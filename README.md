@@ -128,7 +128,7 @@ ng add @angular-eslint/schematics
 if error comes, use the below command
 
 ```shell
-ng add @angular-eslint/schematics@22.0.0
+ng add @angular-eslint/schematics@22.1.0
 # or
 ng add @angular-eslint/schematics@next
 ```
