@@ -1,5 +1,7 @@
 # CardNest
 
+Detailed guides: [application and packages](documentation/APPLICATION.md) · [Android builds](documentation/ANDROID.md)
+
 CardNest is a private, offline-first credit-card ledger built with Angular 22. Data is designed to remain on the device in SQLite. The project intentionally has no analytics, advertising, cloud account, or browser key/value persistence fallback.
 
 ## Current web implementation
@@ -31,7 +33,7 @@ npm install
 Install the native packages requested for the next integration step:
 
 ```bash
-npm i @capacitor/core @capacitor/android @capacitor/camera @capacitor/filesystem @capacitor/local-notifications @capacitor-community/sqlite jeep-sqlite
+npm i @capacitor/core @capacitor/android @capacitor/camera @capacitor/filesystem @capacitor/local-notifications @capacitor-community/sqlite jeep-sqlite sql.js@1.11.0 --save-exact
 npm i -D @capacitor/cli
 ```
 

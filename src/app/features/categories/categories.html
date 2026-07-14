@@ -1,0 +1,137 @@
+<div class="page categories-page">
+  <header class="page-header">
+    <div>
+      <p class="eyebrow">Organisation</p>
+      <h1>Categories</h1>
+      <p class="subtitle">Create, edit and safely replace transaction categories.</p>
+    </div>
+    <button class="btn btn-primary add-category" type="button" (click)="openAdd()">
+      <span aria-hidden="true">＋</span><span>Add category</span>
+    </button>
+  </header>
+  @if (showForm()) {
+    <section class="panel category-form" aria-labelledby="category-form-title">
+      <div class="heading">
+        <div>
+          <p class="eyebrow">{{ editingId() ? 'Update' : 'New' }}</p>
+          <h2 id="category-form-title">{{ editingId() ? 'Edit category' : 'Add category' }}</h2>
+        </div>
+        <button
+          class="icon-button"
+          type="button"
+          (click)="closeForm()"
+          aria-label="Close category form"
+        >
+          ✕
+        </button>
+      </div>
+      <form [formGroup]="form" (ngSubmit)="save()">
+        <div class="form-grid">
+          <label
+            >Name<input formControlName="name" autocomplete="off" />
+            @if (form.controls.name.hasError('duplicate')) {
+              <small>A category with this name already exists.</small>
+            }</label
+          ><label
+            >Icon name<input
+              formControlName="icon"
+              autocomplete="off"
+              placeholder="shopping_bag" /></label
+          ><label>Colour<input formControlName="colour" type="color" /></label
+          ><label
+            >Used for<select formControlName="appliesTo">
+              <option value="BOTH">Expenses and credits</option>
+              <option value="EXPENSE">Expenses only</option>
+              <option value="CREDIT">Credits only</option>
+            </select></label
+          >
+        </div>
+        <div class="form-actions">
+          <button class="btn" type="button" (click)="closeForm()">Cancel</button
+          ><button class="btn btn-primary" type="submit">Save category</button>
+        </div>
+      </form>
+    </section>
+  }
+  <section class="panel category-list" aria-label="Transaction categories">
+    @for (category of sortedCategories(); track category.id) {
+      <article>
+        <span class="category-icon" [style.background]="category.colour" aria-hidden="true">{{
+          category.name.slice(0, 1).toUpperCase()
+        }}</span>
+        <div>
+          <strong>{{ category.name }}</strong
+          ><small
+            >{{
+              category.appliesTo === 'BOTH'
+                ? 'Expenses and credits'
+                : category.appliesTo.toLowerCase()
+            }}
+            · {{ usageCount(category.id) }} transactions</small
+          >
+        </div>
+        <span
+          class="colour"
+          [style.background]="category.colour"
+          [attr.aria-label]="'Colour ' + category.colour"
+        ></span>
+        <div class="actions">
+          <button class="btn btn-quiet" type="button" (click)="edit(category)">Edit</button
+          ><button
+            class="btn btn-quiet danger-text"
+            type="button"
+            (click)="requestDelete(category.id)"
+          >
+            Delete
+          </button>
+        </div>
+        @if (deletingId() === category.id) {
+          <div class="delete-confirmation">
+            <div>
+              <strong>Delete {{ category.name }}?</strong>
+              @if (usageCount(category.id) > 0) {
+                <p>
+                  It is used by {{ usageCount(category.id) }} transactions. Select a replacement
+                  before deleting.
+                </p>
+              } @else {
+                <p>This unused category can be deleted safely.</p>
+              }
+            </div>
+            @if (usageCount(category.id) > 0) {
+              <label
+                >Replacement category<select
+                  [value]="replacementId()"
+                  (change)="updateReplacement($event)"
+                >
+                  <option value="">Choose replacement</option>
+                  @for (replacement of sortedCategories(); track replacement.id) {
+                    @if (replacement.id !== category.id) {
+                      <option [value]="replacement.id">{{ replacement.name }}</option>
+                    }
+                  }
+                </select></label
+              >
+            }
+            <div>
+              <button class="btn" type="button" (click)="cancelDelete()">Cancel</button
+              ><button
+                class="btn danger"
+                type="button"
+                [disabled]="usageCount(category.id) > 0 && !replacementId()"
+                (click)="confirmDelete(category.id)"
+              >
+                Delete category
+              </button>
+            </div>
+          </div>
+        }
+      </article>
+    } @empty {
+      <div class="empty">
+        <h2>No categories yet</h2>
+        <p>Add a category to organise transactions.</p>
+      </div>
+    }
+  </section>
+</div>

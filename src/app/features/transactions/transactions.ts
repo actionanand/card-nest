@@ -1,13 +1,13 @@
 import { Component, computed, inject, signal } from '@angular/core';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
-import { ActivatedRoute } from '@angular/router';
+import { ActivatedRoute, RouterLink } from '@angular/router';
 import { CardTransaction, TransactionType } from '../../core/models/domain';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { formatMoney, parseMoneyToMinor } from '../../core/services/money';
 
 @Component({
   selector: 'app-transactions-page',
-  imports: [ReactiveFormsModule],
+  imports: [ReactiveFormsModule, RouterLink],
   templateUrl: './transactions.html',
   styleUrl: './transactions.scss',
 })
@@ -70,8 +70,8 @@ export class TransactionsPage {
   cardName(cardId: string): string {
     return this.store.cards().find((card) => card.id === cardId)?.nickname ?? 'Archived card';
   }
-  cardLastFour(cardId: string): string {
-    return this.store.cards().find((card) => card.id === cardId)?.lastFourDigits ?? '••••';
+  cardLastDigits(cardId: string): string {
+    return this.store.cards().find((card) => card.id === cardId)?.lastDigits ?? '••••';
   }
   categoryName(categoryId: string): string {
     return this.store.categories().find((item) => item.id === categoryId)?.name ?? 'Other';

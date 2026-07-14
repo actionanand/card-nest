@@ -5,7 +5,7 @@
       <h1>Reminder centre</h1>
       <p class="subtitle">Payment dates, statements, annual fees and expiries.</p>
     </div>
-    <button class="btn" type="button">Notification settings</button>
+    <button class="btn" type="button" (click)="enableNotifications()">Enable notifications</button>
   </header>
   <section class="summary-grid" aria-label="Reminder summary">
     <div class="panel">
@@ -30,7 +30,12 @@
         <p class="eyebrow">Payment schedule</p>
         <h2 id="payment-reminders">Upcoming reminders</h2>
       </div>
-      <span class="pill"><i class="dot"></i> Notifications ready</span>
+      <span class="pill"
+        ><i class="dot"></i
+        >{{
+          notifications.permission() === 'granted' ? 'Notifications ready' : 'Permission needed'
+        }}</span
+      >
     </div>
     @for (reminder of reminders(); track reminder.id) {
       <article>
@@ -40,9 +45,7 @@
         </div>
         <div>
           <strong>Payment due · {{ reminder.card.nickname }}</strong
-          ><small
-            >•••• {{ reminder.card.lastFourDigits }} · {{ reminder.days }} days remaining</small
-          >
+          ><small>•••• {{ reminder.card.lastDigits }} · {{ reminder.days }} days remaining</small>
           <p>{{ money(reminder.amount, reminder.card.currencyCode) }} estimated outstanding</p>
         </div>
         <div class="actions">

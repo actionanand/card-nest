@@ -11,7 +11,7 @@ const SAMPLE_CARDS: readonly CreditCard[] = [
     id: 'card-demo-one',
     nickname: 'Everyday',
     issuerName: 'Northstar Bank',
-    lastFourDigits: '4821',
+    lastDigits: '4821',
     network: 'VISA',
     subtype: 'Visa Signature',
     theme: 'indigo',
@@ -42,7 +42,7 @@ const SAMPLE_CARDS: readonly CreditCard[] = [
     id: 'card-demo-two',
     nickname: 'Travel',
     issuerName: 'Atlas Credit',
-    lastFourDigits: '1907',
+    lastDigits: '1907',
     network: 'MASTERCARD',
     subtype: 'World',
     theme: 'teal',
@@ -194,6 +194,9 @@ export class CardNestStore {
   addCard(card: CreditCard): void {
     this.cards.update((cards) => [...cards, card]);
   }
+  updateCard(updated: CreditCard): void {
+    this.cards.update((cards) => cards.map((card) => (card.id === updated.id ? updated : card)));
+  }
   addTransaction(transaction: CardTransaction): void {
     this.transactions.update((items) => [transaction, ...items]);
   }
@@ -205,5 +208,47 @@ export class CardNestStore {
           : card,
       ),
     );
+  }
+
+  restoreCard(cardId: string): void {
+    this.cards.update((cards) =>
+      cards.map((card) =>
+        card.id === cardId
+          ? { ...card, archived: false, updatedAt: new Date().toISOString() }
+          : card,
+      ),
+    );
+  }
+
+  addCategory(category: Category): void {
+    this.categories.update((categories) => [...categories, category]);
+  }
+
+  updateCategory(updated: Category): void {
+    this.categories.update((categories) =>
+      categories.map((category) => (category.id === updated.id ? updated : category)),
+    );
+  }
+
+  deleteCategory(categoryId: string, replacementCategoryId?: string): boolean {
+    const isUsed = this.transactions().some((transaction) => transaction.categoryId === categoryId);
+    if (isUsed && !replacementCategoryId) return false;
+    if (replacementCategoryId) {
+      this.transactions.update((transactions) =>
+        transactions.map((transaction) =>
+          transaction.categoryId === categoryId
+            ? {
+                ...transaction,
+                categoryId: replacementCategoryId,
+                updatedAt: new Date().toISOString(),
+              }
+            : transaction,
+        ),
+      );
+    }
+    this.categories.update((categories) =>
+      categories.filter((category) => category.id !== categoryId),
+    );
+    return true;
   }
 }

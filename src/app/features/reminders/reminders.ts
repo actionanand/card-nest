@@ -2,6 +2,7 @@ import { Component, computed, inject, signal } from '@angular/core';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { daysBetween, paymentDueDate, statementDateFor } from '../../core/services/billing-cycle';
 import { formatMoney } from '../../core/services/money';
+import { NotificationService } from '../../core/services/notification.service';
 
 @Component({
   selector: 'app-reminders-page',
@@ -10,6 +11,7 @@ import { formatMoney } from '../../core/services/money';
 })
 export class RemindersPage {
   readonly store = inject(CardNestStore);
+  readonly notifications = inject(NotificationService);
   readonly disabled = signal<readonly string[]>([]);
   readonly reminders = computed(() =>
     this.store
@@ -33,5 +35,11 @@ export class RemindersPage {
   }
   snooze(id: string): void {
     this.disabled.update((items) => [...items, id]);
+  }
+
+  async enableNotifications(): Promise<void> {
+    await this.notifications.requestPermission(this.store.cards(), (cardId) =>
+      this.store.cardOutstanding(cardId),
+    );
   }
 }

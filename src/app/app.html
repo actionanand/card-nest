@@ -1,5 +1,15 @@
 <a class="skip-link" href="#main-content">Skip to main content</a>
-<div class="app-layout">
+@if (database.unavailableReason(); as databaseError) {
+  <div class="startup-error" role="alert">
+    <strong>CardNest storage could not start.</strong>
+    <span>{{ databaseError }} Close other CardNest tabs, then reload this page.</span>
+  </div>
+}
+<div
+  class="app-layout"
+  [attr.aria-hidden]="showNotificationPermissionConfirmation() ? 'true' : null"
+  [attr.inert]="showNotificationPermissionConfirmation() ? '' : null"
+>
   <aside class="sidebar" aria-label="Primary navigation">
     <a class="brand" routerLink="/" aria-label="CardNest home">
       <span class="brand-mark" aria-hidden="true"><span></span><span></span></span>
@@ -12,6 +22,9 @@
       <a routerLink="/cards" routerLinkActive="active"><span aria-hidden="true">▣</span> Cards</a>
       <a routerLink="/transactions" routerLinkActive="active"
         ><span aria-hidden="true">↕</span> Transactions</a
+      >
+      <a routerLink="/categories" routerLinkActive="active"
+        ><span aria-hidden="true">◫</span> Categories</a
       >
       <a routerLink="/reminders" routerLinkActive="active"
         ><span aria-hidden="true">◷</span> Reminders</a
@@ -32,7 +45,7 @@
       </div>
     </div>
   </aside>
-  <main id="main-content" tabindex="-1"><router-outlet /></main>
+  <main #mainContent id="main-content" tabindex="-1"><router-outlet /></main>
   <nav class="bottom-nav" aria-label="Primary navigation">
     <a routerLink="/" [routerLinkActiveOptions]="{ exact: true }" routerLinkActive="active"
       ><span aria-hidden="true">⌂</span><small>Home</small></a
@@ -55,3 +68,43 @@
     >
   </nav>
 </div>
+
+@if (showNotificationPermissionConfirmation()) {
+  <div class="permission-backdrop">
+    <section
+      class="permission-dialog panel"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="notification-permission-title"
+      aria-describedby="notification-permission-description"
+    >
+      <span class="permission-dialog__icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" focusable="false">
+          <path d="M18 16v-5a6 6 0 0 0-12 0v5l-2 2h16l-2-2Zm-8 4h4a2 2 0 0 1-4 0Z" />
+        </svg>
+      </span>
+      <h2 id="notification-permission-title">Allow card reminders?</h2>
+      <p id="notification-permission-description">
+        CardNest can notify you about upcoming statements, payments, annual fees, and card expiry.
+        Notifications stay on this device and only show masked card digits.
+      </p>
+      <div class="permission-dialog__actions">
+        <button type="button" class="btn" (click)="dismissNotificationPermissionConfirmation()">
+          Not now
+        </button>
+        <button
+          #allowNotificationsButton
+          type="button"
+          class="btn btn-primary"
+          (click)="confirmNotificationPermission()"
+        >
+          Allow notifications
+        </button>
+      </div>
+    </section>
+  </div>
+}
+
+@if (notificationPermissionMessage(); as message) {
+  <p class="permission-status" role="status">{{ message }}</p>
+}

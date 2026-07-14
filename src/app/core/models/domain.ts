@@ -29,7 +29,8 @@ export interface CreditCard {
   id: string;
   nickname: string;
   issuerName: string;
-  lastFourDigits: string;
+  /** Last 5 digits for American Express; last 4 digits for every other network. */
+  lastDigits: string;
   encryptedFullNumber?: string;
   cardholderName?: string;
   network: CardNetwork;

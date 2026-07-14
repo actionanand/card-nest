@@ -51,7 +51,7 @@
           </div>
           <div>
             <strong>{{ card.nickname }}</strong
-            ><small>{{ card.issuerName }} · •••• {{ card.lastFourDigits }}</small>
+            ><small>{{ card.issuerName }} · •••• {{ card.lastDigits }}</small>
           </div>
           <div class="due-amount">
             <strong>{{ money(store.cardOutstanding(card.id), card.currencyCode) }}</strong

@@ -2,9 +2,15 @@
 
 # Compiled output
 /dist
+/android
+/releases
+/release-keystore.jks
+/keystore.b64.txt
 /tmp
 /out-tsc
 /bazel-out
+
+/reference
 
 # Node
 /node_modules

@@ -17,6 +17,11 @@ export const routes: Routes = [
       import('./features/transactions/transactions').then((item) => item.TransactionsPage),
   },
   {
+    path: 'categories',
+    loadComponent: () =>
+      import('./features/categories/categories').then((item) => item.CategoriesPage),
+  },
+  {
     path: 'reminders',
     loadComponent: () =>
       import('./features/reminders/reminders').then((item) => item.RemindersPage),

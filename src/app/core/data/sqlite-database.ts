@@ -1,44 +1,13 @@
+import { CapacitorSQLite } from '@capacitor-community/sqlite';
+import { Capacitor } from '@capacitor/core';
 import { Service, signal } from '@angular/core';
 import { DATABASE_MIGRATIONS } from './migrations';
 
-interface SqliteResult {
-  readonly changes?: { readonly changes?: number };
-  readonly values?: readonly Record<string, unknown>[];
-}
-interface SqlitePlugin {
-  createConnection(options: {
-    database: string;
-    version: number;
-    encrypted: boolean;
-    mode: string;
-  }): Promise<void>;
-  open(options: { database: string; readonly: boolean }): Promise<void>;
-  execute(options: {
-    database: string;
-    statements: string;
-    transaction: boolean;
-  }): Promise<SqliteResult>;
-  query(options: {
-    database: string;
-    statement: string;
-    values?: readonly unknown[];
-  }): Promise<SqliteResult>;
-  run(options: {
-    database: string;
-    statement: string;
-    values?: readonly unknown[];
-    transaction: boolean;
-  }): Promise<SqliteResult>;
+interface JeepSqliteElement extends HTMLElement {
+  wasmPath: string;
 }
 
-function nativeSqlitePlugin(): SqlitePlugin | undefined {
-  const runtime = globalThis as typeof globalThis & {
-    Capacitor?: { Plugins?: { CapacitorSQLite?: SqlitePlugin } };
-  };
-  return runtime.Capacitor?.Plugins?.CapacitorSQLite;
-}
-
-/** Native SQLite gateway. It deliberately has no browser key/value storage fallback. */
+/** SQLite gateway. The web build uses the jeep-sqlite WASM database, never key/value app storage. */
 @Service()
 export class SqliteDatabase {
   private readonly databaseName = 'cardnest';
@@ -46,31 +15,28 @@ export class SqliteDatabase {
   readonly unavailableReason = signal<string | null>(null);
 
   async initialise(): Promise<void> {
-    const plugin = nativeSqlitePlugin();
-    if (!plugin) {
-      this.unavailableReason.set('SQLite runtime is not installed for this platform.');
-      return;
-    }
     try {
-      await plugin.createConnection({
+      if (Capacitor.getPlatform() === 'web') await this.initialiseWebStore();
+      await CapacitorSQLite.createConnection({
         database: this.databaseName,
         version: DATABASE_MIGRATIONS.at(-1)?.version ?? 1,
         encrypted: false,
         mode: 'no-encryption',
+        readonly: false,
       });
-      await plugin.open({ database: this.databaseName, readonly: false });
-      await plugin.execute({
+      await CapacitorSQLite.open({ database: this.databaseName, readonly: false });
+      await CapacitorSQLite.execute({
         database: this.databaseName,
         statements: 'PRAGMA foreign_keys = ON;',
         transaction: false,
       });
-      const result = await plugin.query({
+      const result = await CapacitorSQLite.query({
         database: this.databaseName,
         statement: 'PRAGMA user_version;',
       });
       const currentVersion = Number(result.values?.[0]?.['user_version'] ?? 0);
       for (const migration of DATABASE_MIGRATIONS.filter((item) => item.version > currentVersion)) {
-        await plugin.execute({
+        await CapacitorSQLite.execute({
           database: this.databaseName,
           statements: [...migration.statements, `PRAGMA user_version = ${migration.version};`].join(
             ';\n',
@@ -80,9 +46,13 @@ export class SqliteDatabase {
       }
       this.ready.set(true);
       this.unavailableReason.set(null);
-    } catch {
+    } catch (error: unknown) {
       this.ready.set(false);
-      this.unavailableReason.set('The encrypted local database could not be opened.');
+      this.unavailableReason.set(
+        error instanceof Error && error.message.includes('WebAssembly')
+          ? 'The installed SQLite WebAssembly file is incompatible.'
+          : 'The local SQLite database could not be opened.',
+      );
     }
   }
 
@@ -90,21 +60,31 @@ export class SqliteDatabase {
     statement: string,
     values: readonly unknown[] = [],
   ): Promise<readonly T[]> {
-    const plugin = nativeSqlitePlugin();
-    if (!plugin || !this.ready()) throw new Error('SQLite database is unavailable.');
-    const result = await plugin.query({ database: this.databaseName, statement, values });
+    if (!this.ready()) throw new Error('SQLite database is unavailable.');
+    const result = await CapacitorSQLite.query({
+      database: this.databaseName,
+      statement,
+      values: [...values],
+    });
     return (result.values ?? []) as readonly T[];
   }
 
   async run(statement: string, values: readonly unknown[] = []): Promise<number> {
-    const plugin = nativeSqlitePlugin();
-    if (!plugin || !this.ready()) throw new Error('SQLite database is unavailable.');
-    const result = await plugin.run({
+    if (!this.ready()) throw new Error('SQLite database is unavailable.');
+    const result = await CapacitorSQLite.run({
       database: this.databaseName,
       statement,
-      values,
+      values: [...values],
       transaction: true,
     });
     return result.changes?.changes ?? 0;
+  }
+
+  private async initialiseWebStore(): Promise<void> {
+    await customElements.whenDefined('jeep-sqlite');
+    const element = document.querySelector<JeepSqliteElement>('jeep-sqlite');
+    if (!element) throw new Error('The jeep-sqlite host element is missing.');
+    element.wasmPath = new URL('assets', document.baseURI).pathname.replace(/\/$/, '');
+    await CapacitorSQLite.initWebStore();
   }
 }

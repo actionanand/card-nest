@@ -10,10 +10,9 @@
     <div class="database-warning" role="status">
       <span aria-hidden="true">i</span>
       <div>
-        <strong>Native SQLite is not active in this browser preview</strong>
+        <strong>SQLite storage is unavailable</strong>
         <p>
-          {{ database.unavailableReason() }} Install the requested packages and run through
-          Capacitor to persist data. No browser key/value fallback is used.
+          {{ database.unavailableReason() }} CardNest does not switch to browser key/value storage.
         </p>
       </div>
     </div>
@@ -77,14 +76,14 @@
           </div>
         </div>
         <div class="theme-options" role="radiogroup" aria-label="Theme">
-          @for (option of ['SYSTEM', 'LIGHT', 'DARK']; track option) {
+          @for (option of themeOptions; track option) {
             <label
               ><input
                 type="radio"
                 name="theme"
                 [value]="option"
                 [checked]="theme() === option"
-                (change)="theme.set($any(option))"
+                (change)="setTheme(option)"
               /><span
                 >{{ option === 'SYSTEM' ? '◐' : option === 'LIGHT' ? '☀' : '☾'
                 }}<strong>{{ option.toLowerCase() }}</strong></span
@@ -131,7 +130,7 @@
           ><span
             ><strong>Payment reminders</strong
             ><small>Card nickname and masked digits only</small></span
-          ><input type="checkbox" [checked]="reminders()" (change)="reminders.set(!reminders())"
+          ><input type="checkbox" [checked]="reminders()" (change)="toggleReminders()"
         /></label>
         <div class="setting-row">
           <label

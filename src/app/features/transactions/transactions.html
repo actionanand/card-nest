@@ -5,8 +5,11 @@
       <h1>Transactions</h1>
       <p class="subtitle">Every purchase, refund and payment—clearly accounted for.</p>
     </div>
-    <button class="btn btn-primary" type="button" (click)="showForm.set(true)">
-      <span aria-hidden="true">＋</span> Add transaction
+    <button class="btn btn-primary add-transaction" type="button" (click)="showForm.set(true)">
+      <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12 5v14M5 12h14" />
+      </svg>
+      <span>Add transaction</span>
     </button>
   </header>
   @if (showForm()) {
@@ -42,9 +45,7 @@
           <label
             >Card<select formControlName="cardId">
               @for (card of store.activeCards(); track card.id) {
-                <option [value]="card.id">
-                  {{ card.nickname }} · •••• {{ card.lastFourDigits }}
-                </option>
+                <option [value]="card.id">{{ card.nickname }} · •••• {{ card.lastDigits }}</option>
               }
             </select></label
           >
@@ -100,7 +101,7 @@
           <option [value]="type.value">{{ type.label }}</option>
         }
       </select></label
-    ><button class="btn" type="button">More filters <span aria-hidden="true">⌄</span></button>
+    ><a class="btn" routerLink="/categories">Manage categories</a>
   </section>
   <section class="panel ledger" aria-labelledby="history-heading">
     <div class="ledger-heading">
@@ -116,7 +117,7 @@
           <strong>{{ transaction.merchant || transaction.type.replace('_', ' ') }}</strong
           ><small
             >{{ categoryName(transaction.categoryId) }} · {{ cardName(transaction.cardId) }} ••••
-            {{ cardLastFour(transaction.cardId) }}</small
+            {{ cardLastDigits(transaction.cardId) }}</small
           >
         </div>
         <div class="tx-date">
