@@ -22,20 +22,23 @@ The native and SQLite dependencies were installed with:
 
 ```bash
 npm i @capacitor/core @capacitor/android @capacitor/camera @capacitor/filesystem @capacitor/local-notifications @capacitor-community/sqlite jeep-sqlite sql.js@1.11.0 --save-exact
+npm i @lucide/angular chart.js
 npm i -D @capacitor/cli
 ```
 
 ### Angular packages
 
-| Package                     | Purpose                                                                                |
-| --------------------------- | -------------------------------------------------------------------------------------- |
-| `@angular/core`             | Components, dependency injection, signals, computed state, and application lifecycle   |
-| `@angular/common`           | Common browser utilities and Angular directives                                        |
-| `@angular/forms`            | Reactive, validated card/category/transaction forms                                    |
-| `@angular/router`           | Lazy feature routing and navigation                                                    |
-| `@angular/platform-browser` | Browser bootstrapping, DOM services, and safe rendering of trusted local SVG constants |
-| `rxjs`                      | Observable utilities used by Angular                                                   |
-| `tslib`                     | TypeScript runtime helpers                                                             |
+| Package                     | Purpose                                                                                 |
+| --------------------------- | --------------------------------------------------------------------------------------- |
+| `@angular/core`             | Components, dependency injection, signals, computed state, and application lifecycle    |
+| `@angular/common`           | Common browser utilities and Angular directives                                         |
+| `@angular/forms`            | Reactive, validated card/category/transaction forms                                     |
+| `@angular/router`           | Lazy feature routing and navigation                                                     |
+| `@angular/platform-browser` | Browser bootstrapping, DOM services, and safe rendering of trusted local SVG constants  |
+| `rxjs`                      | Observable utilities used by Angular                                                    |
+| `tslib`                     | TypeScript runtime helpers                                                              |
+| `@lucide/angular`           | Tree-shakeable, accessible SVG icons for navigation, actions, categories, and status UI |
+| `chart.js`                  | Responsive doughnut and bar charts for category and payment-source analytics            |
 
 ### Capacitor and device packages
 
@@ -81,6 +84,19 @@ CardNest uses the notification plugin's standard Android scheduler and boot-rest
 5. Creates indexes for card/date, category, statement-cycle, recurring, and EMI queries.
 
 The current schema stores four trailing digits for most networks and five for American Express. American Express uses a 15-digit `4–6–5` number layout. CVV and PIN values must never be collected.
+
+## Current product areas
+
+- Compact credit-card list with statement cycles, annual-fee waivers, payment actions, and masked card identifiers.
+- Cash, bank/UPI, and Pluxee sources. Pluxee supports a configurable monthly load; it never receives credit-card settlement reminders.
+- Calendar-month, custom budget-cycle, and selected-card statement-cycle transaction groups.
+- Repeat rules are materialised when CardNest opens; no exact-alarm permission or background timer is required.
+- Income-aware reports use income and tracked source funds, never credit limits, to calculate available spending.
+- Loan and external EMI commitments include installment amount, debit day, end date, and cancellation state.
+
+CardNest uses Lucide for interface icons so navigation, chevrons, action menus, category choices, and status indicators share the same SVG stroke geometry. Card-network logos remain the local constants in `src/imgData/svg` because brand artwork is intentionally separate from interface icons.
+
+Reports use Chart.js directly rather than an Angular wrapper. This keeps the chart dependency framework-independent and provides responsive, signal-driven doughnut and horizontal bar charts. Each canvas has an accessible label and an adjacent text breakdown, so the information does not depend on colour or graphics alone.
 
 ## Common commands
 

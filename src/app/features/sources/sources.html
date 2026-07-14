@@ -1,0 +1,71 @@
+<div class="page sources-page">
+  <header class="page-header">
+    <div>
+      <p class="eyebrow">Money sources</p>
+      <h1>Cash, bank & meal card</h1>
+      <p class="subtitle">Track non-credit spending without settlement reminders.</p>
+    </div>
+  </header>
+  <section class="source-grid">
+    @for (source of store.activePaymentSources(); track source.id) {
+      <article class="panel source-card">
+        <div class="source-heading">
+          <span><app-payment-source-logo [kind]="source.kind" /></span>
+          <div>
+            <h2>{{ source.nickname }}</h2>
+            <p>
+              {{
+                source.institution || (source.kind === 'CASH' ? 'Physical cash' : 'Payment source')
+              }}
+            </p>
+          </div>
+        </div>
+        @if (!source.noLimit) {
+          <strong class="source-balance">{{ money(source.balanceMinor) }}</strong>
+        }
+        @if (source.kind !== 'MEAL') {
+          <label class="toggle-row"
+            ><span
+              ><strong>No tracked balance</strong
+              ><small>Spend is still included in income analytics</small></span
+            ><input type="checkbox" [checked]="source.noLimit" (change)="toggle(source, 'noLimit')"
+          /></label>
+          @if (!source.noLimit) {
+            <label
+              >Available amount<input
+                inputmode="decimal"
+                [value]="(source.balanceMinor ?? 0) / 100"
+                (change)="updateAmount(source, $event, 'balanceMinor')"
+            /></label>
+          }
+        } @else {
+          <label
+            >Current Pluxee balance<input
+              inputmode="decimal"
+              [value]="(source.balanceMinor ?? 0) / 100"
+              (change)="updateAmount(source, $event, 'balanceMinor')" /></label
+          ><label
+            >Monthly load amount<input
+              inputmode="decimal"
+              [value]="(source.loadAmountMinor ?? 0) / 100"
+              (change)="updateAmount(source, $event, 'loadAmountMinor')" /></label
+          ><label
+            >Load date<select [value]="source.loadDay" (change)="updateLoadDay(source, $event)">
+              @for (day of days; track day) {
+                <option [value]="day">Day {{ day }}</option>
+              }
+            </select></label
+          ><label class="toggle-row"
+            ><span
+              ><strong>Load automatically</strong
+              ><small>Add the configured amount once per load month</small></span
+            ><input
+              type="checkbox"
+              [checked]="source.autoLoad"
+              (change)="toggle(source, 'autoLoad')"
+          /></label>
+        }
+      </article>
+    }
+  </section>
+</div>

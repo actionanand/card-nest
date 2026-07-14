@@ -101,8 +101,8 @@ nav a,
   font-weight: 650;
   text-decoration: none;
 }
-nav a > span,
-.sidebar-footer > a span {
+nav a > app-icon,
+.sidebar-footer > a app-icon {
   display: grid;
   width: 1.45rem;
   place-items: center;
@@ -129,7 +129,7 @@ nav a.active,
   border-radius: 0.8rem;
   background: var(--canvas);
 }
-.privacy > span:first-child {
+.privacy > app-icon {
   display: grid;
   width: 1.7rem;
   height: 1.7rem;
@@ -139,7 +139,7 @@ nav a.active,
   color: var(--success);
   background: var(--success-soft);
 }
-.privacy > span:last-child {
+.privacy > span {
   display: grid;
 }
 .privacy strong {
@@ -155,6 +155,11 @@ main {
   margin-left: 16rem;
 }
 .bottom-nav {
+  display: none;
+}
+.mobile-app-bar,
+.mobile-drawer,
+.drawer-scrim {
   display: none;
 }
 
@@ -189,7 +194,7 @@ main {
   background: var(--accent-soft);
 }
 
-.permission-dialog__icon svg {
+.permission-dialog__icon app-icon {
   width: 1.75rem;
   height: 1.75rem;
   fill: currentColor;
@@ -234,12 +239,98 @@ main {
     text-align: left;
   }
 
+  .mobile-app-bar {
+    position: fixed;
+    z-index: 40;
+    inset: 0 0 auto;
+    display: grid;
+    height: calc(3.5rem + env(safe-area-inset-top));
+    grid-template-columns: 3rem 1fr 3rem;
+    align-items: end;
+    padding: env(safe-area-inset-top) 0.45rem 0.45rem;
+    border-bottom: 1px solid var(--line);
+    background: color-mix(in srgb, var(--surface) 96%, transparent);
+    backdrop-filter: blur(12px);
+  }
+  .mobile-app-bar button,
+  .mobile-app-bar .mobile-stats {
+    display: grid;
+    width: 2.6rem;
+    height: 2.6rem;
+    place-items: center;
+    border: 0;
+    border-radius: 0.7rem;
+    color: var(--accent);
+    background: transparent;
+  }
+  .mobile-app-bar > a:not(.mobile-stats) {
+    align-self: center;
+    color: var(--ink);
+    font-family: var(--display);
+    font-size: 1.15rem;
+    font-weight: 700;
+    text-align: center;
+    text-decoration: none;
+  }
+  .mobile-app-bar app-icon {
+    width: 1.35rem;
+    height: 1.35rem;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-width: 2;
+  }
+  .drawer-scrim {
+    position: fixed;
+    z-index: 59;
+    inset: 0;
+    display: block;
+    width: 100%;
+    height: 100%;
+    border: 0;
+    background: rgb(8 20 14 / 55%);
+  }
+  .mobile-drawer {
+    position: fixed;
+    z-index: 60;
+    inset: 0 auto 0 0;
+    display: block;
+    width: min(19rem, 86vw);
+    padding: max(1rem, env(safe-area-inset-top)) 0.8rem 1rem;
+    background: var(--surface);
+    box-shadow: 1rem 0 3rem rgb(8 20 14 / 25%);
+  }
+  .drawer-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.4rem 0.65rem 1rem;
+  }
+  .drawer-heading strong {
+    font-family: var(--display);
+    font-size: 1.35rem;
+  }
+  .drawer-heading button {
+    display: grid;
+    width: 2.5rem;
+    height: 2.5rem;
+    border: 0;
+    border-radius: 50%;
+    color: var(--muted);
+    background: var(--surface-2);
+    place-items: center;
+  }
+  .mobile-drawer nav a {
+    min-height: 2.8rem;
+  }
+
   .sidebar {
     display: none;
   }
   main {
     width: 100%;
     margin-left: 0;
+    padding-top: calc(3.5rem + env(safe-area-inset-top));
     padding-bottom: 5.2rem;
   }
   .bottom-nav {
@@ -266,6 +357,10 @@ main {
     padding: 0;
     font-size: 1.2rem;
   }
+  .bottom-nav app-icon {
+    width: 1.2rem;
+    height: 1.2rem;
+  }
   .bottom-nav small {
     font-size: 0.64rem;
   }
@@ -281,6 +376,10 @@ main {
     background: var(--accent);
     box-shadow: 0 6px 18px #2f76594a;
     font-size: 1.8rem;
+  }
+  .bottom-nav .add-action app-icon {
+    width: 1.45rem;
+    height: 1.45rem;
   }
 
   .permission-dialog__actions {

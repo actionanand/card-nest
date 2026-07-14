@@ -10,6 +10,67 @@
   [attr.aria-hidden]="showNotificationPermissionConfirmation() ? 'true' : null"
   [attr.inert]="showNotificationPermissionConfirmation() ? '' : null"
 >
+  <header class="mobile-app-bar">
+    <button
+      type="button"
+      (click)="mobileMenuOpen.set(true)"
+      aria-label="Open navigation menu"
+      [attr.aria-expanded]="mobileMenuOpen()"
+    >
+      <app-icon name="menu" />
+    </button>
+    <a routerLink="/">CardNest</a>
+    <a class="mobile-stats" routerLink="/reports" aria-label="Open statistics">
+      <app-icon name="reports" />
+    </a>
+  </header>
+
+  @if (mobileMenuOpen()) {
+    <button
+      class="drawer-scrim"
+      type="button"
+      (click)="mobileMenuOpen.set(false)"
+      aria-label="Close navigation menu"
+    ></button>
+    <aside class="mobile-drawer" aria-label="Mobile navigation">
+      <div class="drawer-heading">
+        <strong>CardNest</strong>
+        <button type="button" (click)="mobileMenuOpen.set(false)" aria-label="Close menu">
+          <app-icon name="close" />
+        </button>
+      </div>
+      <nav>
+        <a routerLink="/" (click)="mobileMenuOpen.set(false)"
+          ><app-icon name="overview" /> Overview</a
+        >
+        <a routerLink="/cards" (click)="mobileMenuOpen.set(false)"
+          ><app-icon name="cards" /> Cards</a
+        >
+        <a routerLink="/transactions" (click)="mobileMenuOpen.set(false)"
+          ><app-icon name="transactions" /> Transactions</a
+        >
+        <a routerLink="/sources" (click)="mobileMenuOpen.set(false)"
+          ><app-icon name="sources" /> Cash, bank & Pluxee</a
+        >
+        <a routerLink="/categories" (click)="mobileMenuOpen.set(false)"
+          ><app-icon name="categories" /> Categories</a
+        >
+        <a routerLink="/reminders" (click)="mobileMenuOpen.set(false)"
+          ><app-icon name="reminders" /> Reminders</a
+        >
+        <a routerLink="/reports" (click)="mobileMenuOpen.set(false)"
+          ><app-icon name="reports" /> Stats & graphs</a
+        >
+        <a routerLink="/loans" (click)="mobileMenuOpen.set(false)"
+          ><app-icon name="loans" /> Loans & EMIs</a
+        >
+        <a routerLink="/settings" (click)="mobileMenuOpen.set(false)"
+          ><app-icon name="settings" /> Settings</a
+        >
+      </nav>
+    </aside>
+  }
+
   <aside class="sidebar" aria-label="Primary navigation">
     <a class="brand" routerLink="/" aria-label="CardNest home">
       <span class="brand-mark" aria-hidden="true"><span></span><span></span></span>
@@ -17,54 +78,54 @@
     </a>
     <nav>
       <a routerLink="/" [routerLinkActiveOptions]="{ exact: true }" routerLinkActive="active"
-        ><span aria-hidden="true">⌂</span> Overview</a
+        ><app-icon name="overview" /> Overview</a
       >
-      <a routerLink="/cards" routerLinkActive="active"><span aria-hidden="true">▣</span> Cards</a>
+      <a routerLink="/cards" routerLinkActive="active"><app-icon name="cards" /> Cards</a>
       <a routerLink="/transactions" routerLinkActive="active"
-        ><span aria-hidden="true">↕</span> Transactions</a
+        ><app-icon name="transactions" /> Transactions</a
       >
       <a routerLink="/categories" routerLinkActive="active"
-        ><span aria-hidden="true">◫</span> Categories</a
+        ><app-icon name="categories" /> Categories</a
       >
       <a routerLink="/reminders" routerLinkActive="active"
-        ><span aria-hidden="true">◷</span> Reminders</a
+        ><app-icon name="reminders" /> Reminders</a
       >
-      <a routerLink="/reports" routerLinkActive="active"
-        ><span aria-hidden="true">⌁</span> Reports</a
+      <a routerLink="/reports" routerLinkActive="active"><app-icon name="reports" /> Reports</a>
+      <a routerLink="/sources" routerLinkActive="active"
+        ><app-icon name="sources" /> Money sources</a
       >
+      <a routerLink="/loans" routerLinkActive="active"><app-icon name="loans" /> Loans & EMIs</a>
     </nav>
     <div class="sidebar-footer">
-      <a routerLink="/settings" routerLinkActive="active"
-        ><span aria-hidden="true">⚙</span> Settings</a
-      >
+      <a routerLink="/settings" routerLinkActive="active"><app-icon name="settings" /> Settings</a>
       <div class="privacy">
-        <span aria-hidden="true">✓</span
-        ><span
-          ><strong>Private by design</strong><small>Your data stays on this device</small></span
-        >
+        <app-icon name="privacy" />
+        <span><strong>Private by design</strong><small>Your data stays on this device</small></span>
       </div>
     </div>
   </aside>
+
   <main #mainContent id="main-content" tabindex="-1"><router-outlet /></main>
+
   <nav class="bottom-nav" aria-label="Primary navigation">
     <a routerLink="/" [routerLinkActiveOptions]="{ exact: true }" routerLinkActive="active"
-      ><span aria-hidden="true">⌂</span><small>Home</small></a
+      ><app-icon name="overview" /><small>Home</small></a
     >
     <a routerLink="/cards" routerLinkActive="active"
-      ><span aria-hidden="true">▣</span><small>Cards</small></a
+      ><app-icon name="cards" /><small>Cards</small></a
     >
     <a
       class="add-action"
       routerLink="/transactions"
       [queryParams]="{ add: true }"
       aria-label="Add transaction"
-      ><span aria-hidden="true">+</span></a
-    >
+      ><app-icon name="plus"
+    /></a>
     <a routerLink="/transactions" routerLinkActive="active"
-      ><span aria-hidden="true">↕</span><small>Activity</small></a
+      ><app-icon name="transactions" /><small>Activity</small></a
     >
     <a routerLink="/settings" routerLinkActive="active"
-      ><span aria-hidden="true">⚙</span><small>Settings</small></a
+      ><app-icon name="settings" /><small>Settings</small></a
     >
   </nav>
 </div>
@@ -78,11 +139,7 @@
       aria-labelledby="notification-permission-title"
       aria-describedby="notification-permission-description"
     >
-      <span class="permission-dialog__icon" aria-hidden="true">
-        <svg viewBox="0 0 24 24" focusable="false">
-          <path d="M18 16v-5a6 6 0 0 0-12 0v5l-2 2h16l-2-2Zm-8 4h4a2 2 0 0 1-4 0Z" />
-        </svg>
-      </span>
+      <span class="permission-dialog__icon" aria-hidden="true"><app-icon name="reminders" /></span>
       <h2 id="notification-permission-title">Allow card reminders?</h2>
       <p id="notification-permission-description">
         CardNest can notify you about upcoming statements, payments, annual fees, and card expiry.

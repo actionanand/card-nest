@@ -81,6 +81,23 @@ export interface CardTransaction {
   updatedAt: string;
 }
 
+export type PaymentSourceKind = 'CASH' | 'DEBIT' | 'MEAL';
+
+export interface PaymentSource {
+  id: string;
+  nickname: string;
+  kind: PaymentSourceKind;
+  institution?: string;
+  lastDigits?: string;
+  noLimit: boolean;
+  balanceMinor?: Money;
+  loadAmountMinor?: Money;
+  loadDay?: number;
+  autoLoad: boolean;
+  lastLoadedPeriod?: string;
+  archived: boolean;
+}
+
 export interface Category {
   id: string;
   name: string;
@@ -127,6 +144,19 @@ export interface RecurringRule {
   occurrenceLimit?: number;
   nextOccurrenceDate?: string;
   status: 'ACTIVE' | 'PAUSED' | 'COMPLETED';
+}
+
+export interface LoanCommitment {
+  id: string;
+  name: string;
+  lender?: string;
+  principalMinor: Money;
+  installmentMinor: Money;
+  debitDay: number;
+  startDate: string;
+  endDate: string;
+  status: 'ACTIVE' | 'CANCELLED' | 'COMPLETED';
+  notes?: string;
 }
 
 export interface EmiPlan {

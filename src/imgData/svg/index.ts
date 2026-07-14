@@ -6,3 +6,5 @@ export * from './jcb';
 export * from './mastercard';
 export * from './rupay';
 export * from './visa';
+export * from './debit-card';
+export * from './meal-card';

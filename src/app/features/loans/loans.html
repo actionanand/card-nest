@@ -1,0 +1,80 @@
+<div class="page loans-page">
+  <header class="page-header">
+    <div>
+      <p class="eyebrow">Commitments</p>
+      <h1>Loans & EMIs</h1>
+      <p class="subtitle">Track debit dates and know when every commitment ends.</p>
+    </div>
+    <button class="btn btn-primary" type="button" (click)="showForm.set(true)">+ Add loan</button>
+  </header>
+  @if (showForm()) {
+    <section class="panel loan-form">
+      <div class="form-heading">
+        <button type="button" (click)="showForm.set(false)" aria-label="Back">←</button>
+        <h2>Add loan or external EMI</h2>
+      </div>
+      <form [formGroup]="form" (ngSubmit)="save()">
+        <div class="form-grid">
+          <label>Name<input formControlName="name" placeholder="Home loan" /></label
+          ><label>Lender<input formControlName="lender" /></label
+          ><label>Original principal<input formControlName="principal" inputmode="decimal" /></label
+          ><label
+            >Monthly installment<input formControlName="installment" inputmode="decimal" /></label
+          ><label
+            >Debit date<select formControlName="debitDay">
+              @for (day of days; track day) {
+                <option [ngValue]="day">Day {{ day }}</option>
+              }
+            </select></label
+          ><label>Start date<input type="date" formControlName="startDate" /></label
+          ><label>End date<input type="date" formControlName="endDate" /></label
+          ><label class="full">Notes<textarea formControlName="notes"></textarea></label>
+        </div>
+        <div class="form-actions">
+          <button class="btn" type="button" (click)="showForm.set(false)">Cancel</button
+          ><button class="btn btn-primary" type="submit">Save commitment</button>
+        </div>
+      </form>
+    </section>
+  }
+  <section class="loan-list">
+    @for (loan of store.loans(); track loan.id) {
+      <article class="panel" [class.cancelled]="loan.status === 'CANCELLED'">
+        <div>
+          <span class="loan-icon" aria-hidden="true">₹</span>
+          <div>
+            <h2>{{ loan.name }}</h2>
+            <p>{{ loan.lender || 'Personal commitment' }}</p>
+          </div>
+        </div>
+        <dl>
+          <div>
+            <dt>Installment</dt>
+            <dd>{{ money(loan.installmentMinor) }}</dd>
+          </div>
+          <div>
+            <dt>Debit date</dt>
+            <dd>Day {{ loan.debitDay }}</dd>
+          </div>
+          <div>
+            <dt>Runs until</dt>
+            <dd>{{ loan.endDate }}</dd>
+          </div>
+        </dl>
+        <button
+          class="btn"
+          type="button"
+          [disabled]="loan.status !== 'ACTIVE'"
+          (click)="store.cancelLoan(loan.id)"
+        >
+          {{ loan.status === 'ACTIVE' ? 'Cancel loan / EMI' : loan.status.toLowerCase() }}
+        </button>
+      </article>
+    } @empty {
+      <div class="panel empty">
+        <h2>No loans or external EMIs</h2>
+        <p>Add one to include its monthly debit in your budget forecast.</p>
+      </div>
+    }
+  </section>
+</div>

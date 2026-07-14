@@ -3,6 +3,7 @@ import { SqliteDatabase } from '../../core/data/sqlite-database';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { NotificationService } from '../../core/services/notification.service';
 import { AppTheme, ThemeService } from '../../core/services/theme.service';
+import { parseMoneyToMinor } from '../../core/services/money';
 
 @Component({
   selector: 'app-settings-page',
@@ -22,6 +23,18 @@ export class SettingsPage {
 
   setTheme(theme: AppTheme): void {
     void this.themes.setTheme(theme);
+  }
+
+  updateMoney(event: Event, target: 'income' | 'budget'): void {
+    const value = parseMoneyToMinor((event.target as HTMLInputElement).value);
+    if (value === null) return;
+    if (target === 'income') this.store.monthlyIncomeMinor.set(value);
+    else this.store.monthlyBudgetMinor.set(value);
+  }
+
+  updateCycleDay(event: Event): void {
+    const value = Number((event.target as HTMLInputElement).value);
+    this.store.budgetCycleStartDay.set(Math.min(28, Math.max(1, value)));
   }
 
   async toggleReminders(): Promise<void> {

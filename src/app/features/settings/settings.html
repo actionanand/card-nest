@@ -114,8 +114,25 @@
               <option>MM/DD/YYYY</option>
               <option>YYYY-MM-DD</option>
             </select></label
-          ><label>Monthly budget<input value="60000.00" inputmode="decimal" /></label
-          ><label>Budget cycle begins<input value="1" type="number" min="1" max="31" /></label>
+          ><label
+            >Monthly income (optional)<input
+              [value]="store.monthlyIncomeMinor() / 100"
+              inputmode="decimal"
+              (change)="updateMoney($event, 'income')"
+            /><small>Used for available-to-spend analytics.</small></label
+          ><label
+            >Monthly budget<input
+              [value]="store.monthlyBudgetMinor() / 100"
+              inputmode="decimal"
+              (change)="updateMoney($event, 'budget')" /></label
+          ><label
+            >Budget cycle begins<input
+              [value]="store.budgetCycleStartDay()"
+              type="number"
+              min="1"
+              max="28"
+              (change)="updateCycleDay($event)"
+          /></label>
         </div>
       </section>
       <section id="notifications" class="panel">

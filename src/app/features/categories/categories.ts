@@ -2,10 +2,11 @@ import { Component, computed, inject, signal } from '@angular/core';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { Category } from '../../core/models/domain';
 import { CardNestStore } from '../../core/services/card-nest-store';
+import { AppIcon } from '../../shared/app-icon';
 
 @Component({
   selector: 'app-categories-page',
-  imports: [ReactiveFormsModule],
+  imports: [ReactiveFormsModule, AppIcon],
   templateUrl: './categories.html',
   styleUrl: './categories.scss',
 })
@@ -13,8 +14,20 @@ export class CategoriesPage {
   readonly store = inject(CardNestStore);
   readonly showForm = signal(false);
   readonly editingId = signal<string | null>(null);
-  readonly deletingId = signal<string | null>(null);
-  readonly replacementId = signal('');
+  readonly iconOptions = [
+    'category',
+    'shopping_basket',
+    'restaurant',
+    'local_gas_station',
+    'shopping_bag',
+    'flight',
+    'bolt',
+    'health_and_safety',
+    'subscriptions',
+    'payments',
+    'home',
+    'entertainment',
+  ] as const;
   readonly sortedCategories = computed(() =>
     [...this.store.categories()].sort((a, b) => a.name.localeCompare(b.name)),
   );
@@ -35,7 +48,11 @@ export class CategoriesPage {
   });
 
   usageCount(categoryId: string): number {
-    return this.store.transactions().filter((item) => item.categoryId === categoryId).length;
+    const month = new Date().toISOString().slice(0, 7);
+    return this.store
+      .transactions()
+      .filter((item) => item.categoryId === categoryId && item.transactionDate.startsWith(month))
+      .length;
   }
   openAdd(): void {
     this.editingId.set(null);
@@ -84,18 +101,12 @@ export class CategoriesPage {
     this.closeForm();
   }
   requestDelete(categoryId: string): void {
-    this.deletingId.set(categoryId);
-    this.replacementId.set('');
-  }
-  cancelDelete(): void {
-    this.deletingId.set(null);
-    this.replacementId.set('');
-  }
-  confirmDelete(categoryId: string): void {
-    if (this.store.deleteCategory(categoryId, this.replacementId() || undefined))
-      this.cancelDelete();
-  }
-  updateReplacement(event: Event): void {
-    this.replacementId.set((event.target as HTMLSelectElement).value);
+    const category = this.store.categories().find((item) => item.id === categoryId);
+    if (
+      !category ||
+      !globalThis.confirm?.(`Delete ${category.name}? Existing transactions will move to Other.`)
+    )
+      return;
+    this.store.deleteCategory(categoryId);
   }
 }

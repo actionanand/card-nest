@@ -11,10 +11,11 @@ import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 import { SqliteDatabase } from './core/data/sqlite-database';
 import { CardNestStore } from './core/services/card-nest-store';
 import { NotificationService } from './core/services/notification.service';
+import { AppIcon } from './shared/app-icon';
 
 @Component({
   selector: 'app-root',
-  imports: [RouterOutlet, RouterLink, RouterLinkActive],
+  imports: [RouterOutlet, RouterLink, RouterLinkActive, AppIcon],
   templateUrl: './app.html',
   styleUrl: './app.scss',
   host: {
@@ -28,6 +29,7 @@ export class App {
 
   readonly showNotificationPermissionConfirmation = signal(false);
   readonly notificationPermissionMessage = signal<string | null>(null);
+  readonly mobileMenuOpen = signal(false);
   readonly allowNotificationsButton = viewChild<ElementRef<HTMLButtonElement>>(
     'allowNotificationsButton',
   );
@@ -41,11 +43,13 @@ export class App {
     });
 
     afterNextRender(() => {
+      this.store.materializeRecurringTransactions();
       void this.openNotificationPermissionConfirmationIfNeeded();
     });
   }
 
   dismissNotificationPermissionConfirmation(): void {
+    this.mobileMenuOpen.set(false);
     if (!this.showNotificationPermissionConfirmation()) return;
     this.showNotificationPermissionConfirmation.set(false);
     queueMicrotask(() => this.mainContent()?.nativeElement.focus());

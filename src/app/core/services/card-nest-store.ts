@@ -1,5 +1,13 @@
 import { Service, computed, signal } from '@angular/core';
-import { CardTransaction, Category, CreditCard, DashboardSnapshot } from '../models/domain';
+import {
+  CardTransaction,
+  Category,
+  CreditCard,
+  DashboardSnapshot,
+  LoanCommitment,
+  PaymentSource,
+  RecurringRule,
+} from '../models/domain';
 import { calculateNetSpending, calculateOutstanding } from './money';
 
 const now = new Date();
@@ -141,13 +149,54 @@ const SAMPLE_TRANSACTIONS: readonly CardTransaction[] = [
   },
 ];
 
+const PAYMENT_SOURCES: readonly PaymentSource[] = [
+  {
+    id: 'source-cash',
+    nickname: 'Cash',
+    kind: 'CASH',
+    noLimit: true,
+    autoLoad: false,
+    archived: false,
+  },
+  {
+    id: 'source-debit',
+    nickname: 'Bank / UPI',
+    kind: 'DEBIT',
+    institution: 'Primary bank',
+    noLimit: true,
+    autoLoad: false,
+    archived: false,
+  },
+  {
+    id: 'source-meal',
+    nickname: 'Pluxee meal card',
+    kind: 'MEAL',
+    institution: 'Pluxee',
+    noLimit: false,
+    balanceMinor: 880000,
+    loadAmountMinor: 880000,
+    loadDay: 1,
+    autoLoad: true,
+    lastLoadedPeriod: today.slice(0, 7),
+    archived: false,
+  },
+];
+
 @Service()
 export class CardNestStore {
   readonly cards = signal<readonly CreditCard[]>(SAMPLE_CARDS);
   readonly transactions = signal<readonly CardTransaction[]>(SAMPLE_TRANSACTIONS);
   readonly categories = signal<readonly Category[]>(CATEGORIES);
+  readonly paymentSources = signal<readonly PaymentSource[]>(PAYMENT_SOURCES);
+  readonly recurringRules = signal<readonly RecurringRule[]>([]);
+  readonly loans = signal<readonly LoanCommitment[]>([]);
   readonly monthlyBudgetMinor = signal(6000000);
+  readonly monthlyIncomeMinor = signal(8000000);
+  readonly budgetCycleStartDay = signal(1);
   readonly activeCards = computed(() => this.cards().filter((card) => !card.archived));
+  readonly activePaymentSources = computed(() =>
+    this.paymentSources().filter((source) => !source.archived),
+  );
 
   readonly dashboard = computed<DashboardSnapshot>(() => {
     const cards = this.activeCards();
@@ -181,6 +230,10 @@ export class CardNestStore {
     };
   });
 
+  constructor() {
+    this.materializeSourceLoads();
+  }
+
   cardOutstanding(cardId: string): number {
     const card = this.cards().find((item) => item.id === cardId);
     return card
@@ -199,6 +252,55 @@ export class CardNestStore {
   }
   addTransaction(transaction: CardTransaction): void {
     this.transactions.update((items) => [transaction, ...items]);
+    const source = this.paymentSources().find((item) => item.id === transaction.cardId);
+    if (source && !source.noLimit && source.balanceMinor !== undefined) {
+      const isCredit = ['PAYMENT', 'REFUND', 'CASHBACK', 'CREDIT'].includes(transaction.type);
+      this.updatePaymentSource({
+        ...source,
+        balanceMinor: Math.max(
+          0,
+          source.balanceMinor + (isCredit ? transaction.amountMinor : -transaction.amountMinor),
+        ),
+      });
+    }
+  }
+  addRecurringRule(rule: RecurringRule): void {
+    this.recurringRules.update((rules) => [...rules, rule]);
+    this.materializeRecurringTransactions();
+  }
+  updatePaymentSource(updated: PaymentSource): void {
+    this.paymentSources.update((sources) =>
+      sources.map((source) => (source.id === updated.id ? updated : source)),
+    );
+  }
+  addLoan(loan: LoanCommitment): void {
+    this.loans.update((loans) => [loan, ...loans]);
+  }
+  cancelLoan(loanId: string): void {
+    this.loans.update((loans) =>
+      loans.map((loan) => (loan.id === loanId ? { ...loan, status: 'CANCELLED' } : loan)),
+    );
+  }
+  deleteCard(cardId: string): void {
+    this.cards.update((cards) => cards.filter((card) => card.id !== cardId));
+    this.transactions.update((items) => items.filter((item) => item.cardId !== cardId));
+  }
+  recordPayment(cardId: string, amountMinor: number, label = 'Card payment'): void {
+    if (amountMinor <= 0) return;
+    const timestamp = new Date().toISOString();
+    this.addTransaction({
+      id: crypto.randomUUID(),
+      cardId,
+      type: 'PAYMENT',
+      amountMinor,
+      currencyCode: 'INR',
+      transactionDate: timestamp.slice(0, 10),
+      merchant: label,
+      categoryId: 'payment',
+      attachmentIds: [],
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
   }
   archiveCard(cardId: string): void {
     this.cards.update((cards) =>
@@ -230,9 +332,8 @@ export class CardNestStore {
     );
   }
 
-  deleteCategory(categoryId: string, replacementCategoryId?: string): boolean {
-    const isUsed = this.transactions().some((transaction) => transaction.categoryId === categoryId);
-    if (isUsed && !replacementCategoryId) return false;
+  deleteCategory(categoryId: string, replacementCategoryId = 'other'): boolean {
+    if (categoryId === 'other' || categoryId === 'payment') return false;
     if (replacementCategoryId) {
       this.transactions.update((transactions) =>
         transactions.map((transaction) =>
@@ -250,5 +351,86 @@ export class CardNestStore {
       categories.filter((category) => category.id !== categoryId),
     );
     return true;
+  }
+
+  sourceName(sourceId: string): string {
+    return (
+      this.cards().find((card) => card.id === sourceId)?.nickname ??
+      this.paymentSources().find((source) => source.id === sourceId)?.nickname ??
+      'Unknown source'
+    );
+  }
+
+  sourceDetail(sourceId: string): string {
+    const card = this.cards().find((item) => item.id === sourceId);
+    if (card) return `${card.nickname} •••• ${card.lastDigits} · ${card.issuerName}`;
+    const source = this.paymentSources().find((item) => item.id === sourceId);
+    return source
+      ? `${source.nickname}${source.institution ? ` · ${source.institution}` : ''}`
+      : 'Unknown source';
+  }
+
+  materializeRecurringTransactions(asOf = today): void {
+    const generated: CardTransaction[] = [];
+    const nowStamp = new Date().toISOString();
+    this.recurringRules.update((rules) =>
+      rules.map((rule) => {
+        let next = rule.nextOccurrenceDate;
+        let guard = 0;
+        while (rule.status === 'ACTIVE' && next && next <= asOf && guard < 120) {
+          const occurrence = next;
+          const exists = this.transactions().some(
+            (item) =>
+              item.recurringRuleId === rule.id && item.generatedOccurrenceDate === occurrence,
+          );
+          if (!exists) {
+            generated.push({
+              id: crypto.randomUUID(),
+              cardId: rule.cardId,
+              type: 'PURCHASE',
+              amountMinor: rule.amountMinor,
+              currencyCode: 'INR',
+              transactionDate: occurrence,
+              merchant: rule.title,
+              categoryId: rule.categoryId,
+              recurringRuleId: rule.id,
+              generatedOccurrenceDate: occurrence,
+              attachmentIds: [],
+              createdAt: nowStamp,
+              updatedAt: nowStamp,
+            });
+          }
+          const date = new Date(`${occurrence}T12:00:00`);
+          if (rule.frequency === 'WEEKLY') date.setDate(date.getDate() + 7);
+          else if (rule.frequency === 'YEARLY') date.setFullYear(date.getFullYear() + 1);
+          else date.setMonth(date.getMonth() + (rule.frequency === 'QUARTERLY' ? 3 : 1));
+          next = date.toISOString().slice(0, 10);
+          guard += 1;
+        }
+        return { ...rule, nextOccurrenceDate: next };
+      }),
+    );
+    if (generated.length) this.transactions.update((items) => [...generated, ...items]);
+  }
+
+  private materializeSourceLoads(): void {
+    const period = today.slice(0, 7);
+    const currentDay = Number(today.slice(8, 10));
+    this.paymentSources.update((sources) =>
+      sources.map((source) =>
+        source.kind === 'MEAL' &&
+        source.autoLoad &&
+        source.loadAmountMinor &&
+        source.loadDay &&
+        currentDay >= source.loadDay &&
+        source.lastLoadedPeriod !== period
+          ? {
+              ...source,
+              balanceMinor: (source.balanceMinor ?? 0) + source.loadAmountMinor,
+              lastLoadedPeriod: period,
+            }
+          : source,
+      ),
+    );
   }
 }

@@ -12,15 +12,36 @@ import {
 } from '../../imgData/svg';
 import { CardNetwork } from '../core/models/domain';
 
-const NETWORK_IMAGES: Readonly<Partial<Record<CardNetwork, string>>> = {
-  VISA,
-  MASTERCARD,
-  RUPAY,
-  AMERICAN_EXPRESS: AMEX,
-  DISCOVER,
-  DINERS_CLUB: DINNERS_CLUB,
-  JCB,
+interface NetworkArtwork {
+  readonly markup: string;
+  readonly fallbackViewBox?: string;
+}
+
+const NETWORK_IMAGES: Readonly<Partial<Record<CardNetwork, NetworkArtwork>>> = {
+  VISA: { markup: VISA },
+  MASTERCARD: { markup: MASTERCARD },
+  RUPAY: { markup: RUPAY },
+  AMERICAN_EXPRESS: { markup: AMEX, fallbackViewBox: '0 0 1000 997.51703' },
+  DISCOVER: { markup: DISCOVER, fallbackViewBox: '0 0 1150 242' },
+  DINERS_CLUB: { markup: DINNERS_CLUB },
+  JCB: { markup: JCB },
 };
+
+function normaliseSvg(artwork: NetworkArtwork): string {
+  let markup = artwork.markup
+    .replace(/<\?xml[\s\S]*?\?>/gi, '')
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<(\/?)svg:/g, '<$1');
+  const rootHasViewBox = /<svg\b[^>]*\bviewBox\s*=/.test(markup);
+  const rootAttributes = [
+    'preserveAspectRatio="xMidYMid meet"',
+    !rootHasViewBox && artwork.fallbackViewBox ? `viewBox="${artwork.fallbackViewBox}"` : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+  markup = markup.replace(/<svg\b/, `<svg ${rootAttributes}`);
+  return markup;
+}
 
 @Component({
   selector: 'app-card-network-logo',
@@ -52,7 +73,8 @@ export class CardNetworkLogo {
   private readonly sanitizer = inject(DomSanitizer);
   readonly network = input.required<CardNetwork>();
   readonly label = computed(() => this.network().replaceAll('_', ' '));
-  readonly svg = computed(() =>
-    this.sanitizer.bypassSecurityTrustHtml(NETWORK_IMAGES[this.network()] ?? DEFAULT),
-  );
+  readonly svg = computed(() => {
+    const artwork = NETWORK_IMAGES[this.network()] ?? { markup: DEFAULT };
+    return this.sanitizer.bypassSecurityTrustHtml(normaliseSvg(artwork));
+  });
 }
