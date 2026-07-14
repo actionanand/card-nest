@@ -1,0 +1,150 @@
+<div class="page dashboard">
+  <header class="page-header">
+    <div>
+      <p class="eyebrow">Tuesday, 14 July</p>
+      <h1>Good morning.</h1>
+      <p class="subtitle">Here’s the shape of your credit today.</p>
+    </div>
+    <a
+      class="btn btn-primary desktop-action"
+      routerLink="/transactions"
+      [queryParams]="{ add: true }"
+      ><span aria-hidden="true">＋</span> Add transaction</a
+    >
+  </header>
+
+  <section class="hero panel" aria-labelledby="total-heading">
+    <div class="hero-total">
+      <p id="total-heading">Total outstanding</p>
+      <strong>{{ money(snapshot().outstandingMinor) }}</strong
+      ><span><i class="dot"></i> Across {{ store.activeCards().length }} active cards</span>
+    </div>
+    <div class="hero-metrics">
+      <div>
+        <small>Statement dues</small><b>{{ money(snapshot().statementDueMinor) }}</b
+        ><span>Current cycle</span>
+      </div>
+      <div>
+        <small>Unbilled</small><b>{{ money(snapshot().unbilledMinor) }}</b
+        ><span>Next statement</span>
+      </div>
+      <div>
+        <small>Available credit</small><b>{{ money(snapshot().availableCreditMinor) }}</b
+        ><span>{{ snapshot().utilisationPercent }}% utilised</span>
+      </div>
+    </div>
+  </section>
+
+  <div class="dashboard-grid">
+    <section class="panel due-panel" aria-labelledby="due-heading">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Needs attention</p>
+          <h2 id="due-heading">Upcoming payments</h2>
+        </div>
+        <a routerLink="/reminders">View all <span aria-hidden="true">→</span></a>
+      </div>
+      @for (card of store.activeCards(); track card.id) {
+        <article class="due-item">
+          <div class="card-mini" [class]="'card-mini ' + card.theme" aria-hidden="true">
+            {{ card.nickname.slice(0, 1) }}
+          </div>
+          <div>
+            <strong>{{ card.nickname }}</strong
+            ><small>{{ card.issuerName }} · •••• {{ card.lastFourDigits }}</small>
+          </div>
+          <div class="due-amount">
+            <strong>{{ money(store.cardOutstanding(card.id), card.currencyCode) }}</strong
+            ><span>{{ daysUntilDue(card.id) }} days left</span>
+          </div>
+        </article>
+      }
+    </section>
+
+    <section class="panel budget-panel" aria-labelledby="budget-heading">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">This month</p>
+          <h2 id="budget-heading">Spending budget</h2>
+        </div>
+        <a routerLink="/reports">Details</a>
+      </div>
+      <div
+        class="budget-ring"
+        [style.--progress]="budgetPercent() + '%'"
+        role="img"
+        [attr.aria-label]="budgetPercent() + '% of monthly budget used'"
+      >
+        <div>
+          <strong>{{ budgetPercent() }}%</strong><small>used</small>
+        </div>
+      </div>
+      <div class="budget-copy">
+        <strong>{{ money(snapshot().monthlySpendMinor) }}</strong
+        ><span>of {{ money(store.monthlyBudgetMinor()) }}</span>
+        <p><span class="dot"></span>{{ money(snapshot().remainingBudgetMinor ?? 0) }} remaining</p>
+      </div>
+    </section>
+  </div>
+
+  <section class="panel activity-panel" aria-labelledby="activity-heading">
+    <div class="section-heading">
+      <div>
+        <p class="eyebrow">Latest activity</p>
+        <h2 id="activity-heading">Recent transactions</h2>
+      </div>
+      <a routerLink="/transactions">All transactions <span aria-hidden="true">→</span></a>
+    </div>
+    <div class="transaction-list">
+      @for (transaction of recentTransactions(); track transaction.id) {
+        <article>
+          <div class="transaction-icon" aria-hidden="true">
+            {{ transaction.type === 'PAYMENT' ? '↓' : '↗' }}
+          </div>
+          <div>
+            <strong>{{ transaction.merchant || transaction.type }}</strong
+            ><small
+              >{{ categoryName(transaction.categoryId) }} ·
+              {{ cardName(transaction.cardId) }}</small
+            >
+          </div>
+          <div
+            class="transaction-amount"
+            [class.credit]="
+              transaction.type === 'PAYMENT' ||
+              transaction.type === 'REFUND' ||
+              transaction.type === 'CASHBACK'
+            "
+          >
+            <strong
+              >{{ transaction.type === 'PAYMENT' ? '+' : '−'
+              }}{{ money(transaction.amountMinor, transaction.currencyCode) }}</strong
+            ><small>{{ transaction.transactionDate }}</small>
+          </div>
+        </article>
+      }
+    </div>
+  </section>
+
+  <section class="quick-actions" aria-labelledby="quick-heading">
+    <h2 id="quick-heading">Quick actions</h2>
+    <div>
+      <a routerLink="/transactions" [queryParams]="{ add: true }"
+        ><span aria-hidden="true">＋</span><strong>Add expense</strong
+        ><small>Record a purchase</small></a
+      >
+      <a routerLink="/transactions" [queryParams]="{ payment: true }"
+        ><span aria-hidden="true">✓</span><strong>Record payment</strong
+        ><small>Settle a card</small></a
+      >
+      <a routerLink="/cards" [queryParams]="{ add: true }"
+        ><span aria-hidden="true">▣</span><strong>Add a card</strong
+        ><small>Track another card</small></a
+      >
+      <a routerLink="/settings"
+        ><span aria-hidden="true">⇩</span><strong>Back up data</strong
+        ><small>Create secure backup</small></a
+      >
+    </div>
+  </section>
+</div>

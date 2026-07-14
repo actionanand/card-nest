@@ -1,0 +1,190 @@
+<div class="page">
+  <header class="page-header">
+    <div>
+      <p class="eyebrow">Your wallet</p>
+      <h1>Credit cards</h1>
+      <p class="subtitle">Balances, billing cycles and limits in one place.</p>
+    </div>
+    <button class="btn btn-primary" type="button" (click)="showForm.set(true)">
+      <span aria-hidden="true">＋</span> Add card
+    </button>
+  </header>
+
+  <div class="view-switch" role="group" aria-label="Card view">
+    <button type="button" [class.active]="!showArchived()" (click)="showArchived.set(false)">
+      Active</button
+    ><button type="button" [class.active]="showArchived()" (click)="showArchived.set(true)">
+      Archived
+    </button>
+  </div>
+
+  @if (showForm()) {
+    <section class="panel card-form" aria-labelledby="add-card-heading">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">New card</p>
+          <h2 id="add-card-heading">Add credit card</h2>
+        </div>
+        <button
+          class="btn btn-quiet"
+          type="button"
+          (click)="showForm.set(false)"
+          aria-label="Close add card form"
+        >
+          ✕
+        </button>
+      </div>
+      <p class="security-note">
+        <span aria-hidden="true">⌾</span> Only the last four digits are required. Never enter a CVV
+        or PIN.
+      </p>
+      <form [formGroup]="form" (ngSubmit)="save()" novalidate>
+        <div class="form-grid">
+          <label
+            >Card nickname<input
+              formControlName="nickname"
+              autocomplete="off"
+              placeholder="Everyday rewards"
+            />
+            @if (form.controls.nickname.touched && form.controls.nickname.invalid) {
+              <small>Enter a nickname.</small>
+            }
+          </label>
+          <label
+            >Bank or issuer<input
+              formControlName="issuerName"
+              autocomplete="organization"
+              placeholder="Bank name"
+          /></label>
+          <label
+            >Last four digits<input
+              formControlName="lastFourDigits"
+              inputmode="numeric"
+              maxlength="4"
+              autocomplete="off"
+              placeholder="1234"
+            />
+            @if (form.controls.lastFourDigits.touched && form.controls.lastFourDigits.invalid) {
+              <small>Enter exactly four digits.</small>
+            }
+          </label>
+          <label
+            >Card network<select formControlName="network">
+              @for (network of networks; track network.value) {
+                <option [value]="network.value">{{ network.label }}</option>
+              }
+            </select></label
+          >
+          <label
+            >Statement day<input
+              formControlName="statementDay"
+              type="number"
+              inputmode="numeric"
+              min="1"
+              max="31"
+          /></label>
+          <label
+            >Days after statement<input
+              formControlName="daysAfterStatement"
+              type="number"
+              inputmode="numeric"
+              min="1"
+              max="60"
+          /></label>
+          <label class="full"
+            >Credit limit (optional)<input
+              formControlName="creditLimit"
+              inputmode="decimal"
+              placeholder="250000.00"
+            />
+            @if (form.controls.creditLimit.hasError('money')) {
+              <small>Enter a valid amount with up to two decimals.</small>
+            }
+          </label>
+        </div>
+        <div class="form-actions">
+          <button class="btn" type="button" (click)="showForm.set(false)">Cancel</button
+          ><button class="btn btn-primary" type="submit">Save card</button>
+        </div>
+      </form>
+    </section>
+  }
+
+  <section class="cards-grid" aria-label="Credit cards">
+    @for (card of visibleCards(); track card.id) {
+      <article class="card-panel panel">
+        <div class="visual-card" [class]="'visual-card ' + card.theme">
+          <div>
+            <span>{{ card.issuerName }}</span
+            ><img
+              ngSrc="network-placeholder.svg"
+              width="72"
+              height="28"
+              alt="Card network placeholder"
+            />
+          </div>
+          <strong>•••• &nbsp;•••• &nbsp;•••• &nbsp;{{ card.lastFourDigits }}</strong>
+          <div>
+            <span>{{ card.nickname }}</span
+            ><small>{{ card.network.replace('_', ' ') }}</small>
+          </div>
+        </div>
+        <div class="card-summary">
+          <div>
+            <span>Outstanding</span
+            ><strong>{{ money(store.cardOutstanding(card.id), card.currencyCode) }}</strong>
+          </div>
+          <div>
+            <span>Available credit</span
+            ><strong>{{
+              money(
+                (card.creditLimitMinor ?? 0) - store.cardOutstanding(card.id),
+                card.currencyCode
+              )
+            }}</strong>
+          </div>
+        </div>
+        <div class="utilisation">
+          <div>
+            <span>Credit utilisation</span><strong>{{ utilisation(card) }}%</strong>
+          </div>
+          <progress [value]="utilisation(card)" max="100">{{ utilisation(card) }}%</progress>
+        </div>
+        <div class="card-dates">
+          <div>
+            <span>Next due</span><strong>{{ due(card) }}</strong>
+          </div>
+          <div>
+            <span>Grace period</span><strong>{{ grace(card) }} days</strong>
+          </div>
+          <span class="pill"><i class="dot"></i>{{ card.archived ? 'Archived' : 'Active' }}</span>
+        </div>
+        @if (!card.archived) {
+          <div class="card-actions">
+            <button class="btn btn-quiet" type="button">View details</button
+            ><button class="btn btn-quiet" type="button" (click)="store.archiveCard(card.id)">
+              Archive
+            </button>
+          </div>
+        }
+      </article>
+    } @empty {
+      <div class="panel empty">
+        <span aria-hidden="true">▣</span>
+        <h2>No {{ showArchived() ? 'archived' : '' }} cards yet</h2>
+        <p>
+          {{
+            showArchived()
+              ? 'Cards you archive will remain available for reports.'
+              : 'Add your first credit card to begin tracking spending.'
+          }}
+        </p>
+        @if (!showArchived()) {
+          <button class="btn btn-primary" type="button" (click)="showForm.set(true)">
+            Add credit card
+          </button>
+        }
+      </div>
+    }
+  </section>
+</div>

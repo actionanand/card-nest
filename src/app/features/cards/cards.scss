@@ -1,0 +1,188 @@
+.view-switch {
+  display: inline-flex;
+  margin-bottom: 1.2rem;
+  padding: 0.25rem;
+  border: 1px solid var(--line);
+  border-radius: 0.7rem;
+  background: var(--surface);
+}
+.view-switch button {
+  min-height: 2.25rem;
+  padding: 0.4rem 0.9rem;
+  border: 0;
+  border-radius: 0.5rem;
+  color: var(--muted);
+  background: transparent;
+  font-weight: 700;
+}
+.view-switch button.active {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.card-form {
+  max-width: 50rem;
+  margin-bottom: 1.25rem;
+  padding: 1.4rem;
+}
+.section-heading {
+  display: flex;
+  justify-content: space-between;
+}
+.section-heading h2 {
+  margin-bottom: 0.5rem;
+}
+.security-note {
+  padding: 0.75rem;
+  border-radius: 0.6rem;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  font-size: 0.78rem;
+}
+.security-note span {
+  margin-right: 0.4rem;
+}
+.full {
+  grid-column: 1 / -1;
+}
+.form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.6rem;
+  margin-top: 1.2rem;
+}
+label small {
+  color: var(--danger);
+}
+.cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 22rem), 1fr));
+  gap: 1rem;
+}
+.card-panel {
+  overflow: hidden;
+  padding: 0.8rem;
+}
+.visual-card {
+  display: grid;
+  min-height: 12rem;
+  align-content: space-between;
+  padding: 1.25rem;
+  border-radius: 0.8rem;
+  color: white;
+  background: linear-gradient(135deg, #273b72, #4b65a0);
+  box-shadow: inset 0 0 0 1px #ffffff24;
+}
+.visual-card.teal {
+  background: linear-gradient(135deg, #24554f, #528d82);
+}
+.visual-card > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.visual-card > strong {
+  font-family: var(--display);
+  font-size: 1.2rem;
+  letter-spacing: 0.06em;
+}
+.visual-card small {
+  color: #ffffffc9;
+  font-size: 0.65rem;
+}
+.card-summary {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  padding: 1rem 0.4rem;
+  border-bottom: 1px solid var(--line);
+}
+.card-summary div {
+  display: grid;
+  gap: 0.25rem;
+}
+.card-summary div + div {
+  padding-left: 1rem;
+  border-left: 1px solid var(--line);
+}
+.card-summary span,
+.utilisation span,
+.card-dates span {
+  color: var(--muted);
+  font-size: 0.67rem;
+}
+.card-summary strong {
+  font-family: var(--display);
+  font-size: 1.08rem;
+}
+.utilisation {
+  padding: 0.8rem 0.4rem;
+}
+.utilisation div {
+  display: flex;
+  justify-content: space-between;
+}
+.utilisation progress {
+  width: 100%;
+  height: 0.42rem;
+  margin-top: 0.5rem;
+  overflow: hidden;
+  border: 0;
+  border-radius: 1rem;
+  background: var(--surface-2);
+}
+.utilisation progress::-webkit-progress-bar {
+  background: var(--surface-2);
+}
+.utilisation progress::-webkit-progress-value {
+  border-radius: 1rem;
+  background: var(--accent);
+}
+.card-dates {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  align-items: center;
+  padding: 0.6rem 0.4rem;
+}
+.card-dates div {
+  display: grid;
+  gap: 0.2rem;
+}
+.card-dates strong {
+  font-size: 0.8rem;
+}
+.card-actions {
+  display: flex;
+  justify-content: space-between;
+  border-top: 1px solid var(--line);
+}
+.empty {
+  grid-column: 1 / -1;
+  display: grid;
+  min-height: 22rem;
+  place-items: center;
+  align-content: center;
+  padding: 2rem;
+  text-align: center;
+}
+.empty > span {
+  font-size: 2rem;
+  color: var(--accent);
+}
+.empty p {
+  color: var(--muted);
+}
+@media (max-width: 600px) {
+  .page-header .btn {
+    width: 2.8rem;
+    overflow: hidden;
+    padding: 0;
+    font-size: 0;
+  }
+  .page-header .btn span {
+    font-size: 1.3rem;
+  }
+  .full {
+    grid-column: auto;
+  }
+}

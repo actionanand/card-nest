@@ -1,0 +1,72 @@
+<div class="page">
+  <header class="page-header">
+    <div>
+      <p class="eyebrow">Stay ahead</p>
+      <h1>Reminder centre</h1>
+      <p class="subtitle">Payment dates, statements, annual fees and expiries.</p>
+    </div>
+    <button class="btn" type="button">Notification settings</button>
+  </header>
+  <section class="summary-grid" aria-label="Reminder summary">
+    <div class="panel">
+      <span aria-hidden="true">◷</span>
+      <div>
+        <strong>{{ reminders().length }}</strong
+        ><small>Upcoming payments</small>
+      </div>
+    </div>
+    <div class="panel">
+      <span aria-hidden="true">!</span>
+      <div><strong>0</strong><small>Overdue payments</small></div>
+    </div>
+    <div class="panel">
+      <span aria-hidden="true">▤</span>
+      <div><strong>1</strong><small>Annual fee upcoming</small></div>
+    </div>
+  </section>
+  <section class="panel reminder-list" aria-labelledby="payment-reminders">
+    <div class="section-heading">
+      <div>
+        <p class="eyebrow">Payment schedule</p>
+        <h2 id="payment-reminders">Upcoming reminders</h2>
+      </div>
+      <span class="pill"><i class="dot"></i> Notifications ready</span>
+    </div>
+    @for (reminder of reminders(); track reminder.id) {
+      <article>
+        <div class="date-block">
+          <strong>{{ reminder.due.getDate() }}</strong
+          ><span>{{ reminder.due.toLocaleDateString('en-IN', { month: 'short' }) }}</span>
+        </div>
+        <div>
+          <strong>Payment due · {{ reminder.card.nickname }}</strong
+          ><small
+            >•••• {{ reminder.card.lastFourDigits }} · {{ reminder.days }} days remaining</small
+          >
+          <p>{{ money(reminder.amount, reminder.card.currencyCode) }} estimated outstanding</p>
+        </div>
+        <div class="actions">
+          <button class="btn btn-primary" type="button">Record payment</button
+          ><button class="btn" type="button" (click)="snooze(reminder.id)">Snooze</button>
+        </div>
+      </article>
+    } @empty {
+      <div class="empty">
+        <span aria-hidden="true">✓</span>
+        <h2>You’re all caught up</h2>
+        <p>No active reminders are waiting for attention.</p>
+      </div>
+    }
+  </section>
+  <section class="panel fee-progress">
+    <div>
+      <p class="eyebrow">Annual fee estimate</p>
+      <h2>Everyday waiver progress</h2>
+      <p>Spend estimates may differ from the issuer’s final eligibility decision.</p>
+    </div>
+    <div>
+      <strong>36%</strong><progress value="36" max="100">36%</progress
+      ><small>₹36,000 of ₹1,00,000 eligible spend</small>
+    </div>
+  </section>
+</div>

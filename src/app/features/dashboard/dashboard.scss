@@ -1,0 +1,319 @@
+.dashboard {
+  max-width: 90rem;
+}
+.hero {
+  display: grid;
+  grid-template-columns: minmax(15rem, 1fr) 2fr;
+  overflow: hidden;
+  margin-bottom: 1.2rem;
+  color: white;
+  border: 0;
+  background: linear-gradient(115deg, #153f30, #28684e 60%, #347b5f);
+}
+.hero-total {
+  display: grid;
+  align-content: center;
+  padding: 2rem;
+  border-right: 1px solid #ffffff24;
+}
+.hero-total p {
+  margin-bottom: 0.55rem;
+  color: #d7e8df;
+  font-size: 0.82rem;
+}
+.hero-total strong {
+  font-family: var(--display);
+  font-size: clamp(2rem, 4vw, 3rem);
+  font-weight: 500;
+  letter-spacing: -0.03em;
+}
+.hero-total span {
+  margin-top: 0.75rem;
+  color: #c5dacf;
+  font-size: 0.75rem;
+}
+.hero-total .dot {
+  display: inline-block;
+  margin-right: 0.3rem;
+  background: #86d0a9;
+}
+.hero-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  align-items: center;
+}
+.hero-metrics div {
+  display: grid;
+  gap: 0.45rem;
+  padding: 1.5rem 1.8rem;
+  border-right: 1px solid #ffffff18;
+}
+.hero-metrics div:last-child {
+  border: 0;
+}
+.hero-metrics small,
+.hero-metrics span {
+  color: #c5dacf;
+  font-size: 0.72rem;
+}
+.hero-metrics b {
+  font-family: var(--display);
+  font-size: 1.3rem;
+  font-weight: 500;
+}
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(18rem, 0.8fr);
+  gap: 1.2rem;
+  margin-bottom: 1.2rem;
+}
+.due-panel,
+.budget-panel,
+.activity-panel {
+  padding: 1.35rem;
+}
+.section-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.section-heading h2 {
+  margin: 0;
+}
+.section-heading a {
+  color: var(--accent);
+  font-size: 0.75rem;
+  font-weight: 750;
+  text-decoration: none;
+}
+.due-item {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 0.8rem;
+  padding: 1rem 0;
+  border-bottom: 1px solid var(--line);
+}
+.due-item:last-child {
+  border: 0;
+  padding-bottom: 0;
+}
+.due-item > div:nth-child(2) {
+  display: grid;
+  gap: 0.2rem;
+}
+.due-item small {
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+.card-mini {
+  display: grid;
+  width: 2.6rem;
+  height: 2rem;
+  place-items: center;
+  border-radius: 0.4rem;
+  color: white;
+  background: #385b8f;
+  font-family: var(--display);
+}
+.card-mini.teal {
+  background: #407d76;
+}
+.due-amount {
+  display: grid;
+  justify-items: end;
+  gap: 0.2rem;
+}
+.due-amount span {
+  padding: 0.18rem 0.4rem;
+  border-radius: 999px;
+  color: var(--warning);
+  background: var(--warning-soft);
+  font-size: 0.62rem;
+  font-weight: 700;
+}
+.budget-panel {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  align-items: center;
+}
+.budget-panel .section-heading {
+  grid-column: 1 / -1;
+}
+.budget-ring {
+  display: grid;
+  width: 7.3rem;
+  aspect-ratio: 1;
+  place-items: center;
+  margin: 1rem auto 0;
+  border-radius: 50%;
+  background: conic-gradient(var(--accent) var(--progress), var(--surface-2) 0);
+}
+.budget-ring::before {
+  content: '';
+  grid-area: 1/1;
+  width: 5.55rem;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: var(--surface);
+}
+.budget-ring div {
+  z-index: 1;
+  display: grid;
+  grid-area: 1/1;
+  text-align: center;
+}
+.budget-ring strong {
+  font-family: var(--display);
+  font-size: 1.35rem;
+}
+.budget-ring small {
+  color: var(--muted);
+  font-size: 0.65rem;
+}
+.budget-copy {
+  display: grid;
+  gap: 0.2rem;
+}
+.budget-copy > strong {
+  font-size: 1.1rem;
+}
+.budget-copy > span {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+.budget-copy p {
+  margin: 0.65rem 0 0;
+  color: var(--success);
+  font-size: 0.68rem;
+}
+.budget-copy .dot {
+  display: inline-block;
+  margin-right: 0.35rem;
+}
+.activity-panel {
+  margin-bottom: 1.7rem;
+}
+.transaction-list article {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 0.8rem;
+  padding: 0.85rem 0;
+  border-bottom: 1px solid var(--line);
+}
+.transaction-list article:last-child {
+  border: 0;
+}
+.transaction-icon {
+  display: grid;
+  width: 2.25rem;
+  height: 2.25rem;
+  place-items: center;
+  border-radius: 0.6rem;
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.transaction-list article > div:nth-child(2),
+.transaction-amount {
+  display: grid;
+  gap: 0.2rem;
+}
+.transaction-list small {
+  color: var(--muted);
+  font-size: 0.67rem;
+}
+.transaction-amount {
+  justify-items: end;
+}
+.transaction-amount.credit strong {
+  color: var(--success);
+}
+.quick-actions > div {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.75rem;
+}
+.quick-actions h2 {
+  font-size: 1.1rem;
+}
+.quick-actions a {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.05rem 0.65rem;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 0.8rem;
+  color: var(--ink);
+  background: var(--surface);
+  text-decoration: none;
+}
+.quick-actions a > span {
+  display: grid;
+  grid-row: 1 / 3;
+  width: 2.2rem;
+  height: 2.2rem;
+  place-items: center;
+  border-radius: 0.55rem;
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.quick-actions small {
+  color: var(--muted);
+  font-size: 0.65rem;
+}
+@media (max-width: 1050px) {
+  .hero {
+    grid-template-columns: 1fr;
+  }
+  .hero-total {
+    border: 0;
+    border-bottom: 1px solid #ffffff24;
+  }
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+  .quick-actions > div {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+@media (max-width: 600px) {
+  .desktop-action {
+    display: none;
+  }
+  .hero-total {
+    padding: 1.5rem;
+  }
+  .hero-metrics div {
+    padding: 1rem;
+  }
+  .hero-metrics b {
+    font-size: 1rem;
+  }
+  .hero-metrics span {
+    display: none;
+  }
+  .budget-panel {
+    grid-template-columns: 1fr 1fr;
+  }
+  .quick-actions > div {
+    grid-template-columns: 1fr 1fr;
+  }
+  .quick-actions a {
+    grid-template-columns: 1fr;
+  }
+  .quick-actions a > span {
+    grid-row: auto;
+  }
+  .due-item {
+    grid-template-columns: auto 1fr;
+  }
+  .due-amount {
+    grid-column: 2;
+    justify-items: start;
+  }
+  .transaction-list article {
+    align-items: start;
+  }
+}

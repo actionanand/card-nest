@@ -1,0 +1,151 @@
+<div class="page">
+  <header class="page-header">
+    <div>
+      <p class="eyebrow">Ledger</p>
+      <h1>Transactions</h1>
+      <p class="subtitle">Every purchase, refund and payment—clearly accounted for.</p>
+    </div>
+    <button class="btn btn-primary" type="button" (click)="showForm.set(true)">
+      <span aria-hidden="true">＋</span> Add transaction
+    </button>
+  </header>
+  @if (showForm()) {
+    <section class="panel transaction-form" aria-labelledby="new-transaction">
+      <div class="form-heading">
+        <div>
+          <p class="eyebrow">New entry</p>
+          <h2 id="new-transaction">Record a transaction</h2>
+        </div>
+        <button
+          class="btn btn-quiet"
+          type="button"
+          (click)="showForm.set(false)"
+          aria-label="Close transaction form"
+        >
+          ✕
+        </button>
+      </div>
+      <form [formGroup]="form" (ngSubmit)="save()" novalidate>
+        <fieldset>
+          <legend>Transaction type</legend>
+          <div class="type-picker">
+            @for (type of types; track type.value) {
+              <label
+                ><input type="radio" formControlName="type" [value]="type.value" /><span>{{
+                  type.label
+                }}</span></label
+              >
+            }
+          </div>
+        </fieldset>
+        <div class="form-grid">
+          <label
+            >Card<select formControlName="cardId">
+              @for (card of store.activeCards(); track card.id) {
+                <option [value]="card.id">
+                  {{ card.nickname }} · •••• {{ card.lastFourDigits }}
+                </option>
+              }
+            </select></label
+          >
+          <label
+            >Amount<input formControlName="amount" inputmode="decimal" placeholder="0.00" />
+            @if (form.controls.amount.touched && form.controls.amount.invalid) {
+              <small>Enter a valid amount.</small>
+            }
+          </label>
+          <label>Date<input formControlName="transactionDate" type="date" /></label
+          ><label
+            >Category<select formControlName="categoryId">
+              @for (category of store.categories(); track category.id) {
+                <option [value]="category.id">{{ category.name }}</option>
+              }
+            </select></label
+          >
+          <label class="full"
+            >Merchant or title<input
+              formControlName="merchant"
+              autocomplete="off"
+              placeholder="Where did you spend?" /></label
+          ><label class="full"
+            >Notes<textarea formControlName="notes" placeholder="Optional details"></textarea>
+          </label>
+          <label class="attachment full"
+            ><span>Receipt images</span><input type="file" accept="image/*" multiple /><small
+              >Images will be compressed and stored privately when the native filesystem adapter is
+              enabled.</small
+            ></label
+          >
+        </div>
+        <div class="form-actions">
+          <button class="btn" type="button" (click)="showForm.set(false)">Cancel</button
+          ><button class="btn btn-primary" type="submit">Save transaction</button>
+        </div>
+      </form>
+    </section>
+  }
+  <section class="toolbar panel" aria-label="Transaction filters">
+    <label
+      ><span class="sr-only">Search transactions</span
+      ><input
+        type="search"
+        placeholder="Search merchant or card"
+        [value]="search()"
+        (input)="updateSearch($event)" /></label
+    ><label
+      ><span class="sr-only">Transaction type</span
+      ><select [value]="typeFilter()" (change)="updateType($event)">
+        <option value="ALL">All transaction types</option>
+        @for (type of types; track type.value) {
+          <option [value]="type.value">{{ type.label }}</option>
+        }
+      </select></label
+    ><button class="btn" type="button">More filters <span aria-hidden="true">⌄</span></button>
+  </section>
+  <section class="panel ledger" aria-labelledby="history-heading">
+    <div class="ledger-heading">
+      <h2 id="history-heading">Transaction history</h2>
+      <span>{{ filtered().length }} entries</span>
+    </div>
+    @for (transaction of filtered(); track transaction.id) {
+      <article>
+        <div class="tx-icon" [class.credit]="isCredit(transaction.type)" aria-hidden="true">
+          {{ isCredit(transaction.type) ? '↓' : '↗' }}
+        </div>
+        <div class="tx-main">
+          <strong>{{ transaction.merchant || transaction.type.replace('_', ' ') }}</strong
+          ><small
+            >{{ categoryName(transaction.categoryId) }} · {{ cardName(transaction.cardId) }} ••••
+            {{ cardLastFour(transaction.cardId) }}</small
+          >
+        </div>
+        <div class="tx-date">
+          <span>{{ transaction.transactionDate }}</span
+          ><small>{{ transaction.type.replace('_', ' ') }}</small>
+        </div>
+        <strong class="tx-amount" [class.credit]="isCredit(transaction.type)"
+          >{{ isCredit(transaction.type) ? '+' : '−'
+          }}{{ money(transaction.amountMinor, transaction.currencyCode) }}</strong
+        >
+        @if (transaction.type === 'PURCHASE' && !transaction.emiPlanId) {
+          <button
+            class="emi-button"
+            type="button"
+            aria-label="Convert {{ transaction.merchant || 'purchase' }} to EMI"
+          >
+            Convert to EMI
+          </button>
+        }
+      </article>
+    } @empty {
+      <div class="empty">
+        <span aria-hidden="true">↕</span>
+        <h2>No transactions found</h2>
+        <p>Try changing the filters or record a new transaction.</p>
+        <button class="btn btn-primary" type="button" (click)="showForm.set(true)">
+          Add transaction
+        </button>
+      </div>
+    }
+  </section>
+</div>

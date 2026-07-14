@@ -1,44 +1,57 @@
-<style>
-  :host {
-    display: block;
-    min-height: 100dvh;
-    color: #17202a;
-    background: #f6f8fb;
-    font-family: Arial, Helvetica, sans-serif;
-  }
-
-  main {
-    display: grid;
-    min-height: 100dvh;
-    place-items: center;
-    padding: 2rem;
-    text-align: center;
-  }
-
-  .intro {
-    max-width: 36rem;
-  }
-
-  h1 {
-    margin: 0;
-    font-size: clamp(2rem, 6vw, 4rem);
-    font-weight: 700;
-    line-height: 1.1;
-  }
-
-  p {
-    margin: 1rem 0 0;
-    color: #415164;
-    font-size: 1.125rem;
-    line-height: 1.6;
-  }
-</style>
-
-<main>
-  <section class="intro" aria-labelledby="page-title">
-    <h1 id="page-title">card-nest</h1>
-    <p>A simple default project template ready to clone and build from.</p>
-  </section>
-</main>
-
-<router-outlet />
+<a class="skip-link" href="#main-content">Skip to main content</a>
+<div class="app-layout">
+  <aside class="sidebar" aria-label="Primary navigation">
+    <a class="brand" routerLink="/" aria-label="CardNest home">
+      <span class="brand-mark" aria-hidden="true"><span></span><span></span></span>
+      <span><strong>CardNest</strong><small>Money, organised.</small></span>
+    </a>
+    <nav>
+      <a routerLink="/" [routerLinkActiveOptions]="{ exact: true }" routerLinkActive="active"
+        ><span aria-hidden="true">⌂</span> Overview</a
+      >
+      <a routerLink="/cards" routerLinkActive="active"><span aria-hidden="true">▣</span> Cards</a>
+      <a routerLink="/transactions" routerLinkActive="active"
+        ><span aria-hidden="true">↕</span> Transactions</a
+      >
+      <a routerLink="/reminders" routerLinkActive="active"
+        ><span aria-hidden="true">◷</span> Reminders</a
+      >
+      <a routerLink="/reports" routerLinkActive="active"
+        ><span aria-hidden="true">⌁</span> Reports</a
+      >
+    </nav>
+    <div class="sidebar-footer">
+      <a routerLink="/settings" routerLinkActive="active"
+        ><span aria-hidden="true">⚙</span> Settings</a
+      >
+      <div class="privacy">
+        <span aria-hidden="true">✓</span
+        ><span
+          ><strong>Private by design</strong><small>Your data stays on this device</small></span
+        >
+      </div>
+    </div>
+  </aside>
+  <main id="main-content" tabindex="-1"><router-outlet /></main>
+  <nav class="bottom-nav" aria-label="Primary navigation">
+    <a routerLink="/" [routerLinkActiveOptions]="{ exact: true }" routerLinkActive="active"
+      ><span aria-hidden="true">⌂</span><small>Home</small></a
+    >
+    <a routerLink="/cards" routerLinkActive="active"
+      ><span aria-hidden="true">▣</span><small>Cards</small></a
+    >
+    <a
+      class="add-action"
+      routerLink="/transactions"
+      [queryParams]="{ add: true }"
+      aria-label="Add transaction"
+      ><span aria-hidden="true">+</span></a
+    >
+    <a routerLink="/transactions" routerLinkActive="active"
+      ><span aria-hidden="true">↕</span><small>Activity</small></a
+    >
+    <a routerLink="/settings" routerLinkActive="active"
+      ><span aria-hidden="true">⚙</span><small>Settings</small></a
+    >
+  </nav>
+</div>

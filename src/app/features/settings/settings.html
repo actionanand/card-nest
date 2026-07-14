@@ -1,0 +1,175 @@
+<div class="page settings">
+  <header class="page-header">
+    <div>
+      <p class="eyebrow">Preferences</p>
+      <h1>Settings</h1>
+      <p class="subtitle">Security, defaults, reminders and your private data.</p>
+    </div>
+  </header>
+  @if (!database.ready()) {
+    <div class="database-warning" role="status">
+      <span aria-hidden="true">i</span>
+      <div>
+        <strong>Native SQLite is not active in this browser preview</strong>
+        <p>
+          {{ database.unavailableReason() }} Install the requested packages and run through
+          Capacitor to persist data. No browser key/value fallback is used.
+        </p>
+      </div>
+    </div>
+  }
+  <div class="settings-grid">
+    <nav class="settings-nav" aria-label="Settings sections">
+      <a href="#security">Security</a><a href="#appearance">Appearance</a
+      ><a href="#defaults">Cards & currency</a><a href="#notifications">Notifications</a
+      ><a href="#data">Backup & data</a>
+    </nav>
+    <div class="settings-content">
+      <section id="security" class="panel">
+        <div class="setting-heading">
+          <span aria-hidden="true">⌾</span>
+          <div>
+            <h2>Security</h2>
+            <p>Protect access to sensitive card data.</p>
+          </div>
+        </div>
+        <div class="setting-row">
+          <div>
+            <strong>Application PIN</strong
+            ><small>Required for reveal, backup and destructive actions</small>
+          </div>
+          <button class="btn" type="button">Change PIN</button>
+        </div>
+        <label class="setting-row toggle"
+          ><span
+            ><strong>Biometric unlock</strong
+            ><small>Use device biometrics after native setup</small></span
+          ><input
+            type="checkbox"
+            [checked]="biometric()"
+            (change)="biometric.set(!biometric())" /></label
+        ><label class="setting-row toggle"
+          ><span
+            ><strong>Lock when app enters background</strong
+            ><small>Hide content in Android recent-app previews</small></span
+          ><input
+            type="checkbox"
+            [checked]="lockOnBackground()"
+            (change)="lockOnBackground.set(!lockOnBackground())"
+        /></label>
+        <div class="setting-row">
+          <label
+            >Auto-lock after<select>
+              <option>1 minute</option>
+              <option selected>5 minutes</option>
+              <option>15 minutes</option>
+              <option>30 minutes</option>
+            </select></label
+          >
+        </div>
+      </section>
+      <section id="appearance" class="panel">
+        <div class="setting-heading">
+          <span aria-hidden="true">◐</span>
+          <div>
+            <h2>Appearance</h2>
+            <p>Choose how CardNest looks.</p>
+          </div>
+        </div>
+        <div class="theme-options" role="radiogroup" aria-label="Theme">
+          @for (option of ['SYSTEM', 'LIGHT', 'DARK']; track option) {
+            <label
+              ><input
+                type="radio"
+                name="theme"
+                [value]="option"
+                [checked]="theme() === option"
+                (change)="theme.set($any(option))"
+              /><span
+                >{{ option === 'SYSTEM' ? '◐' : option === 'LIGHT' ? '☀' : '☾'
+                }}<strong>{{ option.toLowerCase() }}</strong></span
+              ></label
+            >
+          }
+        </div>
+      </section>
+      <section id="defaults" class="panel">
+        <div class="setting-heading">
+          <span aria-hidden="true">₹</span>
+          <div>
+            <h2>Cards & currency</h2>
+            <p>Defaults used for new records.</p>
+          </div>
+        </div>
+        <div class="form-grid">
+          <label
+            >Default currency<select>
+              <option>Indian Rupee — INR</option>
+              <option>US Dollar — USD</option>
+              <option>Euro — EUR</option>
+              <option>British Pound — GBP</option>
+            </select></label
+          ><label
+            >Date format<select>
+              <option>DD/MM/YYYY</option>
+              <option>MM/DD/YYYY</option>
+              <option>YYYY-MM-DD</option>
+            </select></label
+          ><label>Monthly budget<input value="60000.00" inputmode="decimal" /></label
+          ><label>Budget cycle begins<input value="1" type="number" min="1" max="31" /></label>
+        </div>
+      </section>
+      <section id="notifications" class="panel">
+        <div class="setting-heading">
+          <span aria-hidden="true">◷</span>
+          <div>
+            <h2>Notifications</h2>
+            <p>Local reminders never contain a full card number.</p>
+          </div>
+        </div>
+        <label class="setting-row toggle"
+          ><span
+            ><strong>Payment reminders</strong
+            ><small>Card nickname and masked digits only</small></span
+          ><input type="checkbox" [checked]="reminders()" (change)="reminders.set(!reminders())"
+        /></label>
+        <div class="setting-row">
+          <label
+            >Default timing<select>
+              <option>7 days before</option>
+              <option selected>3 days before</option>
+              <option>1 day before</option>
+              <option>On due date</option>
+            </select></label
+          >
+        </div>
+      </section>
+      <section id="data" class="panel">
+        <div class="setting-heading">
+          <span aria-hidden="true">⇩</span>
+          <div>
+            <h2>Backup & data</h2>
+            <p>Encrypted local files protected by a separate passphrase.</p>
+          </div>
+        </div>
+        <div class="data-actions">
+          <button class="btn btn-primary" type="button" [disabled]="!database.ready()">
+            Create encrypted backup</button
+          ><button class="btn" type="button" [disabled]="!database.ready()">Restore backup</button
+          ><button class="btn" type="button">Export masked CSV</button>
+        </div>
+        <p class="fine-print">
+          Backup validation, authenticated encryption and transactional restore become available
+          through the native adapter. Backup passphrases are never stored in the file.
+        </p>
+        <div class="danger-zone">
+          <div>
+            <strong>Delete all data</strong
+            ><small>Requires PIN and a second explicit confirmation.</small>
+          </div>
+          <button class="btn danger" type="button">Delete all data</button>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>

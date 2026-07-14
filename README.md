@@ -1,291 +1,84 @@
-# card-nest
+# CardNest
 
-This project was generated using [Angular CLI](https://github.com/angular/angular-cli) version 22.0.4.
+CardNest is a private, offline-first credit-card ledger built with Angular 22. Data is designed to remain on the device in SQLite. The project intentionally has no analytics, advertising, cloud account, or browser key/value persistence fallback.
 
-## Development server
+## Current web implementation
 
-To start a local development server, run:
+- Mobile-first, accessible application shell with lazy-loaded routes
+- Dashboard for total outstanding, statement dues, unbilled spend, available credit, utilisation, budget, upcoming payments, and recent activity
+- Active/archived card views, masked identifiers, credit limits, billing dates, estimated grace periods, and card entry validation
+- Transaction entry and history for purchases, payments, refunds, cashback, credits, fees, interest, and adjustments
+- Integer minor-unit money calculations; no floating-point values are stored for currency
+- Statement-cycle calculations with leap years, short months, configurable due-day modes, and optional weekend adjustment
+- Reminder centre, annual-fee estimate, report charts with accessible table equivalents, budget summary, and masked export entry points
+- Versioned SQLite migrations for cards, categories, transactions, statements, recurring rules, attachments, preferences, and EMI plans/installments
+- Reducing-balance and no-cost EMI calculation/schedule services
+- Security, notification, appearance, currency, backup, export, and destructive-data settings UI
+
+The sample dashboard records are in-memory preview data only. They are not persisted to `localStorage` or IndexedDB. Native records must go through the SQLite gateway.
+
+## Prerequisites
+
+- Node.js `24.16.0` (see `.nvmrc`)
+- npm `11.13.0`
+
+```bash
+nvm install 24.16.0
+nvm use 24.16.0
+npm install
+```
+
+Install the native packages requested for the next integration step:
+
+```bash
+npm i @capacitor/core @capacitor/android @capacitor/camera @capacitor/filesystem @capacitor/local-notifications @capacitor-community/sqlite jeep-sqlite
+npm i -D @capacitor/cli
+```
+
+`npm install` must run on the target operating system. A `node_modules` folder copied from Linux cannot build on Windows because esbuild, Rollup, and related packages contain platform-specific binaries.
+
+## Development
 
 ```bash
 npm run develop
 ```
 
-Once the server is running, open your browser and navigate to `http://localhost:3026/`. The application will automatically reload whenever you modify any of the source files.
-
-## Cloning Guide
-
-1.  Clone only the remote primary HEAD (default: origin/main)
+Open `http://localhost:3028`.
 
 ```bash
-git clone <url> --single-branch
+npm run build
+npm test
+npm run lint
 ```
 
-2. Only specific branch
+## Architecture
 
-```bash
-git clone <url> --branch <branch> --single-branch [<folder>]
+```text
+src/app/
+  core/
+    data/       SQLite gateway and ordered migrations
+    models/     Strict domain contracts
+    services/   Pure money, billing-cycle, EMI, and state logic
+  features/     Lazy dashboard, cards, transactions, reminders, reports, settings
+  shared/       Reusable presentation building blocks
 ```
 
-```bash
-git clone <url> --branch <branch>
-```
+All persisted monetary amounts use integer minor units (`₹100.50` → `10050`). Full card numbers, notes, emergency contacts, secure preferences, attachments, and backup payloads must be encrypted by the native security adapter before storage. CVV and PIN fields must never be added.
 
-3. Cloning repositories using degit
-   - main branch is default.
+## Native integration sequence
 
-```bash
-npx degit github:user/repo#branch-name <folder-name>
-```
+Android packaging is deliberately deferred until the web application is complete, as requested. The next native pass will:
 
-4. Cloning repositories using **gitpick**
+1. Register `@capacitor-community/sqlite` and initialise the bundled `jeep-sqlite` web component where appropriate.
+2. Replace preview state with repositories backed by the existing migrations and transactional SQLite operations.
+3. Add Android Keystore-backed key management, PIN hashing, biometric unlock, screenshot protection, and inactivity/background locking.
+4. Implement local-notification rescheduling, private receipt files/camera capture, encrypted authenticated backups, restore rollback, and masked CSV/PDF exports.
+5. Initialise Capacitor Android and add the GitHub Actions Android build workflow. No Android build workflow should be added before this stage.
 
-```bash
-npx gitpick github_proj_url -b branch-name
-```
+## Security boundaries
 
-5. Cloning this project with skeleton
-
-```bash
-git clone https://github.com/actionanand/card-nest.git --branch 1-skeleton new-proj-name
-```
-
-```bash
-npx degit github:actionanand/card-nest#1-skeleton new-proj-name
-```
-
-```bash
-npx gitpick https://github.com/actionanand/card-nest -b 1-skeleton
-```
-
-## Automate using `Prettier`, `Es Lint` and `Husky`
-
-1. Install the compatible node version
-
-```bash
-  nvm install v24.16.0
-```
-
-2. Install and Configure Prettier
-   - Install prettier as below:
-
-   ```bash
-     npm install prettier -D
-   ```
-
-   - Create a `.prettierrc.yml` file and write down the format as below: - [online ref](https://prettier.io/docs/en/options.html)
-
-   ```yml
-   trailingComma: 'all'
-   tabWidth: 2
-   useTabs: false
-   semi: true
-   singleQuote: true
-   bracketSpacing: true
-   bracketSameLine: true
-   arrowParens: 'avoid'
-   printWidth: 120
-   overrides:
-     - files:
-         - '*.js'
-         - '*.jsx'
-       options:
-         bracketSpacing: true
-         jsxSingleQuote: true
-         semi: true
-         singleQuote: true
-         tabWidth: 2
-         useTabs: false
-     - files:
-         - '*.ts'
-       options:
-         tabWidth: 2
-   ```
-
-   - Create a `.prettierignore` file and write as below(sample)
-
-   ```gitignore
-   # Ignore artifacts:
-   build
-   coverage
-   e2e
-   node_modules
-   dist
-   dest
-   reports
-
-   # Ignore files
-   *.lock
-   package-lock.json
-   yarn.lock
-   ```
-
-3. Install `Es Lint`, if not installed
-
-```bash
-ng add @angular-eslint/schematics
-```
-
-if error comes, use the below command
-
-```shell
-ng add @angular-eslint/schematics@22.1.0
-# or
-ng add @angular-eslint/schematics@next
-```
-
-4. Configure pre-commit hooks
-
-Pre-commit hooks are a nice way to run certain checks to ensure clean code. This can be used to format staged files if for some reason they weren’t automatically formatted during editing. [husky](https://github.com/typicode/husky) can be used to easily configure git hooks to prevent bad commits. We will use this along with [pretty-quick](https://github.com/azz/pretty-quick) to run Prettier on our changed files. Install these packages, along with [npm-run-all](https://github.com/mysticatea/npm-run-all), which will make it easier for us to run npm scripts:
-
-```bash
-npm install -D husky pretty-quick npm-run-all
-```
-
-To configure the pre-commit hook, simply add a `precommit` npm script. We want to first run Prettier, then run TSLint on the formatted files. To make our scripts cleaner, I am using the npm-run-all package, which gives you two commands, `run-s` to run scripts in sequence, and `run-p` to run scripts in parallel:
-
-```json
-  "precommit": "run-s format:fix lint",
-  "format:fix": "pretty-quick --staged",
-  "format:check": "prettier --config ./.prettierrc --list-different \"src/{app,environments,assets}/**/*{.ts,.js,.json,.css,.scss}\"",
-  "format:all": "prettier --config ./.prettierrc --write \"src/{app,environments,assets}/**/*{.ts,.js,.json,.css,.scss}\"",
-  "lint": "ng lint",
-```
-
-5. Initialize husky
-   - Run it once
-
-   ```bash
-     npx husky init
-   ```
-
-   - Add a hook
-
-   ```bash
-     echo "npm run precommit" > .husky/pre-commit
-   ```
-
-   - Make a commit
-
-   ```bash
-     git commit -m "Keep calm and commit"
-     # `npm run precommit and npm test` will run every time you commit
-   ```
-
-6. How to skip prettier format only in particular file
-   1. JS
-
-   ```js
-   matrix(1, 0, 0, 0, 1, 0, 0, 0, 1);
-
-   // prettier-ignore
-   matrix(
-       1, 0, 0,
-       0, 1, 0,
-       0, 0, 1
-     )
-   ```
-
-   2. JSX
-
-   ```jsx
-   <div>
-     {/* prettier-ignore */}
-     <span     ugly  format=''   />
-   </div>
-   ```
-
-   3. HTML
-
-   ```html
-   <!-- prettier-ignore -->
-   <div         class="x"       >hello world</div            >
-
-   <!-- prettier-ignore-attribute -->
-   <div
-     (mousedown)="       onStart    (    )         "
-     (mouseup)="         onEnd      (    )         "
-   ></div>
-
-   <!-- prettier-ignore-attribute (mouseup) -->
-   <div (mousedown)="onStart()" (mouseup)="         onEnd      (    )         "></div>
-   ```
-
-   4. CSS
-
-   ```css
-   /* prettier-ignore */
-   .my    ugly rule
-     {
-   
-     }
-   ```
-
-   5. Markdown
-
-   ```md
-     <!-- prettier-ignore -->
-
-   Do not format this
-   ```
-
-   6. YAML
-
-   ```yml
-   # prettier-ignore
-   key  : value
-     hello: world
-   ```
-
-   7. For more, please [check](https://prettier.io/docs/en/ignore.html)
-
-## Generate environment files
-
-```bash
-ng generate environments
-```
-
-## Code scaffolding
-
-Angular CLI includes powerful code scaffolding tools. To generate a new component, run:
-
-```bash
-ng generate component component-name
-```
-
-For a complete list of available schematics (such as `components`, `directives`, or `pipes`), run:
-
-```bash
-ng generate --help
-```
-
-## Building
-
-To build the project run:
-
-```bash
-ng build
-```
-
-This will compile your project and store the build artifacts in the `dist/` directory. By default, the production build optimizes your application for performance and speed.
-
-## Running unit tests
-
-To execute unit tests with the [Vitest](https://vitest.dev/) test runner, use the following command:
-
-```bash
-ng test
-```
-
-## Running end-to-end tests
-
-For end-to-end (e2e) testing, run:
-
-```bash
-ng e2e
-```
-
-Angular CLI does not come with an end-to-end testing framework by default. You can choose one that suits your needs.
-
-## Additional Resources
-
-For more information on using the Angular CLI, including detailed command references, visit the [Angular CLI Overview and Command Reference](https://angular.dev/tools/cli) page.
+- Never log card numbers, PIN values, passphrases, notes, or attachment metadata.
+- Display full card numbers only after re-authentication and mask them immediately afterward.
+- Notifications and exports use nickname plus `•••• 1234` only.
+- Backups require a unique random salt, a password-based KDF, authenticated encryption, version checks, integrity validation, a safety backup, and transactional restore.
+- Automatic deletion after failed unlock attempts remains disabled unless explicitly enabled and reconfirmed by the user.
