@@ -1,0 +1,44 @@
+name: GitHub Pages - Angular 22.0.0
+
+on:
+  push:
+    branches:
+      - main-github
+
+permissions:
+  contents: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24.16.0'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Extract repository name from package.json
+        id: package
+        run: echo "name=$(node -p "require('./package.json').name")" >> $GITHUB_OUTPUT
+
+      - name: Build Angular app for GitHub Pages
+        run: npm run build:gh --configuration=production
+
+      - name: Copy error files to redirect to home
+        run: npm run copy-error-page
+
+      - name: Deploy
+        if: success()
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          base_href: /${{ steps.package.outputs.name }}/ # make sure this corresponds to https://<your_username>.github.io/<base_href>/
+          deploy_branch: gh-pages
+          publish_dir: dist/${{ steps.package.outputs.name }}/browser
+          enable_jekyll: true

@@ -1,0 +1,52 @@
+{
+  "name": "card-nest",
+  "version": "0.0.0",
+  "scripts": {
+    "ng": "ng",
+    "start": "ng serve",
+    "develop": "ng serve --port 3028",
+    "build": "ng build",
+    "build:gh": "ng build --base-href /card-nest/",
+    "watch": "ng build --watch --configuration development",
+    "copy-error-page": "cp dist/card-nest/browser/index.html dist/card-nest/browser/404.html",
+    "test": "ng test",
+    "precommit:dummy": "echo 'This is a dummy print message!'",
+    "precommit": "run-s format:fix lint",
+    "format:fix": "pretty-quick --staged",
+    "format:check": "prettier --config ./.prettierrc --list-different \"src/{app,environments,assets}/**/*{.ts,.js,.json,.css,.scss}\"",
+    "format:all": "prettier --config ./.prettierrc --write \"src/{app,environments,assets}/**/*{.ts,.js,.json,.css,.scss}\"",
+    "lint": "ng lint",
+    "prepare": "husky"
+  },
+  "private": true,
+  "packageManager": "npm@11.13.0",
+  "dependencies": {
+    "@angular/common": "^22.0.4",
+    "@angular/compiler": "^22.0.4",
+    "@angular/core": "^22.0.4",
+    "@angular/forms": "^22.0.4",
+    "@angular/platform-browser": "^22.0.4",
+    "@angular/router": "^22.0.4",
+    "rxjs": "~7.8.0",
+    "tslib": "^2.3.0"
+  },
+  "devDependencies": {
+    "@angular/build": "^22.0.4",
+    "@angular/cli": "^22.0.4",
+    "@angular/compiler-cli": "^22.0.4",
+    "@eslint/js": "^10.0.1",
+    "angular-eslint": "22.0.0",
+    "eslint": "^10.3.0",
+    "husky": "^9.1.7",
+    "jsdom": "^28.0.0",
+    "npm-run-all": "^4.1.5",
+    "prettier": "^3.8.3",
+    "pretty-quick": "^4.2.2",
+    "typescript": "~6.0.2",
+    "typescript-eslint": "8.60.1",
+    "vitest": "^4.0.8"
+  },
+  "engines": {
+    "node": ">=22.22.3 || >=24.15.0 || >=26.0.0"
+  }
+}
