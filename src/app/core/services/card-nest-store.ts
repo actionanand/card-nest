@@ -271,6 +271,7 @@ export class CardNestStore {
     await Promise.all([this.loadCurrentIncome(), this.loadCards()]);
     await this.loadCategories();
     await this.loadCategoryLimits();
+    await this.loadTransactions();
   }
 
   async setMonthlyIncome(amountMinor: number): Promise<void> {
@@ -343,6 +344,7 @@ export class CardNestStore {
   addTransaction(transaction: CardTransaction): void {
     this.transactions.update((items) => [transaction, ...items]);
     this.adjustPaymentSourceBalance(transaction, 1);
+    void this.persistTransaction(transaction);
   }
   updateTransaction(updated: CardTransaction): boolean {
     const existing = this.transactions().find((transaction) => transaction.id === updated.id);
@@ -352,6 +354,7 @@ export class CardNestStore {
       items.map((transaction) => (transaction.id === updated.id ? updated : transaction)),
     );
     this.adjustPaymentSourceBalance(updated, 1);
+    void this.persistTransaction(updated);
     return true;
   }
   deleteTransaction(transactionId: string): boolean {
@@ -361,6 +364,9 @@ export class CardNestStore {
     this.transactions.update((items) =>
       items.filter((transaction) => transaction.id !== transactionId),
     );
+    if (this.database.ready()) {
+      void this.database.run('DELETE FROM card_transactions WHERE id = ?', [transactionId]);
+    }
     return true;
   }
   duplicateTransaction(transactionId: string): CardTransaction | null {
@@ -565,7 +571,10 @@ export class CardNestStore {
     );
     if (generated.length) {
       this.transactions.update((items) => [...generated, ...items]);
-      for (const transaction of generated) this.adjustPaymentSourceBalance(transaction, 1);
+      for (const transaction of generated) {
+        this.adjustPaymentSourceBalance(transaction, 1);
+        void this.persistTransaction(transaction);
+      }
     }
   }
 
@@ -712,6 +721,57 @@ export class CardNestStore {
       return;
     }
     for (const category of this.categories()) await this.persistCategory(category);
+  }
+
+  private async loadTransactions(): Promise<void> {
+    const rows = await this.database.query<{ payload: string }>(
+      'SELECT payload FROM card_transactions ORDER BY transaction_date DESC, created_at DESC',
+    );
+    if (!rows.length) {
+      this.transactions.set([]);
+      return;
+    }
+    const transactions = rows.flatMap((row) => {
+      try {
+        return [JSON.parse(row.payload) as CardTransaction];
+      } catch {
+        return [];
+      }
+    });
+    this.transactions.set(transactions);
+  }
+
+  private async persistTransaction(transaction: CardTransaction): Promise<void> {
+    if (!this.database.ready()) return;
+    const creditCardId = this.cards().some((card) => card.id === transaction.cardId)
+      ? transaction.cardId
+      : null;
+    await this.database.run(
+      `INSERT INTO card_transactions
+       (id, card_id, category_id, type, amount_minor, currency_code, transaction_date, payload, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         card_id = excluded.card_id,
+         category_id = excluded.category_id,
+         type = excluded.type,
+         amount_minor = excluded.amount_minor,
+         currency_code = excluded.currency_code,
+         transaction_date = excluded.transaction_date,
+         payload = excluded.payload,
+         updated_at = excluded.updated_at`,
+      [
+        transaction.id,
+        creditCardId,
+        transaction.categoryId,
+        transaction.type,
+        transaction.amountMinor,
+        transaction.currencyCode,
+        transaction.transactionDate,
+        JSON.stringify(transaction),
+        transaction.createdAt,
+        transaction.updatedAt,
+      ],
+    );
   }
 
   private async persistCategory(category: Category): Promise<void> {

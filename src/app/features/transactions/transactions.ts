@@ -2,7 +2,7 @@ import { Component, computed, inject, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { ActivatedRoute, Router } from '@angular/router';
-import { Camera, CameraPermissionType } from '@capacitor/camera';
+import { Camera } from '@capacitor/camera';
 import { CardTransaction, TransactionType } from '../../core/models/domain';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { formatMoney, parseMoneyToMinor } from '../../core/services/money';
@@ -189,18 +189,8 @@ export class TransactionsPage {
   }
   async pickReceipts(): Promise<void> {
     try {
-      // Request photo permission on devices that need it (Android < 13).
-      const permissions = await Camera.checkPermissions();
-      if (permissions.photos !== 'granted' && permissions.photos !== 'limited') {
-        const requested = await Camera.requestPermissions({
-          permissions: ['photos'] as CameraPermissionType[],
-        });
-        if (requested.photos !== 'granted' && requested.photos !== 'limited') {
-          this.snackbar.show('Gallery permission is required to add receipt images.', 'WARNING');
-          return;
-        }
-      }
-      const selection = await Camera.pickImages({ quality: 70 });
+      // Android's system photo picker intentionally does not require broad gallery permission.
+      const selection = await Camera.pickImages({ quality: 70, limit: 10 });
       const paths = selection.photos
         .map((photo) => photo.webPath)
         .filter((path): path is string => Boolean(path));
@@ -215,6 +205,13 @@ export class TransactionsPage {
   closeForm(): void {
     this.showForm.set(false);
     this.editingId.set(null);
+    this.receiptPreviews.set([]);
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: { add: null, payment: null, edit: null },
+      queryParamsHandling: 'merge',
+      replaceUrl: true,
+    });
   }
   selectPayFrom(id: string): void {
     this.form.controls.cardId.setValue(id);
