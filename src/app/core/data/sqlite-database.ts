@@ -52,6 +52,7 @@ export class SqliteDatabase {
       const result = await CapacitorSQLite.query({
         database: this.databaseName,
         statement: 'PRAGMA user_version;',
+        values: [],
       });
       const currentVersion = Number(result.values?.[0]?.['user_version'] ?? 0);
       for (const migration of DATABASE_MIGRATIONS.filter((item) => item.version > currentVersion)) {

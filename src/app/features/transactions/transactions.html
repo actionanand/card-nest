@@ -53,26 +53,80 @@
             </div>
           </fieldset>
           <div class="form-grid">
-            <label>
-              Pay from
-              <select formControlName="cardId">
-                <optgroup label="Credit cards">
-                  @for (card of store.activeCards(); track card.id) {
-                    <option [value]="card.id">
-                      {{ card.nickname }} · {{ card.lastDigits }} · {{ card.issuerName }}
-                    </option>
+            <div class="pay-from-field full">
+              <span class="field-label">Pay from</span>
+              <button
+                type="button"
+                class="pay-from-trigger"
+                (click)="payFromOpen.set(true)"
+                [attr.aria-expanded]="payFromOpen()"
+                aria-haspopup="listbox"
+              >
+                <span class="pay-from-trigger__value">{{ selectedSourceLabel() }}</span>
+                <app-icon name="chevron_down" />
+              </button>
+            </div>
+
+            @if (payFromOpen()) {
+              <div
+                class="pay-from-backdrop"
+                role="dialog"
+                aria-modal="true"
+                aria-label="Select payment source"
+                (click)="payFromOpen.set(false)"
+              >
+                <div class="pay-from-sheet" role="listbox" (click)="$event.stopPropagation()">
+                  <div class="pay-from-sheet__header">
+                    <span>Pay from</span>
+                    <button type="button" (click)="payFromOpen.set(false)" aria-label="Close">
+                      <app-icon name="close" />
+                    </button>
+                  </div>
+                  @if (store.activeCards().length) {
+                    <p class="pay-from-group">Credit cards</p>
+                    @for (card of store.activeCards(); track card.id) {
+                      <button
+                        type="button"
+                        class="pay-from-option"
+                        [class.selected]="form.controls.cardId.value === card.id"
+                        role="option"
+                        [attr.aria-selected]="form.controls.cardId.value === card.id"
+                        (click)="selectPayFrom(card.id)"
+                      >
+                        <span class="pay-from-option__name">{{ card.nickname }}</span>
+                        <span class="pay-from-option__detail"
+                          >{{ card.lastDigits }} · {{ card.issuerName }}</span
+                        >
+                        @if (form.controls.cardId.value === card.id) {
+                          <app-icon name="success" class="pay-from-option__check" />
+                        }
+                      </button>
+                    }
                   }
-                </optgroup>
-                <optgroup label="Cash, bank and meal card">
-                  @for (source of store.activePaymentSources(); track source.id) {
-                    <option [value]="source.id">
-                      {{ source.nickname
-                      }}{{ source.institution ? ' · ' + source.institution : '' }}
-                    </option>
+                  @if (store.activePaymentSources().length) {
+                    <p class="pay-from-group">Cash, bank &amp; meal card</p>
+                    @for (source of store.activePaymentSources(); track source.id) {
+                      <button
+                        type="button"
+                        class="pay-from-option"
+                        [class.selected]="form.controls.cardId.value === source.id"
+                        role="option"
+                        [attr.aria-selected]="form.controls.cardId.value === source.id"
+                        (click)="selectPayFrom(source.id)"
+                      >
+                        <span class="pay-from-option__name">{{ source.nickname }}</span>
+                        @if (source.institution) {
+                          <span class="pay-from-option__detail">{{ source.institution }}</span>
+                        }
+                        @if (form.controls.cardId.value === source.id) {
+                          <app-icon name="success" class="pay-from-option__check" />
+                        }
+                      </button>
+                    }
                   }
-                </optgroup>
-              </select>
-            </label>
+                </div>
+              </div>
+            }
             <label>
               Amount
               <input formControlName="amount" inputmode="decimal" placeholder="0.00" />
