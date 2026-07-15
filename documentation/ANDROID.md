@@ -122,10 +122,10 @@ The reference app needed extra native scripts because it reacted to live timer t
 
 ## Native PDF and CSV export
 
-The browser build opens a print-ready report for **Save as PDF** and downloads CSV with the browser download API. Android does not open a browser tab. The generated `CardNestExport` Capacitor plugin:
+The browser build opens a portrait A4 print-ready report for **Save as PDF** and downloads CSV with the browser download API. Android does not open a browser tab. The generated `CardNestExport` Capacitor plugin:
 
 1. Receives structured report sections from Angular.
-2. Draws paginated landscape A4-style pages with Android `PdfDocument`.
+2. Draws paginated portrait A4 pages at 595 x 842 PDF points with Android `PdfDocument`.
 3. Writes PDF or UTF-8 CSV output only to the app's private cache.
 4. Exposes that one file through a non-exported `FileProvider`.
 5. Opens Android's native chooser so the user can save or share it.

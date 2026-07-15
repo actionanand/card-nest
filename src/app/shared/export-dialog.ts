@@ -1,4 +1,4 @@
-import { Component, inject, input, output, signal } from '@angular/core';
+import { Component, inject, input, linkedSignal, output, signal } from '@angular/core';
 import { CardTransaction } from '../core/models/domain';
 import { ExportFormat, ExportPeriod } from '../core/models/export';
 import { ExportService } from '../core/services/export.service';
@@ -98,8 +98,9 @@ import { AppIcon } from './app-icon';
 export class ExportDialog {
   private readonly exporter = inject(ExportService);
   readonly transactions = input.required<readonly CardTransaction[]>();
+  readonly initialFormat = input<ExportFormat>('PDF');
   readonly closed = output<void>();
-  readonly format = signal<ExportFormat>('PDF');
+  readonly format = linkedSignal(() => this.initialFormat());
   readonly period = signal<ExportPeriod>('MONTH');
   readonly periods: readonly { value: ExportPeriod; label: string }[] = [
     { value: 'MONTH', label: 'This cycle' },

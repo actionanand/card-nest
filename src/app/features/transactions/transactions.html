@@ -207,14 +207,14 @@
       }
     </div>
     <div class="summary-menu-anchor">
-      <button
-        class="menu-button export-button"
-        type="button"
-        (click)="exportOpen.set(true); closeMenus()"
-        aria-label="Export transactions"
-      >
-        <app-icon name="download" />
-      </button>
+      <div class="export-choices" role="group" aria-label="Export transactions">
+        <button type="button" (click)="openExport('PDF')">
+          <app-icon name="file_pdf" /><span>PDF</span>
+        </button>
+        <button type="button" (click)="openExport('CSV')">
+          <app-icon name="file_csv" /><span>CSV</span>
+        </button>
+      </div>
       <button
         class="menu-button"
         type="button"
@@ -346,5 +346,9 @@
 }
 
 @if (exportOpen()) {
-  <app-export-dialog [transactions]="filtered()" (closed)="exportOpen.set(false)" />
+  <app-export-dialog
+    [transactions]="filtered()"
+    [initialFormat]="exportFormat()"
+    (closed)="exportOpen.set(false)"
+  />
 }

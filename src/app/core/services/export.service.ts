@@ -289,7 +289,10 @@ export class ExportService {
     const anchor = document.createElement('a');
     anchor.href = url;
     anchor.download = filename;
+    anchor.hidden = true;
+    document.body.append(anchor);
     anchor.click();
+    anchor.remove();
     window.setTimeout(() => URL.revokeObjectURL(url), 0);
     this.snackbar.show('CSV downloaded.');
   }
@@ -333,7 +336,7 @@ export class ExportService {
       )
       .join('');
     return `<!doctype html><html><head><meta charset="utf-8"><title>${this.html(report.title)}</title><style>
-@page{size:A4 landscape;margin:14mm}*{box-sizing:border-box}body{margin:0;color:#14271e;font:10px/1.4 Arial,sans-serif}.brand{padding-bottom:14px;border-bottom:3px solid #28684e}.brand h1{margin:0;font:700 23px Georgia,serif}.brand p{margin:4px 0 0;color:#587066}.summary{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:14px 0}.summary div{padding:10px;border:1px solid #d8e2dc;border-radius:8px;background:#f5f8f5}.summary strong{display:block;color:#28684e;font-size:15px}.summary span{color:#587066}section{margin:15px 0;break-inside:auto}.section-title{display:flex;align-items:end;justify-content:space-between;gap:12px;margin-bottom:6px}.section-title h2{margin:0;font:700 15px Georgia,serif}.section-title p{margin:0;color:#587066}table{width:100%;border-collapse:collapse;table-layout:fixed}th{padding:7px;background:#28684e;color:#fff;text-align:left}td{padding:6px;border-bottom:1px solid #dfe7e2;overflow-wrap:anywhere}tr:nth-child(even) td{background:#f5f8f5}tr.credit td:last-child{color:#197447;font-weight:700}tr.warning td{color:#a1342e}.footer{margin-top:18px;padding-top:8px;border-top:1px solid #d8e2dc;color:#587066;text-align:center}thead{display:table-header-group}@media print{section{break-inside:auto}}
+@page{size:A4 portrait;margin:12mm}*{box-sizing:border-box}body{margin:0;color:#14271e;font:8.5px/1.35 Arial,sans-serif}.brand{padding-bottom:12px;border-bottom:3px solid #28684e}.brand h1{margin:0;font:700 21px Georgia,serif}.brand p{margin:4px 0 0;color:#587066}.summary{display:grid;grid-template-columns:repeat(2,1fr);gap:7px;margin:12px 0}.summary div{padding:9px;border:1px solid #d8e2dc;border-radius:8px;background:#f5f8f5}.summary strong{display:block;color:#28684e;font-size:13px}.summary span{color:#587066}section{margin:13px 0;break-inside:auto}.section-title{display:flex;align-items:end;justify-content:space-between;gap:10px;margin-bottom:5px}.section-title h2{margin:0;font:700 14px Georgia,serif}.section-title p{margin:0;color:#587066}table{width:100%;border-collapse:collapse;table-layout:fixed}th{padding:6px 4px;background:#28684e;color:#fff;text-align:left}td{padding:5px 4px;border-bottom:1px solid #dfe7e2;overflow-wrap:anywhere}tr:nth-child(even) td{background:#f5f8f5}tr.credit td:last-child{color:#197447;font-weight:700}tr.warning td{color:#a1342e}.footer{margin-top:16px;padding-top:7px;border-top:1px solid #d8e2dc;color:#587066;text-align:center}thead{display:table-header-group}@media print{section{break-inside:auto}}
 </style></head><body><header class="brand"><h1>${this.html(report.title)}</h1><p>${this.html(report.subtitle)} &middot; Generated ${this.html(report.generatedOn)}</p></header><div class="summary">${report.summary.map((item) => `<div><strong>${this.html(item.value)}</strong><span>${this.html(item.label)}</span></div>`).join('')}</div>${sections}<footer class="footer">CardNest &middot; Private, local-first money tracking</footer></body></html>`;
   }
 

@@ -130,3 +130,5 @@ npm run keystore:type
 ```
 
 See [ANDROID.md](./ANDROID.md) for local and GitHub Android builds.
+
+See [SQLITE.md](./SQLITE.md) for the complete Angular, Android, browser WebAssembly, IndexedDB, migration, and persistence architecture.

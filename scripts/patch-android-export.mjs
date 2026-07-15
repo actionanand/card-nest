@@ -61,9 +61,10 @@ import org.json.JSONObject;
 
 @CapacitorPlugin(name = "CardNestExport")
 public class CardNestExportPlugin extends Plugin {
-  private static final int PAGE_WIDTH = 842;
-  private static final int PAGE_HEIGHT = 595;
-  private static final int MARGIN = 30;
+  // A4 portrait at 72 points per inch: 210 x 297 mm.
+  private static final int PAGE_WIDTH = 595;
+  private static final int PAGE_HEIGHT = 842;
+  private static final int MARGIN = 28;
   private static final int AVAILABLE_WIDTH = PAGE_WIDTH - (MARGIN * 2);
   private static final int BOTTOM = PAGE_HEIGHT - MARGIN;
   private static final int PADDING = 4;

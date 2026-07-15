@@ -8,6 +8,7 @@ import { SnackbarService } from '../../core/services/snackbar.service';
 import { AppIcon } from '../../shared/app-icon';
 import { CategoriesPage } from '../categories/categories';
 import { ExportDialog } from '../../shared/export-dialog';
+import { ExportFormat } from '../../core/models/export';
 
 type GroupingMode = 'MONTH' | 'CYCLE' | 'STATEMENT';
 type RepeatChoice = 'NONE' | 'INFINITE' | `${number}`;
@@ -36,6 +37,7 @@ export class TransactionsPage {
   readonly summaryMenuOpen = signal(false);
   readonly manageCategoriesOpen = signal(false);
   readonly exportOpen = signal(false);
+  readonly exportFormat = signal<ExportFormat>('PDF');
   readonly hideCredits = signal(false);
   readonly creditCardsOnly = signal(false);
   readonly search = signal('');
@@ -159,6 +161,11 @@ export class TransactionsPage {
   }
   signedMoney(value: number): string {
     return `${value >= 0 ? '+' : '−'}${formatMoney(Math.abs(value), 'INR')}`;
+  }
+  openExport(format: ExportFormat): void {
+    this.exportFormat.set(format);
+    this.exportOpen.set(true);
+    this.closeMenus();
   }
   openAdd(): void {
     this.editingId.set(null);

@@ -194,8 +194,31 @@ label small {
   display: flex;
   align-items: center;
 }
-.export-button {
+.export-choices {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin-right: 0.2rem;
+}
+.export-choices button {
+  display: inline-flex;
+  min-height: 2.35rem;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.4rem 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: 0.55rem;
   color: var(--accent);
+  background: var(--surface);
+  font-size: 0.65rem;
+  font-weight: 750;
+}
+.export-choices button:hover {
+  background: var(--accent-soft);
+}
+.export-choices app-icon {
+  width: 0.95rem;
+  height: 0.95rem;
 }
 .menu-button {
   display: grid;
@@ -467,6 +490,18 @@ label small {
   }
   .summary-menu {
     width: min(15rem, calc(100vw - 2rem));
+  }
+  .export-choices button {
+    width: 2.35rem;
+    justify-content: center;
+    padding: 0;
+  }
+  .export-choices span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
   }
   .tx-main small {
     max-width: 12rem;
