@@ -113,11 +113,30 @@
             <label class="full"
               >Notes<textarea formControlName="notes" placeholder="Optional details"></textarea>
             </label>
-            <label class="attachment full">
-              <span>Receipt images</span>
-              <input type="file" accept="image/*" multiple />
+            <div class="attachment full">
+              <span class="attachment__label">Receipt images</span>
+              <button type="button" class="attachment__pick" (click)="pickReceipts()">
+                <app-icon name="plus" />
+                Add from gallery or camera
+              </button>
+              @if (receiptPreviews().length) {
+                <ul class="attachment__previews">
+                  @for (preview of receiptPreviews(); track preview; let i = $index) {
+                    <li>
+                      <img [src]="preview" alt="Selected receipt preview" />
+                      <button
+                        type="button"
+                        (click)="removeReceipt(i)"
+                        aria-label="Remove receipt image"
+                      >
+                        <app-icon name="close" />
+                      </button>
+                    </li>
+                  }
+                </ul>
+              }
               <small>Images remain private on the device.</small>
-            </label>
+            </div>
           </div>
           <div class="form-actions">
             <button class="btn" type="button" (click)="closeForm()">Cancel</button>

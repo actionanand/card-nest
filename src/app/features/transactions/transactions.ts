@@ -1,6 +1,7 @@
 import { Component, computed, inject, signal } from '@angular/core';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { ActivatedRoute, Router } from '@angular/router';
+import { Camera } from '@capacitor/camera';
 import { CardTransaction, TransactionType } from '../../core/models/domain';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { formatMoney, parseMoneyToMinor } from '../../core/services/money';
@@ -33,6 +34,7 @@ export class TransactionsPage {
       this.requestedEditId !== null,
   );
   readonly editingId = signal<string | null>(null);
+  readonly receiptPreviews = signal<readonly string[]>([]);
   readonly actionMenuId = signal<string | null>(null);
   readonly summaryMenuOpen = signal(false);
   readonly manageCategoriesOpen = signal(false);
@@ -172,6 +174,20 @@ export class TransactionsPage {
     this.resetForm(this.defaultSourceId());
     this.showForm.set(true);
     this.closeMenus();
+  }
+  async pickReceipts(): Promise<void> {
+    try {
+      const selection = await Camera.pickImages({ quality: 70 });
+      const paths = selection.photos
+        .map((photo) => photo.webPath)
+        .filter((path): path is string => Boolean(path));
+      if (paths.length) this.receiptPreviews.update((current) => [...current, ...paths]);
+    } catch {
+      // The native picker was dismissed; nothing to attach.
+    }
+  }
+  removeReceipt(index: number): void {
+    this.receiptPreviews.update((current) => current.filter((_, position) => position !== index));
   }
   closeForm(): void {
     this.showForm.set(false);
@@ -351,6 +367,7 @@ export class TransactionsPage {
   }
 
   private resetForm(sourceId: string): void {
+    this.receiptPreviews.set([]);
     this.form.reset({
       cardId: sourceId,
       type: 'PURCHASE',

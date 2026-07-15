@@ -125,11 +125,62 @@ legend {
   border: 1px dashed var(--line);
   border-radius: 0.6rem;
 }
-.attachment input {
+.attachment__label {
   display: block;
-  min-width: 0;
-  max-width: 100%;
-  padding: 0.55rem;
+  margin-bottom: 0.5rem;
+  font-weight: 600;
+}
+.attachment__pick {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-height: 2.6rem;
+  padding: 0.5rem 0.9rem;
+  border: 1px solid var(--line);
+  border-radius: 0.6rem;
+  color: var(--accent);
+  background: var(--accent-soft);
+  font-weight: 600;
+}
+.attachment__pick app-icon {
+  width: 1rem;
+  height: 1rem;
+}
+.attachment__previews {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+.attachment__previews li {
+  position: relative;
+  width: 4.5rem;
+  height: 4.5rem;
+}
+.attachment__previews img {
+  width: 100%;
+  height: 100%;
+  border-radius: 0.5rem;
+  object-fit: cover;
+}
+.attachment__previews button {
+  position: absolute;
+  top: -0.4rem;
+  right: -0.4rem;
+  display: grid;
+  width: 1.5rem;
+  height: 1.5rem;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  color: #fff;
+  background: rgb(20 20 20 / 78%);
+}
+.attachment__previews button app-icon {
+  width: 0.7rem;
+  height: 0.7rem;
 }
 .attachment small,
 label small {

@@ -180,10 +180,6 @@
   </div>
 }
 
-@if (notificationPermissionMessage(); as message) {
-  <p class="permission-status" role="status">{{ message }}</p>
-}
-
 @if (snackbar.message(); as message) {
   <div class="app-snackbar" [class]="'app-snackbar ' + message.tone.toLowerCase()" role="status">
     <app-icon [name]="message.tone === 'WARNING' ? 'warning' : 'success'" />
@@ -191,5 +187,38 @@
     <button type="button" (click)="snackbar.dismiss()" aria-label="Dismiss message">
       <app-icon name="close" />
     </button>
+  </div>
+}
+
+@if (appLock.locked()) {
+  <div class="lock-backdrop">
+    <section
+      class="lock-dialog panel"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="app-lock-title"
+    >
+      <span class="lock-dialog__icon" aria-hidden="true"><app-icon name="privacy" /></span>
+      <h2 id="app-lock-title">CardNest is locked</h2>
+      <p>Enter your application PIN to continue.</p>
+      <form (submit)="submitUnlock($event)">
+        <input
+          type="password"
+          inputmode="numeric"
+          autocomplete="off"
+          maxlength="8"
+          placeholder="••••"
+          aria-label="Application PIN"
+          [value]="lockPin()"
+          (input)="lockPin.set($any($event.target).value)"
+        />
+        @if (lockError(); as error) {
+          <p class="lock-error" role="alert">{{ error }}</p>
+        }
+        <button type="submit" class="btn btn-primary" [disabled]="unlocking() || !lockPin()">
+          Unlock
+        </button>
+      </form>
+    </section>
   </div>
 }

@@ -10,6 +10,7 @@ import { CardNestStore } from './core/services/card-nest-store';
 import { NotificationService } from './core/services/notification.service';
 import { ThemeService } from './core/services/theme.service';
 import { ApplicationPinService } from './core/services/application-pin.service';
+import { AppLockService } from './core/services/app-lock.service';
 import { SensitiveCardDataService } from './core/services/sensitive-card-data.service';
 import { routes } from './app.routes';
 
@@ -23,6 +24,7 @@ export const appConfig: ApplicationConfig = {
       const notifications = inject(NotificationService);
       const themes = inject(ThemeService);
       const pin = inject(ApplicationPinService);
+      const appLock = inject(AppLockService);
       const cardSecrets = inject(SensitiveCardDataService);
       const initialiseStorage = database
         .initialise()
@@ -33,7 +35,8 @@ export const appConfig: ApplicationConfig = {
             cardSecrets.initialise(),
             store.initialisePreferences(),
           ]),
-        );
+        )
+        .then(() => appLock.initialise());
       return Promise.allSettled([
         initialiseStorage,
         notifications.initialise(store.cards(), (cardId) => store.cardOutstanding(cardId)),

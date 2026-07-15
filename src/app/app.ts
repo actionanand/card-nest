@@ -9,6 +9,7 @@ import {
 } from '@angular/core';
 import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 import { SqliteDatabase } from './core/data/sqlite-database';
+import { AppLockService } from './core/services/app-lock.service';
 import { CardNestStore } from './core/services/card-nest-store';
 import { NotificationService } from './core/services/notification.service';
 import { SnackbarService } from './core/services/snackbar.service';
@@ -27,11 +28,14 @@ export class App {
   private readonly store = inject(CardNestStore);
   private readonly notifications = inject(NotificationService);
   readonly database = inject(SqliteDatabase);
+  readonly appLock = inject(AppLockService);
   readonly snackbar = inject(SnackbarService);
 
   readonly showNotificationPermissionConfirmation = signal(false);
-  readonly notificationPermissionMessage = signal<string | null>(null);
   readonly mobileMenuOpen = signal(false);
+  readonly lockPin = signal('');
+  readonly lockError = signal<string | null>(null);
+  readonly unlocking = signal(false);
   readonly allowNotificationsButton = viewChild<ElementRef<HTMLButtonElement>>(
     'allowNotificationsButton',
   );
@@ -63,12 +67,31 @@ export class App {
       this.store.cardOutstanding(cardId),
     );
 
-    this.notificationPermissionMessage.set(
+    this.snackbar.show(
       granted
         ? 'Notifications are enabled. CardNest will send private card reminders.'
         : 'Notifications were not enabled. You can allow them later in Android settings.',
+      granted ? 'SUCCESS' : 'WARNING',
+      15000,
     );
     queueMicrotask(() => this.mainContent()?.nativeElement.focus());
+  }
+
+  async submitUnlock(event: Event): Promise<void> {
+    event.preventDefault();
+    if (this.unlocking()) return;
+    this.unlocking.set(true);
+    this.lockError.set(null);
+    try {
+      const unlocked = await this.appLock.unlock(this.lockPin());
+      if (unlocked) {
+        this.lockPin.set('');
+        return;
+      }
+      this.lockError.set('Incorrect PIN. Please try again.');
+    } finally {
+      this.unlocking.set(false);
+    }
   }
 
   private async openNotificationPermissionConfirmationIfNeeded(): Promise<void> {
