@@ -309,7 +309,7 @@ export class ExportService {
           window.setTimeout(() => reject(new Error('Export timed out')), 30000),
         ),
       ]);
-      this.snackbar.show(`Choose an app to save or share the ${kind}.`);
+      this.snackbar.show(`${kind} saved to Downloads. You can also share it now.`);
     } catch {
       this.snackbar.show(`Unable to export ${kind}.`, 'WARNING');
     }

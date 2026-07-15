@@ -11,12 +11,13 @@ interface JeepSqliteElement extends HTMLElement {
 @Service()
 export class SqliteDatabase {
   private readonly databaseName = 'cardnest';
+  private readonly isWeb = Capacitor.getPlatform() === 'web';
   readonly ready = signal(false);
   readonly unavailableReason = signal<string | null>(null);
 
   async initialise(): Promise<void> {
     try {
-      if (Capacitor.getPlatform() === 'web') await this.initialiseWebStore();
+      if (this.isWeb) await this.initialiseWebStore();
       const version = DATABASE_MIGRATIONS.at(-1)?.version ?? 1;
 
       // On a warm restart the native layer can still hold the connection from a previous
@@ -98,6 +99,7 @@ export class SqliteDatabase {
       values: [...values],
       transaction: true,
     });
+    if (this.isWeb) await CapacitorSQLite.saveToStore({ database: this.databaseName });
     return result.changes?.changes ?? 0;
   }
 
