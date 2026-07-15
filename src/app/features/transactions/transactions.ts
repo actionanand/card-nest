@@ -1,29 +1,43 @@
 import { Component, computed, inject, signal } from '@angular/core';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
-import { ActivatedRoute, RouterLink } from '@angular/router';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { CardTransaction, TransactionType } from '../../core/models/domain';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { formatMoney, parseMoneyToMinor } from '../../core/services/money';
 import { AppIcon } from '../../shared/app-icon';
+
+type GroupingMode = 'MONTH' | 'CYCLE' | 'STATEMENT';
+type RepeatChoice = 'NONE' | 'INFINITE' | `${number}`;
 
 @Component({
   selector: 'app-transactions-page',
   imports: [ReactiveFormsModule, RouterLink, AppIcon],
   templateUrl: './transactions.html',
   styleUrl: './transactions.scss',
+  host: { '(document:keydown.escape)': 'closeMenus()' },
 })
 export class TransactionsPage {
   readonly store = inject(CardNestStore);
   private readonly route = inject(ActivatedRoute);
+  private readonly router = inject(Router);
   private readonly requestedSourceId = this.route.snapshot.queryParamMap.get('source');
+  private readonly requestedEditId = this.route.snapshot.queryParamMap.get('edit');
   readonly showForm = signal(
     this.route.snapshot.queryParamMap.get('add') === 'true' ||
-      this.route.snapshot.queryParamMap.get('payment') === 'true',
+      this.route.snapshot.queryParamMap.get('payment') === 'true' ||
+      this.requestedEditId !== null,
   );
+  readonly editingId = signal<string | null>(null);
+  readonly actionMenuId = signal<string | null>(null);
+  readonly summaryMenuOpen = signal(false);
+  readonly hideCredits = signal(false);
+  readonly creditCardsOnly = signal(false);
   readonly search = signal('');
   readonly typeFilter = signal<TransactionType | 'ALL'>('ALL');
-  readonly sourceFilter = signal(this.route.snapshot.queryParamMap.get('source') ?? 'ALL');
-  readonly grouping = signal<'MONTH' | 'CYCLE' | 'STATEMENT'>('MONTH');
+  readonly sourceFilter = signal(this.requestedSourceId ?? 'ALL');
+  readonly categoryFilter = signal('ALL');
+  readonly grouping = signal<GroupingMode>('MONTH');
+  readonly repeatOptions = Array.from({ length: 36 }, (_, index) => index + 1);
   readonly types: readonly { value: TransactionType; label: string }[] = [
     { value: 'PURCHASE', label: 'Purchase' },
     { value: 'PAYMENT', label: 'Card payment' },
@@ -35,16 +49,10 @@ export class TransactionsPage {
     { value: 'ADJUSTMENT', label: 'Adjustment' },
   ];
   readonly form = new FormGroup({
-    cardId: new FormControl(
-      this.requestedSourceId ??
-        this.store.activeCards()[0]?.id ??
-        this.store.activePaymentSources()[0]?.id ??
-        '',
-      {
-        nonNullable: true,
-        validators: [Validators.required],
-      },
-    ),
+    cardId: new FormControl(this.defaultSourceId(), {
+      nonNullable: true,
+      validators: [Validators.required],
+    }),
     type: new FormControl<TransactionType>(
       this.route.snapshot.queryParamMap.get('payment') === 'true' ? 'PAYMENT' : 'PURCHASE',
       { nonNullable: true, validators: [Validators.required] },
@@ -60,9 +68,7 @@ export class TransactionsPage {
     }),
     merchant: new FormControl('', { nonNullable: true, validators: [Validators.maxLength(100)] }),
     notes: new FormControl('', { nonNullable: true, validators: [Validators.maxLength(500)] }),
-    repeat: new FormControl<'NONE' | 'WEEKLY' | 'MONTHLY' | 'YEARLY'>('NONE', {
-      nonNullable: true,
-    }),
+    repeat: new FormControl<RepeatChoice>('NONE', { nonNullable: true }),
   });
   readonly filtered = computed(() => {
     const term = this.search().trim().toLocaleLowerCase();
@@ -70,13 +76,23 @@ export class TransactionsPage {
       .transactions()
       .filter(
         (item) =>
+          (!this.hideCredits() || !this.isCredit(item.type)) &&
+          (!this.creditCardsOnly() || this.store.cards().some((card) => card.id === item.cardId)) &&
           (this.typeFilter() === 'ALL' || item.type === this.typeFilter()) &&
           (this.sourceFilter() === 'ALL' || item.cardId === this.sourceFilter()) &&
+          (this.categoryFilter() === 'ALL' || item.categoryId === this.categoryFilter()) &&
           (!term ||
             item.merchant?.toLocaleLowerCase().includes(term) ||
-            this.cardName(item.cardId).toLocaleLowerCase().includes(term)),
+            this.cardName(item.cardId).toLocaleLowerCase().includes(term) ||
+            this.categoryName(item.categoryId).toLocaleLowerCase().includes(term)),
       );
   });
+  readonly visibleTotal = computed(() =>
+    this.filtered().reduce(
+      (sum, item) => sum + (this.isCredit(item.type) ? item.amountMinor : -item.amountMinor),
+      0,
+    ),
+  );
   readonly groups = computed(() => {
     const grouped = new Map<string, { label: string; transactions: CardTransaction[] }>();
     for (const transaction of this.filtered()) {
@@ -100,14 +116,16 @@ export class TransactionsPage {
       }));
   });
 
+  constructor() {
+    const transaction = this.store.transactions().find((item) => item.id === this.requestedEditId);
+    if (transaction) this.edit(transaction);
+  }
+
   money(value: number, currency: string): string {
     return formatMoney(value, currency);
   }
   cardName(cardId: string): string {
     return this.store.sourceName(cardId);
-  }
-  cardLastDigits(cardId: string): string {
-    return this.store.cards().find((card) => card.id === cardId)?.lastDigits ?? '••••';
   }
   categoryName(categoryId: string): string {
     return this.store.categories().find((item) => item.id === categoryId)?.name ?? 'Other';
@@ -124,14 +142,77 @@ export class TransactionsPage {
   updateSource(event: Event): void {
     this.sourceFilter.set((event.target as HTMLSelectElement).value);
   }
+  updateCategory(event: Event): void {
+    this.categoryFilter.set((event.target as HTMLSelectElement).value);
+  }
   updateGrouping(event: Event): void {
-    this.grouping.set((event.target as HTMLSelectElement).value as 'MONTH' | 'CYCLE' | 'STATEMENT');
+    this.grouping.set((event.target as HTMLSelectElement).value as GroupingMode);
   }
   isCreditCardSelected(): boolean {
     return this.store.cards().some((card) => card.id === this.sourceFilter());
   }
   signedMoney(value: number): string {
     return `${value >= 0 ? '+' : '−'}${formatMoney(Math.abs(value), 'INR')}`;
+  }
+  openAdd(): void {
+    this.editingId.set(null);
+    this.resetForm(this.defaultSourceId());
+    this.showForm.set(true);
+    this.closeMenus();
+  }
+  closeForm(): void {
+    this.showForm.set(false);
+    this.editingId.set(null);
+  }
+  edit(transaction: CardTransaction): void {
+    this.editingId.set(transaction.id);
+    this.form.reset({
+      cardId: transaction.cardId,
+      type: transaction.type,
+      amount: String(transaction.amountMinor / 100),
+      transactionDate: transaction.transactionDate,
+      categoryId: transaction.categoryId,
+      merchant: transaction.merchant ?? '',
+      notes: transaction.notes ?? '',
+      repeat: 'NONE',
+    });
+    this.showForm.set(true);
+    this.closeMenus();
+    globalThis.scrollTo?.({ top: 0, behavior: 'smooth' });
+  }
+  toggleActionMenu(transactionId: string): void {
+    this.summaryMenuOpen.set(false);
+    this.actionMenuId.set(this.actionMenuId() === transactionId ? null : transactionId);
+  }
+  closeMenus(): void {
+    this.actionMenuId.set(null);
+    this.summaryMenuOpen.set(false);
+  }
+  delete(transaction: CardTransaction): void {
+    if (!globalThis.confirm?.(`Delete ${transaction.merchant || 'this transaction'}?`)) return;
+    this.store.deleteTransaction(transaction.id);
+    this.closeMenus();
+  }
+  duplicate(transaction: CardTransaction): void {
+    this.store.duplicateTransaction(transaction.id);
+    this.closeMenus();
+  }
+  goToSource(transaction: CardTransaction): void {
+    this.closeMenus();
+    if (this.store.cards().some((card) => card.id === transaction.cardId)) {
+      void this.router.navigate(['/cards'], { queryParams: { open: transaction.cardId } });
+      return;
+    }
+    void this.router.navigate(['/sources'], { fragment: transaction.cardId });
+  }
+  clearFilters(): void {
+    this.search.set('');
+    this.typeFilter.set('ALL');
+    this.sourceFilter.set('ALL');
+    this.categoryFilter.set('ALL');
+    this.hideCredits.set(false);
+    this.creditCardsOnly.set(false);
+    this.closeMenus();
   }
 
   save(): void {
@@ -144,45 +225,45 @@ export class TransactionsPage {
     if (this.form.invalid) return;
     const value = this.form.getRawValue();
     const timestamp = new Date().toISOString();
+    const existing = this.store
+      .transactions()
+      .find((transaction) => transaction.id === this.editingId());
     const transaction: CardTransaction = {
-      id: crypto.randomUUID(),
+      ...existing,
+      id: existing?.id ?? crypto.randomUUID(),
       cardId: value.cardId,
       type: value.type,
       amountMinor,
-      currencyCode: 'INR',
+      currencyCode: existing?.currencyCode ?? 'INR',
       transactionDate: value.transactionDate,
       merchant: value.merchant.trim() || undefined,
       categoryId: value.categoryId,
       notes: value.notes.trim() || undefined,
-      attachmentIds: [],
-      createdAt: timestamp,
+      attachmentIds: existing?.attachmentIds ?? [],
+      createdAt: existing?.createdAt ?? timestamp,
       updatedAt: timestamp,
     };
-    this.store.addTransaction(transaction);
-    if (value.repeat !== 'NONE') {
+    if (existing) this.store.updateTransaction(transaction);
+    else this.store.addTransaction(transaction);
+
+    if (!existing && value.repeat !== 'NONE') {
+      const occurrenceLimit = value.repeat === 'INFINITE' ? undefined : Number(value.repeat);
       this.store.addRecurringRule({
         id: crypto.randomUUID(),
         cardId: value.cardId,
         title: value.merchant.trim() || value.type.replace('_', ' '),
         amountMinor,
         categoryId: value.categoryId,
-        frequency: value.repeat,
+        transactionType: value.type,
+        frequency: 'MONTHLY',
         startDate: value.transactionDate,
-        nextOccurrenceDate: this.nextOccurrence(value.transactionDate, value.repeat),
+        occurrenceLimit,
+        nextOccurrenceDate: this.nextMonthlyOccurrence(value.transactionDate),
         status: 'ACTIVE',
       });
     }
-    this.form.reset({
-      cardId: value.cardId,
-      type: 'PURCHASE',
-      amount: '',
-      transactionDate: new Date().toISOString().slice(0, 10),
-      categoryId: this.store.categories()[0]?.id ?? 'other',
-      merchant: '',
-      notes: '',
-      repeat: 'NONE',
-    });
-    this.showForm.set(false);
+    this.resetForm(value.cardId);
+    this.closeForm();
   }
 
   private periodFor(transaction: CardTransaction): { key: string; label: string } {
@@ -229,11 +310,36 @@ export class TransactionsPage {
     };
   }
 
-  private nextOccurrence(dateValue: string, repeat: 'WEEKLY' | 'MONTHLY' | 'YEARLY'): string {
+  private defaultSourceId(): string {
+    return (
+      this.requestedSourceId ??
+      this.store.activeCards()[0]?.id ??
+      this.store.activePaymentSources()[0]?.id ??
+      ''
+    );
+  }
+
+  private resetForm(sourceId: string): void {
+    this.form.reset({
+      cardId: sourceId,
+      type: 'PURCHASE',
+      amount: '',
+      transactionDate: new Date().toISOString().slice(0, 10),
+      categoryId: this.store.categories()[0]?.id ?? 'other',
+      merchant: '',
+      notes: '',
+      repeat: 'NONE',
+    });
+  }
+
+  private nextMonthlyOccurrence(dateValue: string): string {
     const date = new Date(`${dateValue}T12:00:00`);
-    if (repeat === 'WEEKLY') date.setDate(date.getDate() + 7);
-    else if (repeat === 'MONTHLY') date.setMonth(date.getMonth() + 1);
-    else date.setFullYear(date.getFullYear() + 1);
+    const anchorDay = date.getDate();
+    date.setDate(1);
+    date.setMonth(date.getMonth() + 1);
+    date.setDate(
+      Math.min(anchorDay, new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate()),
+    );
     return date.toISOString().slice(0, 10);
   }
 }

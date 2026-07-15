@@ -20,7 +20,7 @@
   <section class="stat-grid" aria-label="Budget summary">
     <article class="panel">
       <small>Income + tracked loads</small>
-      <strong>{{ money(store.monthlyIncomeMinor() + pluxeeLoad() + trackedSourceFunds()) }}</strong>
+      <strong>{{ money(periodIncome() + pluxeeLoad() + trackedSourceFunds()) }}</strong>
     </article>
     <article class="panel">
       <small>Spent in period</small>

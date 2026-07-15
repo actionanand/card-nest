@@ -28,7 +28,7 @@ export class CardsPage {
   private readonly router = inject(Router);
   readonly showForm = signal(this.route.snapshot.queryParamMap.get('add') === 'true');
   readonly editingId = signal<string | null>(null);
-  readonly selectedCardId = signal<string | null>(null);
+  readonly selectedCardId = signal<string | null>(this.route.snapshot.queryParamMap.get('open'));
   readonly showArchived = signal(false);
   readonly actionMenuId = signal<string | null>(null);
   readonly cardFilter = signal<CardFilter>('ALL');
@@ -131,6 +131,12 @@ export class CardsPage {
   }
   dueDate(card: CreditCard): Date {
     return paymentDueDate(this.nextStatement(card), card);
+  }
+  statementCountdown(card: CreditCard): string {
+    const days = Math.max(0, daysBetween(new Date(), this.nextStatement(card)));
+    return days === 0
+      ? 'Bill generates today'
+      : `Bill generates in ${days} ${days === 1 ? 'day' : 'days'}`;
   }
   date(value: Date): string {
     return value.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });

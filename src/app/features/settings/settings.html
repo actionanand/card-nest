@@ -1,4 +1,8 @@
-<div class="page settings">
+<div
+  class="page settings"
+  [attr.aria-hidden]="showPinForm() ? 'true' : null"
+  [attr.inert]="showPinForm() ? '' : null"
+>
   <header class="page-header">
     <div>
       <p class="eyebrow">Preferences</p>
@@ -37,16 +41,32 @@
             <strong>Application PIN</strong
             ><small>Required for reveal, backup and destructive actions</small>
           </div>
-          <button class="btn" type="button">Change PIN</button>
+          <button
+            #pinButton
+            class="btn"
+            type="button"
+            (click)="openPinForm()"
+            [disabled]="!database.ready()"
+          >
+            {{ pin.hasPin() ? 'Change PIN' : 'Set PIN' }}
+          </button>
         </div>
+        @if (pinMessage(); as message) {
+          <p class="setting-status" role="status">{{ message }}</p>
+        }
         <label class="setting-row toggle"
           ><span
             ><strong>Biometric unlock</strong
-            ><small>Use device biometrics after native setup</small></span
+            ><small>{{
+              biometricAvailable
+                ? 'Use Android device biometrics after native setup'
+                : 'Available only in the Android app'
+            }}</small></span
           ><input
             type="checkbox"
             [checked]="biometric()"
-            (change)="biometric.set(!biometric())" /></label
+            [disabled]="!biometricAvailable"
+            (change)="toggleBiometric()" /></label
         ><label class="setting-row toggle"
           ><span
             ><strong>Lock when app enters background</strong
@@ -102,6 +122,28 @@
         </div>
         <div class="form-grid">
           <label
+            >Title (optional)<select
+              [value]="store.profileTitle()"
+              [disabled]="!database.ready()"
+              (change)="updateProfileTitle($event)"
+            >
+              <option value="">No title</option>
+              <option value="Mr">Mr</option>
+              <option value="Ms">Ms</option>
+              <option value="Mrs">Mrs</option>
+              <option value="Mx">Mx</option>
+              <option value="Dr">Dr</option>
+            </select></label
+          ><label
+            >Name (optional)<input
+              [value]="store.profileName()"
+              [disabled]="!database.ready()"
+              maxlength="60"
+              autocomplete="name"
+              placeholder="Used only for your greeting"
+              (change)="updateProfileName($event)"
+          /></label>
+          <label
             >Default currency<select>
               <option>Indian Rupee — INR</option>
               <option>US Dollar — USD</option>
@@ -117,23 +159,45 @@
           ><label
             >Monthly income (optional)<input
               [value]="store.monthlyIncomeMinor() / 100"
+              [disabled]="!database.ready()"
               inputmode="decimal"
               (change)="updateMoney($event, 'income')"
-            /><small>Used for available-to-spend analytics.</small></label
+            /><small
+              >Saved for {{ store.currentIncomePeriodLabel() }}. Previous cycles remain
+              unchanged.</small
+            ></label
           ><label
             >Monthly budget<input
               [value]="store.monthlyBudgetMinor() / 100"
+              [disabled]="!database.ready()"
               inputmode="decimal"
               (change)="updateMoney($event, 'budget')" /></label
           ><label
             >Budget cycle begins<input
               [value]="store.budgetCycleStartDay()"
+              [disabled]="!database.ready()"
               type="number"
               min="1"
               max="28"
               (change)="updateCycleDay($event)"
           /></label>
         </div>
+        @if (preferenceMessage(); as message) {
+          <p class="setting-status" role="status">{{ message }}</p>
+        }
+        @if (store.incomeHistory().length) {
+          <details class="income-history">
+            <summary>Saved income history</summary>
+            <ul>
+              @for (income of store.incomeHistory(); track income.periodKey) {
+                <li>
+                  <span>{{ income.cycleStartDate }} – {{ income.cycleEndDate }}</span
+                  ><strong>{{ money(income.amountMinor) }}</strong>
+                </li>
+              }
+            </ul>
+          </details>
+        }
       </section>
       <section id="notifications" class="panel">
         <div class="setting-heading">
@@ -189,3 +253,73 @@
     </div>
   </div>
 </div>
+
+@if (showPinForm()) {
+  <div class="pin-backdrop">
+    <section
+      class="panel pin-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="pin-dialog-title"
+    >
+      <div class="pin-heading">
+        <div>
+          <p class="eyebrow">Security</p>
+          <h2 id="pin-dialog-title">
+            {{ pin.hasPin() ? 'Change application PIN' : 'Set application PIN' }}
+          </h2>
+        </div>
+        <button
+          class="pin-close"
+          type="button"
+          (click)="closePinForm()"
+          aria-label="Close PIN editor"
+        >
+          <app-icon name="close" />
+        </button>
+      </div>
+      <form [formGroup]="pinForm" (ngSubmit)="savePin()" novalidate>
+        @if (pin.hasPin()) {
+          <label
+            >Current PIN<input
+              #currentPinInput
+              formControlName="currentPin"
+              type="password"
+              inputmode="numeric"
+              autocomplete="current-password"
+              maxlength="8"
+          /></label>
+        }
+        <label
+          >New PIN<input
+            #newPinInput
+            formControlName="newPin"
+            type="password"
+            inputmode="numeric"
+            autocomplete="new-password"
+            minlength="4"
+            maxlength="8"
+          /><small>Use 4 to 8 digits.</small></label
+        >
+        <label
+          >Confirm new PIN<input
+            formControlName="confirmPin"
+            type="password"
+            inputmode="numeric"
+            autocomplete="new-password"
+            minlength="4"
+            maxlength="8"
+        /></label>
+        @if (pinError(); as error) {
+          <p class="pin-error" role="alert">{{ error }}</p>
+        }
+        <div class="pin-actions">
+          <button class="btn" type="button" (click)="closePinForm()">Cancel</button
+          ><button class="btn btn-primary" type="submit" [disabled]="savingPin()">
+            {{ savingPin() ? 'Saving…' : 'Save PIN' }}
+          </button>
+        </div>
+      </form>
+    </section>
+  </div>
+}

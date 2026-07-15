@@ -29,4 +29,11 @@ export const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
       `CREATE INDEX IF NOT EXISTS idx_emi_due ON emi_installments(due_date, paid)`,
     ],
   },
+  {
+    version: 3,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS monthly_income (period_key TEXT PRIMARY KEY NOT NULL, cycle_start_date TEXT NOT NULL, cycle_end_date TEXT NOT NULL, amount_minor INTEGER NOT NULL CHECK(amount_minor >= 0), updated_at TEXT NOT NULL)`,
+      `CREATE INDEX IF NOT EXISTS idx_monthly_income_cycle_start ON monthly_income(cycle_start_date DESC)`,
+    ],
+  },
 ];

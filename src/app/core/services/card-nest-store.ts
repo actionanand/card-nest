@@ -1,13 +1,15 @@
-import { Service, computed, signal } from '@angular/core';
+import { Service, computed, inject, signal } from '@angular/core';
 import {
   CardTransaction,
   Category,
   CreditCard,
   DashboardSnapshot,
   LoanCommitment,
+  MonthlyIncomeRecord,
   PaymentSource,
   RecurringRule,
 } from '../models/domain';
+import { SqliteDatabase } from '../data/sqlite-database';
 import { calculateNetSpending, calculateOutstanding } from './money';
 
 const now = new Date();
@@ -184,6 +186,7 @@ const PAYMENT_SOURCES: readonly PaymentSource[] = [
 
 @Service()
 export class CardNestStore {
+  private readonly database = inject(SqliteDatabase);
   readonly cards = signal<readonly CreditCard[]>(SAMPLE_CARDS);
   readonly transactions = signal<readonly CardTransaction[]>(SAMPLE_TRANSACTIONS);
   readonly categories = signal<readonly Category[]>(CATEGORIES);
@@ -193,6 +196,22 @@ export class CardNestStore {
   readonly monthlyBudgetMinor = signal(6000000);
   readonly monthlyIncomeMinor = signal(8000000);
   readonly budgetCycleStartDay = signal(1);
+  readonly incomeHistory = signal<readonly MonthlyIncomeRecord[]>([]);
+  readonly profileTitle = signal('');
+  readonly profileName = signal('');
+  readonly profileDisplayName = computed(() => {
+    const name = this.profileName().trim();
+    return name ? [this.profileTitle(), name].filter(Boolean).join(' ') : '';
+  });
+  readonly currentIncomePeriod = computed(() =>
+    this.incomePeriodFor(new Date(), this.budgetCycleStartDay()),
+  );
+  readonly currentIncomePeriodLabel = computed(() => {
+    const period = this.currentIncomePeriod();
+    const start = new Date(`${period.cycleStartDate}T12:00:00`);
+    const end = new Date(`${period.cycleEndDate}T12:00:00`);
+    return `${start.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} – ${end.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}`;
+  });
   readonly activeCards = computed(() => this.cards().filter((card) => !card.archived));
   readonly activePaymentSources = computed(() =>
     this.paymentSources().filter((source) => !source.archived),
@@ -234,6 +253,73 @@ export class CardNestStore {
     this.materializeSourceLoads();
   }
 
+  async initialisePreferences(): Promise<void> {
+    if (!this.database.ready()) return;
+    const preferences = await this.database.query<{ key: string; encrypted_value: string }>(
+      `SELECT key, encrypted_value FROM app_preferences
+       WHERE key IN ('budget_cycle_start_day', 'monthly_budget_minor', 'profile_title', 'profile_name')`,
+    );
+    const values = new Map(preferences.map((item) => [item.key, item.encrypted_value]));
+    const cycleDay = Number(values.get('budget_cycle_start_day'));
+    const budget = Number(values.get('monthly_budget_minor'));
+    if (Number.isInteger(cycleDay) && cycleDay >= 1 && cycleDay <= 28) {
+      this.budgetCycleStartDay.set(cycleDay);
+    }
+    if (Number.isFinite(budget) && budget >= 0) this.monthlyBudgetMinor.set(budget);
+    this.profileTitle.set(values.get('profile_title') ?? '');
+    this.profileName.set(values.get('profile_name') ?? '');
+    await this.loadCurrentIncome();
+  }
+
+  async setMonthlyIncome(amountMinor: number): Promise<void> {
+    if (!this.database.ready()) throw new Error('SQLite storage is unavailable.');
+    const period = this.currentIncomePeriod();
+    const updatedAt = new Date().toISOString();
+    await this.database.run(
+      `INSERT INTO monthly_income
+       (period_key, cycle_start_date, cycle_end_date, amount_minor, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(period_key) DO UPDATE SET
+         cycle_start_date = excluded.cycle_start_date,
+         cycle_end_date = excluded.cycle_end_date,
+         amount_minor = excluded.amount_minor,
+         updated_at = excluded.updated_at`,
+      [period.periodKey, period.cycleStartDate, period.cycleEndDate, amountMinor, updatedAt],
+    );
+    this.monthlyIncomeMinor.set(amountMinor);
+    await this.refreshIncomeHistory();
+  }
+
+  async setMonthlyBudget(amountMinor: number): Promise<void> {
+    this.monthlyBudgetMinor.set(amountMinor);
+    await this.upsertPreference('monthly_budget_minor', String(amountMinor));
+  }
+
+  async setBudgetCycleStartDay(day: number): Promise<void> {
+    const safeDay = Math.min(28, Math.max(1, Math.round(day)));
+    const currentIncome = this.monthlyIncomeMinor();
+    this.budgetCycleStartDay.set(safeDay);
+    await this.upsertPreference('budget_cycle_start_day', String(safeDay));
+    const existing = await this.findIncome(this.currentIncomePeriod().periodKey);
+    if (existing) {
+      this.monthlyIncomeMinor.set(existing.amountMinor);
+      await this.refreshIncomeHistory();
+      return;
+    }
+    await this.setMonthlyIncome(currentIncome);
+  }
+
+  async setProfileTitle(title: string): Promise<void> {
+    this.profileTitle.set(title);
+    await this.upsertPreference('profile_title', title);
+  }
+
+  async setProfileName(name: string): Promise<void> {
+    const cleanName = name.trim().slice(0, 60);
+    this.profileName.set(cleanName);
+    await this.upsertPreference('profile_name', cleanName);
+  }
+
   cardOutstanding(cardId: string): number {
     const card = this.cards().find((item) => item.id === cardId);
     return card
@@ -252,17 +338,42 @@ export class CardNestStore {
   }
   addTransaction(transaction: CardTransaction): void {
     this.transactions.update((items) => [transaction, ...items]);
-    const source = this.paymentSources().find((item) => item.id === transaction.cardId);
-    if (source && !source.noLimit && source.balanceMinor !== undefined) {
-      const isCredit = ['PAYMENT', 'REFUND', 'CASHBACK', 'CREDIT'].includes(transaction.type);
-      this.updatePaymentSource({
-        ...source,
-        balanceMinor: Math.max(
-          0,
-          source.balanceMinor + (isCredit ? transaction.amountMinor : -transaction.amountMinor),
-        ),
-      });
-    }
+    this.adjustPaymentSourceBalance(transaction, 1);
+  }
+  updateTransaction(updated: CardTransaction): boolean {
+    const existing = this.transactions().find((transaction) => transaction.id === updated.id);
+    if (!existing) return false;
+    this.adjustPaymentSourceBalance(existing, -1);
+    this.transactions.update((items) =>
+      items.map((transaction) => (transaction.id === updated.id ? updated : transaction)),
+    );
+    this.adjustPaymentSourceBalance(updated, 1);
+    return true;
+  }
+  deleteTransaction(transactionId: string): boolean {
+    const existing = this.transactions().find((transaction) => transaction.id === transactionId);
+    if (!existing) return false;
+    this.adjustPaymentSourceBalance(existing, -1);
+    this.transactions.update((items) =>
+      items.filter((transaction) => transaction.id !== transactionId),
+    );
+    return true;
+  }
+  duplicateTransaction(transactionId: string): CardTransaction | null {
+    const existing = this.transactions().find((transaction) => transaction.id === transactionId);
+    if (!existing) return null;
+    const timestamp = new Date().toISOString();
+    const duplicate: CardTransaction = {
+      ...existing,
+      id: crypto.randomUUID(),
+      recurringRuleId: undefined,
+      generatedOccurrenceDate: undefined,
+      emiPlanId: undefined,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    this.addTransaction(duplicate);
+    return duplicate;
   }
   addRecurringRule(rule: RecurringRule): void {
     this.recurringRules.update((rules) => [...rules, rule]);
@@ -272,6 +383,7 @@ export class CardNestStore {
     this.paymentSources.update((sources) =>
       sources.map((source) => (source.id === updated.id ? updated : source)),
     );
+    this.materializeSourceLoads();
   }
   addLoan(loan: LoanCommitment): void {
     this.loans.update((loans) => [loan, ...loans]);
@@ -377,7 +489,16 @@ export class CardNestStore {
       rules.map((rule) => {
         let next = rule.nextOccurrenceDate;
         let guard = 0;
+        let occurrenceCount = this.transactions().filter(
+          (item) => item.recurringRuleId === rule.id,
+        ).length;
+        let status = rule.status;
         while (rule.status === 'ACTIVE' && next && next <= asOf && guard < 120) {
+          if (rule.occurrenceLimit !== undefined && occurrenceCount >= rule.occurrenceLimit) {
+            status = 'COMPLETED';
+            next = undefined;
+            break;
+          }
           const occurrence = next;
           const exists = this.transactions().some(
             (item) =>
@@ -387,7 +508,7 @@ export class CardNestStore {
             generated.push({
               id: crypto.randomUUID(),
               cardId: rule.cardId,
-              type: 'PURCHASE',
+              type: rule.transactionType ?? 'PURCHASE',
               amountMinor: rule.amountMinor,
               currencyCode: 'INR',
               transactionDate: occurrence,
@@ -399,23 +520,28 @@ export class CardNestStore {
               createdAt: nowStamp,
               updatedAt: nowStamp,
             });
+            occurrenceCount += 1;
           }
-          const date = new Date(`${occurrence}T12:00:00`);
-          if (rule.frequency === 'WEEKLY') date.setDate(date.getDate() + 7);
-          else if (rule.frequency === 'YEARLY') date.setFullYear(date.getFullYear() + 1);
-          else date.setMonth(date.getMonth() + (rule.frequency === 'QUARTERLY' ? 3 : 1));
-          next = date.toISOString().slice(0, 10);
+          if (rule.occurrenceLimit !== undefined && occurrenceCount >= rule.occurrenceLimit) {
+            status = 'COMPLETED';
+            next = undefined;
+          } else {
+            next = this.nextRecurringDate(rule, occurrence);
+          }
           guard += 1;
         }
-        return { ...rule, nextOccurrenceDate: next };
+        return { ...rule, nextOccurrenceDate: next, status };
       }),
     );
-    if (generated.length) this.transactions.update((items) => [...generated, ...items]);
+    if (generated.length) {
+      this.transactions.update((items) => [...generated, ...items]);
+      for (const transaction of generated) this.adjustPaymentSourceBalance(transaction, 1);
+    }
   }
 
-  private materializeSourceLoads(): void {
-    const period = today.slice(0, 7);
-    const currentDay = Number(today.slice(8, 10));
+  materializeSourceLoads(asOf = today): void {
+    const period = asOf.slice(0, 7);
+    const currentDay = Number(asOf.slice(8, 10));
     this.paymentSources.update((sources) =>
       sources.map((source) =>
         source.kind === 'MEAL' &&
@@ -432,5 +558,104 @@ export class CardNestStore {
           : source,
       ),
     );
+  }
+
+  private adjustPaymentSourceBalance(transaction: CardTransaction, direction: 1 | -1): void {
+    const source = this.paymentSources().find((item) => item.id === transaction.cardId);
+    if (!source || source.noLimit || source.balanceMinor === undefined) return;
+    const isCredit = ['PAYMENT', 'REFUND', 'CASHBACK', 'CREDIT'].includes(transaction.type);
+    const transactionEffect =
+      (isCredit ? transaction.amountMinor : -transaction.amountMinor) * direction;
+    this.paymentSources.update((sources) =>
+      sources.map((item) =>
+        item.id === source.id
+          ? { ...item, balanceMinor: Math.max(0, (item.balanceMinor ?? 0) + transactionEffect) }
+          : item,
+      ),
+    );
+  }
+
+  private nextRecurringDate(rule: RecurringRule, occurrence: string): string {
+    const date = new Date(`${occurrence}T12:00:00`);
+    if (rule.frequency === 'WEEKLY') date.setDate(date.getDate() + 7);
+    else if (rule.frequency === 'BIWEEKLY') date.setDate(date.getDate() + 14);
+    else if (rule.frequency === 'DAILY') date.setDate(date.getDate() + 1);
+    else if (rule.frequency === 'YEARLY') date.setFullYear(date.getFullYear() + 1);
+    else {
+      const months =
+        rule.frequency === 'BIMONTHLY'
+          ? 2
+          : rule.frequency === 'QUARTERLY'
+            ? 3
+            : rule.frequency === 'HALF_YEARLY'
+              ? 6
+              : Math.max(1, rule.interval ?? 1);
+      const anchorDay = Number(rule.startDate.slice(8, 10));
+      date.setDate(1);
+      date.setMonth(date.getMonth() + months);
+      date.setDate(
+        Math.min(anchorDay, new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate()),
+      );
+    }
+    return date.toISOString().slice(0, 10);
+  }
+
+  private async loadCurrentIncome(): Promise<void> {
+    const income = await this.findIncome(this.currentIncomePeriod().periodKey);
+    if (!income) {
+      await this.setMonthlyIncome(this.monthlyIncomeMinor());
+      return;
+    }
+    this.monthlyIncomeMinor.set(income.amountMinor);
+    await this.refreshIncomeHistory();
+  }
+
+  private async findIncome(periodKey: string): Promise<MonthlyIncomeRecord | null> {
+    const rows = await this.database.query<MonthlyIncomeRecord & Record<string, unknown>>(
+      `SELECT period_key AS periodKey,
+              cycle_start_date AS cycleStartDate,
+              cycle_end_date AS cycleEndDate,
+              amount_minor AS amountMinor,
+              updated_at AS updatedAt
+       FROM monthly_income WHERE period_key = ?`,
+      [periodKey],
+    );
+    return rows[0] ?? null;
+  }
+
+  private async refreshIncomeHistory(): Promise<void> {
+    const rows = await this.database.query<MonthlyIncomeRecord & Record<string, unknown>>(
+      `SELECT period_key AS periodKey,
+              cycle_start_date AS cycleStartDate,
+              cycle_end_date AS cycleEndDate,
+              amount_minor AS amountMinor,
+              updated_at AS updatedAt
+       FROM monthly_income ORDER BY cycle_start_date DESC`,
+    );
+    this.incomeHistory.set(rows);
+  }
+
+  private async upsertPreference(key: string, value: string): Promise<void> {
+    if (!this.database.ready()) throw new Error('SQLite storage is unavailable.');
+    await this.database.run(
+      `INSERT INTO app_preferences (key, encrypted_value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET encrypted_value = excluded.encrypted_value`,
+      [key, value],
+    );
+  }
+
+  private incomePeriodFor(date: Date, startDay: number) {
+    const start = new Date(date.getFullYear(), date.getMonth(), startDay);
+    if (date.getDate() < startDay) start.setMonth(start.getMonth() - 1);
+    const end = new Date(start.getFullYear(), start.getMonth() + 1, startDay - 1);
+    return {
+      periodKey: `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, '0')}`,
+      cycleStartDate: this.localDate(start),
+      cycleEndDate: this.localDate(end),
+    };
+  }
+
+  private localDate(date: Date): string {
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
   }
 }

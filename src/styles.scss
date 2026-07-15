@@ -56,14 +56,18 @@ html {
   width: 100%;
   max-width: 100%;
   min-width: 320px;
-  overflow-x: clip;
+  overflow-x: hidden;
+  overscroll-behavior-x: none;
   background: var(--canvas);
 }
 body {
+  position: relative;
   width: 100%;
   max-width: 100%;
   min-height: 100dvh;
-  overflow-x: clip;
+  overflow-x: hidden;
+  overscroll-behavior-x: none;
+  touch-action: pan-y;
   margin: 0;
   color: var(--ink);
   background: var(--canvas);
@@ -112,6 +116,7 @@ button {
   transform: translateY(0);
 }
 .page {
+  overflow-x: hidden;
   max-width: 100%;
   min-width: 0;
   width: min(100%, 92rem);

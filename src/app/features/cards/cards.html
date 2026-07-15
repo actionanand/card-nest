@@ -231,7 +231,10 @@
                   >{{ card.network === 'AMERICAN_EXPRESS' ? '•••••' : '••••' }}
                   {{ card.lastDigits }}</b
                 ></strong
-              ><small>{{ card.issuerName }} · Exp {{ expiry(card) }}</small></span
+              ><small
+                >{{ card.issuerName }} · Exp {{ expiry(card) }} ·
+                {{ statementCountdown(card) }}</small
+              ></span
             >
             <span class="card-balance"
               ><small>Outstanding</small
@@ -298,6 +301,9 @@
               </div>
               <div>
                 <span>Statement</span><strong>{{ date(nextStatement(card)) }}</strong>
+              </div>
+              <div>
+                <span>Bill generation</span><strong>{{ statementCountdown(card) }}</strong>
               </div>
               <div>
                 <span>Due date</span><strong>{{ date(dueDate(card)) }}</strong>

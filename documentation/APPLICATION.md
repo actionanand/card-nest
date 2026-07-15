@@ -83,16 +83,22 @@ CardNest uses the notification plugin's standard Android scheduler and boot-rest
 4. Applies every later migration inside a transaction.
 5. Creates indexes for card/date, category, statement-cycle, recurring, and EMI queries.
 
+Migration 3 adds `monthly_income`. Each row is keyed by the month in which the active budget cycle starts. A 25 Juneâ€“24 July cycle is therefore stored as `2026-06`; changing July's current income does not modify earlier cycle rows.
+
 The current schema stores four trailing digits for most networks and five for American Express. American Express uses a 15-digit `4–6–5` number layout. CVV and PIN values must never be collected.
 
 ## Current product areas
 
 - Compact credit-card list with statement cycles, annual-fee waivers, payment actions, and masked card identifiers.
-- Cash, bank/UPI, and Pluxee sources. Pluxee supports a configurable monthly load; it never receives credit-card settlement reminders.
+- Cash, bank/UPI, and Pluxee sources. The Sources activity tab shows their transactions, tracked balance, spending, and credits/top-ups. Editing an entry can move it between these sources and a credit card while reconciling the old and new balances.
 - Calendar-month, custom budget-cycle, and selected-card statement-cycle transaction groups.
-- Repeat rules are materialised when CardNest opens; no exact-alarm permission or background timer is required.
-- Income-aware reports use income and tracked source funds, never credit limits, to calculate available spending.
+- Transaction filters include type, payment source, category, cycle, and free-text search. Entry menus support edit, duplicate, source navigation, and delete while reconciling tracked source balances.
+- Monthly repeat rules can run for 1–36 additional months or indefinitely. They preserve the selected day where possible and use the final valid day in shorter months. Rules are materialised when CardNest opens; no exact-alarm permission or background timer is required.
+- Pluxee monthly loads are added to the existing carried-forward balance. For example, a ₹2,000 balance plus an ₹8,800 load becomes ₹10,800; users can correct the current balance at any time.
+- Income-aware reports use cycle-specific SQLite income and tracked source funds, never credit limits, to calculate available spending. The current income input updates only the active cycle and preserves older amounts for historical reporting.
+- An optional title and name are stored in SQLite preferences and used for a time-appropriate private dashboard greeting.
 - Loan and external EMI commitments include installment amount, debit day, end date, and cancellation state.
+- Application PINs are stored in SQLite as salted PBKDF2-SHA-256 hashes; the PIN itself is never stored. Biometric unlock is presented only in the Android app because it requires a native biometric adapter and device enrollment.
 
 CardNest uses Lucide for interface icons so navigation, chevrons, action menus, category choices, and status indicators share the same SVG stroke geometry. Card-network logos remain the local constants in `src/imgData/svg` because brand artwork is intentionally separate from interface icons.
 

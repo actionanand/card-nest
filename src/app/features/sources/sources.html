@@ -3,69 +3,233 @@
     <div>
       <p class="eyebrow">Money sources</p>
       <h1>Cash, bank & meal card</h1>
-      <p class="subtitle">Track non-credit spending without settlement reminders.</p>
+      <p class="subtitle">Track balances and every non-credit-card transaction.</p>
     </div>
+    <a class="btn btn-primary source-add" routerLink="/transactions" [queryParams]="{ add: true }">
+      <app-icon name="plus" /><span>Add transaction</span>
+    </a>
   </header>
-  <section class="source-grid">
-    @for (source of store.activePaymentSources(); track source.id) {
-      <article class="panel source-card">
-        <div class="source-heading">
-          <span><app-payment-source-logo [kind]="source.kind" /></span>
-          <div>
-            <h2>{{ source.nickname }}</h2>
-            <p>
-              {{
-                source.institution || (source.kind === 'CASH' ? 'Physical cash' : 'Payment source')
-              }}
-            </p>
+
+  <div class="source-tabs" role="tablist" aria-label="Money source views">
+    <button
+      id="accounts-tab"
+      type="button"
+      role="tab"
+      [attr.aria-selected]="activeTab() === 'ACCOUNTS'"
+      aria-controls="source-accounts"
+      (click)="selectTab('ACCOUNTS')"
+    >
+      <app-icon name="sources" /> Accounts
+    </button>
+    <button
+      id="activity-tab"
+      type="button"
+      role="tab"
+      [attr.aria-selected]="activeTab() === 'ACTIVITY'"
+      aria-controls="source-activity"
+      (click)="selectTab('ACTIVITY')"
+    >
+      <app-icon name="transactions" /> Transactions
+      <span>{{ sourceTransactions().length }}</span>
+    </button>
+  </div>
+
+  @if (activeTab() === 'ACCOUNTS') {
+    <section
+      id="source-accounts"
+      class="source-grid"
+      role="tabpanel"
+      aria-labelledby="accounts-tab"
+    >
+      @for (source of store.activePaymentSources(); track source.id) {
+        <article class="panel source-card" [id]="source.id">
+          <div class="source-heading">
+            <span><app-payment-source-logo [kind]="source.kind" /></span>
+            <div>
+              <h2>{{ source.nickname }}</h2>
+              <p>
+                {{
+                  source.institution ||
+                    (source.kind === 'CASH' ? 'Physical cash' : 'Payment source')
+                }}
+              </p>
+            </div>
           </div>
-        </div>
-        @if (!source.noLimit) {
-          <strong class="source-balance">{{ money(source.balanceMinor) }}</strong>
-        }
-        @if (source.kind !== 'MEAL') {
-          <label class="toggle-row"
-            ><span
-              ><strong>No tracked balance</strong
-              ><small>Spend is still included in income analytics</small></span
-            ><input type="checkbox" [checked]="source.noLimit" (change)="toggle(source, 'noLimit')"
-          /></label>
           @if (!source.noLimit) {
+            <div class="balance-copy">
+              <small>Available now</small
+              ><strong class="source-balance">{{ money(source.balanceMinor) }}</strong>
+            </div>
+          } @else {
+            <span class="untracked-balance">Balance not tracked</span>
+          }
+          @if (source.kind !== 'MEAL') {
+            <label class="toggle-row"
+              ><span
+                ><strong>No tracked balance</strong
+                ><small>Spend is still included in income analytics</small></span
+              ><input
+                type="checkbox"
+                [checked]="source.noLimit"
+                (change)="toggle(source, 'noLimit')"
+            /></label>
+            @if (!source.noLimit) {
+              <label
+                >Available amount<input
+                  inputmode="decimal"
+                  [value]="(source.balanceMinor ?? 0) / 100"
+                  (change)="updateAmount(source, $event, 'balanceMinor')"
+              /></label>
+            }
+          } @else {
             <label
-              >Available amount<input
+              >Current Pluxee balance<input
                 inputmode="decimal"
                 [value]="(source.balanceMinor ?? 0) / 100"
-                (change)="updateAmount(source, $event, 'balanceMinor')"
+                (change)="updateAmount(source, $event, 'balanceMinor')" /></label
+            ><label
+              >Monthly load amount<input
+                inputmode="decimal"
+                [value]="(source.loadAmountMinor ?? 0) / 100"
+                (change)="updateAmount(source, $event, 'loadAmountMinor')" /></label
+            ><label
+              >Load date<select [value]="source.loadDay" (change)="updateLoadDay(source, $event)">
+                @for (day of days; track day) {
+                  <option [value]="day">Day {{ day }}</option>
+                }
+              </select></label
+            ><label class="toggle-row"
+              ><span
+                ><strong>Load automatically</strong
+                ><small
+                  >Add the configured amount to the carried-forward balance monthly</small
+                ></span
+              ><input
+                type="checkbox"
+                [checked]="source.autoLoad"
+                (change)="toggle(source, 'autoLoad')"
             /></label>
           }
+          <div class="source-actions">
+            <button class="btn" type="button" (click)="showSourceActivity(source.id)">
+              <app-icon name="transactions" /> View activity
+            </button>
+            <a
+              class="btn btn-quiet"
+              routerLink="/transactions"
+              [queryParams]="{ add: true, source: source.id }"
+            >
+              <app-icon name="plus" /> Add
+            </a>
+          </div>
+        </article>
+      }
+    </section>
+  } @else {
+    <section
+      #sourceActivity
+      id="source-activity"
+      class="source-activity"
+      role="tabpanel"
+      aria-labelledby="activity-tab"
+      tabindex="-1"
+    >
+      <div class="activity-toolbar panel">
+        <label>
+          Show transactions from
+          <select [value]="selectedSourceId()" (change)="updateSourceFilter($event)">
+            <option value="ALL">All cash, bank and meal sources</option>
+            @for (source of store.activePaymentSources(); track source.id) {
+              <option [value]="source.id">
+                {{ source.nickname }}{{ source.institution ? ' · ' + source.institution : '' }}
+              </option>
+            }
+          </select>
+        </label>
+        @if (selectedSource(); as source) {
+          <a
+            class="btn btn-primary"
+            routerLink="/transactions"
+            [queryParams]="{ add: true, source: source.id }"
+          >
+            <app-icon name="plus" /> Add transaction
+          </a>
         } @else {
-          <label
-            >Current Pluxee balance<input
-              inputmode="decimal"
-              [value]="(source.balanceMinor ?? 0) / 100"
-              (change)="updateAmount(source, $event, 'balanceMinor')" /></label
-          ><label
-            >Monthly load amount<input
-              inputmode="decimal"
-              [value]="(source.loadAmountMinor ?? 0) / 100"
-              (change)="updateAmount(source, $event, 'loadAmountMinor')" /></label
-          ><label
-            >Load date<select [value]="source.loadDay" (change)="updateLoadDay(source, $event)">
-              @for (day of days; track day) {
-                <option [value]="day">Day {{ day }}</option>
-              }
-            </select></label
-          ><label class="toggle-row"
-            ><span
-              ><strong>Load automatically</strong
-              ><small>Add the configured amount once per load month</small></span
-            ><input
-              type="checkbox"
-              [checked]="source.autoLoad"
-              (change)="toggle(source, 'autoLoad')"
-          /></label>
+          <a class="btn btn-primary" routerLink="/transactions" [queryParams]="{ add: true }">
+            <app-icon name="plus" /> Add transaction
+          </a>
         }
-      </article>
-    }
-  </section>
+      </div>
+
+      <div class="source-summary" aria-label="Selected source summary">
+        <article class="panel">
+          <small>Remaining tracked funds</small>
+          <strong>{{
+            remainingMinor() === null ? 'Not tracked' : money(remainingMinor() ?? 0)
+          }}</strong>
+        </article>
+        <article class="panel">
+          <small>Spent</small><strong>{{ money(spentMinor()) }}</strong>
+        </article>
+        <article class="panel credit">
+          <small>Credits / top-ups</small><strong>{{ money(creditsMinor()) }}</strong>
+        </article>
+        <article class="panel">
+          <small>Transactions</small><strong>{{ visibleTransactions().length }}</strong>
+        </article>
+      </div>
+
+      <section class="panel source-ledger" aria-labelledby="source-ledger-title">
+        <div class="ledger-heading">
+          <div>
+            <p class="eyebrow">Activity</p>
+            <h2 id="source-ledger-title">
+              {{ selectedSource()?.nickname || 'All source transactions' }}
+            </h2>
+          </div>
+          <small>You can edit a transaction and move it to a credit card or another source.</small>
+        </div>
+        <div class="source-transactions">
+          @for (transaction of visibleTransactions(); track transaction.id) {
+            <article>
+              <span
+                class="transaction-direction"
+                [class.credit]="isCredit(transaction.type)"
+                aria-hidden="true"
+              >
+                <app-icon [name]="isCredit(transaction.type) ? 'incoming' : 'outgoing'" />
+              </span>
+              <div>
+                <strong>{{ transactionLabel(transaction) }}</strong>
+                <small
+                  >{{ categoryName(transaction.categoryId) }} ·
+                  {{ sourceName(transaction.cardId) }}</small
+                >
+              </div>
+              <time [attr.datetime]="transaction.transactionDate">{{
+                transaction.transactionDate
+              }}</time>
+              <strong class="transaction-amount" [class.credit]="isCredit(transaction.type)">
+                {{ isCredit(transaction.type) ? '+' : '−' }}{{ money(transaction.amountMinor) }}
+              </strong>
+              <a
+                class="edit-transaction"
+                routerLink="/transactions"
+                [queryParams]="{ edit: transaction.id }"
+                [attr.aria-label]="'Edit ' + transactionLabel(transaction)"
+              >
+                <app-icon name="edit" />
+              </a>
+            </article>
+          } @empty {
+            <div class="source-empty">
+              <app-icon name="transactions" />
+              <h3>No transactions yet</h3>
+              <p>Add a transaction and select Cash, Bank / UPI or Pluxee as the payment source.</p>
+            </div>
+          }
+        </div>
+      </section>
+    </section>
+  }
 </div>

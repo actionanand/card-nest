@@ -24,7 +24,16 @@ export class ReportsPage {
   readonly monthlyLoans = computed(() => this.store.loans().filter((loan) => loan.status === 'ACTIVE').reduce((sum, loan) => sum + loan.installmentMinor, 0));
   readonly pluxeeLoad = computed(() => this.store.paymentSources().filter((source) => source.kind === 'MEAL' && source.autoLoad).reduce((sum, source) => sum + (source.loadAmountMinor ?? 0), 0));
   readonly trackedSourceFunds = computed(() => this.store.paymentSources().filter((source) => source.kind !== 'MEAL' && !source.noLimit).reduce((sum, source) => sum + (source.balanceMinor ?? 0), 0));
-  readonly availableThisMonth = computed(() => Math.max(0, this.store.monthlyIncomeMinor() + this.pluxeeLoad() + this.trackedSourceFunds() - this.totalSpent() - this.monthlyLoans()));
+  readonly periodIncome = computed(() => {
+    const start = this.periodStart();
+    const records = this.store
+      .incomeHistory()
+      .filter((income) => !start || income.cycleStartDate >= start);
+    return records.length
+      ? records.reduce((sum, income) => sum + income.amountMinor, 0)
+      : this.store.monthlyIncomeMinor();
+  });
+  readonly availableThisMonth = computed(() => Math.max(0, this.periodIncome() + this.pluxeeLoad() + this.trackedSourceFunds() - this.totalSpent() - this.monthlyLoans()));
   readonly byCategory = computed(() => {
     const total = this.totalSpent();
     return this.store.categories().map((category) => {

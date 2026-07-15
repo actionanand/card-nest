@@ -8,7 +8,7 @@
     <button
       class="btn btn-primary add-transaction"
       type="button"
-      (click)="showForm.set(true)"
+      (click)="openAdd()"
       aria-label="Add transaction"
     >
       <app-icon name="plus" /><span>Add transaction</span>
@@ -16,19 +16,21 @@
   </header>
 
   @if (showForm()) {
-    <section class="panel transaction-form" aria-labelledby="new-transaction">
+    <section class="panel transaction-form" aria-labelledby="transaction-form-title">
       <div class="form-heading">
         <button
           class="back-button"
           type="button"
-          (click)="showForm.set(false)"
+          (click)="closeForm()"
           aria-label="Back to transactions"
         >
           <app-icon name="back" />
         </button>
         <div>
-          <p class="eyebrow">New entry</p>
-          <h2 id="new-transaction">Record a transaction</h2>
+          <p class="eyebrow">{{ editingId() ? 'Update entry' : 'New entry' }}</p>
+          <h2 id="transaction-form-title">
+            {{ editingId() ? 'Edit transaction' : 'Record a transaction' }}
+          </h2>
         </div>
       </div>
       <form [formGroup]="form" (ngSubmit)="save()" novalidate>
@@ -45,8 +47,9 @@
           </div>
         </fieldset>
         <div class="form-grid">
-          <label
-            >Pay from<select formControlName="cardId">
+          <label>
+            Pay from
+            <select formControlName="cardId">
               <optgroup label="Credit cards">
                 @for (card of store.activeCards(); track card.id) {
                   <option [value]="card.id">
@@ -61,48 +64,59 @@
                   </option>
                 }
               </optgroup>
-            </select></label
-          >
-          <label
-            >Amount<input formControlName="amount" inputmode="decimal" placeholder="0.00" />
+            </select>
+          </label>
+          <label>
+            Amount
+            <input formControlName="amount" inputmode="decimal" placeholder="0.00" />
             @if (form.controls.amount.touched && form.controls.amount.invalid) {
               <small>Enter a valid amount.</small>
             }
           </label>
           <label>Date<input formControlName="transactionDate" type="date" /></label>
-          <label
-            >Category<select formControlName="categoryId">
+          <label>
+            Category
+            <select formControlName="categoryId">
               @for (category of store.categories(); track category.id) {
                 <option [value]="category.id">{{ category.name }}</option>
               }
-            </select></label
-          >
+            </select>
+          </label>
           <label class="full"
             >Merchant or title<input
               formControlName="merchant"
               autocomplete="off"
               placeholder="Where did you spend?"
           /></label>
-          <label
-            >Repeat<select formControlName="repeat">
-              <option value="NONE">None</option>
-              <option value="WEEKLY">Every week</option>
-              <option value="MONTHLY">Every month</option>
-              <option value="YEARLY">Every year</option></select
-            ><small>Repeats are generated automatically when CardNest opens.</small></label
-          >
+          @if (!editingId()) {
+            <label>
+              Repeat monthly
+              <select formControlName="repeat">
+                <option value="NONE">Do not repeat</option>
+                @for (count of repeatOptions; track count) {
+                  <option [value]="count">
+                    {{ count }} more {{ count === 1 ? 'month' : 'months' }}
+                  </option>
+                }
+                <option value="INFINITE">Every month · no end date</option>
+              </select>
+              <small>The entry is added on the same date to the selected payment source.</small>
+            </label>
+          }
           <label class="full"
             >Notes<textarea formControlName="notes" placeholder="Optional details"></textarea>
           </label>
-          <label class="attachment full"
-            ><span>Receipt images</span><input type="file" accept="image/*" multiple /><small
-              >Images remain private on the device.</small
-            ></label
-          >
+          <label class="attachment full">
+            <span>Receipt images</span>
+            <input type="file" accept="image/*" multiple />
+            <small>Images remain private on the device.</small>
+          </label>
         </div>
         <div class="form-actions">
-          <button class="btn" type="button" (click)="showForm.set(false)">Cancel</button
-          ><button class="btn btn-primary" type="submit">Save transaction</button>
+          <button class="btn" type="button" (click)="closeForm()">Cancel</button>
+          <button class="btn btn-primary" type="submit">
+            {{ editingId() ? 'Update transaction' : 'Save transaction' }}
+          </button>
         </div>
       </form>
     </section>
@@ -113,22 +127,22 @@
       ><span class="sr-only">Search transactions</span
       ><input
         type="search"
-        placeholder="Search merchant or source"
+        placeholder="Search merchant, category or source"
         [value]="search()"
         (input)="updateSearch($event)"
     /></label>
-    <label
-      ><span class="sr-only">Transaction type</span
-      ><select [value]="typeFilter()" (change)="updateType($event)">
+    <label>
+      <span class="sr-only">Transaction type</span>
+      <select [value]="typeFilter()" (change)="updateType($event)">
         <option value="ALL">All transaction types</option>
         @for (type of types; track type.value) {
           <option [value]="type.value">{{ type.label }}</option>
         }
-      </select></label
-    >
-    <label
-      ><span class="sr-only">Payment source</span
-      ><select [value]="sourceFilter()" (change)="updateSource($event)">
+      </select>
+    </label>
+    <label>
+      <span class="sr-only">Payment source</span>
+      <select [value]="sourceFilter()" (change)="updateSource($event)">
         <option value="ALL">All cards and sources</option>
         <optgroup label="Credit cards">
           @for (card of store.activeCards(); track card.id) {
@@ -144,40 +158,99 @@
             </option>
           }
         </optgroup>
-      </select></label
-    >
-    <label
-      ><span class="sr-only">Grouping cycle</span
-      ><select [value]="grouping()" (change)="updateGrouping($event)">
+      </select>
+    </label>
+    <label>
+      <span class="sr-only">Transaction category</span>
+      <select [value]="categoryFilter()" (change)="updateCategory($event)">
+        <option value="ALL">All categories</option>
+        @for (category of store.categories(); track category.id) {
+          <option [value]="category.id">{{ category.name }}</option>
+        }
+      </select>
+    </label>
+    <label>
+      <span class="sr-only">Grouping cycle</span>
+      <select [value]="grouping()" (change)="updateGrouping($event)">
         <option value="MONTH">Calendar month</option>
         <option value="CYCLE">Budget cycle (day {{ store.budgetCycleStartDay() }})</option>
         <option value="STATEMENT" [disabled]="!isCreditCardSelected()">
           Selected card statement cycle
         </option>
-      </select></label
-    >
+      </select>
+    </label>
     <a class="btn manage-categories" routerLink="/categories">Manage categories</a>
+  </section>
+
+  <section class="ledger-summary panel" aria-label="Visible transaction summary">
+    <div>
+      <small
+        >{{ filtered().length }} visible
+        {{ filtered().length === 1 ? 'transaction' : 'transactions' }}</small
+      >
+      <strong [class.credit]="visibleTotal() >= 0">{{ signedMoney(visibleTotal()) }}</strong>
+      @if (hideCredits()) {
+        <span class="filter-chip">Payments and credits hidden</span>
+      }
+      @if (creditCardsOnly()) {
+        <span class="filter-chip">Credit cards only</span>
+      }
+    </div>
+    <div class="summary-menu-anchor">
+      <button
+        class="menu-button"
+        type="button"
+        (click)="summaryMenuOpen.set(!summaryMenuOpen()); actionMenuId.set(null)"
+        [attr.aria-expanded]="summaryMenuOpen()"
+        aria-label="Transaction summary options"
+      >
+        <app-icon name="more" />
+      </button>
+      @if (summaryMenuOpen()) {
+        <div class="action-menu summary-menu" role="menu">
+          <button
+            type="button"
+            role="menuitem"
+            (click)="hideCredits.set(!hideCredits()); closeMenus()"
+          >
+            <app-icon [name]="hideCredits() ? 'show_credit' : 'hide_credit'" />
+            {{ hideCredits() ? 'Show payments and credits' : 'Hide payments and credits' }}
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            (click)="creditCardsOnly.set(!creditCardsOnly()); closeMenus()"
+          >
+            <app-icon name="cards" />
+            {{ creditCardsOnly() ? 'Show every payment source' : 'Show credit cards only' }}
+          </button>
+          <button type="button" role="menuitem" (click)="clearFilters()">
+            <app-icon name="close" /> Clear all filters
+          </button>
+        </div>
+      }
+    </div>
   </section>
 
   <section class="month-ledger" aria-label="Transactions grouped by period">
     @for (group of groups(); track group.key) {
       <details class="panel month-group" open>
         <summary>
-          <span>{{ group.label }}</span
-          ><strong [class.credit]="group.totalMinor >= 0">{{
+          <span>{{ group.label }}</span>
+          <strong [class.credit]="group.totalMinor >= 0">{{
             signedMoney(group.totalMinor)
-          }}</strong
-          ><app-icon name="chevron_right" />
+          }}</strong>
+          <app-icon name="chevron_right" />
         </summary>
         <div class="month-entries">
           @for (transaction of group.transactions; track transaction.id) {
-            <article>
-              <span class="tx-icon" [class.credit]="isCredit(transaction.type)" aria-hidden="true"
-                ><app-icon [name]="isCredit(transaction.type) ? 'incoming' : 'outgoing'"
-              /></span>
+            <article [class.menu-open]="actionMenuId() === transaction.id">
+              <span class="tx-icon" [class.credit]="isCredit(transaction.type)" aria-hidden="true">
+                <app-icon [name]="isCredit(transaction.type) ? 'incoming' : 'outgoing'" />
+              </span>
               <div class="tx-main">
-                <strong>{{ transaction.merchant || transaction.type.replace('_', ' ') }}</strong
-                ><small
+                <strong>{{ transaction.merchant || transaction.type.replace('_', ' ') }}</strong>
+                <small
                   >{{ categoryName(transaction.categoryId) }} ·
                   {{ store.sourceDetail(transaction.cardId) }}</small
                 >
@@ -196,6 +269,38 @@
               @if (transaction.type === 'PURCHASE' && !transaction.emiPlanId) {
                 <button class="emi-button" type="button">Convert to EMI</button>
               }
+              <div class="transaction-menu-anchor">
+                <button
+                  class="menu-button"
+                  type="button"
+                  (click)="toggleActionMenu(transaction.id)"
+                  [attr.aria-expanded]="actionMenuId() === transaction.id"
+                  aria-label="Actions for {{ transaction.merchant || 'transaction' }}"
+                >
+                  <app-icon name="more" />
+                </button>
+                @if (actionMenuId() === transaction.id) {
+                  <div class="action-menu" role="menu">
+                    <button type="button" role="menuitem" (click)="edit(transaction)">
+                      <app-icon name="edit" /> Edit transaction
+                    </button>
+                    <button type="button" role="menuitem" (click)="duplicate(transaction)">
+                      <app-icon name="duplicate" /> Duplicate transaction
+                    </button>
+                    <button type="button" role="menuitem" (click)="goToSource(transaction)">
+                      <app-icon name="go_to_source" /> Go to payment source
+                    </button>
+                    <button
+                      class="danger-item"
+                      type="button"
+                      role="menuitem"
+                      (click)="delete(transaction)"
+                    >
+                      <app-icon name="delete" /> Delete transaction
+                    </button>
+                  </div>
+                }
+              </div>
             </article>
           }
         </div>

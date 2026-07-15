@@ -1,9 +1,12 @@
 <div class="page categories-page">
   <header class="page-header">
-    <div>
-      <p class="eyebrow">Organisation</p>
-      <h1>Categories</h1>
-      <p class="subtitle">Monthly spending stays organised even when categories change.</p>
+    <div class="header-copy">
+      <a class="back-link" routerLink="/transactions"><app-icon name="back" /> Transactions</a>
+      <div>
+        <p class="eyebrow">Organisation</p>
+        <h1>Categories</h1>
+        <p class="subtitle">Monthly spending stays organised even when categories change.</p>
+      </div>
     </div>
     <button
       class="btn btn-primary add-category"
@@ -11,25 +14,26 @@
       (click)="openAdd()"
       aria-label="Add category"
     >
-      +
+      <app-icon name="plus" />
     </button>
   </header>
+
   <section class="panel category-list" aria-label="Transaction categories">
     @for (category of sortedCategories(); track category.id) {
       <article>
-        <span class="category-icon" [style.background]="category.colour" aria-hidden="true"
-          ><app-icon [name]="category.icon"
-        /></span>
+        <span class="category-icon" [style.background]="category.colour" aria-hidden="true">
+          <app-icon [name]="category.icon" />
+        </span>
         <div>
-          <strong>{{ category.name }}</strong
-          ><small
-            >{{
+          <strong>{{ category.name }}</strong>
+          <small>
+            {{
               category.appliesTo === 'BOTH'
                 ? 'Expenses and credits'
                 : category.appliesTo.toLowerCase()
             }}
-            · {{ usageCount(category.id) }} this month</small
-          >
+            · {{ usageCount(category.id) }} this month
+          </small>
         </div>
         <div class="actions">
           <button
@@ -38,8 +42,9 @@
             (click)="edit(category)"
             aria-label="Edit {{ category.name }}"
           >
-            <app-icon name="edit" /></button
-          ><button
+            <app-icon name="edit" />
+          </button>
+          <button
             class="icon-action danger-text"
             type="button"
             (click)="requestDelete(category.id)"
@@ -73,12 +78,14 @@
           (click)="closeForm()"
           aria-label="Close category editor"
         >
-          ×
+          <app-icon name="close" />
         </button>
       </div>
+
       <form [formGroup]="form" (ngSubmit)="save()">
-        <label
-          >Name<input formControlName="name" autocomplete="off" />
+        <label>
+          Name
+          <input formControlName="name" autocomplete="off" />
           @if (form.controls.name.hasError('duplicate')) {
             <small>A category with this name already exists.</small>
           }
@@ -87,27 +94,29 @@
           <legend>Choose icon</legend>
           <div class="icon-picker">
             @for (icon of iconOptions; track icon) {
-              <label
-                ><input type="radio" formControlName="icon" [value]="icon" /><span
+              <label [title]="icon.replaceAll('_', ' ')">
+                <input type="radio" formControlName="icon" [value]="icon" />
+                <span
                   ><app-icon [name]="icon" /><small>{{ icon.replaceAll('_', ' ') }}</small></span
-                ></label
-              >
+                >
+              </label>
             }
           </div>
         </fieldset>
         <div class="form-grid">
-          <label>Colour<input formControlName="colour" type="color" /></label
-          ><label
-            >Used for<select formControlName="appliesTo">
+          <label>Colour<input formControlName="colour" type="color" /></label>
+          <label>
+            Used for
+            <select formControlName="appliesTo">
               <option value="BOTH">Expenses and credits</option>
               <option value="EXPENSE">Expenses only</option>
               <option value="CREDIT">Credits only</option>
-            </select></label
-          >
+            </select>
+          </label>
         </div>
         <div class="form-actions">
-          <button class="btn" type="button" (click)="closeForm()">Cancel</button
-          ><button class="btn btn-primary" type="submit">Save category</button>
+          <button class="btn" type="button" (click)="closeForm()">Cancel</button>
+          <button class="btn btn-primary" type="submit">Save category</button>
         </div>
       </form>
     </section>

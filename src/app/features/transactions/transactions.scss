@@ -121,7 +121,7 @@ label small {
 .toolbar {
   display: grid;
   min-width: 0;
-  grid-template-columns: minmax(12rem, 1fr) repeat(3, minmax(10rem, 0.75fr)) auto;
+  grid-template-columns: minmax(12rem, 1fr) repeat(4, minmax(9rem, 0.7fr)) auto;
   gap: 0.55rem;
   margin-bottom: 0.75rem;
   padding: 0.7rem;
@@ -131,12 +131,98 @@ label small {
 .toolbar .btn {
   min-height: 2.65rem;
 }
+.ledger-summary {
+  position: relative;
+  z-index: 8;
+  display: flex;
+  min-height: 3.8rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+  padding: 0.65rem 0.75rem 0.65rem 1rem;
+}
+.ledger-summary > div:first-child {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.75rem;
+}
+.ledger-summary small {
+  color: var(--muted);
+}
+.ledger-summary strong.credit {
+  color: var(--success);
+}
+.filter-chip {
+  padding: 0.22rem 0.45rem;
+  border-radius: 999px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  font-size: 0.6rem;
+  font-weight: 750;
+}
+.summary-menu-anchor,
+.transaction-menu-anchor {
+  position: relative;
+}
+.menu-button {
+  display: grid;
+  width: 2.5rem;
+  height: 2.5rem;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  color: var(--muted);
+  background: transparent;
+}
+.menu-button:hover,
+.menu-button[aria-expanded='true'] {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.action-menu {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% - 0.15rem);
+  right: 0;
+  display: grid;
+  width: 13.5rem;
+  padding: 0.35rem;
+  border: 1px solid var(--line);
+  border-radius: 0.7rem;
+  background: var(--surface);
+  box-shadow: 0 1rem 2.5rem rgb(20 35 27 / 20%);
+}
+.action-menu button {
+  display: flex;
+  min-height: 2.45rem;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.5rem 0.65rem;
+  border: 0;
+  border-radius: 0.45rem;
+  color: var(--ink);
+  background: transparent;
+  font-size: 0.7rem;
+  text-align: left;
+}
+.action-menu button:hover {
+  background: var(--accent-soft);
+}
+.action-menu button app-icon {
+  width: 1rem;
+  height: 1rem;
+}
+.action-menu .danger-item {
+  color: var(--danger);
+}
 .month-ledger {
   display: grid;
   gap: 0.55rem;
 }
 .month-group {
-  overflow: hidden;
+  overflow: visible;
 }
 .month-group summary {
   display: grid;
@@ -174,12 +260,16 @@ label small {
   border-top: 1px solid var(--line);
 }
 .month-entries article {
+  position: relative;
   display: grid;
-  grid-template-columns: auto minmax(10rem, 1fr) 7rem 8rem auto;
+  grid-template-columns: auto minmax(10rem, 1fr) 7rem 8rem auto auto;
   align-items: center;
   gap: 0.75rem;
   padding: 0.75rem 1rem;
   border-bottom: 1px solid var(--line);
+}
+.month-entries article.menu-open {
+  z-index: 12;
 }
 .month-entries article:last-child {
   border-bottom: 0;
@@ -248,6 +338,10 @@ label small {
   font-size: 0.62rem;
   font-weight: 750;
 }
+.transaction-menu-anchor {
+  grid-column: 6;
+  grid-row: 1;
+}
 .empty {
   padding: 3rem 1rem;
   text-align: center;
@@ -260,7 +354,7 @@ label small {
     grid-column: 1/-1;
   }
   .month-entries article {
-    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
   }
   .tx-date {
     display: none;
@@ -272,6 +366,9 @@ label small {
   .emi-button {
     grid-column: 2;
     justify-self: start;
+  }
+  .transaction-menu-anchor {
+    grid-column: 4;
   }
 }
 @media (max-width: 600px) {
@@ -322,6 +419,14 @@ label small {
   .month-entries article {
     gap: 0.55rem;
     padding: 0.7rem 0.75rem;
+  }
+  .ledger-summary > div:first-child {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+  .summary-menu {
+    width: min(15rem, calc(100vw - 2rem));
   }
   .tx-main small {
     max-width: 12rem;

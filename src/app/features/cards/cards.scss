@@ -191,6 +191,11 @@ label small {
   color: var(--muted);
   font-size: 0.65rem;
 }
+.card-identity small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .card-balance {
   justify-items: end;
 }

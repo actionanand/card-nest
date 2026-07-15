@@ -82,10 +82,17 @@
   margin: 0;
 }
 .section-heading a {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
   color: var(--accent);
   font-size: 0.75rem;
   font-weight: 750;
   text-decoration: none;
+}
+.section-heading a app-icon {
+  width: 0.9rem;
+  height: 0.9rem;
 }
 .due-item {
   display: grid;
@@ -215,6 +222,10 @@
   color: var(--accent);
   background: var(--accent-soft);
 }
+.transaction-icon app-icon {
+  width: 1.05rem;
+  height: 1.05rem;
+}
 .transaction-list article > div:nth-child(2),
 .transaction-amount {
   display: grid;
@@ -258,6 +269,10 @@
   border-radius: 0.55rem;
   color: var(--accent);
   background: var(--accent-soft);
+}
+.quick-actions a > span app-icon {
+  width: 1.1rem;
+  height: 1.1rem;
 }
 .quick-actions small {
   color: var(--muted);

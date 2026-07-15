@@ -98,6 +98,14 @@ export interface PaymentSource {
   archived: boolean;
 }
 
+export interface MonthlyIncomeRecord {
+  periodKey: string;
+  cycleStartDate: string;
+  cycleEndDate: string;
+  amountMinor: Money;
+  updatedAt: string;
+}
+
 export interface Category {
   id: string;
   name: string;
@@ -128,6 +136,7 @@ export interface RecurringRule {
   title: string;
   amountMinor: Money;
   categoryId: string;
+  transactionType?: TransactionType;
   frequency:
     | 'DAILY'
     | 'WEEKLY'

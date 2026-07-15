@@ -1,12 +1,13 @@
 import { Component, computed, inject, signal } from '@angular/core';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
+import { RouterLink } from '@angular/router';
 import { Category } from '../../core/models/domain';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { AppIcon } from '../../shared/app-icon';
 
 @Component({
   selector: 'app-categories-page',
-  imports: [ReactiveFormsModule, AppIcon],
+  imports: [ReactiveFormsModule, RouterLink, AppIcon],
   templateUrl: './categories.html',
   styleUrl: './categories.scss',
 })
@@ -27,6 +28,25 @@ export class CategoriesPage {
     'payments',
     'home',
     'entertainment',
+    'vegetables_fruits',
+    'kids',
+    'fashion',
+    'groceries',
+    'meat_fish',
+    'milk',
+    'pastry_snacks',
+    'utility_bills',
+    'mobile',
+    'electronics',
+    'electricity',
+    'jewels',
+    'religion',
+    'insurance',
+    'education',
+    'boy',
+    'girl',
+    'other',
+    'family',
   ] as const;
   readonly sortedCategories = computed(() =>
     [...this.store.categories()].sort((a, b) => a.name.localeCompare(b.name)),
