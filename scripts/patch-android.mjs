@@ -45,9 +45,11 @@ writeFileSync(
   `package com.actionanand.cardnest.app;
 
 import android.graphics.Color;
+import android.os.Build;
 import android.os.Bundle;
 import android.view.View;
 import android.view.Window;
+import android.view.WindowInsetsController;
 
 import com.getcapacitor.BridgeActivity;
 
@@ -77,9 +79,22 @@ public class MainActivity extends BridgeActivity {
     window.setStatusBarColor(Color.rgb(40, 104, 78));
     window.setNavigationBarColor(Color.rgb(245, 246, 241));
 
+    View decor = window.getDecorView();
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+      WindowInsetsController controller = decor.getWindowInsetsController();
+      if (controller != null) {
+        // No APPEARANCE_LIGHT_STATUS_BARS means white status-bar icons.
+        controller.setSystemBarsAppearance(
+          WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS,
+          WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+            | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+        );
+      }
+      return;
+    }
+
     // Clear SYSTEM_UI_FLAG_LIGHT_STATUS_BAR  → white status-bar icons on the dark-green bar.
     // Set   SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR → dark nav-bar icons on the light nav bar.
-    View decor = window.getDecorView();
     int flags = decor.getSystemUiVisibility();
     flags &= ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
     flags |= View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
@@ -119,7 +134,7 @@ writeFileSync(
     <item android:gravity="center">
         <bitmap
             android:gravity="center"
-            android:src="@mipmap/ic_launcher_foreground" />
+            android:src="@mipmap/ic_launcher" />
     </item>
 </layer-list>
 `,
@@ -184,6 +199,29 @@ if (
 `,
   );
 }
+
+// Android 12+ shows the platform splash before Capacitor's launch theme. Keep it
+// branded and use the generated launcher icon so users never see a plain white flash.
+const v31StylesDir = join(androidRoot, 'res', 'values-v31');
+const v31StylesPath = join(v31StylesDir, 'styles.xml');
+mkdirSync(v31StylesDir, { recursive: true });
+writeFileSync(
+  v31StylesPath,
+  `<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="AppTheme.NoActionBarLaunch" parent="AppTheme.NoActionBar">
+        <item name="windowSplashScreenBackground">#28684E</item>
+        <item name="windowSplashScreenAnimatedIcon">@mipmap/ic_launcher</item>
+        <item name="windowSplashScreenIconBackgroundColor">#28684E</item>
+        <item name="postSplashScreenTheme">@style/AppTheme.NoActionBar</item>
+        <item name="android:statusBarColor">#28684E</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:navigationBarColor">#F5F6F1</item>
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
+</resources>
+`,
+);
 
 console.log(
   'CardNest Android shell, status-bar icons, splash screen, styles, and notification icon patched.',
