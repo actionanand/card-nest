@@ -176,7 +176,7 @@ main {
   inset: 0;
   display: grid;
   place-items: center;
-  padding: max(3.5rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right))
+  padding: calc(env(safe-area-inset-top) + 3.5rem) max(1rem, env(safe-area-inset-right))
     max(1rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
   overflow-y: auto;
   background: rgb(14 28 22 / 72%);
@@ -230,7 +230,7 @@ main {
   inset: 0;
   display: grid;
   place-items: center;
-  padding: max(3.5rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right))
+  padding: calc(env(safe-area-inset-top) + 3.5rem) max(1rem, env(safe-area-inset-right))
     max(1rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
   overflow-y: auto;
   background: rgb(9 20 15 / 88%);

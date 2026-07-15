@@ -151,6 +151,8 @@ const SAMPLE_TRANSACTIONS: readonly CardTransaction[] = [
   },
 ];
 
+const TRANSACTION_CACHE_KEY = 'cardnest.transactions.cache.v1';
+
 const PAYMENT_SOURCES: readonly PaymentSource[] = [
   {
     id: 'source-cash',
@@ -188,7 +190,9 @@ const PAYMENT_SOURCES: readonly PaymentSource[] = [
 export class CardNestStore {
   private readonly database = inject(SqliteDatabase);
   readonly cards = signal<readonly CreditCard[]>(SAMPLE_CARDS);
-  readonly transactions = signal<readonly CardTransaction[]>(SAMPLE_TRANSACTIONS);
+  readonly transactions = signal<readonly CardTransaction[]>(
+    readCachedTransactions() ?? SAMPLE_TRANSACTIONS,
+  );
   readonly categories = signal<readonly Category[]>(CATEGORIES);
   readonly paymentSources = signal<readonly PaymentSource[]>(PAYMENT_SOURCES);
   readonly recurringRules = signal<readonly RecurringRule[]>([]);
@@ -342,7 +346,12 @@ export class CardNestStore {
     void this.persistCard(updated);
   }
   addTransaction(transaction: CardTransaction): void {
-    this.transactions.update((items) => [transaction, ...items]);
+    this.transactions.update((items) => {
+      const existingItems = hasOnlySampleTransactions(items) ? [] : items;
+      const updated = [transaction, ...existingItems];
+      this.cacheTransactions(updated);
+      return updated;
+    });
     this.adjustPaymentSourceBalance(transaction, 1);
     void this.persistTransaction(transaction);
   }
@@ -350,9 +359,13 @@ export class CardNestStore {
     const existing = this.transactions().find((transaction) => transaction.id === updated.id);
     if (!existing) return false;
     this.adjustPaymentSourceBalance(existing, -1);
-    this.transactions.update((items) =>
-      items.map((transaction) => (transaction.id === updated.id ? updated : transaction)),
-    );
+    this.transactions.update((items) => {
+      const next = items.map((transaction) =>
+        transaction.id === updated.id ? updated : transaction,
+      );
+      this.cacheTransactions(next);
+      return next;
+    });
     this.adjustPaymentSourceBalance(updated, 1);
     void this.persistTransaction(updated);
     return true;
@@ -361,9 +374,11 @@ export class CardNestStore {
     const existing = this.transactions().find((transaction) => transaction.id === transactionId);
     if (!existing) return false;
     this.adjustPaymentSourceBalance(existing, -1);
-    this.transactions.update((items) =>
-      items.filter((transaction) => transaction.id !== transactionId),
-    );
+    this.transactions.update((items) => {
+      const next = items.filter((transaction) => transaction.id !== transactionId);
+      this.cacheTransactions(next);
+      return next;
+    });
     if (this.database.ready()) {
       void this.database.run('DELETE FROM card_transactions WHERE id = ?', [transactionId]);
     }
@@ -570,7 +585,11 @@ export class CardNestStore {
       }),
     );
     if (generated.length) {
-      this.transactions.update((items) => [...generated, ...items]);
+      this.transactions.update((items) => {
+        const next = [...generated, ...items];
+        this.cacheTransactions(next);
+        return next;
+      });
       for (const transaction of generated) {
         this.adjustPaymentSourceBalance(transaction, 1);
         void this.persistTransaction(transaction);
@@ -728,7 +747,8 @@ export class CardNestStore {
       'SELECT payload FROM card_transactions ORDER BY transaction_date DESC, created_at DESC',
     );
     if (!rows.length) {
-      this.transactions.set([]);
+      const cached = readCachedTransactions();
+      this.transactions.set(cached ?? []);
       return;
     }
     const transactions = rows.flatMap((row) => {
@@ -739,6 +759,11 @@ export class CardNestStore {
       }
     });
     this.transactions.set(transactions);
+    this.cacheTransactions(transactions);
+  }
+
+  private cacheTransactions(transactions: readonly CardTransaction[]): void {
+    writeCachedTransactions(transactions);
   }
 
   private async persistTransaction(transaction: CardTransaction): Promise<void> {
@@ -910,5 +935,33 @@ export class CardNestStore {
 
   private localDate(date: Date): string {
     return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  }
+}
+
+function hasOnlySampleTransactions(transactions: readonly CardTransaction[]): boolean {
+  return (
+    transactions.length === SAMPLE_TRANSACTIONS.length &&
+    transactions.every((transaction) =>
+      SAMPLE_TRANSACTIONS.some((sample) => sample.id === transaction.id),
+    )
+  );
+}
+
+function readCachedTransactions(): readonly CardTransaction[] | null {
+  try {
+    const value = globalThis.localStorage?.getItem(TRANSACTION_CACHE_KEY);
+    if (!value) return null;
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed) ? (parsed as CardTransaction[]) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedTransactions(transactions: readonly CardTransaction[]): void {
+  try {
+    globalThis.localStorage?.setItem(TRANSACTION_CACHE_KEY, JSON.stringify(transactions));
+  } catch {
+    // The SQLite database remains the source of truth when browser storage is unavailable.
   }
 }
