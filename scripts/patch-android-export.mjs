@@ -34,6 +34,8 @@ writeFileSync(
   `package ${appPackage};
 
 import android.content.ActivityNotFoundException;
+import android.content.ContentResolver;
+import android.content.ContentValues;
 import android.content.Intent;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -41,6 +43,9 @@ import android.graphics.Paint;
 import android.graphics.Typeface;
 import android.graphics.pdf.PdfDocument;
 import android.net.Uri;
+import android.os.Build;
+import android.os.Environment;
+import android.provider.MediaStore;
 
 import androidx.core.content.FileProvider;
 
@@ -51,7 +56,9 @@ import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
@@ -83,8 +90,9 @@ public class CardNestExportPlugin extends Plugin {
     try {
       File file = outputFile(filename, ".pdf");
       writePdf(file, title, content);
-      share(file, "application/pdf", title);
-      resolve(call, file);
+      SavedExport saved = saveToDownloads(file, "application/pdf");
+      share(saved.uri, "application/pdf", title);
+      resolve(call, saved.path);
     } catch (ActivityNotFoundException error) {
       call.reject("No app can save or share this PDF.");
     } catch (Exception error) {
@@ -106,8 +114,9 @@ public class CardNestExportPlugin extends Plugin {
       try (FileOutputStream output = new FileOutputStream(file, false)) {
         output.write(content.getBytes(StandardCharsets.UTF_8));
       }
-      share(file, "text/csv", title);
-      resolve(call, file);
+      SavedExport saved = saveToDownloads(file, "text/csv");
+      share(saved.uri, "text/csv", title);
+      resolve(call, saved.path);
     } catch (ActivityNotFoundException error) {
       call.reject("No app can save or share this CSV.");
     } catch (Exception error) {
@@ -126,18 +135,65 @@ public class CardNestExportPlugin extends Plugin {
     return new File(directory, name);
   }
 
-  private void resolve(PluginCall call, File file) {
+  private void resolve(PluginCall call, String path) {
     JSObject result = new JSObject();
-    result.put("path", file.getAbsolutePath());
+    result.put("path", path);
     call.resolve(result);
   }
 
-  private void share(File file, String mimeType, String title) {
+  private SavedExport saveToDownloads(File source, String mimeType) throws Exception {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+      ContentValues values = new ContentValues();
+      values.put(MediaStore.Downloads.DISPLAY_NAME, source.getName());
+      values.put(MediaStore.Downloads.MIME_TYPE, mimeType);
+      values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+      values.put(MediaStore.Downloads.IS_PENDING, 1);
+      ContentResolver resolver = getContext().getContentResolver();
+      Uri uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+      if (uri == null) throw new Exception("Unable to create the Downloads file.");
+      try (FileInputStream input = new FileInputStream(source); OutputStream output = resolver.openOutputStream(uri, "w")) {
+        if (output == null) throw new Exception("Unable to open the Downloads file.");
+        byte[] buffer = new byte[8192];
+        int read;
+        while ((read = input.read(buffer)) != -1) output.write(buffer, 0, read);
+      }
+      values.clear();
+      values.put(MediaStore.Downloads.IS_PENDING, 0);
+      resolver.update(uri, values, null, null);
+      return new SavedExport(uri, "Downloads/" + source.getName());
+    }
+
+    File downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+    if (!downloads.exists() && !downloads.mkdirs()) throw new Exception("Unable to open Downloads.");
+    File target = uniqueFile(downloads, source.getName());
+    try (FileInputStream input = new FileInputStream(source); FileOutputStream output = new FileOutputStream(target, false)) {
+      byte[] buffer = new byte[8192];
+      int read;
+      while ((read = input.read(buffer)) != -1) output.write(buffer, 0, read);
+    }
     Uri uri = FileProvider.getUriForFile(
       getContext(),
       getContext().getPackageName() + ".exports.fileprovider",
-      file
+      target
     );
+    return new SavedExport(uri, target.getAbsolutePath());
+  }
+
+  private File uniqueFile(File directory, String name) {
+    File candidate = new File(directory, name);
+    if (!candidate.exists()) return candidate;
+    int dot = name.lastIndexOf('.');
+    String base = dot > 0 ? name.substring(0, dot) : name;
+    String ext = dot > 0 ? name.substring(dot) : "";
+    int index = 1;
+    while (candidate.exists()) {
+      candidate = new File(directory, base + "-" + index + ext);
+      index++;
+    }
+    return candidate;
+  }
+
+  private void share(Uri uri, String mimeType, String title) {
     Intent intent = new Intent(Intent.ACTION_SEND);
     intent.setType(mimeType);
     intent.putExtra(Intent.EXTRA_STREAM, uri);
@@ -373,6 +429,16 @@ public class CardNestExportPlugin extends Plugin {
     if (state.y + height > BOTTOM) nextPage(document, state);
   }
 
+  private static class SavedExport {
+    final Uri uri;
+    final String path;
+
+    SavedExport(Uri uri, String path) {
+      this.uri = uri;
+      this.path = path;
+    }
+  }
+
   private static class PageState {
     PdfDocument.Page page;
     Canvas canvas;
@@ -388,6 +454,7 @@ writeFileSync(
   `<?xml version="1.0" encoding="utf-8"?>
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
     <cache-path name="card_nest_exports" path="exports/" />
+    <external-path name="card_nest_downloads" path="Download/" />
 </paths>
 `,
 );

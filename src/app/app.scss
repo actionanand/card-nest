@@ -176,7 +176,7 @@ main {
   inset: 0;
   display: grid;
   place-items: center;
-  padding: max(3.5rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right))
+  padding: calc(env(safe-area-inset-top) + 3.5rem) max(1rem, env(safe-area-inset-right))
     max(1rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
   overflow-y: auto;
   background: rgb(14 28 22 / 72%);
@@ -230,7 +230,7 @@ main {
   inset: 0;
   display: grid;
   place-items: center;
-  padding: max(3.5rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right))
+  padding: calc(env(safe-area-inset-top) + 3.5rem) max(1rem, env(safe-area-inset-right))
     max(1rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
   overflow-y: auto;
   background: rgb(9 20 15 / 88%);
@@ -291,7 +291,7 @@ main {
   padding: 0.75rem 0.8rem;
   border: 1px solid color-mix(in srgb, var(--success) 55%, transparent);
   border-radius: 0.8rem;
-  color: white;
+  color: #fff;
   background: #173c2d;
   box-shadow: 0 1rem 2.5rem rgb(8 26 18 / 28%);
 }
@@ -304,6 +304,8 @@ main {
 .app-snackbar > app-icon {
   width: 1.15rem;
   height: 1.15rem;
+  color: #fff;
+  stroke: currentColor;
 }
 .app-snackbar button {
   display: grid;
@@ -382,10 +384,14 @@ main {
   .mobile-drawer {
     position: fixed;
     z-index: 60;
-    inset: 0 auto 0 0;
+    inset: calc(env(safe-area-inset-top) + 0.65rem) auto max(0.65rem, env(safe-area-inset-bottom))
+      0.65rem;
     display: block;
-    width: min(19rem, 86vw);
-    padding: max(1rem, env(safe-area-inset-top)) 0.8rem 1rem;
+    width: min(19rem, calc(86vw - 0.65rem));
+    padding: 0.8rem;
+    overflow-y: auto;
+    border: 1px solid var(--line);
+    border-radius: 1.35rem;
     background: var(--surface);
     box-shadow: 1rem 0 3rem rgb(8 20 14 / 25%);
   }
