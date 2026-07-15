@@ -15,6 +15,7 @@ const androidRoot = join(process.cwd(), 'android', 'app', 'src', 'main');
 const javaDirectory = join(androidRoot, 'java', 'com', 'actionanand', 'cardnest', 'app');
 const mainActivityPath = join(javaDirectory, 'MainActivity.java');
 const manifestPath = join(androidRoot, 'AndroidManifest.xml');
+const appBuildGradlePath = join(process.cwd(), 'android', 'app', 'build.gradle');
 const notificationIconPath = join(androidRoot, 'res', 'drawable', 'ic_stat_card_nest.xml');
 
 for (const requiredPath of [mainActivityPath, manifestPath]) {
@@ -22,6 +23,32 @@ for (const requiredPath of [mainActivityPath, manifestPath]) {
     throw new Error(
       `Android project file not found: ${requiredPath}. Run "npx cap add android" first.`,
     );
+  }
+}
+
+let manifest = readFileSync(manifestPath, 'utf8');
+if (!manifest.includes('android.permission.USE_BIOMETRIC')) {
+  manifest = manifest.replace(
+    /(<manifest\b[^>]*>)/,
+    '$1\n    <uses-permission android:name="android.permission.USE_BIOMETRIC" />',
+  );
+}
+if (!manifest.includes('android.permission.USE_FINGERPRINT')) {
+  manifest = manifest.replace(
+    /(<manifest\b[^>]*>)/,
+    '$1\n    <uses-permission android:name="android.permission.USE_FINGERPRINT" />',
+  );
+}
+writeFileSync(manifestPath, manifest);
+
+if (existsSync(appBuildGradlePath)) {
+  let buildGradle = readFileSync(appBuildGradlePath, 'utf8');
+  if (!buildGradle.includes('androidx.biometric:biometric')) {
+    buildGradle = buildGradle.replace(
+      /(dependencies\s*\{)/,
+      '$1\n    implementation "androidx.biometric:biometric:1.1.0"',
+    );
+    writeFileSync(appBuildGradlePath, buildGradle);
   }
 }
 
@@ -53,18 +80,36 @@ writeFileSync(
   `package com.actionanand.cardnest.app;
 
 import android.content.res.Configuration;
+import android.app.Activity;
+import android.content.Intent;
 import android.graphics.Color;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.util.Base64;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowInsetsController;
 import android.webkit.JavascriptInterface;
 
+import androidx.biometric.BiometricManager;
+import androidx.biometric.BiometricPrompt;
+import androidx.core.content.ContextCompat;
+
 import com.getcapacitor.BridgeActivity;
 
+import org.json.JSONObject;
+
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.util.concurrent.Executor;
+
 public class MainActivity extends BridgeActivity {
+  private static final int CREATE_BACKUP_REQUEST = 4101;
+  private static final int OPEN_BACKUP_REQUEST = 4102;
   private boolean darkMode;
+  private byte[] pendingBackup;
 
   @Override
   public void onCreate(Bundle savedInstanceState) {
@@ -72,6 +117,7 @@ public class MainActivity extends BridgeActivity {
     darkMode = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
       == Configuration.UI_MODE_NIGHT_YES;
     getBridge().getWebView().addJavascriptInterface(new SystemBarsBridge(), "CardNestSystemBars");
+    getBridge().getWebView().addJavascriptInterface(new CardNestNativeBridge(), "CardNestNative");
     applySystemBarStyle(darkMode);
   }
 
@@ -94,6 +140,129 @@ public class MainActivity extends BridgeActivity {
       darkMode = enabled;
       runOnUiThread(() -> applySystemBarStyle(enabled));
     }
+  }
+
+  private class CardNestNativeBridge {
+    @JavascriptInterface
+    public boolean isBiometricAvailable() {
+      return BiometricManager.from(MainActivity.this).canAuthenticate(
+        BiometricManager.Authenticators.BIOMETRIC_WEAK
+      )
+        == BiometricManager.BIOMETRIC_SUCCESS;
+    }
+
+    @JavascriptInterface
+    public void authenticateBiometric() {
+      runOnUiThread(() -> {
+        Executor executor = ContextCompat.getMainExecutor(MainActivity.this);
+        BiometricPrompt prompt = new BiometricPrompt(
+          MainActivity.this,
+          executor,
+          new BiometricPrompt.AuthenticationCallback() {
+            @Override
+            public void onAuthenticationSucceeded(BiometricPrompt.AuthenticationResult result) {
+              super.onAuthenticationSucceeded(result);
+              dispatchNativeResult("biometric", true, "", "");
+            }
+
+            @Override
+            public void onAuthenticationError(int errorCode, CharSequence errorMessage) {
+              super.onAuthenticationError(errorCode, errorMessage);
+              dispatchNativeResult("biometric", false, "", errorMessage.toString());
+            }
+          }
+        );
+        BiometricPrompt.PromptInfo promptInfo = new BiometricPrompt.PromptInfo.Builder()
+          .setTitle("Unlock CardNest")
+          .setSubtitle("Confirm your identity to access your cards")
+          .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_WEAK)
+          .build();
+        prompt.authenticate(promptInfo);
+      });
+    }
+
+    @JavascriptInterface
+    public void saveBackup(String fileName, String base64Data) {
+      runOnUiThread(() -> {
+        try {
+          pendingBackup = Base64.decode(base64Data, Base64.DEFAULT);
+          Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+          intent.addCategory(Intent.CATEGORY_OPENABLE);
+          intent.setType("application/octet-stream");
+          intent.putExtra(Intent.EXTRA_TITLE, fileName);
+          startActivityForResult(intent, CREATE_BACKUP_REQUEST);
+        } catch (Exception error) {
+          dispatchNativeResult("backup-saved", false, "", error.getMessage());
+        }
+      });
+    }
+
+    @JavascriptInterface
+    public void openBackup() {
+      runOnUiThread(() -> {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("*/*");
+        startActivityForResult(intent, OPEN_BACKUP_REQUEST);
+      });
+    }
+  }
+
+  @Override
+  protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+    super.onActivityResult(requestCode, resultCode, data);
+    if (requestCode != CREATE_BACKUP_REQUEST && requestCode != OPEN_BACKUP_REQUEST) return;
+    String action = requestCode == CREATE_BACKUP_REQUEST ? "backup-saved" : "backup-opened";
+    if (resultCode != Activity.RESULT_OK || data == null || data.getData() == null) {
+      pendingBackup = null;
+      dispatchNativeResult(action, false, "", "File selection was cancelled.");
+      return;
+    }
+    Uri uri = data.getData();
+    try {
+      if (requestCode == CREATE_BACKUP_REQUEST) {
+        try (OutputStream output = getContentResolver().openOutputStream(uri)) {
+          if (output == null) throw new IllegalStateException("The selected file could not be opened.");
+          output.write(pendingBackup);
+        }
+        pendingBackup = null;
+        dispatchNativeResult(action, true, "", "");
+        return;
+      }
+      ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+      try (InputStream input = getContentResolver().openInputStream(uri)) {
+        if (input == null) throw new IllegalStateException("The selected file could not be opened.");
+        byte[] buffer = new byte[8192];
+        int count;
+        while ((count = input.read(buffer)) != -1) bytes.write(buffer, 0, count);
+      }
+      dispatchNativeResult(
+        action,
+        true,
+        Base64.encodeToString(bytes.toByteArray(), Base64.NO_WRAP),
+        ""
+      );
+    } catch (Exception error) {
+      pendingBackup = null;
+      dispatchNativeResult(action, false, "", error.getMessage());
+    }
+  }
+
+  private void dispatchNativeResult(
+    String action,
+    boolean success,
+    String data,
+    String message
+  ) {
+    runOnUiThread(() -> {
+      String script = "window.dispatchEvent(new CustomEvent('cardnest-native-result',{detail:{"
+        + "action:" + JSONObject.quote(action)
+        + ",success:" + success
+        + ",data:" + JSONObject.quote(data == null ? "" : data)
+        + ",message:" + JSONObject.quote(message == null ? "" : message)
+        + "}}));";
+      getBridge().getWebView().evaluateJavascript(script, null);
+    });
   }
 
   @SuppressWarnings("deprecation")
@@ -193,7 +362,7 @@ writeFileSync(
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
     <item>
         <shape android:shape="rectangle">
-            <solid android:color="#28684E" />
+            <solid android:color="#F5F6F1" />
         </shape>
     </item>
     <item
@@ -277,7 +446,7 @@ writeFileSync(
   `<?xml version="1.0" encoding="utf-8"?>
 <resources>
     <style name="AppTheme.NoActionBarLaunch" parent="AppTheme.NoActionBar">
-        <item name="windowSplashScreenBackground">#28684E</item>
+        <item name="windowSplashScreenBackground">#F5F6F1</item>
         <item name="windowSplashScreenAnimatedIcon">@drawable/card_nest_splash_icon</item>
         <item name="windowSplashScreenIconBackgroundColor">#FFFFFF</item>
         <item name="postSplashScreenTheme">@style/AppTheme.NoActionBar</item>

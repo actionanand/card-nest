@@ -5,6 +5,7 @@ import { estimatedGracePeriod } from '../../core/services/billing-cycle';
 import { formatMoney } from '../../core/services/money';
 import { NotificationService } from '../../core/services/notification.service';
 import { AppIcon } from '../../shared/app-icon';
+import { SnackbarService } from '../../core/services/snackbar.service';
 
 type ReminderFilter = 'ALL' | 'DUE' | 'GRACE' | 'FEE' | 'EXPIRING';
 
@@ -17,6 +18,7 @@ type ReminderFilter = 'ALL' | 'DUE' | 'GRACE' | 'FEE' | 'EXPIRING';
 export class RemindersPage {
   readonly store = inject(CardNestStore);
   readonly notifications = inject(NotificationService);
+  private readonly snackbar = inject(SnackbarService);
   readonly disabled = signal<readonly string[]>([]);
   readonly filter = signal<ReminderFilter>('DUE');
   readonly reminders = computed(() =>
@@ -62,8 +64,15 @@ export class RemindersPage {
   async toggleNotifications(): Promise<void> {
     if (this.notifications.enabled()) {
       await this.notifications.cancelAll(this.store.cards());
+      this.snackbar.show('Payment reminders disabled.', 'INFO');
     } else {
-      await this.enableNotifications();
+      const granted = await this.notifications.requestPermission(this.store.cards(), (cardId) =>
+        this.store.cardOutstanding(cardId),
+      );
+      this.snackbar.show(
+        granted ? 'Payment reminders enabled and scheduled.' : 'Notification permission denied.',
+        granted ? 'SUCCESS' : 'WARNING',
+      );
     }
   }
   updateFilter(event: Event): void {
@@ -71,5 +80,6 @@ export class RemindersPage {
   }
   recordPayment(cardId: string, amount: number): void {
     this.store.recordPayment(cardId, amount, 'Reminder payment');
+    this.snackbar.show('Payment recorded.');
   }
 }

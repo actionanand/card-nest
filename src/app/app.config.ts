@@ -37,10 +37,11 @@ export const appConfig: ApplicationConfig = {
           ]),
         )
         .then(() => appLock.initialise());
-      return Promise.allSettled([
-        initialiseStorage,
-        notifications.initialise(store.cards(), (cardId) => store.cardOutstanding(cardId)),
-      ]).then(() => undefined);
+      return initialiseStorage
+        .then(() =>
+          notifications.initialise(store.cards(), (cardId) => store.cardOutstanding(cardId)),
+        )
+        .catch(() => undefined);
     }),
   ],
 };

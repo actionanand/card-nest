@@ -41,7 +41,7 @@
     @for (loan of store.loans(); track loan.id) {
       <article class="panel" [class.cancelled]="loan.status === 'CANCELLED'">
         <div>
-          <span class="loan-icon" aria-hidden="true">₹</span>
+          <span class="loan-icon" aria-hidden="true"><app-icon name="spending" /></span>
           <div>
             <h2>{{ loan.name }}</h2>
             <p>{{ loan.lender || 'Personal commitment' }}</p>

@@ -103,6 +103,43 @@ export class SqliteDatabase {
     return result.changes?.changes ?? 0;
   }
 
+  async exportBackupJson(): Promise<string> {
+    if (!this.ready()) throw new Error('SQLite database is unavailable.');
+    const result = await CapacitorSQLite.exportToJson({
+      database: this.databaseName,
+      jsonexportmode: 'full',
+      readonly: true,
+    });
+    if (!result.export) throw new Error('The database could not be exported.');
+    return JSON.stringify(result.export);
+  }
+
+  async restoreBackupJson(json: string): Promise<void> {
+    if (!this.ready()) throw new Error('SQLite database is unavailable.');
+    const parsed = JSON.parse(json) as Record<string, unknown>;
+    parsed['database'] = this.databaseName;
+    parsed['overwrite'] = true;
+    parsed['encrypted'] = false;
+    parsed['mode'] = 'full';
+    const jsonstring = JSON.stringify(parsed);
+    const validation = await CapacitorSQLite.isJsonValid({ jsonstring });
+    if (!validation.result) throw new Error('The backup database is invalid.');
+
+    try {
+      await CapacitorSQLite.close({ database: this.databaseName });
+    } catch {
+      // A closed connection is safe to continue with.
+    }
+    try {
+      await CapacitorSQLite.closeConnection({ database: this.databaseName, readonly: false });
+    } catch {
+      // The importer can continue when no retained connection exists.
+    }
+    this.ready.set(false);
+    await CapacitorSQLite.importFromJson({ jsonstring });
+    if (this.isWeb) await CapacitorSQLite.saveToStore({ database: this.databaseName });
+  }
+
   private async initialiseWebStore(): Promise<void> {
     await customElements.whenDefined('jeep-sqlite');
     const element = document.querySelector<JeepSqliteElement>('jeep-sqlite');

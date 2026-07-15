@@ -48,6 +48,16 @@ export class App {
       void this.notifications.reschedule(cards, (cardId) => this.store.cardOutstanding(cardId));
     });
 
+    effect(() => {
+      if (
+        this.appLock.locked() &&
+        this.appLock.biometricEnabled() &&
+        this.appLock.biometricAvailable()
+      ) {
+        queueMicrotask(() => void this.appLock.authenticateWithBiometrics());
+      }
+    });
+
     afterNextRender(() => {
       this.store.materializeRecurringTransactions();
       void this.openNotificationPermissionConfirmationIfNeeded();

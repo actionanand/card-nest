@@ -3,10 +3,11 @@ import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angula
 import { LoanCommitment } from '../../core/models/domain';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { formatMoney, parseMoneyToMinor } from '../../core/services/money';
+import { AppIcon } from '../../shared/app-icon';
 
 @Component({
   selector: 'app-loans-page',
-  imports: [ReactiveFormsModule],
+  imports: [ReactiveFormsModule, AppIcon],
   templateUrl: './loans.html',
   styleUrl: './loans.scss',
 })

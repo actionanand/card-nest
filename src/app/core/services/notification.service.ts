@@ -1,9 +1,12 @@
 import { LocalNotifications } from '@capacitor/local-notifications';
 import { Capacitor } from '@capacitor/core';
-import { Service, signal } from '@angular/core';
+import { inject, Service, signal } from '@angular/core';
 import { CreditCard } from '../models/domain';
 import { paymentDueDate, statementDateFor } from './billing-cycle';
 import { formatMoney } from './money';
+import { SqliteDatabase } from '../data/sqlite-database';
+
+const REMINDERS_ENABLED_KEY = 'notifications_payment_reminders';
 
 interface ReminderTarget {
   readonly id: number;
@@ -16,6 +19,7 @@ interface ReminderTarget {
 
 @Service()
 export class NotificationService {
+  private readonly database = inject(SqliteDatabase);
   private readonly channelId = 'card-nest-reminders';
   private readonly paymentOffsets = [10, 7, 3, 1, 0] as const;
   readonly permission = signal<'unavailable' | 'prompt' | 'denied' | 'granted'>('unavailable');
@@ -32,7 +36,8 @@ export class NotificationService {
     this.permission.set(
       status.display === 'granted' ? 'granted' : status.display === 'denied' ? 'denied' : 'prompt',
     );
-    this.enabled.set(status.display === 'granted');
+    const preference = await this.readEnabledPreference();
+    this.enabled.set(status.display === 'granted' && (preference ?? true));
     if (this.enabled()) await this.reschedule(cards, outstandingFor);
   }
 
@@ -50,6 +55,7 @@ export class NotificationService {
       this.permission.set(granted ? 'granted' : 'denied');
       this.enabled.set(granted);
       if (granted) {
+        await this.writeEnabledPreference(true);
         await this.ensureChannel();
         await this.reschedule(cards, outstandingFor);
       }
@@ -123,6 +129,7 @@ export class NotificationService {
 
   async cancelAll(cards: readonly CreditCard[]): Promise<void> {
     this.enabled.set(false);
+    await this.writeEnabledPreference(false);
     if (!this.isAndroid()) return;
     const ids = cards.flatMap((card) => this.notificationIds(card.id));
     if (ids.length) await LocalNotifications.cancel({ notifications: ids.map((id) => ({ id })) });
@@ -251,5 +258,24 @@ export class NotificationService {
 
   private isAndroid(): boolean {
     return Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android';
+  }
+
+  private async readEnabledPreference(): Promise<boolean | null> {
+    if (!this.database.ready()) return null;
+    const rows = await this.database.query<{ encrypted_value: string }>(
+      'SELECT encrypted_value FROM app_preferences WHERE key = ?',
+      [REMINDERS_ENABLED_KEY],
+    );
+    const value = rows[0]?.encrypted_value;
+    return value === undefined ? null : value === '1';
+  }
+
+  private async writeEnabledPreference(enabled: boolean): Promise<void> {
+    if (!this.database.ready()) return;
+    await this.database.run(
+      `INSERT INTO app_preferences (key, encrypted_value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET encrypted_value = excluded.encrypted_value`,
+      [REMINDERS_ENABLED_KEY, enabled ? '1' : '0'],
+    );
   }
 }
