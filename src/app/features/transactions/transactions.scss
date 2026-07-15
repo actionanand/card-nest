@@ -19,7 +19,9 @@
   max-width: 56rem;
   margin: auto;
   padding: 1.3rem;
-  overflow: hidden;
+  max-height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 2rem);
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 .transaction-modal-backdrop,
 .category-manager-backdrop {
@@ -28,7 +30,7 @@
   inset: 0;
   display: grid;
   align-items: start;
-  padding: max(3.5rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right))
+  padding: calc(env(safe-area-inset-top) + 1rem) max(1rem, env(safe-area-inset-right))
     max(1rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
   overflow-y: auto;
   background: rgb(10 25 18 / 68%);
@@ -264,11 +266,11 @@ legend {
   align-items: center;
   gap: 0.4rem;
   min-height: 2.6rem;
-  padding: 0.5rem 0.9rem;
-  border: 1px solid var(--line);
-  border-radius: 0.6rem;
-  color: var(--accent);
-  background: var(--accent-soft);
+  padding: 0.65rem 1rem;
+  border: 0;
+  border-radius: 999px;
+  color: #fff;
+  background: var(--accent);
   font-weight: 600;
 }
 .attachment__pick app-icon {
