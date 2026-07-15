@@ -48,6 +48,12 @@
   width: min(100%, 48rem);
   margin: auto;
   padding: clamp(1rem, 3vw, 1.5rem);
+  max-height: calc(
+    100dvh - max(4.75rem, calc(env(safe-area-inset-top) + 1rem)) - env(safe-area-inset-bottom) -
+      1rem
+  );
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 .card-modal-backdrop {
   position: fixed;
@@ -55,7 +61,7 @@
   inset: 0;
   display: grid;
   align-items: start;
-  padding: max(1rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right))
+  padding: max(4.75rem, calc(env(safe-area-inset-top) + 1rem)) max(1rem, env(safe-area-inset-right))
     max(1rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
   overflow-y: auto;
   background: rgb(10 25 18 / 68%);
@@ -327,10 +333,6 @@ label small {
   border-radius: 0.7rem;
   background: var(--surface);
   box-shadow: 0 1rem 2.5rem rgb(20 35 27 / 18%);
-}
-.card-list-item:nth-last-child(-n + 4) .action-menu {
-  top: auto;
-  bottom: calc(100% - 0.2rem);
 }
 .action-menu button {
   min-height: 2.45rem;
