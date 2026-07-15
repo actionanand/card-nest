@@ -20,7 +20,10 @@ type RepeatChoice = 'NONE' | 'INFINITE' | `${number}`;
   imports: [ReactiveFormsModule, AppIcon, CategoriesPage, ExportDialog],
   templateUrl: './transactions.html',
   styleUrl: './transactions.scss',
-  host: { '(document:keydown.escape)': 'closeOverlays()' },
+  host: {
+    '(document:keydown.escape)': 'closeOverlays()',
+    '(document:click)': 'closeMenusFromOutside($event)',
+  },
 })
 export class TransactionsPage {
   readonly store = inject(CardNestStore);
@@ -38,7 +41,9 @@ export class TransactionsPage {
   readonly receiptPreviews = signal<readonly string[]>([]);
   readonly payFromOpen = signal(false);
   readonly actionMenuId = signal<string | null>(null);
+  readonly actionMenuOpensUp = signal(false);
   readonly summaryMenuOpen = signal(false);
+  readonly summaryMenuOpensUp = signal(false);
   readonly manageCategoriesOpen = signal(false);
   readonly exportOpen = signal(false);
   readonly exportFormat = signal<ExportFormat>('PDF');
@@ -241,13 +246,44 @@ export class TransactionsPage {
     this.closeMenus();
     globalThis.scrollTo?.({ top: 0, behavior: 'smooth' });
   }
-  toggleActionMenu(transactionId: string): void {
+  toggleActionMenu(event: MouseEvent, transactionId: string): void {
     this.summaryMenuOpen.set(false);
-    this.actionMenuId.set(this.actionMenuId() === transactionId ? null : transactionId);
+    if (this.actionMenuId() === transactionId) {
+      this.actionMenuId.set(null);
+      return;
+    }
+    this.actionMenuId.set(transactionId);
+    this.positionMenu(event.currentTarget);
+  }
+  toggleSummaryMenu(event: MouseEvent): void {
+    this.actionMenuId.set(null);
+    if (this.summaryMenuOpen()) {
+      this.summaryMenuOpen.set(false);
+      return;
+    }
+    this.summaryMenuOpen.set(true);
+    this.positionMenu(event.currentTarget, true);
+  }
+  closeMenusFromOutside(event: Event): void {
+    if (!(event.target instanceof Element) || !event.target.closest('[data-action-menu]')) {
+      this.closeMenus();
+    }
   }
   closeMenus(): void {
     this.actionMenuId.set(null);
     this.summaryMenuOpen.set(false);
+  }
+
+  private positionMenu(target: EventTarget | null, summary = false): void {
+    if (!(target instanceof HTMLElement)) return;
+    requestAnimationFrame(() => {
+      const menu = target.parentElement?.querySelector<HTMLElement>('.action-menu');
+      if (!menu) return;
+      const trigger = target.getBoundingClientRect();
+      const spaceBelow = globalThis.innerHeight - trigger.bottom;
+      const opensUp = spaceBelow < menu.offsetHeight + 8 && trigger.top > spaceBelow;
+      (summary ? this.summaryMenuOpensUp : this.actionMenuOpensUp).set(opensUp);
+    });
   }
   closeOverlays(): void {
     if (this.exportOpen()) {
