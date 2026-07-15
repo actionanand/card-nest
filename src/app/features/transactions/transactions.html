@@ -73,9 +73,17 @@
                 role="dialog"
                 aria-modal="true"
                 aria-label="Select payment source"
+                tabindex="-1"
                 (click)="payFromOpen.set(false)"
+                (keydown.escape)="payFromOpen.set(false)"
               >
-                <div class="pay-from-sheet" role="listbox" (click)="$event.stopPropagation()">
+                <div
+                  class="pay-from-sheet"
+                  role="listbox"
+                  tabindex="-1"
+                  (click)="$event.stopPropagation()"
+                  (keydown)="$event.stopPropagation()"
+                >
                   <div class="pay-from-sheet__header">
                     <span>Pay from</span>
                     <button type="button" (click)="payFromOpen.set(false)" aria-label="Close">
