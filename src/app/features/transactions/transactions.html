@@ -208,6 +208,14 @@
     </div>
     <div class="summary-menu-anchor">
       <button
+        class="menu-button export-button"
+        type="button"
+        (click)="exportOpen.set(true); closeMenus()"
+        aria-label="Export transactions"
+      >
+        <app-icon name="download" />
+      </button>
+      <button
         class="menu-button"
         type="button"
         (click)="summaryMenuOpen.set(!summaryMenuOpen()); actionMenuId.set(null)"
@@ -335,4 +343,8 @@
       <app-categories-page [embedded]="true" (closed)="manageCategoriesOpen.set(false)" />
     </section>
   </div>
+}
+
+@if (exportOpen()) {
+  <app-export-dialog [transactions]="filtered()" (closed)="exportOpen.set(false)" />
 }

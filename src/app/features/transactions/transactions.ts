@@ -7,13 +7,14 @@ import { formatMoney, parseMoneyToMinor } from '../../core/services/money';
 import { SnackbarService } from '../../core/services/snackbar.service';
 import { AppIcon } from '../../shared/app-icon';
 import { CategoriesPage } from '../categories/categories';
+import { ExportDialog } from '../../shared/export-dialog';
 
 type GroupingMode = 'MONTH' | 'CYCLE' | 'STATEMENT';
 type RepeatChoice = 'NONE' | 'INFINITE' | `${number}`;
 
 @Component({
   selector: 'app-transactions-page',
-  imports: [ReactiveFormsModule, AppIcon, CategoriesPage],
+  imports: [ReactiveFormsModule, AppIcon, CategoriesPage, ExportDialog],
   templateUrl: './transactions.html',
   styleUrl: './transactions.scss',
   host: { '(document:keydown.escape)': 'closeOverlays()' },
@@ -34,6 +35,7 @@ export class TransactionsPage {
   readonly actionMenuId = signal<string | null>(null);
   readonly summaryMenuOpen = signal(false);
   readonly manageCategoriesOpen = signal(false);
+  readonly exportOpen = signal(false);
   readonly hideCredits = signal(false);
   readonly creditCardsOnly = signal(false);
   readonly search = signal('');
@@ -193,6 +195,10 @@ export class TransactionsPage {
     this.summaryMenuOpen.set(false);
   }
   closeOverlays(): void {
+    if (this.exportOpen()) {
+      this.exportOpen.set(false);
+      return;
+    }
     if (this.manageCategoriesOpen()) {
       this.manageCategoriesOpen.set(false);
       return;

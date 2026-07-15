@@ -86,6 +86,7 @@
                 formControlName="issuerName"
                 autocomplete="organization"
                 placeholder="Bank name"
+                (input)="issuerChanged()"
             /></label>
             <label
               >Card network<select formControlName="network" (change)="networkChanged()">
@@ -288,20 +289,29 @@
                 <small>Every link must be a valid HTTP or HTTPS address.</small>
               }
             </label>
-            <label class="full"
-              >Linked card account (optional)<input
-                formControlName="relationshipGroup"
-                list="card-relationship-groups"
-                placeholder="ICICI Rubyx account"
-              /><small>Cards with the same account name count as used together.</small></label
-            >
-            <datalist id="card-relationship-groups">
-              @for (relatedCard of store.cards(); track relatedCard.id) {
-                @if (relatedCard.relationshipGroupId) {
-                  <option [value]="relatedCard.relationshipGroupId"></option>
+            <label class="full">
+              Link to another card (optional)
+              <select formControlName="relationshipGroup">
+                <option value="">Not linked</option>
+                @for (relatedCard of linkableCards(); track relatedCard.id) {
+                  <option [value]="relatedCard.id">
+                    {{ relatedCard.nickname }} · {{ relatedCard.lastDigits }} ·
+                    {{ relatedCard.network.replace('_', ' ')
+                    }}{{ relatedCard.archived ? ' · Archived' : '' }}
+                  </option>
                 }
+              </select>
+              <small>
+                Only cards from the same bank or issuer are available. Linked cards count as used
+                together.
+              </small>
+              @if (form.controls.issuerName.value.trim() && !linkableCards().length) {
+                <small>No other cards from this issuer are available.</small>
               }
-            </datalist>
+              @if (form.controls.relationshipGroup.hasError('issuerMismatch')) {
+                <small>Select a card issued by the same bank.</small>
+              }
+            </label>
           </div>
           <div class="form-actions">
             <button class="btn" type="button" (click)="closeForm()">Cancel</button

@@ -200,6 +200,7 @@ export class CardsPage {
     this.showForm.set(true);
   }
   edit(card: CreditCard): void {
+    const linkedCard = this.relatedCardFor(card);
     this.editingId.set(card.id);
     this.form.reset({
       nickname: card.nickname,
@@ -230,7 +231,7 @@ export class CardsPage {
         .join('\n'),
       benefitName: '',
       benefitNote: '',
-      relationshipGroup: card.relationshipGroupId ?? '',
+      relationshipGroup: linkedCard?.id ?? '',
     });
     this.draftBenefits.set(card.benefits ?? []);
     this.showForm.set(true);
@@ -244,6 +245,30 @@ export class CardsPage {
   networkChanged(): void {
     this.form.controls.lastDigits.setValue('');
     this.form.controls.lastDigits.markAsUntouched();
+  }
+
+  issuerChanged(): void {
+    const selectedCardId = this.form.controls.relationshipGroup.value;
+    if (!selectedCardId) return;
+    const selectedCard = this.store.cards().find((card) => card.id === selectedCardId);
+    if (
+      !selectedCard ||
+      this.normaliseIssuer(selectedCard.issuerName) !==
+        this.normaliseIssuer(this.form.controls.issuerName.value)
+    ) {
+      this.form.controls.relationshipGroup.setValue('');
+    }
+  }
+
+  linkableCards(): readonly CreditCard[] {
+    const issuer = this.normaliseIssuer(this.form.controls.issuerName.value);
+    if (!issuer) return [];
+    return this.store
+      .cards()
+      .filter(
+        (card) => card.id !== this.editingId() && this.normaliseIssuer(card.issuerName) === issuer,
+      )
+      .sort((left, right) => left.nickname.localeCompare(right.nickname));
   }
 
   addBenefit(): void {
@@ -299,9 +324,23 @@ export class CardsPage {
     if (cvv && !validCvv.test(cvv)) this.form.controls.cvv.setErrors({ cvv: true });
     const importantLinks = this.parseImportantLinks(value.importantLinks);
     if (importantLinks === null) this.form.controls.importantLinks.setErrors({ links: true });
+    const linkedCard = value.relationshipGroup
+      ? this.store.cards().find((card) => card.id === value.relationshipGroup)
+      : undefined;
+    if (
+      value.relationshipGroup &&
+      (!linkedCard ||
+        linkedCard.id === this.editingId() ||
+        this.normaliseIssuer(linkedCard.issuerName) !== this.normaliseIssuer(value.issuerName))
+    ) {
+      this.form.controls.relationshipGroup.setErrors({ issuerMismatch: true });
+    }
     if (this.form.invalid || parsedCreditLimit === null || waiverThreshold === null) return;
     const existing = this.store.cards().find((card) => card.id === this.editingId());
     const timestamp = new Date().toISOString();
+    const relationshipGroupId = linkedCard
+      ? (linkedCard.relationshipGroupId ?? existing?.relationshipGroupId ?? crypto.randomUUID())
+      : undefined;
     const card: CreditCard = {
       ...existing,
       id: existing?.id ?? crypto.randomUUID(),
@@ -316,7 +355,7 @@ export class CardsPage {
       subtype: value.subtype.trim() || undefined,
       benefits: this.draftBenefits(),
       importantLinks: importantLinks ?? [],
-      relationshipGroupId: value.relationshipGroup.trim() || undefined,
+      relationshipGroupId,
       theme: existing?.theme ?? (this.store.cards().length % 2 ? 'teal' : 'indigo'),
       expiryMonth: value.expiryMonth ?? undefined,
       expiryYear: value.expiryYear ?? undefined,
@@ -348,6 +387,13 @@ export class CardsPage {
       createdAt: existing?.createdAt ?? timestamp,
       updatedAt: timestamp,
     };
+    if (linkedCard && linkedCard.relationshipGroupId !== relationshipGroupId) {
+      this.store.updateCard({
+        ...linkedCard,
+        relationshipGroupId,
+        updatedAt: timestamp,
+      });
+    }
     if (existing) this.store.updateCard(card);
     else this.store.addCard(card);
     this.snackbar.show(existing ? `${card.nickname} updated.` : `${card.nickname} added.`);
@@ -434,6 +480,24 @@ export class CardsPage {
       .split(/[,\n]/)
       .map((item) => item.trim())
       .filter(Boolean);
+  }
+  private relatedCardFor(card: CreditCard): CreditCard | undefined {
+    if (!card.relationshipGroupId) return undefined;
+    const issuer = this.normaliseIssuer(card.issuerName);
+    return this.store
+      .cards()
+      .find(
+        (candidate) =>
+          candidate.id !== card.id &&
+          candidate.relationshipGroupId === card.relationshipGroupId &&
+          this.normaliseIssuer(candidate.issuerName) === issuer,
+      );
+  }
+  private normaliseIssuer(value: string): string {
+    return value
+      .normalize('NFKC')
+      .toLocaleLowerCase()
+      .replace(/[^a-z0-9]/g, '');
   }
   private resetForm(): void {
     this.form.reset({

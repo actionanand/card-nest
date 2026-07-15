@@ -5,16 +5,21 @@
       <h1>Stats & budget</h1>
       <p class="subtitle">Income-aware analytics using your chosen budget cycle.</p>
     </div>
-    <label class="period-select">
-      <span class="sr-only">Report period</span>
-      <select [value]="period()" (change)="updatePeriod($event)">
-        <option value="MONTH">This month</option>
-        <option value="THREE">Last 3 months</option>
-        <option value="SIX">Last 6 months</option>
-        <option value="YEAR">Last 1 year</option>
-        <option value="ALL">Overall</option>
-      </select>
-    </label>
+    <div class="report-actions">
+      <label class="period-select">
+        <span class="sr-only">Report period</span>
+        <select [value]="period()" (change)="updatePeriod($event)">
+          <option value="MONTH">This month</option>
+          <option value="THREE">Last 3 months</option>
+          <option value="SIX">Last 6 months</option>
+          <option value="YEAR">Last 1 year</option>
+          <option value="ALL">Overall</option>
+        </select>
+      </label>
+      <button class="btn btn-primary export-report" type="button" (click)="exportPdf()">
+        <app-icon name="download" /> Export stats PDF
+      </button>
+    </div>
   </header>
 
   <section class="stat-grid" aria-label="Budget summary">

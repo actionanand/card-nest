@@ -10,6 +10,15 @@
 .period-select {
   width: 10rem;
 }
+.report-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+.export-report app-icon {
+  width: 1rem;
+  height: 1rem;
+}
 
 .stat-grid {
   display: grid;
@@ -212,6 +221,13 @@
 
   .period-select {
     width: 8.5rem;
+  }
+  .report-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .period-select {
+    width: 100%;
   }
 
   .stat-grid {

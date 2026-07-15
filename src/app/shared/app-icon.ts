@@ -17,11 +17,14 @@ import {
   LucideCookie,
   LucideCopy,
   LucideDatabaseBackup,
+  LucideDownload,
   LucideDynamicIcon,
   LucideEllipsisVertical,
   LucideExternalLink,
   LucideEye,
   LucideEyeOff,
+  LucideFileSpreadsheet,
+  LucideFileText,
   LucideFish,
   LucideFuel,
   LucideGamepad2,
@@ -130,6 +133,9 @@ const ICONS: Readonly<Record<string, LucideIconInput>> = {
   go_to_source: LucideExternalLink,
   hide_credit: LucideEyeOff,
   show_credit: LucideEye,
+  download: LucideDownload,
+  file_pdf: LucideFileText,
+  file_csv: LucideFileSpreadsheet,
 };
 
 @Component({

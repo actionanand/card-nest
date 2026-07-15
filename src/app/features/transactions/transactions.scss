@@ -190,6 +190,13 @@ label small {
 .transaction-menu-anchor {
   position: relative;
 }
+.summary-menu-anchor {
+  display: flex;
+  align-items: center;
+}
+.export-button {
+  color: var(--accent);
+}
 .menu-button {
   display: grid;
   width: 2.5rem;

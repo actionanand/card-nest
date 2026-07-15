@@ -2,18 +2,20 @@ import { Component, computed, inject, signal } from '@angular/core';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { formatMoney } from '../../core/services/money';
 import { ReportChart } from '../../shared/report-chart';
-
-type ReportPeriod = 'MONTH' | 'THREE' | 'SIX' | 'YEAR' | 'ALL';
+import { ExportPeriod } from '../../core/models/export';
+import { ExportService } from '../../core/services/export.service';
+import { AppIcon } from '../../shared/app-icon';
 
 @Component({
   selector: 'app-reports-page',
-  imports: [ReportChart],
+  imports: [ReportChart, AppIcon],
   templateUrl: './reports.html',
   styleUrl: './reports.scss',
 })
 export class ReportsPage {
   readonly store = inject(CardNestStore);
-  readonly period = signal<ReportPeriod>('MONTH');
+  private readonly exporter = inject(ExportService);
+  readonly period = signal<ExportPeriod>('MONTH');
   readonly selectedCategoryId = signal<string | null>(null);
   readonly periodTransactions = computed(() => {
     const start = this.periodStart();
@@ -152,8 +154,12 @@ export class ReportsPage {
   }
 
   updatePeriod(event: Event): void {
-    this.period.set((event.target as HTMLSelectElement).value as ReportPeriod);
+    this.period.set((event.target as HTMLSelectElement).value as ExportPeriod);
     this.selectedCategoryId.set(null);
+  }
+
+  exportPdf(): void {
+    this.exporter.exportStatistics(this.period());
   }
 
   selectCategory(categoryId: string): void {
@@ -167,7 +173,7 @@ export class ReportsPage {
   private periodStart(): string | null {
     const period = this.period();
     if (period === 'ALL') return null;
-    const offsets: Readonly<Record<Exclude<ReportPeriod, 'ALL'>, number>> = {
+    const offsets: Readonly<Record<Exclude<ExportPeriod, 'ALL'>, number>> = {
       MONTH: 0,
       THREE: 2,
       SIX: 5,
