@@ -70,11 +70,11 @@
         ><label class="setting-row toggle"
           ><span
             ><strong>Lock when app enters background</strong
-            ><small>Hide content in Android recent-app previews</small></span
+            ><small>Require the PIN when returning to CardNest</small></span
           ><input
             type="checkbox"
             [checked]="lockOnBackground()"
-            (change)="lockOnBackground.set(!lockOnBackground())"
+            (change)="toggleLockOnBackground()"
         /></label>
         <div class="setting-row">
           <label

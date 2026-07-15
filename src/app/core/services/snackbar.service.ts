@@ -13,10 +13,10 @@ export class SnackbarService {
   readonly message = signal<SnackbarMessage | null>(null);
   private timeoutId: ReturnType<typeof setTimeout> | null = null;
 
-  show(text: string, tone: SnackbarTone = 'SUCCESS'): void {
+  show(text: string, tone: SnackbarTone = 'SUCCESS', durationMs = 3200): void {
     if (this.timeoutId) clearTimeout(this.timeoutId);
     this.message.set({ id: Date.now(), text, tone });
-    this.timeoutId = setTimeout(() => this.dismiss(), 3200);
+    this.timeoutId = setTimeout(() => this.dismiss(), durationMs);
   }
 
   dismiss(): void {

@@ -3,6 +3,7 @@ import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angula
 import { Capacitor } from '@capacitor/core';
 import { SqliteDatabase } from '../../core/data/sqlite-database';
 import { ApplicationPinService } from '../../core/services/application-pin.service';
+import { AppLockService } from '../../core/services/app-lock.service';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { NotificationService } from '../../core/services/notification.service';
 import { AppTheme, ThemeService } from '../../core/services/theme.service';
@@ -21,12 +22,13 @@ export class SettingsPage {
   readonly store = inject(CardNestStore);
   readonly notifications = inject(NotificationService);
   readonly pin = inject(ApplicationPinService);
+  readonly appLock = inject(AppLockService);
   private readonly themes = inject(ThemeService);
   readonly theme = this.themes.theme;
   readonly themeOptions: readonly AppTheme[] = ['SYSTEM', 'LIGHT', 'DARK'];
-  readonly biometric = signal(false);
+  readonly biometric = this.appLock.biometricEnabled;
   readonly biometricAvailable = Capacitor.getPlatform() === 'android';
-  readonly lockOnBackground = signal(true);
+  readonly lockOnBackground = this.appLock.lockOnBackground;
   readonly reminders = this.notifications.enabled;
   readonly showPinForm = signal(false);
   readonly pinError = signal<string | null>(null);
@@ -104,7 +106,11 @@ export class SettingsPage {
 
   toggleBiometric(): void {
     if (!this.biometricAvailable) return;
-    this.biometric.update((enabled) => !enabled);
+    void this.appLock.setBiometricEnabled(!this.biometric());
+  }
+
+  toggleLockOnBackground(): void {
+    void this.appLock.setLockOnBackground(!this.lockOnBackground());
   }
 
   money(value: number): string {

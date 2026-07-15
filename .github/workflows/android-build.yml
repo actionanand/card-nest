@@ -39,6 +39,18 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Bump versionCode and commit
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          node scripts/bump-android-version.js
+          VERSION_CODE=$(node -p "require('./android-version.json').versionCode")
+          VERSION_NAME=$(node -p "require('./android-version.json').versionName")
+          echo "Building versionName=$VERSION_NAME versionCode=$VERSION_CODE"
+          git add android-version.json
+          git commit -m "chore: bump versionCode to $VERSION_CODE [skip ci]"
+          git push
+
       - name: Build Angular app
         run: npm run build -- --configuration=production
 
@@ -121,21 +133,23 @@ jobs:
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ steps.keystore_type.outputs.type == 'PKCS12' && secrets.KEYSTORE_PASSWORD || secrets.KEY_PASSWORD }}
         run: |
+          mkdir -p releases
           UNSIGNED_APK=$(find android/app/build -name "*-release-unsigned.apk" | head -1)
           OUTPUT_APK="releases/${RELEASE_BASENAME}.apk"
           BUILD_TOOLS_DIR="${ANDROID_HOME}/build-tools/$(ls "${ANDROID_HOME}/build-tools/" | sort -V | tail -1)"
           "$BUILD_TOOLS_DIR/zipalign" -v 4 "$UNSIGNED_APK" "$OUTPUT_APK"
           "$BUILD_TOOLS_DIR/apksigner" sign --ks android/app/release-keystore.jks --ks-pass env:KEYSTORE_PASSWORD --ks-key-alias "$KEY_ALIAS" --key-pass env:KEY_PASSWORD "$OUTPUT_APK"
           "$BUILD_TOOLS_DIR/apksigner" verify --verbose "$OUTPUT_APK"
-          echo "SIGNED APK created: $OUTPUT_APK"
+          echo "✅ SIGNED APK created: $OUTPUT_APK"
 
       - name: Copy unsigned APK
         if: steps.keystore.outputs.available != 'true' || steps.sign_apk.outcome == 'failure'
         run: |
+          mkdir -p releases
           rm -f "releases/${RELEASE_BASENAME}.apk"
           UNSIGNED_APK=$(find android/app/build -name "*-release-unsigned.apk" | head -1)
           cp "$UNSIGNED_APK" "releases/${RELEASE_BASENAME}-unsigned.apk"
-          echo "UNSIGNED APK created: releases/${RELEASE_BASENAME}-unsigned.apk"
+          echo "⚠️ UNSIGNED APK created: releases/${RELEASE_BASENAME}-unsigned.apk"
 
       - name: Sign AAB
         id: sign_aab
@@ -146,6 +160,7 @@ jobs:
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ steps.keystore_type.outputs.type == 'PKCS12' && secrets.KEYSTORE_PASSWORD || secrets.KEY_PASSWORD }}
         run: |
+          mkdir -p releases
           UNSIGNED_AAB=$(find android/app/build -name "*-release.aab" | head -1)
           OUTPUT_AAB="releases/${RELEASE_BASENAME}.aab"
           STORE_PASS_FILE=$(mktemp)
@@ -155,15 +170,16 @@ jobs:
           printf '%s' "$KEY_PASSWORD" > "$KEY_PASS_FILE"
           jarsigner -verbose -keystore android/app/release-keystore.jks -storepass:file "$STORE_PASS_FILE" -keypass:file "$KEY_PASS_FILE" -signedjar "$OUTPUT_AAB" "$UNSIGNED_AAB" "$KEY_ALIAS"
           jarsigner -verify -verbose -certs "$OUTPUT_AAB"
-          echo "SIGNED AAB created: $OUTPUT_AAB"
+          echo "✅ SIGNED AAB created: $OUTPUT_AAB"
 
       - name: Copy unsigned AAB
         if: steps.keystore.outputs.available != 'true' || steps.sign_aab.outcome == 'failure'
         run: |
+          mkdir -p releases
           rm -f "releases/${RELEASE_BASENAME}.aab"
           UNSIGNED_AAB=$(find android/app/build -name "*-release.aab" | head -1)
           cp "$UNSIGNED_AAB" "releases/${RELEASE_BASENAME}-unsigned.aab"
-          echo "UNSIGNED AAB created: releases/${RELEASE_BASENAME}-unsigned.aab"
+          echo "⚠️ UNSIGNED AAB created: releases/${RELEASE_BASENAME}-unsigned.aab"
 
       - name: Summarize Android artifacts
         if: always()
@@ -171,14 +187,14 @@ jobs:
           echo "Android artifact summary"
           echo "========================"
           if [[ "${{ steps.keystore.outputs.available }}" == "true" && "${{ steps.sign_apk.outcome }}" == "success" ]]; then
-            APK_STATUS="SIGNED APK created: releases/${RELEASE_BASENAME}.apk"
+            APK_STATUS="✅ SIGNED APK created: releases/${RELEASE_BASENAME}.apk"
           else
-            APK_STATUS="UNSIGNED APK created: releases/${RELEASE_BASENAME}-unsigned.apk"
+            APK_STATUS="⚠️ UNSIGNED APK created: releases/${RELEASE_BASENAME}-unsigned.apk"
           fi
           if [[ "${{ steps.keystore.outputs.available }}" == "true" && "${{ steps.sign_aab.outcome }}" == "success" ]]; then
-            AAB_STATUS="SIGNED AAB created: releases/${RELEASE_BASENAME}.aab"
+            AAB_STATUS="✅ SIGNED AAB created: releases/${RELEASE_BASENAME}.aab"
           else
-            AAB_STATUS="UNSIGNED AAB created: releases/${RELEASE_BASENAME}-unsigned.aab"
+            AAB_STATUS="⚠️ UNSIGNED AAB created: releases/${RELEASE_BASENAME}-unsigned.aab"
           fi
           echo "$APK_STATUS"
           echo "$AAB_STATUS"

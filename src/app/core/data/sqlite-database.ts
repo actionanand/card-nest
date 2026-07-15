@@ -17,14 +17,33 @@ export class SqliteDatabase {
   async initialise(): Promise<void> {
     try {
       if (Capacitor.getPlatform() === 'web') await this.initialiseWebStore();
-      await CapacitorSQLite.createConnection({
-        database: this.databaseName,
-        version: DATABASE_MIGRATIONS.at(-1)?.version ?? 1,
-        encrypted: false,
-        mode: 'no-encryption',
-        readonly: false,
-      });
-      await CapacitorSQLite.open({ database: this.databaseName, readonly: false });
+      const version = DATABASE_MIGRATIONS.at(-1)?.version ?? 1;
+
+      // On a warm restart the native layer can still hold the connection from a previous
+      // activity instance, making a plain createConnection() throw. Treat that as success
+      // and continue to open/migrate with the existing connection.
+      try {
+        await CapacitorSQLite.createConnection({
+          database: this.databaseName,
+          version,
+          encrypted: false,
+          mode: 'no-encryption',
+          readonly: false,
+        });
+      } catch (createError: unknown) {
+        const msg = createError instanceof Error ? createError.message : String(createError);
+        // Ignore "connection already exists" — reuse the live connection.
+        if (!msg.toLowerCase().includes('already')) throw createError;
+      }
+
+      try {
+        await CapacitorSQLite.open({ database: this.databaseName, readonly: false });
+      } catch (openError: unknown) {
+        const msg = openError instanceof Error ? openError.message : String(openError);
+        // Ignore "database already open" on a warm restart.
+        if (!msg.toLowerCase().includes('already')) throw openError;
+      }
+
       await CapacitorSQLite.execute({
         database: this.databaseName,
         statements: 'PRAGMA foreign_keys = ON;',
@@ -48,10 +67,11 @@ export class SqliteDatabase {
       this.unavailableReason.set(null);
     } catch (error: unknown) {
       this.ready.set(false);
+      const detail = error instanceof Error ? error.message : String(error);
       this.unavailableReason.set(
-        error instanceof Error && error.message.includes('WebAssembly')
+        detail.includes('WebAssembly')
           ? 'The installed SQLite WebAssembly file is incompatible.'
-          : 'The local SQLite database could not be opened.',
+          : `The local SQLite database could not be opened. (${detail})`,
       );
     }
   }

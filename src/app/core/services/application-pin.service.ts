@@ -64,6 +64,11 @@ export class ApplicationPinService {
     return true;
   }
 
+  async verifyPin(pin: string): Promise<boolean> {
+    if (!this.database.ready()) return false;
+    return this.verify(pin);
+  }
+
   private async verify(pin: string): Promise<boolean> {
     if (!this.storedHash) return false;
     const expected = this.fromBase64(this.storedHash.hash);
