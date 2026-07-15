@@ -1,44 +1,167 @@
-<style>
-  :host {
-    display: block;
-    min-height: 100dvh;
-    color: #17202a;
-    background: #f6f8fb;
-    font-family: Arial, Helvetica, sans-serif;
+<a class="skip-link" href="#main-content">Skip to main content</a>
+@if (database.unavailableReason(); as databaseError) {
+  <div class="startup-error" role="alert">
+    <strong>CardNest storage could not start.</strong>
+    <span>{{ databaseError }} Close other CardNest tabs, then reload this page.</span>
+  </div>
+}
+<div
+  class="app-layout"
+  [attr.aria-hidden]="showNotificationPermissionConfirmation() ? 'true' : null"
+  [attr.inert]="showNotificationPermissionConfirmation() ? '' : null"
+>
+  <header class="mobile-app-bar">
+    <button
+      type="button"
+      (click)="mobileMenuOpen.set(true)"
+      aria-label="Open navigation menu"
+      [attr.aria-expanded]="mobileMenuOpen()"
+    >
+      <app-icon name="menu" />
+    </button>
+    <a routerLink="/">CardNest</a>
+    <a class="mobile-stats" routerLink="/reports" aria-label="Open statistics">
+      <app-icon name="reports" />
+    </a>
+  </header>
+
+  @if (mobileMenuOpen()) {
+    <button
+      class="drawer-scrim"
+      type="button"
+      (click)="mobileMenuOpen.set(false)"
+      aria-label="Close navigation menu"
+    ></button>
+    <aside class="mobile-drawer" aria-label="Mobile navigation">
+      <div class="drawer-heading">
+        <strong>CardNest</strong>
+        <button type="button" (click)="mobileMenuOpen.set(false)" aria-label="Close menu">
+          <app-icon name="close" />
+        </button>
+      </div>
+      <nav>
+        <a routerLink="/" (click)="mobileMenuOpen.set(false)"
+          ><app-icon name="overview" /> Overview</a
+        >
+        <a routerLink="/cards" (click)="mobileMenuOpen.set(false)"
+          ><app-icon name="cards" /> Cards</a
+        >
+        <a routerLink="/transactions" (click)="mobileMenuOpen.set(false)"
+          ><app-icon name="transactions" /> Transactions</a
+        >
+        <a routerLink="/sources" (click)="mobileMenuOpen.set(false)"
+          ><app-icon name="sources" /> Cash, bank & Pluxee</a
+        >
+        <a routerLink="/categories" (click)="mobileMenuOpen.set(false)"
+          ><app-icon name="categories" /> Categories</a
+        >
+        <a routerLink="/reminders" (click)="mobileMenuOpen.set(false)"
+          ><app-icon name="reminders" /> Reminders</a
+        >
+        <a routerLink="/reports" (click)="mobileMenuOpen.set(false)"
+          ><app-icon name="reports" /> Stats & graphs</a
+        >
+        <a routerLink="/loans" (click)="mobileMenuOpen.set(false)"
+          ><app-icon name="loans" /> Loans & EMIs</a
+        >
+        <a routerLink="/settings" (click)="mobileMenuOpen.set(false)"
+          ><app-icon name="settings" /> Settings</a
+        >
+      </nav>
+    </aside>
   }
 
-  main {
-    display: grid;
-    min-height: 100dvh;
-    place-items: center;
-    padding: 2rem;
-    text-align: center;
-  }
+  <aside class="sidebar" aria-label="Primary navigation">
+    <a class="brand" routerLink="/" aria-label="CardNest home">
+      <span class="brand-mark" aria-hidden="true"><span></span><span></span></span>
+      <span><strong>CardNest</strong><small>Money, organised.</small></span>
+    </a>
+    <nav>
+      <a routerLink="/" [routerLinkActiveOptions]="{ exact: true }" routerLinkActive="active"
+        ><app-icon name="overview" /> Overview</a
+      >
+      <a routerLink="/cards" routerLinkActive="active"><app-icon name="cards" /> Cards</a>
+      <a routerLink="/transactions" routerLinkActive="active"
+        ><app-icon name="transactions" /> Transactions</a
+      >
+      <a routerLink="/categories" routerLinkActive="active"
+        ><app-icon name="categories" /> Categories</a
+      >
+      <a routerLink="/reminders" routerLinkActive="active"
+        ><app-icon name="reminders" /> Reminders</a
+      >
+      <a routerLink="/reports" routerLinkActive="active"><app-icon name="reports" /> Reports</a>
+      <a routerLink="/sources" routerLinkActive="active"
+        ><app-icon name="sources" /> Money sources</a
+      >
+      <a routerLink="/loans" routerLinkActive="active"><app-icon name="loans" /> Loans & EMIs</a>
+    </nav>
+    <div class="sidebar-footer">
+      <a routerLink="/settings" routerLinkActive="active"><app-icon name="settings" /> Settings</a>
+      <div class="privacy">
+        <app-icon name="privacy" />
+        <span><strong>Private by design</strong><small>Your data stays on this device</small></span>
+      </div>
+    </div>
+  </aside>
 
-  .intro {
-    max-width: 36rem;
-  }
+  <main #mainContent id="main-content" tabindex="-1"><router-outlet /></main>
 
-  h1 {
-    margin: 0;
-    font-size: clamp(2rem, 6vw, 4rem);
-    font-weight: 700;
-    line-height: 1.1;
-  }
+  <nav class="bottom-nav" aria-label="Primary navigation">
+    <a routerLink="/" [routerLinkActiveOptions]="{ exact: true }" routerLinkActive="active"
+      ><app-icon name="overview" /><small>Home</small></a
+    >
+    <a routerLink="/cards" routerLinkActive="active"
+      ><app-icon name="cards" /><small>Cards</small></a
+    >
+    <a
+      class="add-action"
+      routerLink="/transactions"
+      [queryParams]="{ add: true }"
+      aria-label="Add transaction"
+      ><app-icon name="plus"
+    /></a>
+    <a routerLink="/transactions" routerLinkActive="active"
+      ><app-icon name="transactions" /><small>Activity</small></a
+    >
+    <a routerLink="/settings" routerLinkActive="active"
+      ><app-icon name="settings" /><small>Settings</small></a
+    >
+  </nav>
+</div>
 
-  p {
-    margin: 1rem 0 0;
-    color: #415164;
-    font-size: 1.125rem;
-    line-height: 1.6;
-  }
-</style>
+@if (showNotificationPermissionConfirmation()) {
+  <div class="permission-backdrop">
+    <section
+      class="permission-dialog panel"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="notification-permission-title"
+      aria-describedby="notification-permission-description"
+    >
+      <span class="permission-dialog__icon" aria-hidden="true"><app-icon name="reminders" /></span>
+      <h2 id="notification-permission-title">Allow card reminders?</h2>
+      <p id="notification-permission-description">
+        CardNest can notify you about upcoming statements, payments, annual fees, and card expiry.
+        Notifications stay on this device and only show masked card digits.
+      </p>
+      <div class="permission-dialog__actions">
+        <button type="button" class="btn" (click)="dismissNotificationPermissionConfirmation()">
+          Not now
+        </button>
+        <button
+          #allowNotificationsButton
+          type="button"
+          class="btn btn-primary"
+          (click)="confirmNotificationPermission()"
+        >
+          Allow notifications
+        </button>
+      </div>
+    </section>
+  </div>
+}
 
-<main>
-  <section class="intro" aria-labelledby="page-title">
-    <h1 id="page-title">card-nest</h1>
-    <p>A simple default project template ready to clone and build from.</p>
-  </section>
-</main>
-
-<router-outlet />
+@if (notificationPermissionMessage(); as message) {
+  <p class="permission-status" role="status">{{ message }}</p>
+}

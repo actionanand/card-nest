@@ -1,0 +1,395 @@
+:host {
+  display: block;
+  min-height: 100dvh;
+}
+
+.startup-error {
+  position: relative;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--danger);
+  color: var(--danger);
+  background: var(--danger-soft);
+  text-align: center;
+}
+
+.startup-error span {
+  color: var(--ink);
+}
+
+.app-layout {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  min-height: 100dvh;
+  overflow-x: hidden;
+}
+.sidebar {
+  position: fixed;
+  inset: 0 auto 0 0;
+  z-index: 10;
+  display: flex;
+  width: 16rem;
+  flex-direction: column;
+  padding: 1.5rem 1rem;
+  border-right: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface) 96%, transparent);
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.35rem 0.5rem 2rem;
+  color: var(--ink);
+  text-decoration: none;
+}
+.brand > span:last-child {
+  display: grid;
+}
+.brand strong {
+  font-family: var(--display);
+  font-size: 1.25rem;
+}
+.brand small {
+  color: var(--muted);
+  font-size: 0.7rem;
+  letter-spacing: 0.02em;
+}
+.brand-mark {
+  position: relative;
+  width: 2.1rem;
+  height: 2.1rem;
+  border-radius: 0.65rem;
+  background: var(--accent);
+  box-shadow: inset 0 0 0 1px #ffffff33;
+}
+.brand-mark span {
+  position: absolute;
+  width: 1rem;
+  height: 0.7rem;
+  border: 1.5px solid #fff;
+  border-radius: 0.2rem;
+}
+.brand-mark span:first-child {
+  top: 0.55rem;
+  left: 0.4rem;
+  transform: rotate(-9deg);
+}
+.brand-mark span:last-child {
+  top: 0.82rem;
+  left: 0.7rem;
+  transform: rotate(8deg);
+}
+nav {
+  display: grid;
+  gap: 0.35rem;
+}
+nav a,
+.sidebar-footer > a {
+  display: flex;
+  min-height: 2.85rem;
+  align-items: center;
+  gap: 0.8rem;
+  padding: 0.65rem 0.8rem;
+  border-radius: 0.7rem;
+  color: var(--muted);
+  font-weight: 650;
+  text-decoration: none;
+}
+nav a > app-icon,
+.sidebar-footer > a app-icon {
+  display: grid;
+  width: 1.45rem;
+  place-items: center;
+  font-size: 1.2rem;
+}
+nav a:hover,
+nav a.active,
+.sidebar-footer > a:hover,
+.sidebar-footer > a.active {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.sidebar-footer {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: auto;
+}
+.privacy {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: 0.8rem;
+  background: var(--canvas);
+}
+.privacy > app-icon {
+  display: grid;
+  width: 1.7rem;
+  height: 1.7rem;
+  place-items: center;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  color: var(--success);
+  background: var(--success-soft);
+}
+.privacy > span {
+  display: grid;
+}
+.privacy strong {
+  font-size: 0.73rem;
+}
+.privacy small {
+  color: var(--muted);
+  font-size: 0.62rem;
+}
+main {
+  max-width: calc(100% - 16rem);
+  overflow-x: hidden;
+  min-width: 0;
+  min-height: 100dvh;
+  margin-left: 16rem;
+}
+.bottom-nav {
+  display: none;
+}
+.mobile-app-bar,
+.mobile-drawer,
+.drawer-scrim {
+  display: none;
+}
+
+.permission-backdrop {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: max(1rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right))
+    max(1rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
+  overflow-y: auto;
+  background: rgb(14 28 22 / 72%);
+  backdrop-filter: blur(4px);
+}
+
+.permission-dialog {
+  width: min(100%, 28rem);
+  padding: clamp(1.25rem, 4vw, 2rem);
+  text-align: center;
+  box-shadow: 0 1.5rem 4rem rgb(8 26 18 / 30%);
+}
+
+.permission-dialog__icon {
+  display: inline-grid;
+  width: 3.5rem;
+  height: 3.5rem;
+  margin-bottom: 0.75rem;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.permission-dialog__icon app-icon {
+  width: 1.75rem;
+  height: 1.75rem;
+  fill: currentColor;
+}
+
+.permission-dialog h2 {
+  margin: 0;
+}
+
+.permission-dialog p {
+  margin: 0.75rem 0 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.permission-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+}
+
+.permission-status {
+  position: fixed;
+  z-index: 900;
+  right: max(1rem, env(safe-area-inset-right));
+  bottom: max(5rem, calc(env(safe-area-inset-bottom) + 1rem));
+  max-width: min(24rem, calc(100vw - 2rem));
+  margin: 0;
+  padding: 0.75rem 1rem;
+  border-radius: 0.75rem;
+  color: #fff;
+  background: #173c2d;
+  box-shadow: 0 0.75rem 2rem rgb(8 26 18 / 24%);
+}
+
+@media (max-width: 760px) {
+  .startup-error {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0.2rem;
+    text-align: left;
+  }
+
+  .mobile-app-bar {
+    position: fixed;
+    z-index: 40;
+    inset: 0 0 auto;
+    display: grid;
+    height: calc(3.5rem + env(safe-area-inset-top));
+    grid-template-columns: 3rem 1fr 3rem;
+    align-items: end;
+    padding: env(safe-area-inset-top) 0.45rem 0.45rem;
+    border-bottom: 1px solid var(--line);
+    background: color-mix(in srgb, var(--surface) 96%, transparent);
+    backdrop-filter: blur(12px);
+  }
+  .mobile-app-bar button,
+  .mobile-app-bar .mobile-stats {
+    display: grid;
+    width: 2.6rem;
+    height: 2.6rem;
+    place-items: center;
+    border: 0;
+    border-radius: 0.7rem;
+    color: var(--accent);
+    background: transparent;
+  }
+  .mobile-app-bar > a:not(.mobile-stats) {
+    align-self: center;
+    color: var(--ink);
+    font-family: var(--display);
+    font-size: 1.15rem;
+    font-weight: 700;
+    text-align: center;
+    text-decoration: none;
+  }
+  .mobile-app-bar app-icon {
+    width: 1.35rem;
+    height: 1.35rem;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-width: 2;
+  }
+  .drawer-scrim {
+    position: fixed;
+    z-index: 59;
+    inset: 0;
+    display: block;
+    width: 100%;
+    height: 100%;
+    border: 0;
+    background: rgb(8 20 14 / 55%);
+  }
+  .mobile-drawer {
+    position: fixed;
+    z-index: 60;
+    inset: 0 auto 0 0;
+    display: block;
+    width: min(19rem, 86vw);
+    padding: max(1rem, env(safe-area-inset-top)) 0.8rem 1rem;
+    background: var(--surface);
+    box-shadow: 1rem 0 3rem rgb(8 20 14 / 25%);
+  }
+  .drawer-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.4rem 0.65rem 1rem;
+  }
+  .drawer-heading strong {
+    font-family: var(--display);
+    font-size: 1.35rem;
+  }
+  .drawer-heading button {
+    display: grid;
+    width: 2.5rem;
+    height: 2.5rem;
+    border: 0;
+    border-radius: 50%;
+    color: var(--muted);
+    background: var(--surface-2);
+    place-items: center;
+  }
+  .mobile-drawer nav a {
+    min-height: 2.8rem;
+  }
+
+  .sidebar {
+    display: none;
+  }
+  main {
+    width: 100%;
+    max-width: 100%;
+    margin-left: 0;
+    padding-top: calc(3.5rem + env(safe-area-inset-top));
+    padding-bottom: 5.2rem;
+  }
+  .bottom-nav {
+    width: 100%;
+    max-width: 100%;
+    position: fixed;
+    inset: auto 0 0;
+    z-index: 20;
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    align-items: end;
+    height: 4.7rem;
+    padding: 0.45rem 0.55rem max(0.45rem, env(safe-area-inset-bottom));
+    border-top: 1px solid var(--line);
+    background: var(--surface);
+    box-shadow: 0 -8px 30px #17221d12;
+  }
+  .bottom-nav a {
+    display: grid;
+    min-height: 3.2rem;
+    place-items: center;
+    align-content: center;
+    gap: 0.05rem;
+    padding: 0;
+    font-size: 1.2rem;
+  }
+  .bottom-nav app-icon {
+    width: 1.2rem;
+    height: 1.2rem;
+  }
+  .bottom-nav small {
+    font-size: 0.64rem;
+  }
+  .bottom-nav .add-action {
+    width: 3.45rem;
+    height: 3.45rem;
+    min-height: 0;
+    place-self: start center;
+    margin-top: -1.45rem;
+    border: 5px solid var(--surface);
+    border-radius: 50%;
+    color: white;
+    background: var(--accent);
+    box-shadow: 0 6px 18px #2f76594a;
+    font-size: 1.8rem;
+  }
+  .bottom-nav .add-action app-icon {
+    width: 1.45rem;
+    height: 1.45rem;
+  }
+
+  .permission-dialog__actions {
+    flex-direction: column-reverse;
+  }
+
+  .permission-dialog__actions .btn {
+    width: 100%;
+  }
+}

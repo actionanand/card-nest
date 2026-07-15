@@ -1,0 +1,180 @@
+:host {
+  display: block;
+  min-width: 0;
+}
+
+.reports-page {
+  max-width: 76rem;
+}
+
+.period-select {
+  width: 10rem;
+}
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0.7rem;
+  margin-bottom: 1rem;
+}
+
+.stat-grid article {
+  display: grid;
+  gap: 0.25rem;
+  padding: 1rem;
+}
+
+.stat-grid small,
+.commitments span {
+  color: var(--muted);
+  font-size: 0.65rem;
+}
+
+.stat-grid strong {
+  font-family: var(--display);
+  font-size: 1.05rem;
+}
+
+.stat-grid .available {
+  color: white;
+  background: var(--accent);
+}
+
+.stat-grid .available small {
+  color: rgb(255 255 255 / 79%);
+}
+
+.report-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.chart-panel,
+.commitments {
+  min-width: 0;
+  padding: 1.2rem;
+}
+
+.chart-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.chart-heading > strong {
+  color: var(--accent);
+  font-family: var(--display);
+  font-size: 1.05rem;
+}
+
+.chart-legend,
+.source-values {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chart-legend li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.7rem;
+}
+
+.chart-legend i {
+  width: 0.65rem;
+  height: 0.65rem;
+  border-radius: 50%;
+}
+
+.chart-legend small,
+.source-values span {
+  color: var(--muted);
+}
+
+.source-values {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.source-values li {
+  display: flex;
+  min-width: 0;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.55rem 0.65rem;
+  border-radius: 0.55rem;
+  background: var(--canvas);
+  font-size: 0.68rem;
+}
+
+.source-values span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chart-empty {
+  display: grid;
+  min-height: 14rem;
+  place-items: center;
+  color: var(--muted);
+}
+
+.commitments {
+  margin-top: 1rem;
+}
+
+.commitments > div {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.7rem;
+}
+
+.commitments article {
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.85rem;
+  border-radius: 0.65rem;
+  background: var(--canvas);
+}
+
+@media (max-width: 950px) {
+  .stat-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .stat-grid .available {
+    grid-column: 1 / -1;
+  }
+
+  .report-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 600px) {
+  .reports-page {
+    padding-inline: 0.7rem;
+  }
+
+  .period-select {
+    width: 8.5rem;
+  }
+
+  .stat-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .source-values {
+    grid-template-columns: 1fr;
+  }
+
+  .commitments > div {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}

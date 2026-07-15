@@ -1,0 +1,361 @@
+<div class="page cards-page">
+  <header class="page-header">
+    <div>
+      <p class="eyebrow">Your wallet</p>
+      <h1>Cards</h1>
+      <p class="subtitle">Compact, private and ready for every billing cycle.</p>
+    </div>
+    <button
+      class="btn btn-primary add-card"
+      type="button"
+      (click)="openAdd()"
+      aria-label="Add card"
+    >
+      <app-icon class="button-icon" name="plus" />
+      <span>Add card</span>
+    </button>
+  </header>
+
+  <div class="card-toolbar">
+    <div class="view-switch" role="group" aria-label="Card status">
+      <button type="button" [class.active]="!showArchived()" (click)="showArchived.set(false)">
+        Active
+      </button>
+      <button type="button" [class.active]="showArchived()" (click)="showArchived.set(true)">
+        Archived
+      </button>
+    </div>
+    <label class="card-filter"
+      ><span class="sr-only">Sort and filter cards</span
+      ><select [value]="cardFilter()" (change)="updateCardFilter($event)">
+        <option value="ALL">All cards</option>
+        <option value="DUE">Incoming payment due</option>
+        <option value="GRACE">Longest grace period</option>
+        <option value="FEE">Annual fee due</option>
+        <option value="EXPIRING">Expiring soon</option>
+      </select></label
+    >
+  </div>
+
+  @if (showForm()) {
+    <section class="panel card-form" aria-labelledby="card-form-heading">
+      <div class="section-heading">
+        <button
+          class="icon-button form-back"
+          type="button"
+          (click)="closeForm()"
+          aria-label="Back to cards"
+        >
+          <app-icon name="back" />
+        </button>
+        <div>
+          <p class="eyebrow">{{ editingId() ? 'Update card' : 'New card' }}</p>
+          <h2 id="card-form-heading">{{ editingId() ? 'Edit credit card' : 'Add credit card' }}</h2>
+        </div>
+      </div>
+      <p class="security-note">
+        American Express uses 15 digits in a 4–6–5 format. Save only its last five digits; save the
+        last four for other cards.
+      </p>
+      <form [formGroup]="form" (ngSubmit)="save()" novalidate>
+        <div class="form-grid">
+          <label
+            >Card nickname<input
+              formControlName="nickname"
+              autocomplete="off"
+              placeholder="Everyday rewards"
+            />
+            @if (form.controls.nickname.touched && form.controls.nickname.invalid) {
+              <small>Enter a nickname.</small>
+            }
+          </label>
+          <label
+            >Bank or issuer<input
+              formControlName="issuerName"
+              autocomplete="organization"
+              placeholder="Bank name"
+          /></label>
+          <label
+            >Card network<select formControlName="network" (change)="networkChanged()">
+              @for (network of networks; track network.value) {
+                <option [value]="network.value">{{ network.label }}</option>
+              }
+            </select></label
+          >
+          <label
+            >{{ digitsLabel()
+            }}<input
+              formControlName="lastDigits"
+              inputmode="numeric"
+              [maxlength]="isAmex() ? 5 : 4"
+              [placeholder]="isAmex() ? '12345' : '1234'"
+            />
+            @if (form.controls.lastDigits.touched && form.controls.lastDigits.invalid) {
+              <small>Enter exactly {{ isAmex() ? 'five' : 'four' }} digits.</small>
+            }
+          </label>
+          <div class="paired-fields full">
+            <label
+              >Expiry month<select formControlName="expiryMonth">
+                <option [ngValue]="null">Month</option>
+                @for (month of months; track month) {
+                  <option [ngValue]="month">{{ twoDigit(month) }}</option>
+                }
+              </select></label
+            ><label
+              >Expiry year<select formControlName="expiryYear">
+                <option [ngValue]="null">Year</option>
+                @for (year of years; track year) {
+                  <option [ngValue]="year">{{ year }}</option>
+                }
+              </select></label
+            >
+          </div>
+          <div class="paired-fields full">
+            <label
+              >Statement date<select formControlName="statementDay">
+                @for (day of days; track day) {
+                  <option [ngValue]="day">Day {{ day }}</option>
+                }
+              </select></label
+            ><label
+              >Payment due<input
+                formControlName="daysAfterStatement"
+                type="number"
+                inputmode="numeric"
+                min="1"
+                max="60"
+              /><small>Days after statement</small></label
+            >
+          </div>
+          <label class="full"
+            >Credit limit (optional)<input
+              formControlName="creditLimit"
+              inputmode="decimal"
+              placeholder="250000.00"
+            />
+            @if (form.controls.creditLimit.hasError('money')) {
+              <small>Enter a valid amount.</small>
+            }
+          </label>
+          <label class="full checkbox-row"
+            ><input type="checkbox" formControlName="annualFeeEnabled" /><span
+              ><strong>Has annual fee</strong><small>Add renewal and waiver conditions</small></span
+            ></label
+          >
+          @if (form.controls.annualFeeEnabled.value) {
+            <div class="annual-fee-fields full">
+              <label
+                >Annual fee<input
+                  formControlName="annualFeeAmount"
+                  inputmode="decimal"
+                  placeholder="999.00"
+              /></label>
+              <label
+                >Renewal month<select formControlName="renewalMonth">
+                  @for (month of months; track month) {
+                    <option [ngValue]="month">{{ month }}</option>
+                  }
+                </select></label
+              >
+              <label
+                >Renewal day<select formControlName="renewalDay">
+                  @for (day of days; track day) {
+                    <option [ngValue]="day">{{ day }}</option>
+                  }
+                </select></label
+              >
+              <label
+                >Waiver spend<input
+                  formControlName="waiverThreshold"
+                  inputmode="decimal"
+                  placeholder="100000.00"
+              /></label>
+              <label
+                >Waiver period<select formControlName="waiverPeriod">
+                  <option value="ANNIVERSARY">Card anniversary</option>
+                  <option value="CALENDAR">Calendar year</option>
+                  <option value="FINANCIAL">Financial year</option>
+                  <option value="CUSTOM">Custom issuer period</option>
+                </select></label
+              >
+            </div>
+          }
+          <label class="full"
+            >Description (optional)<textarea
+              formControlName="notes"
+              placeholder="Rewards, usage notes or benefits"
+            ></textarea>
+          </label>
+          <label class="full"
+            >Emergency hotlines<input
+              formControlName="emergencyPhones"
+              inputmode="tel"
+              placeholder="1800 000 000, +91 22 0000 0000"
+            /><small>Separate multiple numbers with commas.</small></label
+          >
+          <label class="full"
+            >Support email IDs<input
+              formControlName="supportEmails"
+              type="text"
+              placeholder="cards@example.com"
+            /><small>Separate multiple addresses with commas.</small></label
+          >
+        </div>
+        <div class="form-actions">
+          <button class="btn" type="button" (click)="closeForm()">Cancel</button
+          ><button class="btn btn-primary" type="submit">
+            {{ editingId() ? 'Update card' : 'Save card' }}
+          </button>
+        </div>
+      </form>
+    </section>
+  }
+
+  <section class="card-list" aria-label="Credit cards">
+    @for (card of visibleCards(); track card.id) {
+      <article class="card-list-item panel" [class.expanded]="selectedCardId() === card.id">
+        <div class="card-row">
+          <button
+            class="card-main-button"
+            type="button"
+            (click)="selectCard(card)"
+            [attr.aria-expanded]="selectedCardId() === card.id"
+            [attr.aria-controls]="'details-' + card.id"
+          >
+            <span class="network-tile"><app-card-network-logo [network]="card.network" /></span>
+            <span class="card-identity"
+              ><strong
+                >{{ card.nickname }}
+                <b
+                  >{{ card.network === 'AMERICAN_EXPRESS' ? '•••••' : '••••' }}
+                  {{ card.lastDigits }}</b
+                ></strong
+              ><small
+                >{{ card.issuerName }} · Exp {{ expiry(card) }} ·
+                {{ statementCountdown(card) }}</small
+              ></span
+            >
+            <span class="card-balance"
+              ><small>Outstanding</small
+              ><strong>{{ money(store.cardOutstanding(card.id), card.currencyCode) }}</strong></span
+            >
+            <app-icon class="chevron" name="chevron_down" />
+          </button>
+          <div class="menu-anchor">
+            <button
+              class="menu-button"
+              type="button"
+              (click)="toggleActionMenu(card.id)"
+              [attr.aria-expanded]="actionMenuId() === card.id"
+              aria-label="Actions for {{ card.nickname }}"
+            >
+              <app-icon name="more" />
+            </button>
+            @if (actionMenuId() === card.id) {
+              <div class="action-menu" role="menu">
+                <button type="button" role="menuitem" (click)="showTransactions(card.id)">
+                  Show transactions
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  (click)="pay(card, dueAmount(card), 'Due amount paid')"
+                >
+                  Pay due amount
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  (click)="pay(card, store.cardOutstanding(card.id), 'Outstanding paid')"
+                >
+                  Pay outstanding
+                </button>
+                <button type="button" role="menuitem" (click)="markSettled(card)">
+                  Mark as settled
+                </button>
+                <button type="button" role="menuitem" (click)="edit(card)">Edit</button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  (click)="store.archiveCard(card.id); actionMenuId.set(null)"
+                >
+                  Archive
+                </button>
+                <button class="danger-item" type="button" role="menuitem" (click)="delete(card)">
+                  Delete
+                </button>
+              </div>
+            }
+          </div>
+        </div>
+        @if (selectedCardId() === card.id) {
+          <div class="card-details" [id]="'details-' + card.id">
+            <div class="metric-grid">
+              <div>
+                <span>Due amount</span
+                ><strong>{{ money(dueAmount(card), card.currencyCode) }}</strong>
+              </div>
+              <div>
+                <span>Payment status</span><strong>{{ paymentStatus(card) }}</strong>
+              </div>
+              <div>
+                <span>Statement</span><strong>{{ date(nextStatement(card)) }}</strong>
+              </div>
+              <div>
+                <span>Bill generation</span><strong>{{ statementCountdown(card) }}</strong>
+              </div>
+              <div>
+                <span>Due date</span><strong>{{ date(dueDate(card)) }}</strong>
+              </div>
+              <div>
+                <span>Grace period</span><strong>{{ grace(card) }} days</strong>
+              </div>
+              <div>
+                <span>Credit limit</span
+                ><strong>{{ money(card.creditLimitMinor ?? 0, card.currencyCode) }}</strong>
+              </div>
+            </div>
+            <div class="utilisation">
+              <div>
+                <span>Credit used</span><strong>{{ utilisation(card) }}%</strong>
+              </div>
+              <progress [value]="utilisation(card)" max="100">{{ utilisation(card) }}%</progress
+              ><small>{{ money(availableCredit(card), card.currencyCode) }} available</small>
+            </div>
+            @if (card.notes) {
+              <p class="card-notes">{{ card.notes }}</p>
+            }
+            <div class="card-actions">
+              <a
+                class="btn btn-primary"
+                routerLink="/transactions"
+                [queryParams]="{ add: true, source: card.id }"
+                ><app-icon name="plus" /> Add transaction</a
+              ><button
+                class="btn"
+                type="button"
+                (click)="pay(card, store.cardOutstanding(card.id), 'Payment received')"
+              >
+                Record payment
+              </button>
+            </div>
+          </div>
+        }
+      </article>
+    } @empty {
+      <div class="panel empty">
+        <h2>No matching cards</h2>
+        <p>Change the filter or add a credit card.</p>
+      </div>
+    }
+  </section>
+
+  <a
+    class="transaction-fab"
+    routerLink="/transactions"
+    [queryParams]="{ add: true }"
+    aria-label="Add transaction"
+    ><app-icon name="plus"
+  /></a>
+</div>

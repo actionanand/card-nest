@@ -1,0 +1,104 @@
+<div class="page reports-page">
+  <header class="page-header">
+    <div>
+      <p class="eyebrow">Insights</p>
+      <h1>Stats & budget</h1>
+      <p class="subtitle">Income-aware analytics using your chosen budget cycle.</p>
+    </div>
+    <label class="period-select">
+      <span class="sr-only">Report period</span>
+      <select [value]="period()" (change)="updatePeriod($event)">
+        <option value="MONTH">This month</option>
+        <option value="THREE">Last 3 months</option>
+        <option value="SIX">Last 6 months</option>
+        <option value="YEAR">Last 1 year</option>
+        <option value="ALL">Overall</option>
+      </select>
+    </label>
+  </header>
+
+  <section class="stat-grid" aria-label="Budget summary">
+    <article class="panel">
+      <small>Income + tracked loads</small>
+      <strong>{{ money(periodIncome() + pluxeeLoad() + trackedSourceFunds()) }}</strong>
+    </article>
+    <article class="panel">
+      <small>Spent in period</small>
+      <strong>{{ money(totalSpent()) }}</strong>
+    </article>
+    <article class="panel">
+      <small>Credit cards to pay</small>
+      <strong>{{ money(incomingPayments()) }}</strong>
+    </article>
+    <article class="panel">
+      <small>Loans / EMIs this month</small>
+      <strong>{{ money(monthlyLoans()) }}</strong>
+    </article>
+    <article class="panel available">
+      <small>Available to use</small>
+      <strong>{{ money(availableThisMonth()) }}</strong>
+    </article>
+  </section>
+
+  <div class="report-grid">
+    <section class="panel chart-panel">
+      <div class="chart-heading">
+        <div><p class="eyebrow">Spending mix</p><h2>By category</h2></div>
+        <strong>{{ money(totalSpent()) }}</strong>
+      </div>
+      @if (byCategory().length) {
+        <app-report-chart
+          kind="doughnut"
+          [labels]="categoryLabels()"
+          [values]="categoryValues()"
+          [colours]="categoryColours()"
+          accessibleLabel="Doughnut chart showing spending by category"
+        />
+        <ul class="chart-legend" aria-label="Category spending breakdown">
+          @for (item of byCategory(); track item.id) {
+            <li>
+              <i [style.background]="item.colour"></i>
+              <span>{{ item.name }}</span>
+              <strong>{{ item.percent }}%</strong>
+              <small>{{ money(item.amount) }}</small>
+            </li>
+          }
+        </ul>
+      } @else {
+        <div class="chart-empty"><p>No spending in this period.</p></div>
+      }
+    </section>
+
+    <section class="panel chart-panel">
+      <div class="chart-heading">
+        <div><p class="eyebrow">Cards & sources</p><h2>Where spending happened</h2></div>
+      </div>
+      @if (bySource().length) {
+        <app-report-chart
+          kind="bar"
+          [labels]="sourceLabels()"
+          [values]="sourceValues()"
+          [colours]="sourceColours()"
+          accessibleLabel="Horizontal bar chart showing spending by card and payment source"
+        />
+        <ul class="source-values" aria-label="Spending by payment source">
+          @for (item of bySource(); track item.id) {
+            <li><span>{{ item.name }}</span><strong>{{ money(item.amount) }}</strong></li>
+          }
+        </ul>
+      } @else {
+        <div class="chart-empty"><p>No source spending in this period.</p></div>
+      }
+    </section>
+  </div>
+
+  <section class="panel commitments">
+    <h2>What this month needs</h2>
+    <div>
+      <article><span>Card payments</span><strong>{{ money(incomingPayments()) }}</strong></article>
+      <article><span>Pluxee load</span><strong>{{ money(pluxeeLoad()) }}</strong></article>
+      <article><span>Loan / EMI debits</span><strong>{{ money(monthlyLoans()) }}</strong></article>
+      <article><span>Budget cycle begins</span><strong>Day {{ store.budgetCycleStartDay() }}</strong></article>
+    </div>
+  </section>
+</div>
