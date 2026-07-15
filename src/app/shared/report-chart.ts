@@ -16,15 +16,19 @@ import {
   CategoryScale,
   Chart,
   DoughnutController,
+  Filler,
   Legend,
+  LineController,
+  LineElement,
   LinearScale,
+  PointElement,
   Tooltip,
   type ChartConfiguration,
   type TooltipItem,
 } from 'chart.js';
 import { ThemeService } from '../core/services/theme.service';
 
-export type ReportChartKind = 'doughnut' | 'bar';
+export type ReportChartKind = 'doughnut' | 'bar' | 'column' | 'line' | 'comparison';
 
 Chart.register(
   ArcElement,
@@ -32,15 +36,23 @@ Chart.register(
   BarElement,
   CategoryScale,
   DoughnutController,
+  Filler,
   Legend,
+  LineController,
+  LineElement,
   LinearScale,
+  PointElement,
   Tooltip,
 );
 
 @Component({
   selector: 'app-report-chart',
   template: `
-    <div class="chart-frame" [class.chart-frame--bar]="kind() === 'bar'">
+    <div
+      class="chart-frame"
+      [class.chart-frame--bar]="kind() === 'bar'"
+      [class.chart-frame--trend]="kind() === 'line' || kind() === 'comparison'"
+    >
       <canvas #chartCanvas role="img" [attr.aria-label]="accessibleLabel()"></canvas>
     </div>
   `,
@@ -59,6 +71,10 @@ Chart.register(
 
     .chart-frame--bar {
       height: clamp(14rem, 32vw, 20rem);
+    }
+
+    .chart-frame--trend {
+      height: clamp(16rem, 36vw, 23rem);
     }
 
     canvas {
@@ -81,12 +97,14 @@ export class ReportChart {
   readonly labels = input.required<readonly string[]>();
   readonly values = input.required<readonly number[]>();
   readonly colours = input.required<readonly string[]>();
+  readonly secondaryValues = input<readonly number[]>([]);
+  readonly datasetLabels = input<readonly string[]>([]);
   readonly accessibleLabel = input.required<string>();
 
   private readonly canvas = viewChild.required<ElementRef<HTMLCanvasElement>>('chartCanvas');
   private readonly theme = inject(ThemeService);
   private readonly ready = signal(false);
-  private chart: Chart<'doughnut', number[], string> | Chart<'bar', number[], string> | null = null;
+  private chart: Chart | null = null;
 
   constructor() {
     inject(DestroyRef).onDestroy(() => this.chart?.destroy());
@@ -99,6 +117,8 @@ export class ReportChart {
         labels: [...this.labels()],
         values: [...this.values()],
         colours: [...this.colours()],
+        secondaryValues: [...this.secondaryValues()],
+        datasetLabels: [...this.datasetLabels()],
         appTheme: this.theme.theme(),
       };
       if (!this.ready()) return;
@@ -111,6 +131,8 @@ export class ReportChart {
     labels: string[];
     values: number[];
     colours: string[];
+    secondaryValues: number[];
+    datasetLabels: string[];
   }): void {
     this.chart?.destroy();
     const canvas = this.canvas().nativeElement;
@@ -152,6 +174,91 @@ export class ReportChart {
       return;
     }
 
+    if (snapshot.kind === 'line') {
+      const configuration: ChartConfiguration<'line', number[], string> = {
+        type: 'line',
+        data: {
+          labels: snapshot.labels,
+          datasets: [
+            {
+              label: snapshot.datasetLabels[0] ?? 'Expense',
+              data: snapshot.values,
+              borderColor: colours[0] ?? '#d84a42',
+              backgroundColor: `${colours[0] ?? '#d84a42'}22`,
+              pointBackgroundColor: colours[0] ?? '#d84a42',
+              fill: true,
+              tension: 0.32,
+            },
+            {
+              label: snapshot.datasetLabels[1] ?? 'Remaining',
+              data: snapshot.secondaryValues,
+              borderColor: colours[1] ?? '#3b9b53',
+              backgroundColor: `${colours[1] ?? '#3b9b53'}18`,
+              pointBackgroundColor: colours[1] ?? '#3b9b53',
+              fill: true,
+              tension: 0.32,
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { intersect: false, mode: 'index' },
+          plugins: { legend: { labels: { color: ink } } },
+          scales: {
+            x: { border: { display: false }, grid: { display: false }, ticks: { color: muted } },
+            y: {
+              beginAtZero: true,
+              border: { display: false },
+              grid: { color: line },
+              ticks: { color: muted, callback: (value) => this.compactCurrency(Number(value)) },
+            },
+          },
+        },
+      };
+      this.chart = new Chart(canvas, configuration);
+      return;
+    }
+
+    if (snapshot.kind === 'comparison') {
+      const configuration: ChartConfiguration<'bar', number[], string> = {
+        type: 'bar',
+        data: {
+          labels: snapshot.labels,
+          datasets: [
+            {
+              label: snapshot.datasetLabels[0] ?? 'Income',
+              data: snapshot.values,
+              backgroundColor: colours[0] ?? '#397bd1',
+              borderRadius: 6,
+            },
+            {
+              label: snapshot.datasetLabels[1] ?? 'Expense',
+              data: snapshot.secondaryValues,
+              backgroundColor: colours[1] ?? '#d84a42',
+              borderRadius: 6,
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { labels: { color: ink } } },
+          scales: {
+            x: { border: { display: false }, grid: { display: false }, ticks: { color: muted } },
+            y: {
+              beginAtZero: true,
+              border: { display: false },
+              grid: { color: line },
+              ticks: { color: muted, callback: (value) => this.compactCurrency(Number(value)) },
+            },
+          },
+        },
+      };
+      this.chart = new Chart(canvas, configuration);
+      return;
+    }
+
     const configuration: ChartConfiguration<'bar', number[], string> = {
       type: 'bar',
       data: {
@@ -159,7 +266,8 @@ export class ReportChart {
         datasets: [
           {
             data: snapshot.values,
-            backgroundColor: colours,
+            backgroundColor:
+              snapshot.kind === 'column' ? snapshot.values.map(() => colours[0]) : colours,
             borderRadius: 7,
             borderSkipped: false,
             barThickness: 18,
@@ -169,7 +277,7 @@ export class ReportChart {
       options: {
         responsive: true,
         maintainAspectRatio: false,
-        indexAxis: 'y',
+        indexAxis: snapshot.kind === 'bar' ? 'y' : 'x',
         plugins: {
           legend: { display: false },
           tooltip: { callbacks: { label: this.barTooltipLabel } },

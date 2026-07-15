@@ -1,7 +1,6 @@
-<div class="page categories-page">
+<div class="page categories-page" [class.embedded]="embedded()">
   <header class="page-header">
     <div class="header-copy">
-      <a class="back-link" routerLink="/transactions"><app-icon name="back" /> Transactions</a>
       <div>
         <p class="eyebrow">Organisation</p>
         <h1>Categories</h1>
@@ -16,6 +15,16 @@
     >
       <app-icon name="plus" />
     </button>
+    @if (embedded()) {
+      <button
+        class="close-manager"
+        type="button"
+        (click)="closed.emit()"
+        aria-label="Close categories"
+      >
+        <app-icon name="close" />
+      </button>
+    }
   </header>
 
   <section class="panel category-list" aria-label="Transaction categories">

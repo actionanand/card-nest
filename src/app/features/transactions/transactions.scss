@@ -14,12 +14,36 @@
   height: 1.15rem;
 }
 .transaction-form {
-  width: 100%;
+  width: min(100%, 56rem);
   min-width: 0;
   max-width: 56rem;
-  margin-bottom: 1rem;
+  margin: auto;
   padding: 1.3rem;
   overflow: hidden;
+}
+.transaction-modal-backdrop,
+.category-manager-backdrop {
+  position: fixed;
+  z-index: 700;
+  inset: 0;
+  display: grid;
+  align-items: start;
+  padding: max(1rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right))
+    max(1rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
+  overflow-y: auto;
+  background: rgb(10 25 18 / 68%);
+  backdrop-filter: blur(4px);
+}
+.category-manager-backdrop {
+  z-index: 720;
+}
+.category-manager-shell {
+  width: min(100%, 58rem);
+  margin: auto;
+}
+.manage-categories app-icon {
+  width: 1rem;
+  height: 1rem;
 }
 .transaction-form form,
 .transaction-form fieldset,
@@ -372,6 +396,15 @@ label small {
   }
 }
 @media (max-width: 600px) {
+  .transaction-modal-backdrop,
+  .category-manager-backdrop {
+    padding: 0;
+  }
+  .transaction-form,
+  .category-manager-shell {
+    min-height: 100dvh;
+    border-radius: 0;
+  }
   .transactions-page {
     padding-inline: 0.65rem;
   }

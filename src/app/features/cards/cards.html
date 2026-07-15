@@ -38,178 +38,280 @@
   </div>
 
   @if (showForm()) {
-    <section class="panel card-form" aria-labelledby="card-form-heading">
-      <div class="section-heading">
-        <button
-          class="icon-button form-back"
-          type="button"
-          (click)="closeForm()"
-          aria-label="Back to cards"
-        >
-          <app-icon name="back" />
-        </button>
-        <div>
-          <p class="eyebrow">{{ editingId() ? 'Update card' : 'New card' }}</p>
-          <h2 id="card-form-heading">{{ editingId() ? 'Edit credit card' : 'Add credit card' }}</h2>
+    <div class="card-modal-backdrop">
+      <section
+        class="panel card-form"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="card-form-heading"
+      >
+        <div class="section-heading">
+          <button
+            class="icon-button form-back"
+            type="button"
+            (click)="closeForm()"
+            aria-label="Close card editor"
+          >
+            <app-icon name="close" />
+          </button>
+          <div>
+            <p class="eyebrow">{{ editingId() ? 'Update card' : 'New card' }}</p>
+            <h2 id="card-form-heading">
+              {{ editingId() ? 'Edit credit card' : 'Add credit card' }}
+            </h2>
+          </div>
         </div>
-      </div>
-      <p class="security-note">
-        American Express uses 15 digits in a 4–6–5 format. Save only its last five digits; save the
-        last four for other cards.
-      </p>
-      <form [formGroup]="form" (ngSubmit)="save()" novalidate>
-        <div class="form-grid">
-          <label
-            >Card nickname<input
-              formControlName="nickname"
-              autocomplete="off"
-              placeholder="Everyday rewards"
-            />
-            @if (form.controls.nickname.touched && form.controls.nickname.invalid) {
-              <small>Enter a nickname.</small>
-            }
-          </label>
-          <label
-            >Bank or issuer<input
-              formControlName="issuerName"
-              autocomplete="organization"
-              placeholder="Bank name"
-          /></label>
-          <label
-            >Card network<select formControlName="network" (change)="networkChanged()">
-              @for (network of networks; track network.value) {
-                <option [value]="network.value">{{ network.label }}</option>
+        <p class="security-note">
+          American Express uses 15 digits in a 4–6–5 format. Save only its last five digits; save
+          the last four for other cards.
+        </p>
+        <p class="security-note">
+          Full card number and CVV are optional, encrypted locally, hidden by default, and never
+          used in notifications.
+        </p>
+        <form [formGroup]="form" (ngSubmit)="save()" novalidate>
+          <div class="form-grid">
+            <label
+              >Card nickname<input
+                formControlName="nickname"
+                autocomplete="off"
+                placeholder="Everyday rewards"
+              />
+              @if (form.controls.nickname.touched && form.controls.nickname.invalid) {
+                <small>Enter a nickname.</small>
               }
-            </select></label
-          >
-          <label
-            >{{ digitsLabel()
-            }}<input
-              formControlName="lastDigits"
-              inputmode="numeric"
-              [maxlength]="isAmex() ? 5 : 4"
-              [placeholder]="isAmex() ? '12345' : '1234'"
-            />
-            @if (form.controls.lastDigits.touched && form.controls.lastDigits.invalid) {
-              <small>Enter exactly {{ isAmex() ? 'five' : 'four' }} digits.</small>
-            }
-          </label>
-          <div class="paired-fields full">
+            </label>
             <label
-              >Expiry month<select formControlName="expiryMonth">
-                <option [ngValue]="null">Month</option>
-                @for (month of months; track month) {
-                  <option [ngValue]="month">{{ twoDigit(month) }}</option>
-                }
-              </select></label
-            ><label
-              >Expiry year<select formControlName="expiryYear">
-                <option [ngValue]="null">Year</option>
-                @for (year of years; track year) {
-                  <option [ngValue]="year">{{ year }}</option>
+              >Bank or issuer<input
+                formControlName="issuerName"
+                autocomplete="organization"
+                placeholder="Bank name"
+            /></label>
+            <label
+              >Card network<select formControlName="network" (change)="networkChanged()">
+                @for (network of networks; track network.value) {
+                  <option [value]="network.value">{{ network.label }}</option>
                 }
               </select></label
             >
-          </div>
-          <div class="paired-fields full">
             <label
-              >Statement date<select formControlName="statementDay">
-                @for (day of days; track day) {
-                  <option [ngValue]="day">Day {{ day }}</option>
-                }
-              </select></label
-            ><label
-              >Payment due<input
-                formControlName="daysAfterStatement"
-                type="number"
+              >Network tier / subtype<input
+                formControlName="subtype"
+                placeholder="Visa Signature, RuPay Select…"
+            /></label>
+            <label
+              >{{ digitsLabel()
+              }}<input
+                formControlName="lastDigits"
                 inputmode="numeric"
-                min="1"
-                max="60"
-              /><small>Days after statement</small></label
-            >
-          </div>
-          <label class="full"
-            >Credit limit (optional)<input
-              formControlName="creditLimit"
-              inputmode="decimal"
-              placeholder="250000.00"
-            />
-            @if (form.controls.creditLimit.hasError('money')) {
-              <small>Enter a valid amount.</small>
-            }
-          </label>
-          <label class="full checkbox-row"
-            ><input type="checkbox" formControlName="annualFeeEnabled" /><span
-              ><strong>Has annual fee</strong><small>Add renewal and waiver conditions</small></span
-            ></label
-          >
-          @if (form.controls.annualFeeEnabled.value) {
-            <div class="annual-fee-fields full">
+                [maxlength]="isAmex() ? 5 : 4"
+                [placeholder]="isAmex() ? '12345' : '1234'"
+              />
+              @if (form.controls.lastDigits.touched && form.controls.lastDigits.invalid) {
+                <small>Enter exactly {{ isAmex() ? 'five' : 'four' }} digits.</small>
+              }
+            </label>
+            <label
+              >Full card number (optional)<input
+                formControlName="fullNumber"
+                inputmode="numeric"
+                autocomplete="off"
+                placeholder="Encrypted and hidden"
+              />
+              @if (form.controls.fullNumber.hasError('cardNumber')) {
+                <small>Check the number length and ensure it ends with the saved digits.</small>
+              }
+            </label>
+            <label
+              >CVV (optional)<input
+                formControlName="cvv"
+                type="password"
+                inputmode="numeric"
+                autocomplete="off"
+                [maxlength]="isAmex() ? 4 : 3"
+                placeholder="Encrypted"
+              />
+              @if (form.controls.cvv.hasError('cvv')) {
+                <small>Enter {{ isAmex() ? 'four' : 'three' }} digits.</small>
+              }
+            </label>
+            <div class="paired-fields full">
               <label
-                >Annual fee<input
-                  formControlName="annualFeeAmount"
-                  inputmode="decimal"
-                  placeholder="999.00"
-              /></label>
-              <label
-                >Renewal month<select formControlName="renewalMonth">
+                >Expiry month<select formControlName="expiryMonth">
+                  <option [ngValue]="null">Month</option>
                   @for (month of months; track month) {
-                    <option [ngValue]="month">{{ month }}</option>
+                    <option [ngValue]="month">{{ twoDigit(month) }}</option>
                   }
                 </select></label
-              >
-              <label
-                >Renewal day<select formControlName="renewalDay">
-                  @for (day of days; track day) {
-                    <option [ngValue]="day">{{ day }}</option>
+              ><label
+                >Expiry year<select formControlName="expiryYear">
+                  <option [ngValue]="null">Year</option>
+                  @for (year of years; track year) {
+                    <option [ngValue]="year">{{ year }}</option>
                   }
-                </select></label
-              >
-              <label
-                >Waiver spend<input
-                  formControlName="waiverThreshold"
-                  inputmode="decimal"
-                  placeholder="100000.00"
-              /></label>
-              <label
-                >Waiver period<select formControlName="waiverPeriod">
-                  <option value="ANNIVERSARY">Card anniversary</option>
-                  <option value="CALENDAR">Calendar year</option>
-                  <option value="FINANCIAL">Financial year</option>
-                  <option value="CUSTOM">Custom issuer period</option>
                 </select></label
               >
             </div>
-          }
-          <label class="full"
-            >Description (optional)<textarea
-              formControlName="notes"
-              placeholder="Rewards, usage notes or benefits"
-            ></textarea>
-          </label>
-          <label class="full"
-            >Emergency hotlines<input
-              formControlName="emergencyPhones"
-              inputmode="tel"
-              placeholder="1800 000 000, +91 22 0000 0000"
-            /><small>Separate multiple numbers with commas.</small></label
-          >
-          <label class="full"
-            >Support email IDs<input
-              formControlName="supportEmails"
-              type="text"
-              placeholder="cards@example.com"
-            /><small>Separate multiple addresses with commas.</small></label
-          >
-        </div>
-        <div class="form-actions">
-          <button class="btn" type="button" (click)="closeForm()">Cancel</button
-          ><button class="btn btn-primary" type="submit">
-            {{ editingId() ? 'Update card' : 'Save card' }}
-          </button>
-        </div>
-      </form>
-    </section>
+            <div class="paired-fields full">
+              <label
+                >Statement date<select formControlName="statementDay">
+                  @for (day of days; track day) {
+                    <option [ngValue]="day">Day {{ day }}</option>
+                  }
+                </select></label
+              ><label
+                >Payment due<input
+                  formControlName="daysAfterStatement"
+                  type="number"
+                  inputmode="numeric"
+                  min="1"
+                  max="60"
+                /><small>Days after statement</small></label
+              >
+            </div>
+            <label class="full"
+              >Credit limit (optional)<input
+                formControlName="creditLimit"
+                inputmode="decimal"
+                placeholder="250000.00"
+              />
+              @if (form.controls.creditLimit.hasError('money')) {
+                <small>Enter a valid amount.</small>
+              }
+            </label>
+            <label class="full checkbox-row"
+              ><input type="checkbox" formControlName="annualFeeEnabled" /><span
+                ><strong>Has annual fee</strong
+                ><small>Add renewal and waiver conditions</small></span
+              ></label
+            >
+            @if (form.controls.annualFeeEnabled.value) {
+              <div class="annual-fee-fields full">
+                <label
+                  >Annual fee<input
+                    formControlName="annualFeeAmount"
+                    inputmode="decimal"
+                    placeholder="999.00"
+                /></label>
+                <label
+                  >Renewal month<select formControlName="renewalMonth">
+                    @for (month of months; track month) {
+                      <option [ngValue]="month">{{ month }}</option>
+                    }
+                  </select></label
+                >
+                <label
+                  >Renewal day<select formControlName="renewalDay">
+                    @for (day of days; track day) {
+                      <option [ngValue]="day">{{ day }}</option>
+                    }
+                  </select></label
+                >
+                <label
+                  >Waiver spend<input
+                    formControlName="waiverThreshold"
+                    inputmode="decimal"
+                    placeholder="100000.00"
+                /></label>
+                <label
+                  >Waiver period<select formControlName="waiverPeriod">
+                    <option value="ANNIVERSARY">Card anniversary</option>
+                    <option value="CALENDAR">Calendar year</option>
+                    <option value="FINANCIAL">Financial year</option>
+                    <option value="CUSTOM">Custom issuer period</option>
+                  </select></label
+                >
+              </div>
+            }
+            <label class="full"
+              >Description (optional)<textarea
+                formControlName="notes"
+                placeholder="Rewards, usage notes or benefits"
+              ></textarea>
+            </label>
+            <label class="full"
+              >Emergency hotlines<input
+                formControlName="emergencyPhones"
+                inputmode="tel"
+                placeholder="1800 000 000, +91 22 0000 0000"
+              /><small>Separate multiple numbers with commas.</small></label
+            >
+            <label class="full"
+              >Support email IDs<input
+                formControlName="supportEmails"
+                type="text"
+                placeholder="cards@example.com"
+              /><small>Separate multiple addresses with commas.</small></label
+            >
+            <fieldset class="benefit-builder full">
+              <legend>Card benefits (optional)</legend>
+              <div class="benefit-entry">
+                <label
+                  >Benefit<input
+                    formControlName="benefitName"
+                    placeholder="Fuel, lounge, cashback, movies…"
+                /></label>
+                <label
+                  >Conditions / note<input
+                    formControlName="benefitNote"
+                    placeholder="Minimum spend, merchant cap, BOGO terms…"
+                /></label>
+                <button class="btn" type="button" (click)="addBenefit()">
+                  <app-icon name="plus" /> Add benefit
+                </button>
+              </div>
+              @if (form.controls.benefitName.hasError('duplicate')) {
+                <small>A benefit with this name is already added.</small>
+              }
+              <div class="benefit-pills">
+                @for (benefit of draftBenefits(); track benefit.id) {
+                  <span [title]="benefit.note || benefit.name">
+                    {{ benefit.name }}
+                    <button
+                      type="button"
+                      (click)="removeBenefit(benefit.id)"
+                      aria-label="Remove {{ benefit.name }}"
+                    >
+                      <app-icon name="close" />
+                    </button>
+                  </span>
+                }
+              </div>
+            </fieldset>
+            <label class="full"
+              >Important links (optional)<textarea
+                formControlName="importantLinks"
+                placeholder="Rewards portal | https://example.com/rewards"
+              ></textarea>
+              <small>Use one “Label | https://…” link per line.</small>
+              @if (form.controls.importantLinks.hasError('links')) {
+                <small>Every link must be a valid HTTP or HTTPS address.</small>
+              }
+            </label>
+            <label class="full"
+              >Linked card account (optional)<input
+                formControlName="relationshipGroup"
+                list="card-relationship-groups"
+                placeholder="ICICI Rubyx account"
+              /><small>Cards with the same account name count as used together.</small></label
+            >
+            <datalist id="card-relationship-groups">
+              @for (relatedCard of store.cards(); track relatedCard.id) {
+                @if (relatedCard.relationshipGroupId) {
+                  <option [value]="relatedCard.relationshipGroupId"></option>
+                }
+              }
+            </datalist>
+          </div>
+          <div class="form-actions">
+            <button class="btn" type="button" (click)="closeForm()">Cancel</button
+            ><button class="btn btn-primary" type="submit">
+              {{ editingId() ? 'Update card' : 'Save card' }}
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>
   }
 
   <section class="card-list" aria-label="Credit cards">
@@ -234,8 +336,11 @@
               ><small
                 >{{ card.issuerName }} · Exp {{ expiry(card) }} ·
                 {{ statementCountdown(card) }}</small
-              ></span
-            >
+              >
+              @if (card.subtype) {
+                <em class="compact-subtype">{{ card.subtype }}</em>
+              }
+            </span>
             <span class="card-balance"
               ><small>Outstanding</small
               ><strong>{{ money(store.cardOutstanding(card.id), card.currencyCode) }}</strong></span
@@ -275,12 +380,8 @@
                   Mark as settled
                 </button>
                 <button type="button" role="menuitem" (click)="edit(card)">Edit</button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  (click)="store.archiveCard(card.id); actionMenuId.set(null)"
-                >
-                  Archive
+                <button type="button" role="menuitem" (click)="archive(card)">
+                  {{ card.archived ? 'Restore' : 'Archive' }}
                 </button>
                 <button class="danger-item" type="button" role="menuitem" (click)="delete(card)">
                   Delete
@@ -325,6 +426,56 @@
             </div>
             @if (card.notes) {
               <p class="card-notes">{{ card.notes }}</p>
+            }
+            @if (card.subtype) {
+              <span class="network-subtype">{{ card.subtype }}</span>
+            }
+            @if (card.benefits?.length) {
+              <div class="card-benefits" aria-label="Card benefits">
+                @for (benefit of card.benefits ?? []; track benefit.id) {
+                  <span [title]="benefit.note || benefit.name"
+                    >{{ benefit.name }}
+                    <button
+                      type="button"
+                      (click)="removeCardBenefit(card, benefit.id)"
+                      aria-label="Remove {{ benefit.name }} from {{ card.nickname }}"
+                    >
+                      <app-icon name="close" />
+                    </button>
+                  </span>
+                }
+              </div>
+            }
+            @if (card.encryptedFullNumber || card.encryptedCvv) {
+              <div class="secret-details">
+                <button class="btn btn-quiet" type="button" (click)="revealSecrets(card)">
+                  <app-icon [name]="revealedCardId() === card.id ? 'hide_credit' : 'show_credit'" />
+                  {{
+                    revealedCardId() === card.id
+                      ? 'Hide protected details'
+                      : 'Reveal protected details'
+                  }}
+                </button>
+                @if (revealedCardId() === card.id) {
+                  <div>
+                    @if (revealedNumber()) {
+                      <span>Number</span><strong>{{ revealedNumber() }}</strong>
+                    }
+                    @if (revealedCvv()) {
+                      <span>CVV</span><strong>{{ revealedCvv() }}</strong>
+                    }
+                  </div>
+                }
+              </div>
+            }
+            @if (card.importantLinks?.length) {
+              <div class="important-links">
+                @for (link of card.importantLinks ?? []; track link.id) {
+                  <a [href]="link.url" target="_blank" rel="noopener noreferrer">
+                    <app-icon name="go_to_source" /> {{ link.label }}
+                  </a>
+                }
+              </div>
             }
             <div class="card-actions">
               <a

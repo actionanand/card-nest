@@ -3,6 +3,7 @@ import { ActivatedRoute, RouterLink } from '@angular/router';
 import { CardTransaction, PaymentSource, TransactionType } from '../../core/models/domain';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { formatMoney, parseMoneyToMinor } from '../../core/services/money';
+import { SnackbarService } from '../../core/services/snackbar.service';
 import { AppIcon } from '../../shared/app-icon';
 import { PaymentSourceLogo } from '../../shared/payment-source-logo';
 
@@ -17,6 +18,7 @@ type SourceTab = 'ACCOUNTS' | 'ACTIVITY';
 export class SourcesPage {
   readonly store = inject(CardNestStore);
   private readonly route = inject(ActivatedRoute);
+  private readonly snackbar = inject(SnackbarService);
   private readonly requestedSourceId = this.route.snapshot.fragment;
   readonly activeTab = signal<SourceTab>(this.requestedSourceId ? 'ACTIVITY' : 'ACCOUNTS');
   readonly selectedSourceId = signal(this.requestedSourceId ?? 'ALL');
@@ -93,6 +95,7 @@ export class SourcesPage {
     const value = parseMoneyToMinor((event.target as HTMLInputElement).value);
     if (value === null) return;
     this.store.updatePaymentSource({ ...source, [field]: value });
+    this.snackbar.show(`${source.nickname} updated.`);
   }
 
   updateLoadDay(source: PaymentSource, event: Event): void {
@@ -100,10 +103,12 @@ export class SourcesPage {
       ...source,
       loadDay: Number((event.target as HTMLSelectElement).value),
     });
+    this.snackbar.show(`${source.nickname} load date updated.`);
   }
 
   toggle(source: PaymentSource, field: 'noLimit' | 'autoLoad'): void {
     this.store.updatePaymentSource({ ...source, [field]: !source[field] });
+    this.snackbar.show(`${source.nickname} updated.`);
   }
 
   transactionLabel(transaction: CardTransaction): string {

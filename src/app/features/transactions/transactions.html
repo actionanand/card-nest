@@ -16,110 +16,118 @@
   </header>
 
   @if (showForm()) {
-    <section class="panel transaction-form" aria-labelledby="transaction-form-title">
-      <div class="form-heading">
-        <button
-          class="back-button"
-          type="button"
-          (click)="closeForm()"
-          aria-label="Back to transactions"
-        >
-          <app-icon name="back" />
-        </button>
-        <div>
-          <p class="eyebrow">{{ editingId() ? 'Update entry' : 'New entry' }}</p>
-          <h2 id="transaction-form-title">
-            {{ editingId() ? 'Edit transaction' : 'Record a transaction' }}
-          </h2>
-        </div>
-      </div>
-      <form [formGroup]="form" (ngSubmit)="save()" novalidate>
-        <fieldset>
-          <legend>Transaction type</legend>
-          <div class="type-picker">
-            @for (type of types; track type.value) {
-              <label
-                ><input type="radio" formControlName="type" [value]="type.value" /><span>{{
-                  type.label
-                }}</span></label
-              >
-            }
-          </div>
-        </fieldset>
-        <div class="form-grid">
-          <label>
-            Pay from
-            <select formControlName="cardId">
-              <optgroup label="Credit cards">
-                @for (card of store.activeCards(); track card.id) {
-                  <option [value]="card.id">
-                    {{ card.nickname }} · {{ card.lastDigits }} · {{ card.issuerName }}
-                  </option>
-                }
-              </optgroup>
-              <optgroup label="Cash, bank and meal card">
-                @for (source of store.activePaymentSources(); track source.id) {
-                  <option [value]="source.id">
-                    {{ source.nickname }}{{ source.institution ? ' · ' + source.institution : '' }}
-                  </option>
-                }
-              </optgroup>
-            </select>
-          </label>
-          <label>
-            Amount
-            <input formControlName="amount" inputmode="decimal" placeholder="0.00" />
-            @if (form.controls.amount.touched && form.controls.amount.invalid) {
-              <small>Enter a valid amount.</small>
-            }
-          </label>
-          <label>Date<input formControlName="transactionDate" type="date" /></label>
-          <label>
-            Category
-            <select formControlName="categoryId">
-              @for (category of store.categories(); track category.id) {
-                <option [value]="category.id">{{ category.name }}</option>
-              }
-            </select>
-          </label>
-          <label class="full"
-            >Merchant or title<input
-              formControlName="merchant"
-              autocomplete="off"
-              placeholder="Where did you spend?"
-          /></label>
-          @if (!editingId()) {
-            <label>
-              Repeat monthly
-              <select formControlName="repeat">
-                <option value="NONE">Do not repeat</option>
-                @for (count of repeatOptions; track count) {
-                  <option [value]="count">
-                    {{ count }} more {{ count === 1 ? 'month' : 'months' }}
-                  </option>
-                }
-                <option value="INFINITE">Every month · no end date</option>
-              </select>
-              <small>The entry is added on the same date to the selected payment source.</small>
-            </label>
-          }
-          <label class="full"
-            >Notes<textarea formControlName="notes" placeholder="Optional details"></textarea>
-          </label>
-          <label class="attachment full">
-            <span>Receipt images</span>
-            <input type="file" accept="image/*" multiple />
-            <small>Images remain private on the device.</small>
-          </label>
-        </div>
-        <div class="form-actions">
-          <button class="btn" type="button" (click)="closeForm()">Cancel</button>
-          <button class="btn btn-primary" type="submit">
-            {{ editingId() ? 'Update transaction' : 'Save transaction' }}
+    <div class="transaction-modal-backdrop">
+      <section
+        class="panel transaction-form"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="transaction-form-title"
+      >
+        <div class="form-heading">
+          <button
+            class="back-button"
+            type="button"
+            (click)="closeForm()"
+            aria-label="Close transaction editor"
+          >
+            <app-icon name="close" />
           </button>
+          <div>
+            <p class="eyebrow">{{ editingId() ? 'Update entry' : 'New entry' }}</p>
+            <h2 id="transaction-form-title">
+              {{ editingId() ? 'Edit transaction' : 'Record a transaction' }}
+            </h2>
+          </div>
         </div>
-      </form>
-    </section>
+        <form [formGroup]="form" (ngSubmit)="save()" novalidate>
+          <fieldset>
+            <legend>Transaction type</legend>
+            <div class="type-picker">
+              @for (type of types; track type.value) {
+                <label
+                  ><input type="radio" formControlName="type" [value]="type.value" /><span>{{
+                    type.label
+                  }}</span></label
+                >
+              }
+            </div>
+          </fieldset>
+          <div class="form-grid">
+            <label>
+              Pay from
+              <select formControlName="cardId">
+                <optgroup label="Credit cards">
+                  @for (card of store.activeCards(); track card.id) {
+                    <option [value]="card.id">
+                      {{ card.nickname }} · {{ card.lastDigits }} · {{ card.issuerName }}
+                    </option>
+                  }
+                </optgroup>
+                <optgroup label="Cash, bank and meal card">
+                  @for (source of store.activePaymentSources(); track source.id) {
+                    <option [value]="source.id">
+                      {{ source.nickname
+                      }}{{ source.institution ? ' · ' + source.institution : '' }}
+                    </option>
+                  }
+                </optgroup>
+              </select>
+            </label>
+            <label>
+              Amount
+              <input formControlName="amount" inputmode="decimal" placeholder="0.00" />
+              @if (form.controls.amount.touched && form.controls.amount.invalid) {
+                <small>Enter a valid amount.</small>
+              }
+            </label>
+            <label>Date<input formControlName="transactionDate" type="date" /></label>
+            <label>
+              Category
+              <select formControlName="categoryId">
+                @for (category of store.categories(); track category.id) {
+                  <option [value]="category.id">{{ category.name }}</option>
+                }
+              </select>
+            </label>
+            <label class="full"
+              >Merchant or title<input
+                formControlName="merchant"
+                autocomplete="off"
+                placeholder="Where did you spend?"
+            /></label>
+            @if (!editingId()) {
+              <label>
+                Repeat monthly
+                <select formControlName="repeat">
+                  <option value="NONE">Do not repeat</option>
+                  @for (count of repeatOptions; track count) {
+                    <option [value]="count">
+                      {{ count }} more {{ count === 1 ? 'month' : 'months' }}
+                    </option>
+                  }
+                  <option value="INFINITE">Every month · no end date</option>
+                </select>
+                <small>The entry is added on the same date to the selected payment source.</small>
+              </label>
+            }
+            <label class="full"
+              >Notes<textarea formControlName="notes" placeholder="Optional details"></textarea>
+            </label>
+            <label class="attachment full">
+              <span>Receipt images</span>
+              <input type="file" accept="image/*" multiple />
+              <small>Images remain private on the device.</small>
+            </label>
+          </div>
+          <div class="form-actions">
+            <button class="btn" type="button" (click)="closeForm()">Cancel</button>
+            <button class="btn btn-primary" type="submit">
+              {{ editingId() ? 'Update transaction' : 'Save transaction' }}
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>
   }
 
   <section class="toolbar panel" aria-label="Transaction filters">
@@ -179,7 +187,9 @@
         </option>
       </select>
     </label>
-    <a class="btn manage-categories" routerLink="/categories">Manage categories</a>
+    <button class="btn manage-categories" type="button" (click)="manageCategoriesOpen.set(true)">
+      <app-icon name="categories" /> Manage categories
+    </button>
   </section>
 
   <section class="ledger-summary panel" aria-label="Visible transaction summary">
@@ -313,3 +323,16 @@
     }
   </section>
 </div>
+
+@if (manageCategoriesOpen()) {
+  <div class="category-manager-backdrop">
+    <section
+      class="category-manager-shell"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Manage categories"
+    >
+      <app-categories-page [embedded]="true" (closed)="manageCategoriesOpen.set(false)" />
+    </section>
+  </div>
+}

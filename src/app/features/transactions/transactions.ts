@@ -1,25 +1,28 @@
 import { Component, computed, inject, signal } from '@angular/core';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
-import { ActivatedRoute, Router, RouterLink } from '@angular/router';
+import { ActivatedRoute, Router } from '@angular/router';
 import { CardTransaction, TransactionType } from '../../core/models/domain';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { formatMoney, parseMoneyToMinor } from '../../core/services/money';
+import { SnackbarService } from '../../core/services/snackbar.service';
 import { AppIcon } from '../../shared/app-icon';
+import { CategoriesPage } from '../categories/categories';
 
 type GroupingMode = 'MONTH' | 'CYCLE' | 'STATEMENT';
 type RepeatChoice = 'NONE' | 'INFINITE' | `${number}`;
 
 @Component({
   selector: 'app-transactions-page',
-  imports: [ReactiveFormsModule, RouterLink, AppIcon],
+  imports: [ReactiveFormsModule, AppIcon, CategoriesPage],
   templateUrl: './transactions.html',
   styleUrl: './transactions.scss',
-  host: { '(document:keydown.escape)': 'closeMenus()' },
+  host: { '(document:keydown.escape)': 'closeOverlays()' },
 })
 export class TransactionsPage {
   readonly store = inject(CardNestStore);
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
+  private readonly snackbar = inject(SnackbarService);
   private readonly requestedSourceId = this.route.snapshot.queryParamMap.get('source');
   private readonly requestedEditId = this.route.snapshot.queryParamMap.get('edit');
   readonly showForm = signal(
@@ -30,6 +33,7 @@ export class TransactionsPage {
   readonly editingId = signal<string | null>(null);
   readonly actionMenuId = signal<string | null>(null);
   readonly summaryMenuOpen = signal(false);
+  readonly manageCategoriesOpen = signal(false);
   readonly hideCredits = signal(false);
   readonly creditCardsOnly = signal(false);
   readonly search = signal('');
@@ -188,13 +192,26 @@ export class TransactionsPage {
     this.actionMenuId.set(null);
     this.summaryMenuOpen.set(false);
   }
+  closeOverlays(): void {
+    if (this.manageCategoriesOpen()) {
+      this.manageCategoriesOpen.set(false);
+      return;
+    }
+    if (this.showForm()) {
+      this.closeForm();
+      return;
+    }
+    this.closeMenus();
+  }
   delete(transaction: CardTransaction): void {
     if (!globalThis.confirm?.(`Delete ${transaction.merchant || 'this transaction'}?`)) return;
     this.store.deleteTransaction(transaction.id);
+    this.snackbar.show('Transaction deleted.', 'WARNING');
     this.closeMenus();
   }
   duplicate(transaction: CardTransaction): void {
     this.store.duplicateTransaction(transaction.id);
+    this.snackbar.show('Transaction duplicated.');
     this.closeMenus();
   }
   goToSource(transaction: CardTransaction): void {
@@ -264,6 +281,7 @@ export class TransactionsPage {
     }
     this.resetForm(value.cardId);
     this.closeForm();
+    this.snackbar.show(existing ? 'Transaction updated.' : 'Transaction added.');
   }
 
   private periodFor(transaction: CardTransaction): { key: string; label: string } {

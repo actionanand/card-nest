@@ -13,7 +13,7 @@
 
 .stat-grid {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 0.7rem;
   margin-bottom: 1rem;
 }
@@ -43,6 +43,9 @@
 .stat-grid .available small {
   color: rgb(255 255 255 / 79%);
 }
+.stat-grid .ratio strong {
+  color: var(--accent);
+}
 
 .report-grid {
   display: grid;
@@ -51,9 +54,43 @@
 }
 
 .chart-panel,
-.commitments {
+.commitments,
+.trend-panel,
+.category-trend {
   min-width: 0;
   padding: 1.2rem;
+}
+.trend-table-wrap {
+  margin-bottom: 1rem;
+  overflow-x: auto;
+}
+.trend-table-wrap table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.72rem;
+}
+.trend-table-wrap th,
+.trend-table-wrap td {
+  padding: 0.7rem 0.8rem;
+  border-bottom: 1px solid var(--line);
+  text-align: right;
+  white-space: nowrap;
+}
+.trend-table-wrap th:first-child {
+  text-align: left;
+}
+.trend-table-wrap thead th {
+  color: var(--muted);
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.trend-table-wrap .negative {
+  color: var(--danger);
+}
+.trend-panel,
+.category-trend {
+  margin-bottom: 1rem;
 }
 
 .chart-heading {
@@ -78,12 +115,23 @@
   list-style: none;
 }
 
-.chart-legend li {
+.chart-legend li > button {
   display: grid;
+  width: 100%;
   grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 0.45rem;
+  padding: 0.45rem;
+  border: 0;
+  border-radius: 0.5rem;
+  color: var(--ink);
+  background: transparent;
   font-size: 0.7rem;
+  text-align: left;
+}
+.chart-legend li > button:hover,
+.chart-legend li > button[aria-expanded='true'] {
+  background: var(--accent-soft);
 }
 
 .chart-legend i {

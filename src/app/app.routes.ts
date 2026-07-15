@@ -31,6 +31,23 @@ export const routes: Routes = [
     loadComponent: () => import('./features/reports/reports').then((item) => item.ReportsPage),
   },
   {
+    path: 'category-spending',
+    loadComponent: () =>
+      import('./features/category-spending/category-spending').then(
+        (item) => item.CategorySpendingPage,
+      ),
+  },
+  {
+    path: 'card-benefits',
+    loadComponent: () =>
+      import('./features/card-benefits/card-benefits').then((item) => item.CardBenefitsPage),
+  },
+  {
+    path: 'card-usage',
+    loadComponent: () =>
+      import('./features/card-usage/card-usage').then((item) => item.CardUsagePage),
+  },
+  {
     path: 'settings',
     loadComponent: () => import('./features/settings/settings').then((item) => item.SettingsPage),
   },

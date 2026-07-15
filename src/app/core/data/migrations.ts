@@ -36,4 +36,16 @@ export const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
       `CREATE INDEX IF NOT EXISTS idx_monthly_income_cycle_start ON monthly_income(cycle_start_date DESC)`,
     ],
   },
+  {
+    version: 4,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS category_limits (category_id TEXT PRIMARY KEY NOT NULL, limit_minor INTEGER NOT NULL CHECK(limit_minor >= 0), show_limit INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL, FOREIGN KEY(category_id) REFERENCES categories(id) ON DELETE CASCADE)`,
+      `CREATE TABLE IF NOT EXISTS card_benefits (id TEXT PRIMARY KEY NOT NULL, card_id TEXT NOT NULL, name TEXT NOT NULL, note TEXT, updated_at TEXT NOT NULL, FOREIGN KEY(card_id) REFERENCES credit_cards(id) ON DELETE CASCADE)`,
+      `CREATE INDEX IF NOT EXISTS idx_card_benefits_name ON card_benefits(name COLLATE NOCASE)`,
+      `CREATE TABLE IF NOT EXISTS card_important_links (id TEXT PRIMARY KEY NOT NULL, card_id TEXT NOT NULL, label TEXT NOT NULL, url TEXT NOT NULL, updated_at TEXT NOT NULL, FOREIGN KEY(card_id) REFERENCES credit_cards(id) ON DELETE CASCADE)`,
+      `CREATE TABLE IF NOT EXISTS card_relationship_groups (id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+      `CREATE TABLE IF NOT EXISTS card_relationship_members (group_id TEXT NOT NULL, card_id TEXT NOT NULL UNIQUE, PRIMARY KEY(group_id, card_id), FOREIGN KEY(group_id) REFERENCES card_relationship_groups(id) ON DELETE CASCADE, FOREIGN KEY(card_id) REFERENCES credit_cards(id) ON DELETE CASCADE)`,
+      `CREATE TABLE IF NOT EXISTS card_secrets (card_id TEXT PRIMARY KEY NOT NULL, encrypted_number TEXT, encrypted_cvv TEXT, updated_at TEXT NOT NULL, FOREIGN KEY(card_id) REFERENCES credit_cards(id) ON DELETE CASCADE)`,
+    ],
+  },
 ];

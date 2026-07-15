@@ -268,7 +268,9 @@ export class CardNestStore {
     if (Number.isFinite(budget) && budget >= 0) this.monthlyBudgetMinor.set(budget);
     this.profileTitle.set(values.get('profile_title') ?? '');
     this.profileName.set(values.get('profile_name') ?? '');
-    await this.loadCurrentIncome();
+    await Promise.all([this.loadCurrentIncome(), this.loadCards()]);
+    await this.loadCategories();
+    await this.loadCategoryLimits();
   }
 
   async setMonthlyIncome(amountMinor: number): Promise<void> {
@@ -332,9 +334,11 @@ export class CardNestStore {
 
   addCard(card: CreditCard): void {
     this.cards.update((cards) => [...cards, card]);
+    void this.persistCard(card);
   }
   updateCard(updated: CreditCard): void {
     this.cards.update((cards) => cards.map((card) => (card.id === updated.id ? updated : card)));
+    void this.persistCard(updated);
   }
   addTransaction(transaction: CardTransaction): void {
     this.transactions.update((items) => [transaction, ...items]);
@@ -396,6 +400,9 @@ export class CardNestStore {
   deleteCard(cardId: string): void {
     this.cards.update((cards) => cards.filter((card) => card.id !== cardId));
     this.transactions.update((items) => items.filter((item) => item.cardId !== cardId));
+    if (this.database.ready()) {
+      void this.database.run('DELETE FROM credit_cards WHERE id = ?', [cardId]);
+    }
   }
   recordPayment(cardId: string, amountMinor: number, label = 'Card payment'): void {
     if (amountMinor <= 0) return;
@@ -415,33 +422,25 @@ export class CardNestStore {
     });
   }
   archiveCard(cardId: string): void {
-    this.cards.update((cards) =>
-      cards.map((card) =>
-        card.id === cardId
-          ? { ...card, archived: true, updatedAt: new Date().toISOString() }
-          : card,
-      ),
-    );
+    const card = this.cards().find((item) => item.id === cardId);
+    if (card) this.updateCard({ ...card, archived: true, updatedAt: new Date().toISOString() });
   }
 
   restoreCard(cardId: string): void {
-    this.cards.update((cards) =>
-      cards.map((card) =>
-        card.id === cardId
-          ? { ...card, archived: false, updatedAt: new Date().toISOString() }
-          : card,
-      ),
-    );
+    const card = this.cards().find((item) => item.id === cardId);
+    if (card) this.updateCard({ ...card, archived: false, updatedAt: new Date().toISOString() });
   }
 
   addCategory(category: Category): void {
     this.categories.update((categories) => [...categories, category]);
+    void this.persistCategory(category);
   }
 
   updateCategory(updated: Category): void {
     this.categories.update((categories) =>
       categories.map((category) => (category.id === updated.id ? updated : category)),
     );
+    void this.persistCategory(updated);
   }
 
   deleteCategory(categoryId: string, replacementCategoryId = 'other'): boolean {
@@ -462,7 +461,38 @@ export class CardNestStore {
     this.categories.update((categories) =>
       categories.filter((category) => category.id !== categoryId),
     );
+    if (this.database.ready()) {
+      void this.database.run('DELETE FROM categories WHERE id = ?', [categoryId]);
+    }
     return true;
+  }
+
+  async setCategoryLimit(
+    categoryId: string,
+    limitMinor: number | undefined,
+    showLimit: boolean,
+  ): Promise<void> {
+    this.categories.update((categories) =>
+      categories.map((category) =>
+        category.id === categoryId
+          ? { ...category, monthlyLimitMinor: limitMinor, showLimit }
+          : category,
+      ),
+    );
+    if (!this.database.ready()) return;
+    if (limitMinor === undefined) {
+      await this.database.run('DELETE FROM category_limits WHERE category_id = ?', [categoryId]);
+      return;
+    }
+    await this.database.run(
+      `INSERT INTO category_limits (category_id, limit_minor, show_limit, updated_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(category_id) DO UPDATE SET
+         limit_minor = excluded.limit_minor,
+         show_limit = excluded.show_limit,
+         updated_at = excluded.updated_at`,
+      [categoryId, limitMinor, showLimit ? 1 : 0, new Date().toISOString()],
+    );
   }
 
   sourceName(sourceId: string): string {
@@ -608,6 +638,169 @@ export class CardNestStore {
     }
     this.monthlyIncomeMinor.set(income.amountMinor);
     await this.refreshIncomeHistory();
+  }
+
+  private async loadCards(): Promise<void> {
+    const rows = await this.database.query<{ payload: string }>(
+      'SELECT payload FROM credit_cards ORDER BY created_at',
+    );
+    if (rows.length) {
+      const cards = rows.flatMap((row) => {
+        try {
+          return [JSON.parse(row.payload) as CreditCard];
+        } catch {
+          return [];
+        }
+      });
+      if (cards.length) this.cards.set(cards);
+      return;
+    }
+    for (const card of this.cards()) await this.persistCard(card);
+  }
+
+  private async loadCategoryLimits(): Promise<void> {
+    const rows = await this.database.query<
+      {
+        categoryId: string;
+        limitMinor: number;
+        showLimit: number;
+      } & Record<string, unknown>
+    >(
+      `SELECT category_id AS categoryId, limit_minor AS limitMinor, show_limit AS showLimit
+       FROM category_limits`,
+    );
+    const limits = new Map(rows.map((row) => [row.categoryId, row]));
+    this.categories.update((categories) =>
+      categories.map((category) => {
+        const limit = limits.get(category.id);
+        return limit
+          ? {
+              ...category,
+              monthlyLimitMinor: limit.limitMinor,
+              showLimit: Boolean(limit.showLimit),
+            }
+          : category;
+      }),
+    );
+  }
+
+  private async loadCategories(): Promise<void> {
+    const rows = await this.database.query<
+      {
+        id: string;
+        name: string;
+        icon: string;
+        colour: string | null;
+        appliesTo: Category['appliesTo'];
+        archived: number;
+      } & Record<string, unknown>
+    >(
+      `SELECT id, name, icon, colour, applies_to AS appliesTo, archived
+       FROM categories ORDER BY name COLLATE NOCASE`,
+    );
+    if (rows.length) {
+      this.categories.set(
+        rows.map((row) => ({
+          id: row.id,
+          name: row.name,
+          icon: row.icon,
+          colour: row.colour ?? undefined,
+          appliesTo: row.appliesTo,
+          archived: Boolean(row.archived),
+        })),
+      );
+      return;
+    }
+    for (const category of this.categories()) await this.persistCategory(category);
+  }
+
+  private async persistCategory(category: Category): Promise<void> {
+    if (!this.database.ready()) return;
+    await this.database.run(
+      `INSERT INTO categories (id, name, icon, colour, applies_to, archived)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         name = excluded.name,
+         icon = excluded.icon,
+         colour = excluded.colour,
+         applies_to = excluded.applies_to,
+         archived = excluded.archived`,
+      [
+        category.id,
+        category.name,
+        category.icon,
+        category.colour ?? null,
+        category.appliesTo,
+        category.archived ? 1 : 0,
+      ],
+    );
+  }
+
+  private async persistCard(card: CreditCard): Promise<void> {
+    if (!this.database.ready()) return;
+    await this.database.run(
+      `INSERT INTO credit_cards
+       (id, nickname, issuer_name, last_digits, encrypted_full_number, network, payload, archived, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         nickname = excluded.nickname,
+         issuer_name = excluded.issuer_name,
+         last_digits = excluded.last_digits,
+         encrypted_full_number = excluded.encrypted_full_number,
+         network = excluded.network,
+         payload = excluded.payload,
+         archived = excluded.archived,
+         updated_at = excluded.updated_at`,
+      [
+        card.id,
+        card.nickname,
+        card.issuerName,
+        card.lastDigits,
+        card.encryptedFullNumber ?? null,
+        card.network,
+        JSON.stringify(card),
+        card.archived ? 1 : 0,
+        card.createdAt,
+        card.updatedAt,
+      ],
+    );
+    await this.database.run('DELETE FROM card_benefits WHERE card_id = ?', [card.id]);
+    for (const benefit of card.benefits ?? []) {
+      await this.database.run(
+        `INSERT INTO card_benefits (id, card_id, name, note, updated_at)
+         VALUES (?, ?, ?, ?, ?)`,
+        [benefit.id, card.id, benefit.name, benefit.note ?? null, card.updatedAt],
+      );
+    }
+    await this.database.run('DELETE FROM card_important_links WHERE card_id = ?', [card.id]);
+    for (const link of card.importantLinks ?? []) {
+      await this.database.run(
+        `INSERT INTO card_important_links (id, card_id, label, url, updated_at)
+         VALUES (?, ?, ?, ?, ?)`,
+        [link.id, card.id, link.label, link.url, card.updatedAt],
+      );
+    }
+    await this.database.run('DELETE FROM card_relationship_members WHERE card_id = ?', [card.id]);
+    if (card.relationshipGroupId) {
+      await this.database.run(
+        `INSERT INTO card_relationship_groups (id, name, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET name = excluded.name, updated_at = excluded.updated_at`,
+        [card.relationshipGroupId, card.relationshipGroupId, card.updatedAt],
+      );
+      await this.database.run(
+        'INSERT INTO card_relationship_members (group_id, card_id) VALUES (?, ?)',
+        [card.relationshipGroupId, card.id],
+      );
+    }
+    await this.database.run(
+      `INSERT INTO card_secrets (card_id, encrypted_number, encrypted_cvv, updated_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(card_id) DO UPDATE SET
+         encrypted_number = excluded.encrypted_number,
+         encrypted_cvv = excluded.encrypted_cvv,
+         updated_at = excluded.updated_at`,
+      [card.id, card.encryptedFullNumber ?? null, card.encryptedCvv ?? null, card.updatedAt],
+    );
   }
 
   private async findIncome(periodKey: string): Promise<MonthlyIncomeRecord | null> {

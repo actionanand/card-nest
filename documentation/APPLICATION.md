@@ -85,17 +85,23 @@ CardNest uses the notification plugin's standard Android scheduler and boot-rest
 
 Migration 3 adds `monthly_income`. Each row is keyed by the month in which the active budget cycle starts. A 25 Juneâ€“24 July cycle is therefore stored as `2026-06`; changing July's current income does not modify earlier cycle rows.
 
+Migration 4 adds category limits, card benefit notes, important links, linked-card account groups, and encrypted card-secret records. These migrations run automatically during startup.
+
 The current schema stores four trailing digits for most networks and five for American Express. American Express uses a 15-digit `4–6–5` number layout. CVV and PIN values must never be collected.
 
 ## Current product areas
 
 - Compact credit-card list with statement cycles, annual-fee waivers, payment actions, and masked card identifiers.
+- Card forms open as dialogs and support optional network tier, locally encrypted full number/CVV, important links, benefit pills with conditions, and a linked-account name. Compact lists and notifications continue to use only the last four digits, or the last five for American Express.
 - Cash, bank/UPI, and Pluxee sources. The Sources activity tab shows their transactions, tracked balance, spending, and credits/top-ups. Editing an entry can move it between these sources and a credit card while reconciling the old and new balances.
 - Calendar-month, custom budget-cycle, and selected-card statement-cycle transaction groups.
 - Transaction filters include type, payment source, category, cycle, and free-text search. Entry menus support edit, duplicate, source navigation, and delete while reconciling tracked source balances.
 - Monthly repeat rules can run for 1–36 additional months or indefinitely. They preserve the selected day where possible and use the final valid day in shorter months. Rules are materialised when CardNest opens; no exact-alarm permission or background timer is required.
 - Pluxee monthly loads are added to the existing carried-forward balance. For example, a ₹2,000 balance plus an ₹8,800 load becomes ₹10,800; users can correct the current balance at any time.
 - Income-aware reports use cycle-specific SQLite income and tracked source funds, never credit limits, to calculate available spending. The current income input updates only the active cycle and preserves older amounts for historical reporting.
+- Multi-cycle reports include expense-versus-remaining line charts, income-versus-expense grouped bars, a cycle table, category percentages, and click-through monthly category bars.
+- Category Spending provides a cycle snapshot, per-category transaction drill-down, and optional SQLite-backed limits. A hidden limit remains stored without showing progress colours or remaining amounts.
+- Card Benefits groups cards by searchable benefit and condition notes. Card Usage groups related cards into one bank account and flags accounts unused for three months, six months, one year, beyond one year, or never.
 - An optional title and name are stored in SQLite preferences and used for a time-appropriate private dashboard greeting.
 - Loan and external EMI commitments include installment amount, debit day, end date, and cancellation state.
 - Application PINs are stored in SQLite as salted PBKDF2-SHA-256 hashes; the PIN itself is never stored. Biometric unlock is presented only in the Android app because it requires a native biometric adapter and device enrollment.
@@ -103,6 +109,8 @@ The current schema stores four trailing digits for most networks and five for Am
 CardNest uses Lucide for interface icons so navigation, chevrons, action menus, category choices, and status indicators share the same SVG stroke geometry. Card-network logos remain the local constants in `src/imgData/svg` because brand artwork is intentionally separate from interface icons.
 
 Reports use Chart.js directly rather than an Angular wrapper. This keeps the chart dependency framework-independent and provides responsive, signal-driven doughnut and horizontal bar charts. Each canvas has an accessible label and an adjacent text breakdown, so the information does not depend on colour or graphics alone.
+
+`ng2-charts` is intentionally not installed. CardNest already owns the Chart.js lifecycle in `ReportChart`, including line, grouped bar, column, horizontal bar, and doughnut modes; another Angular wrapper would duplicate that responsibility.
 
 ## Common commands
 

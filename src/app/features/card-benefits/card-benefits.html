@@ -1,0 +1,57 @@
+<div class="page benefits-page">
+  <header class="page-header">
+    <div>
+      <p class="eyebrow">Use cards efficiently</p>
+      <h1>Card benefits</h1>
+      <p class="subtitle">
+        Find the right card for fuel, travel, cashback, movies, lounges and more.
+      </p>
+    </div>
+    <a class="btn btn-primary" routerLink="/cards" [queryParams]="{ add: true }"
+      ><app-icon name="plus" /> Add card</a
+    >
+  </header>
+  <section class="benefit-search panel">
+    <label
+      ><span class="sr-only">Search card benefits</span
+      ><input
+        type="search"
+        [value]="search()"
+        (input)="updateSearch($event)"
+        placeholder="Search benefit, card or condition"
+    /></label>
+  </section>
+  <section class="benefit-groups">
+    @for (group of benefitGroups(); track group.name) {
+      <article class="panel benefit-group">
+        <div class="benefit-heading">
+          <span><app-icon name="verified" /></span>
+          <div>
+            <h2>{{ group.name }}</h2>
+            <small
+              >{{ group.cards.length }} {{ group.cards.length === 1 ? 'card' : 'cards' }}</small
+            >
+          </div>
+        </div>
+        <div class="benefit-cards">
+          @for (card of group.cards; track card.cardId) {
+            <a routerLink="/cards" [queryParams]="{ open: card.cardId }">
+              <span class="network"><app-card-network-logo [network]="card.network" /></span>
+              <span
+                ><strong>{{ card.nickname }}</strong
+                ><small>{{ card.note || 'No conditions recorded' }}</small></span
+              >
+              <app-icon name="chevron_right" />
+            </a>
+          }
+        </div>
+      </article>
+    } @empty {
+      <div class="panel empty">
+        <app-icon name="verified" />
+        <h2>No matching benefits</h2>
+        <p>Edit a card and add benefit pills with optional conditions.</p>
+      </div>
+    }
+  </section>
+</div>

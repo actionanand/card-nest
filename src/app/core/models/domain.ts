@@ -25,6 +25,18 @@ export interface AnnualFeeDetails {
   notes?: string;
 }
 
+export interface CardImportantLink {
+  id: string;
+  label: string;
+  url: string;
+}
+
+export interface CardBenefit {
+  id: string;
+  name: string;
+  note?: string;
+}
+
 export interface CreditCard {
   id: string;
   nickname: string;
@@ -32,10 +44,14 @@ export interface CreditCard {
   /** Last 5 digits for American Express; last 4 digits for every other network. */
   lastDigits: string;
   encryptedFullNumber?: string;
+  encryptedCvv?: string;
   cardholderName?: string;
   network: CardNetwork;
   customNetwork?: string;
   subtype?: string;
+  benefits?: readonly CardBenefit[];
+  importantLinks?: readonly CardImportantLink[];
+  relationshipGroupId?: string;
   theme: string;
   expiryMonth?: number;
   expiryYear?: number;
@@ -113,6 +129,8 @@ export interface Category {
   colour?: string;
   appliesTo: 'EXPENSE' | 'CREDIT' | 'BOTH';
   archived: boolean;
+  monthlyLimitMinor?: Money;
+  showLimit?: boolean;
 }
 
 export interface CardStatement {

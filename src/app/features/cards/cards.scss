@@ -45,8 +45,21 @@
   min-height: 2.65rem;
 }
 .card-form {
-  margin-bottom: 1rem;
+  width: min(100%, 48rem);
+  margin: auto;
   padding: clamp(1rem, 3vw, 1.5rem);
+}
+.card-modal-backdrop {
+  position: fixed;
+  z-index: 700;
+  inset: 0;
+  display: grid;
+  align-items: start;
+  padding: max(1rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right))
+    max(1rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
+  overflow-y: auto;
+  background: rgb(10 25 18 / 68%);
+  backdrop-filter: blur(4px);
 }
 .section-heading {
   display: flex;
@@ -118,6 +131,62 @@ label small {
   justify-content: flex-end;
   gap: 0.6rem;
   margin-top: 1rem;
+}
+.benefit-builder {
+  min-width: 0;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+}
+.benefit-builder legend {
+  padding-inline: 0.35rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 750;
+}
+.benefit-entry {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.4fr) auto;
+  align-items: end;
+  gap: 0.65rem;
+}
+.benefit-pills,
+.card-benefits,
+.important-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.7rem;
+}
+.benefit-pills > span,
+.card-benefits > span,
+.network-subtype {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.3rem 0.5rem;
+  border-radius: 999px;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  font-size: 0.65rem;
+  font-weight: 750;
+}
+.benefit-pills button,
+.card-benefits button {
+  display: grid;
+  width: 1.15rem;
+  height: 1.15rem;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  color: currentColor;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.benefit-pills button app-icon,
+.card-benefits button app-icon {
+  width: 0.7rem;
+  height: 0.7rem;
 }
 .card-list {
   display: grid;
@@ -196,6 +265,20 @@ label small {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.compact-subtype {
+  width: max-content;
+  max-width: 100%;
+  overflow: hidden;
+  padding: 0.12rem 0.35rem;
+  border-radius: 999px;
+  color: #314f85;
+  background: #e8effc;
+  font-size: 0.55rem;
+  font-style: normal;
+  font-weight: 750;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .card-balance {
   justify-items: end;
 }
@@ -244,6 +327,10 @@ label small {
   border-radius: 0.7rem;
   background: var(--surface);
   box-shadow: 0 1rem 2.5rem rgb(20 35 27 / 18%);
+}
+.card-list-item:nth-last-child(-n + 4) .action-menu {
+  top: auto;
+  bottom: calc(100% - 0.2rem);
 }
 .action-menu button {
   min-height: 2.45rem;
@@ -296,6 +383,50 @@ label small {
   margin: 0.7rem 0 0;
   color: var(--muted);
   font-size: 0.72rem;
+}
+.network-subtype {
+  margin-top: 0.7rem;
+  color: #314f85;
+  background: #e8effc;
+}
+.secret-details {
+  margin-top: 0.75rem;
+  padding: 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 0.65rem;
+}
+.secret-details .btn {
+  min-height: 2.2rem;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.7rem;
+}
+.secret-details > div {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.3rem 0.75rem;
+  padding: 0.5rem;
+}
+.secret-details span {
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+.secret-details strong {
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, monospace;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+}
+.important-links a {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: var(--accent);
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+.important-links app-icon {
+  width: 0.8rem;
+  height: 0.8rem;
 }
 .card-actions {
   display: flex;
@@ -386,6 +517,16 @@ label small {
   .paired-fields,
   .annual-fee-fields {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .card-modal-backdrop {
+    padding: 0;
+  }
+  .card-form {
+    min-height: 100dvh;
+    border-radius: 0;
+  }
+  .benefit-entry {
+    grid-template-columns: 1fr;
   }
   .transaction-fab {
     display: grid;
