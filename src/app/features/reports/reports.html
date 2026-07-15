@@ -5,16 +5,21 @@
       <h1>Stats & budget</h1>
       <p class="subtitle">Income-aware analytics using your chosen budget cycle.</p>
     </div>
-    <label class="period-select">
-      <span class="sr-only">Report period</span>
-      <select [value]="period()" (change)="updatePeriod($event)">
-        <option value="MONTH">This month</option>
-        <option value="THREE">Last 3 months</option>
-        <option value="SIX">Last 6 months</option>
-        <option value="YEAR">Last 1 year</option>
-        <option value="ALL">Overall</option>
-      </select>
-    </label>
+    <div class="report-actions">
+      <label class="period-select">
+        <span class="sr-only">Report period</span>
+        <select [value]="period()" (change)="updatePeriod($event)">
+          <option value="MONTH">This month</option>
+          <option value="THREE">Last 3 months</option>
+          <option value="SIX">Last 6 months</option>
+          <option value="YEAR">Last 1 year</option>
+          <option value="ALL">Overall</option>
+        </select>
+      </label>
+      <button class="btn btn-primary export-report" type="button" (click)="exportPdf()">
+        <app-icon name="download" /> Export stats PDF
+      </button>
+    </div>
   </header>
 
   <section class="stat-grid" aria-label="Budget summary">
@@ -38,12 +43,82 @@
       <small>Available to use</small>
       <strong>{{ money(availableThisMonth()) }}</strong>
     </article>
+    <article class="panel ratio">
+      <small>Expense / income ratio</small>
+      <strong>{{ expenseRatio() }}%</strong>
+    </article>
   </section>
+
+  @if (period() !== 'MONTH') {
+    <section class="panel trend-panel">
+      <div class="chart-heading">
+        <div>
+          <p class="eyebrow">Budget movement</p>
+          <h2>Expense vs remaining money</h2>
+        </div>
+      </div>
+      <app-report-chart
+        kind="line"
+        [labels]="trendLabels()"
+        [values]="expenseTrendValues()"
+        [secondaryValues]="remainingTrendValues()"
+        [datasetLabels]="['Expense', 'Remaining']"
+        [colours]="['#d84a42', '#3b9b53']"
+        accessibleLabel="Line chart comparing expenses and remaining income by budget cycle"
+      />
+    </section>
+    <section class="panel trend-panel">
+      <div class="chart-heading">
+        <div>
+          <p class="eyebrow">Cash flow</p>
+          <h2>Income vs expense</h2>
+        </div>
+      </div>
+      <app-report-chart
+        kind="comparison"
+        [labels]="trendLabels()"
+        [values]="incomeTrendValues()"
+        [secondaryValues]="expenseTrendValues()"
+        [datasetLabels]="['Income', 'Expense']"
+        [colours]="['#397bd1', '#d84a42']"
+        accessibleLabel="Bar chart comparing income and expense by budget cycle"
+      />
+    </section>
+    <div class="panel trend-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Cycle</th>
+            <th>Income</th>
+            <th>Expense</th>
+            <th>Remaining</th>
+            <th>Rate</th>
+          </tr>
+        </thead>
+        <tbody>
+          @for (item of trend(); track item.key) {
+            <tr>
+              <th>{{ item.label }}</th>
+              <td>{{ money(item.income) }}</td>
+              <td>{{ money(item.expense) }}</td>
+              <td [class.negative]="item.remaining < 0">{{ money(item.remaining) }}</td>
+              <td [class.negative]="savingsRate(item.income, item.expense) < 0">
+                {{ savingsRate(item.income, item.expense) }}%
+              </td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    </div>
+  }
 
   <div class="report-grid">
     <section class="panel chart-panel">
       <div class="chart-heading">
-        <div><p class="eyebrow">Spending mix</p><h2>By category</h2></div>
+        <div>
+          <p class="eyebrow">Spending mix</p>
+          <h2>By category</h2>
+        </div>
         <strong>{{ money(totalSpent()) }}</strong>
       </div>
       @if (byCategory().length) {
@@ -57,10 +132,16 @@
         <ul class="chart-legend" aria-label="Category spending breakdown">
           @for (item of byCategory(); track item.id) {
             <li>
-              <i [style.background]="item.colour"></i>
-              <span>{{ item.name }}</span>
-              <strong>{{ item.percent }}%</strong>
-              <small>{{ money(item.amount) }}</small>
+              <button
+                type="button"
+                (click)="selectCategory(item.id)"
+                [attr.aria-expanded]="selectedCategoryId() === item.id"
+              >
+                <i [style.background]="item.colour"></i>
+                <span>{{ item.name }}</span>
+                <strong>{{ item.percent }}%</strong>
+                <small>{{ money(item.amount) }}</small>
+              </button>
             </li>
           }
         </ul>
@@ -71,7 +152,10 @@
 
     <section class="panel chart-panel">
       <div class="chart-heading">
-        <div><p class="eyebrow">Cards & sources</p><h2>Where spending happened</h2></div>
+        <div>
+          <p class="eyebrow">Cards & sources</p>
+          <h2>Where spending happened</h2>
+        </div>
       </div>
       @if (bySource().length) {
         <app-report-chart
@@ -83,7 +167,10 @@
         />
         <ul class="source-values" aria-label="Spending by payment source">
           @for (item of bySource(); track item.id) {
-            <li><span>{{ item.name }}</span><strong>{{ money(item.amount) }}</strong></li>
+            <li>
+              <span>{{ item.name }}</span
+              ><strong>{{ money(item.amount) }}</strong>
+            </li>
           }
         </ul>
       } @else {
@@ -92,13 +179,40 @@
     </section>
   </div>
 
+  @if (selectedCategory(); as category) {
+    <section class="panel category-trend">
+      <div class="chart-heading">
+        <div>
+          <p class="eyebrow">Category detail</p>
+          <h2>{{ category.name }} by month</h2>
+        </div>
+        <strong>{{ category.percent }}% of selected spending</strong>
+      </div>
+      <app-report-chart
+        kind="column"
+        [labels]="trendLabels()"
+        [values]="selectedCategoryValues()"
+        [colours]="[category.colour || '#28684e']"
+        accessibleLabel="Monthly spending bar chart for the selected category"
+      />
+    </section>
+  }
+
   <section class="panel commitments">
     <h2>What this month needs</h2>
     <div>
-      <article><span>Card payments</span><strong>{{ money(incomingPayments()) }}</strong></article>
-      <article><span>Pluxee load</span><strong>{{ money(pluxeeLoad()) }}</strong></article>
-      <article><span>Loan / EMI debits</span><strong>{{ money(monthlyLoans()) }}</strong></article>
-      <article><span>Budget cycle begins</span><strong>Day {{ store.budgetCycleStartDay() }}</strong></article>
+      <article>
+        <span>Card payments</span><strong>{{ money(incomingPayments()) }}</strong>
+      </article>
+      <article>
+        <span>Pluxee load</span><strong>{{ money(pluxeeLoad()) }}</strong>
+      </article>
+      <article>
+        <span>Loan / EMI debits</span><strong>{{ money(monthlyLoans()) }}</strong>
+      </article>
+      <article>
+        <span>Budget cycle begins</span><strong>Day {{ store.budgetCycleStartDay() }}</strong>
+      </article>
     </div>
   </section>
 </div>

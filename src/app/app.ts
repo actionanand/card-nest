@@ -11,6 +11,7 @@ import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 import { SqliteDatabase } from './core/data/sqlite-database';
 import { CardNestStore } from './core/services/card-nest-store';
 import { NotificationService } from './core/services/notification.service';
+import { SnackbarService } from './core/services/snackbar.service';
 import { AppIcon } from './shared/app-icon';
 
 @Component({
@@ -26,6 +27,7 @@ export class App {
   private readonly store = inject(CardNestStore);
   private readonly notifications = inject(NotificationService);
   readonly database = inject(SqliteDatabase);
+  readonly snackbar = inject(SnackbarService);
 
   readonly showNotificationPermissionConfirmation = signal(false);
   readonly notificationPermissionMessage = signal<string | null>(null);

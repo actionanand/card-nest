@@ -1,0 +1,70 @@
+<div class="page usage-page">
+  <header class="page-header">
+    <div>
+      <p class="eyebrow">Keep accounts active</p>
+      <h1>Card usage</h1>
+      <p class="subtitle">
+        Find cards that have not been used recently. Linked cards count as one bank account.
+      </p>
+    </div>
+    <a class="btn" routerLink="/cards"><app-icon name="edit" /> Manage links</a>
+  </header>
+  <section class="usage-summary" aria-label="Card usage summary">
+    @for (band of bands; track band.id) {
+      <article class="panel">
+        <small>{{ band.title }}</small
+        ><strong>{{ groupsFor(band.id).length }}</strong>
+      </article>
+    }
+  </section>
+  <section class="usage-bands">
+    @for (band of bands; track band.id) {
+      @if (groupsFor(band.id).length) {
+        <section
+          class="panel usage-band"
+          [class.attention]="band.id === 'NEVER' || band.id === 'OLDER'"
+        >
+          <div class="band-heading">
+            <div>
+              <h2>{{ band.title }}</h2>
+              <p>{{ band.description }}</p>
+            </div>
+            <span>{{ groupsFor(band.id).length }}</span>
+          </div>
+          <div class="account-list">
+            @for (group of groupsFor(band.id); track group.key) {
+              <article>
+                <div class="account-cards">
+                  @for (card of group.cards; track card.id) {
+                    <span title="{{ card.nickname }}"
+                      ><app-card-network-logo [network]="card.network"
+                    /></span>
+                  }
+                </div>
+                <div class="account-copy">
+                  <strong>{{ group.name }}</strong
+                  ><small
+                    >{{ group.cards.length }}
+                    {{ group.cards.length === 1 ? 'card' : 'linked cards' }} ·
+                    {{ group.lastUsed ? 'Last used ' + group.lastUsed : 'No recorded use' }}</small
+                  >
+                  <div>
+                    @for (card of group.cards; track card.id) {
+                      <span>{{ card.nickname }} · {{ card.lastDigits }}</span>
+                    }
+                  </div>
+                </div>
+                <a
+                  class="btn btn-primary"
+                  routerLink="/transactions"
+                  [queryParams]="{ add: true, source: group.cards[0].id }"
+                  ><app-icon name="plus" /> Use card</a
+                >
+              </article>
+            }
+          </div>
+        </section>
+      }
+    }
+  </section>
+</div>

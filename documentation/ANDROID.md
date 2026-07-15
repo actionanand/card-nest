@@ -13,16 +13,17 @@ No application-login SHA1 hash or password is injected. Android release-signing 
 
 ## Build files
 
-| File                                  | Purpose                                                                                 |
-| ------------------------------------- | --------------------------------------------------------------------------------------- |
-| `capacitor.config.ts`                 | App ID, app name, output directory, Android colors, and notification icon configuration |
-| `.github/workflows/android-build.yml` | Builds, optionally signs, verifies, summarizes, and uploads APK/AAB files               |
-| `android-version.json`                | Stores Android `versionCode` and `versionName`                                          |
-| `scripts/bump-android-version.js`     | Updates Android version values                                                          |
-| `scripts/patch-android.mjs`           | Adds the native notification icon, secure-window flag, and CardNest system-bar colors   |
-| `scripts/generate-keystore.mjs`       | Generates a PKCS12 release keystore                                                     |
-| `scripts/detect-keystore-format.mjs`  | Displays the keystore type                                                              |
-| `public/card-nest.png`                | Source image for launcher and Play Store icons                                          |
+| File                                  | Purpose                                                                                                |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `capacitor.config.ts`                 | App ID, app name, output directory, Android colors, and notification icon configuration                |
+| `.github/workflows/android-build.yml` | Builds, optionally signs, verifies, summarizes, and uploads APK/AAB files                              |
+| `android-version.json`                | Stores Android `versionCode` and `versionName`                                                         |
+| `scripts/bump-android-version.js`     | Updates Android version values                                                                         |
+| `scripts/patch-android.mjs`           | Adds the native notification icon, secure-window flag, system-bar colors, and invokes the export patch |
+| `scripts/patch-android-export.mjs`    | Generates the native PDF/CSV export plugin and private cache `FileProvider`                            |
+| `scripts/generate-keystore.mjs`       | Generates a PKCS12 release keystore                                                                    |
+| `scripts/detect-keystore-format.mjs`  | Displays the keystore type                                                                             |
+| `public/card-nest.png`                | Source image for launcher and Play Store icons                                                         |
 
 ## GitHub signing secrets
 
@@ -80,7 +81,7 @@ Copy the single-line content of `keystore.b64.txt` into `KEYSTORE_BASE64`. Store
 2. `npm ci` installs the locked dependencies.
 3. Angular builds `dist/card-nest/browser`.
 4. Capacitor generates and syncs the Android project.
-5. `scripts/patch-android.mjs` adds the white notification icon, secure-window flag, and native shell colors.
+5. `scripts/patch-android.mjs` adds the white notification icon, secure-window flag, and native shell colors, then applies the PDF/CSV export bridge.
 6. CI applies the Android version, minimum SDK 24, and target SDK 35.
 7. ImageMagick generates launcher icons from `public/card-nest.png`.
 8. Gradle creates unsigned release APK/AAB inputs.
@@ -117,7 +118,19 @@ CardNest uses `@capacitor/local-notifications` directly. This matches the reliab
 
 The Android patch script writes the monochrome credit-card small icon to `android/app/src/main/res/drawable/ic_stat_card_nest.xml`. `capacitor.config.ts` configures it as the plugin default, and each scheduled reminder also names `ic_stat_card_nest`. Android requires white artwork on a transparent background for notification small icons and applies the appropriate light or dark system tint in the status bar and notification shade.
 
-The reference app needed extra native scripts because it reacted to live timer thresholds and implemented custom `AlarmManager`/`BroadcastReceiver` behavior, theme bridging, and native PDF export. CardNest has date-based card reminders, so duplicating that native reminder plugin would add competing schedulers and unnecessary permissions. `scripts/patch-android.mjs` therefore handles only CardNest-specific native shell work.
+The reference app needed extra native scripts because it reacted to live timer thresholds and implemented custom `AlarmManager`/`BroadcastReceiver` behavior and theme bridging. CardNest has date-based card reminders, so duplicating that timer-specific reminder plugin would add competing schedulers and unnecessary permissions. CardNest does reuse the reference app's proven export pattern through `scripts/patch-android-export.mjs`.
+
+## Native PDF and CSV export
+
+The browser build opens a portrait A4 print-ready report for **Save as PDF** and downloads CSV with the browser download API. Android does not open a browser tab. The generated `CardNestExport` Capacitor plugin:
+
+1. Receives structured report sections from Angular.
+2. Draws paginated portrait A4 pages at 595 x 842 PDF points with Android `PdfDocument`.
+3. Writes PDF or UTF-8 CSV output only to the app's private cache.
+4. Exposes that one file through a non-exported `FileProvider`.
+5. Opens Android's native chooser so the user can save or share it.
+
+The cache provider grants read access only to the chosen receiving app. Exports contain masked source/card descriptions and never include full card numbers, CVVs, PINs, encrypted secret fields, or notification data. No storage permission and no additional npm package are required.
 
 ## Local Android workflow
 

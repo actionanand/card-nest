@@ -70,3 +70,5 @@ public class MainActivity extends BridgeActivity {
 // @capacitor/local-notifications contributes notification, boot, and wake-lock
 // manifest entries through Android manifest merging. No exact-alarm permission is requested.
 console.log('CardNest Android shell, secure-window flag, and notification icon patched.');
+
+await import('./patch-android-export.mjs');

@@ -50,7 +50,7 @@
           ><app-icon name="transactions" /> Transactions</a
         >
         <a routerLink="/sources" (click)="mobileMenuOpen.set(false)"
-          ><app-icon name="sources" /> Cash, bank & Pluxee</a
+          ><app-icon name="sources" /> Cash, Banks & Pluxee</a
         >
         <a routerLink="/categories" (click)="mobileMenuOpen.set(false)"
           ><app-icon name="categories" /> Categories</a
@@ -60,6 +60,15 @@
         >
         <a routerLink="/reports" (click)="mobileMenuOpen.set(false)"
           ><app-icon name="reports" /> Stats & graphs</a
+        >
+        <a routerLink="/category-spending" (click)="mobileMenuOpen.set(false)"
+          ><app-icon name="spending" /> Category spending</a
+        >
+        <a routerLink="/card-benefits" (click)="mobileMenuOpen.set(false)"
+          ><app-icon name="benefits" /> Card benefits</a
+        >
+        <a routerLink="/card-usage" (click)="mobileMenuOpen.set(false)"
+          ><app-icon name="card_usage" /> Card usage</a
         >
         <a routerLink="/loans" (click)="mobileMenuOpen.set(false)"
           ><app-icon name="loans" /> Loans & EMIs</a
@@ -91,8 +100,17 @@
         ><app-icon name="reminders" /> Reminders</a
       >
       <a routerLink="/reports" routerLinkActive="active"><app-icon name="reports" /> Reports</a>
+      <a routerLink="/category-spending" routerLinkActive="active"
+        ><app-icon name="spending" /> Category spending</a
+      >
+      <a routerLink="/card-benefits" routerLinkActive="active"
+        ><app-icon name="benefits" /> Card benefits</a
+      >
+      <a routerLink="/card-usage" routerLinkActive="active"
+        ><app-icon name="card_usage" /> Card usage</a
+      >
       <a routerLink="/sources" routerLinkActive="active"
-        ><app-icon name="sources" /> Money sources</a
+        ><app-icon name="sources" /> Cash, Banks & Pluxee</a
       >
       <a routerLink="/loans" routerLinkActive="active"><app-icon name="loans" /> Loans & EMIs</a>
     </nav>
@@ -164,4 +182,14 @@
 
 @if (notificationPermissionMessage(); as message) {
   <p class="permission-status" role="status">{{ message }}</p>
+}
+
+@if (snackbar.message(); as message) {
+  <div class="app-snackbar" [class]="'app-snackbar ' + message.tone.toLowerCase()" role="status">
+    <app-icon [name]="message.tone === 'WARNING' ? 'warning' : 'success'" />
+    <span>{{ message.text }}</span>
+    <button type="button" (click)="snackbar.dismiss()" aria-label="Dismiss message">
+      <app-icon name="close" />
+    </button>
+  </div>
 }

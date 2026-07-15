@@ -120,6 +120,11 @@ nav a.active,
   gap: 0.75rem;
   margin-top: auto;
 }
+.sidebar > nav {
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
 .privacy {
   display: flex;
   align-items: center;
@@ -231,6 +236,48 @@ main {
   color: #fff;
   background: #173c2d;
   box-shadow: 0 0.75rem 2rem rgb(8 26 18 / 24%);
+}
+
+.app-snackbar {
+  position: fixed;
+  z-index: 1200;
+  right: max(1rem, env(safe-area-inset-right));
+  bottom: max(1rem, env(safe-area-inset-bottom));
+  display: grid;
+  width: min(24rem, calc(100vw - 2rem));
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.75rem 0.8rem;
+  border: 1px solid color-mix(in srgb, var(--success) 55%, transparent);
+  border-radius: 0.8rem;
+  color: white;
+  background: #173c2d;
+  box-shadow: 0 1rem 2.5rem rgb(8 26 18 / 28%);
+}
+.app-snackbar.info {
+  background: #254e65;
+}
+.app-snackbar.warning {
+  background: #704c18;
+}
+.app-snackbar > app-icon {
+  width: 1.15rem;
+  height: 1.15rem;
+}
+.app-snackbar button {
+  display: grid;
+  width: 2rem;
+  height: 2rem;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  color: inherit;
+  background: rgb(255 255 255 / 12%);
+}
+.app-snackbar button app-icon {
+  width: 0.9rem;
+  height: 0.9rem;
 }
 
 @media (max-width: 760px) {
@@ -391,5 +438,10 @@ main {
 
   .permission-dialog__actions .btn {
     width: 100%;
+  }
+  .app-snackbar {
+    right: 0.75rem;
+    bottom: calc(5.25rem + env(safe-area-inset-bottom));
+    width: calc(100vw - 1.5rem);
   }
 }

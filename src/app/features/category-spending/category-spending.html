@@ -1,0 +1,172 @@
+<div class="page spending-page">
+  <header class="page-header">
+    <div>
+      <p class="eyebrow">Budget snapshot</p>
+      <h1>Category spending</h1>
+      <p class="subtitle">See where money went and keep optional limits for each category.</p>
+    </div>
+  </header>
+
+  <section class="period-picker" aria-label="Choose budget period">
+    <button
+      type="button"
+      (click)="movePeriod(1)"
+      [disabled]="periodOffset() === 35"
+      aria-label="Previous period"
+    >
+      <app-icon name="back" />
+    </button>
+    <label>
+      <span class="sr-only">Budget period</span>
+      <select [value]="periodOffset()" (change)="selectPeriod($event)">
+        @for (item of periods; track item.key; let offset = $index) {
+          <option [value]="offset">{{ item.label }}</option>
+        }
+      </select>
+    </label>
+    <button
+      type="button"
+      (click)="movePeriod(-1)"
+      [disabled]="periodOffset() === 0"
+      aria-label="Next period"
+    >
+      <app-icon name="chevron_right" />
+    </button>
+  </section>
+
+  <section class="snapshot-grid" aria-label="Period summary">
+    <article class="panel income">
+      <small>Income</small><strong>{{ money(incomeMinor()) }}</strong>
+    </article>
+    <article class="panel expense">
+      <small>Expense</small><strong>{{ money(spentMinor()) }}</strong>
+    </article>
+    <article class="panel balance" [class.negative]="remainingMinor() < 0">
+      <small>Remaining</small><strong>{{ money(remainingMinor()) }}</strong>
+    </article>
+  </section>
+
+  <section class="panel overall-budget">
+    <div>
+      <span>Monthly budget used</span
+      ><strong>{{ money(spentMinor()) }} / {{ money(store.monthlyBudgetMinor()) }}</strong>
+    </div>
+    <progress [value]="spentMinor()" [max]="store.monthlyBudgetMinor() || 1"></progress>
+    <small
+      >{{ money(store.monthlyBudgetMinor() - spentMinor()) }} remaining against the overall
+      budget</small
+    >
+  </section>
+
+  <div class="category-heading">
+    <h2>Category breakdown</h2>
+    <small>Select a category to see its transactions.</small>
+  </div>
+  <section class="category-breakdown">
+    @for (row of categoryRows(); track row.category.id) {
+      <article
+        class="panel category-spend"
+        [class.over-limit]="row.remaining !== undefined && row.remaining < 0"
+      >
+        <button
+          class="category-summary"
+          type="button"
+          (click)="toggleCategory(row.category.id)"
+          [attr.aria-expanded]="selectedCategoryId() === row.category.id"
+        >
+          <span class="category-symbol" [style.background]="row.category.colour"
+            ><app-icon [name]="row.category.icon"
+          /></span>
+          <span
+            ><strong>{{ row.category.name }}</strong
+            ><small>{{ row.transactions.length }} transactions</small></span
+          >
+          <span class="category-total">
+            <strong
+              >{{ money(row.spent) }}
+              @if (row.limit !== undefined) {
+                <i> / {{ money(row.limit) }}</i>
+              }
+            </strong>
+            @if (row.remaining !== undefined) {
+              <small>{{
+                row.remaining >= 0
+                  ? money(row.remaining) + ' left'
+                  : money(-row.remaining) + ' over'
+              }}</small>
+            }
+          </span>
+          <app-icon name="chevron_down" />
+        </button>
+        @if (row.limit !== undefined) {
+          <progress [value]="row.spent" [max]="row.limit || 1"></progress>
+        }
+        <button
+          class="limit-button"
+          type="button"
+          (click)="openLimit(row.category); $event.stopPropagation()"
+        >
+          <app-icon name="settings" />
+          {{ row.configuredLimit === undefined ? 'Set limit' : 'Edit limit' }}
+        </button>
+        @if (selectedCategoryId() === row.category.id) {
+          <div class="category-transactions">
+            @for (transaction of row.transactions; track transaction.id) {
+              <div>
+                <span
+                  ><strong>{{ transaction.merchant || transaction.type }}</strong
+                  ><small
+                    >{{ transaction.transactionDate }} ·
+                    {{ store.sourceName(transaction.cardId) }}</small
+                  ></span
+                ><strong>{{ money(transaction.amountMinor) }}</strong>
+              </div>
+            }
+          </div>
+        }
+      </article>
+    } @empty {
+      <div class="panel empty">
+        <h2>No spending in this period</h2>
+        <p>Choose another month or add transactions.</p>
+      </div>
+    }
+  </section>
+</div>
+
+@if (limitCategoryId(); as categoryId) {
+  <div class="limit-backdrop">
+    <section
+      class="panel limit-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="limit-title"
+    >
+      <div class="limit-heading">
+        <div>
+          <p class="eyebrow">Category budget</p>
+          <h2 id="limit-title">{{ limitCategory()?.name }}</h2>
+        </div>
+        <button type="button" (click)="closeLimit()" aria-label="Close limit editor">
+          <app-icon name="close" />
+        </button>
+      </div>
+      <form [formGroup]="limitForm" (ngSubmit)="saveLimit()">
+        <label
+          >Monthly limit<input formControlName="amount" inputmode="decimal" placeholder="5000.00"
+        /></label>
+        <label class="show-limit"
+          ><input type="checkbox" formControlName="showLimit" /><span
+            ><strong>Show progress and remaining amount</strong
+            ><small>Turn off to keep the limit saved but hide visual warnings.</small></span
+          ></label
+        >
+        <div class="limit-actions">
+          <button class="btn danger" type="button" (click)="removeLimit()">Remove limit</button
+          ><button class="btn" type="button" (click)="closeLimit()">Cancel</button
+          ><button class="btn btn-primary" type="submit">Save limit</button>
+        </div>
+      </form>
+    </section>
+  </div>
+}

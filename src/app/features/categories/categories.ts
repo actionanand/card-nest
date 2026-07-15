@@ -1,18 +1,21 @@
-import { Component, computed, inject, signal } from '@angular/core';
+import { Component, computed, inject, input, output, signal } from '@angular/core';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
-import { RouterLink } from '@angular/router';
 import { Category } from '../../core/models/domain';
 import { CardNestStore } from '../../core/services/card-nest-store';
+import { SnackbarService } from '../../core/services/snackbar.service';
 import { AppIcon } from '../../shared/app-icon';
 
 @Component({
   selector: 'app-categories-page',
-  imports: [ReactiveFormsModule, RouterLink, AppIcon],
+  imports: [ReactiveFormsModule, AppIcon],
   templateUrl: './categories.html',
   styleUrl: './categories.scss',
 })
 export class CategoriesPage {
   readonly store = inject(CardNestStore);
+  private readonly snackbar = inject(SnackbarService);
+  readonly embedded = input(false);
+  readonly closed = output<void>();
   readonly showForm = signal(false);
   readonly editingId = signal<string | null>(null);
   readonly iconOptions = [
@@ -118,6 +121,7 @@ export class CategoriesPage {
     };
     if (this.editingId()) this.store.updateCategory(category);
     else this.store.addCategory(category);
+    this.snackbar.show(this.editingId() ? `${category.name} updated.` : `${category.name} added.`);
     this.closeForm();
   }
   requestDelete(categoryId: string): void {
@@ -128,5 +132,6 @@ export class CategoriesPage {
     )
       return;
     this.store.deleteCategory(categoryId);
+    this.snackbar.show(`${category.name} deleted. Existing entries moved to Other.`, 'WARNING');
   }
 }
