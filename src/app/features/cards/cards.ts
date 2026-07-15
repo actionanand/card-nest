@@ -23,7 +23,10 @@ type CardFilter = 'ALL' | 'DUE' | 'GRACE' | 'FEE' | 'EXPIRING';
   imports: [ReactiveFormsModule, CardNetworkLogo, RouterLink, AppIcon],
   templateUrl: './cards.html',
   styleUrl: './cards.scss',
-  host: { '(document:keydown.escape)': 'closeForm()' },
+  host: {
+    '(document:keydown.escape)': 'closeForm()',
+    '(document:click)': 'closeMenuFromOutside($event)',
+  },
 })
 export class CardsPage {
   readonly store = inject(CardNestStore);
@@ -36,6 +39,7 @@ export class CardsPage {
   readonly selectedCardId = signal<string | null>(this.route.snapshot.queryParamMap.get('open'));
   readonly showArchived = signal(false);
   readonly actionMenuId = signal<string | null>(null);
+  readonly actionMenuOpensUp = signal(false);
   readonly draftBenefits = signal<readonly CardBenefit[]>([]);
   readonly revealedCardId = signal<string | null>(null);
   readonly revealedNumber = signal('');
@@ -404,8 +408,28 @@ export class CardsPage {
   cutoff(card: CreditCard): string {
     return toIsoDate(this.nextStatement(card));
   }
-  toggleActionMenu(cardId: string): void {
-    this.actionMenuId.set(this.actionMenuId() === cardId ? null : cardId);
+  toggleActionMenu(event: MouseEvent, cardId: string): void {
+    if (this.actionMenuId() === cardId) {
+      this.actionMenuId.set(null);
+      return;
+    }
+    this.actionMenuId.set(cardId);
+    if (!(event.currentTarget instanceof HTMLElement)) return;
+    const trigger = event.currentTarget;
+    requestAnimationFrame(() => {
+      const menu = trigger.parentElement?.querySelector<HTMLElement>('.action-menu');
+      if (!menu) return;
+      const triggerRect = trigger.getBoundingClientRect();
+      const spaceBelow = globalThis.innerHeight - triggerRect.bottom;
+      this.actionMenuOpensUp.set(
+        spaceBelow < menu.offsetHeight + 8 && triggerRect.top > spaceBelow,
+      );
+    });
+  }
+  closeMenuFromOutside(event: Event): void {
+    if (!(event.target instanceof Element) || !event.target.closest('[data-action-menu]')) {
+      this.actionMenuId.set(null);
+    }
   }
   showTransactions(cardId: string): void {
     this.actionMenuId.set(null);

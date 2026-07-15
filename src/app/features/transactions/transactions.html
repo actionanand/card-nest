@@ -287,7 +287,7 @@
         <span class="filter-chip">Credit cards only</span>
       }
     </div>
-    <div class="summary-menu-anchor">
+    <div class="summary-menu-anchor" data-action-menu>
       <div class="export-choices" role="group" aria-label="Export transactions">
         <button type="button" (click)="openExport('PDF')">
           <app-icon name="file_pdf" /><span>PDF</span>
@@ -299,14 +299,14 @@
       <button
         class="menu-button"
         type="button"
-        (click)="summaryMenuOpen.set(!summaryMenuOpen()); actionMenuId.set(null)"
+        (click)="toggleSummaryMenu($event)"
         [attr.aria-expanded]="summaryMenuOpen()"
         aria-label="Transaction summary options"
       >
         <app-icon name="more" />
       </button>
       @if (summaryMenuOpen()) {
-        <div class="action-menu summary-menu" role="menu">
+        <div class="action-menu summary-menu" [class.menu-up]="summaryMenuOpensUp()" role="menu">
           <button
             type="button"
             role="menuitem"
@@ -368,18 +368,18 @@
               @if (transaction.type === 'PURCHASE' && !transaction.emiPlanId) {
                 <button class="emi-button" type="button">Convert to EMI</button>
               }
-              <div class="transaction-menu-anchor">
+              <div class="transaction-menu-anchor" data-action-menu>
                 <button
                   class="menu-button"
                   type="button"
-                  (click)="toggleActionMenu(transaction.id)"
+                  (click)="toggleActionMenu($event, transaction.id)"
                   [attr.aria-expanded]="actionMenuId() === transaction.id"
                   aria-label="Actions for {{ transaction.merchant || 'transaction' }}"
                 >
                   <app-icon name="more" />
                 </button>
                 @if (actionMenuId() === transaction.id) {
-                  <div class="action-menu" role="menu">
+                  <div class="action-menu" [class.menu-up]="actionMenuOpensUp()" role="menu">
                     <button type="button" role="menuitem" (click)="edit(transaction)">
                       <app-icon name="edit" /> Edit transaction
                     </button>

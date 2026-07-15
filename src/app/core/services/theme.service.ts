@@ -4,6 +4,10 @@ import { SqliteDatabase } from '../data/sqlite-database';
 
 export type AppTheme = 'SYSTEM' | 'LIGHT' | 'DARK';
 
+interface AndroidSystemBars {
+  setDarkMode(darkMode: boolean): void;
+}
+
 @Service()
 export class ThemeService {
   private readonly document = inject(DOCUMENT);
@@ -47,10 +51,11 @@ export class ThemeService {
     const systemIsDark = this.document.defaultView?.matchMedia(
       '(prefers-color-scheme: dark)',
     ).matches;
-    themeColour?.setAttribute(
-      'content',
-      theme === 'DARK' || (theme === 'SYSTEM' && systemIsDark) ? '#17211c' : '#28684e',
-    );
+    const darkMode = theme === 'DARK' || (theme === 'SYSTEM' && systemIsDark === true);
+    themeColour?.setAttribute('content', darkMode ? '#17211c' : '#28684e');
+    const androidWindow = this.document.defaultView as
+      (Window & { CardNestSystemBars?: AndroidSystemBars }) | null;
+    androidWindow?.CardNestSystemBars?.setDarkMode(darkMode);
   }
 
   private isTheme(value: string | undefined): value is AppTheme {

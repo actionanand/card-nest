@@ -357,18 +357,18 @@
             >
             <app-icon class="chevron" name="chevron_down" />
           </button>
-          <div class="menu-anchor">
+          <div class="menu-anchor" data-action-menu>
             <button
               class="menu-button"
               type="button"
-              (click)="toggleActionMenu(card.id)"
+              (click)="toggleActionMenu($event, card.id)"
               [attr.aria-expanded]="actionMenuId() === card.id"
               aria-label="Actions for {{ card.nickname }}"
             >
               <app-icon name="more" />
             </button>
             @if (actionMenuId() === card.id) {
-              <div class="action-menu" role="menu">
+              <div class="action-menu" [class.menu-up]="actionMenuOpensUp()" role="menu">
                 <button type="button" role="menuitem" (click)="showTransactions(card.id)">
                   Show transactions
                 </button>

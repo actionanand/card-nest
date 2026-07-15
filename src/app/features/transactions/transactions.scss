@@ -434,6 +434,10 @@ label small {
   background: var(--surface);
   box-shadow: 0 1rem 2.5rem rgb(20 35 27 / 20%);
 }
+.action-menu.menu-up {
+  top: auto;
+  bottom: calc(100% - 0.15rem);
+}
 .action-menu button {
   display: flex;
   min-height: 2.45rem;
@@ -614,11 +618,18 @@ label small {
 @media (max-width: 600px) {
   .transaction-modal-backdrop,
   .category-manager-backdrop {
+    inset: calc(3.5rem + env(safe-area-inset-top)) 0 0;
     padding: 0;
   }
-  .transaction-form,
+  .transaction-form {
+    height: 100%;
+    min-height: 0;
+    max-height: none;
+    margin: 0;
+    border-radius: 0;
+  }
   .category-manager-shell {
-    min-height: 100dvh;
+    min-height: 100%;
     border-radius: 0;
   }
   .transactions-page {

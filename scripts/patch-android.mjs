@@ -59,34 +59,46 @@ import android.os.Bundle;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowInsetsController;
+import android.webkit.JavascriptInterface;
 
 import com.getcapacitor.BridgeActivity;
 
 public class MainActivity extends BridgeActivity {
+  private boolean darkMode;
+
   @Override
   public void onCreate(Bundle savedInstanceState) {
     super.onCreate(savedInstanceState);
-    applySystemBarStyle();
+    darkMode = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
+      == Configuration.UI_MODE_NIGHT_YES;
+    getBridge().getWebView().addJavascriptInterface(new SystemBarsBridge(), "CardNestSystemBars");
+    applySystemBarStyle(darkMode);
   }
 
   @Override
   public void onResume() {
     super.onResume();
     // Re-apply after Capacitor WebView reinitialises the window on config change.
-    applySystemBarStyle();
+    applySystemBarStyle(darkMode);
   }
 
   @Override
   public void onWindowFocusChanged(boolean hasFocus) {
     super.onWindowFocusChanged(hasFocus);
-    if (hasFocus) applySystemBarStyle();
+    if (hasFocus) applySystemBarStyle(darkMode);
+  }
+
+  private class SystemBarsBridge {
+    @JavascriptInterface
+    public void setDarkMode(boolean enabled) {
+      darkMode = enabled;
+      runOnUiThread(() -> applySystemBarStyle(enabled));
+    }
   }
 
   @SuppressWarnings("deprecation")
-  private void applySystemBarStyle() {
+  private void applySystemBarStyle(boolean darkMode) {
     Window window = getWindow();
-    boolean darkMode = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
-      == Configuration.UI_MODE_NIGHT_YES;
     window.setStatusBarColor(darkMode ? Color.rgb(23, 33, 28) : Color.rgb(245, 246, 241));
     window.setNavigationBarColor(darkMode ? Color.rgb(23, 33, 28) : Color.rgb(245, 246, 241));
 
@@ -136,11 +148,43 @@ if (existsSync(drawableRoot)) {
   }
 }
 const splashIconSource = join(process.cwd(), 'public', 'card-nest.png');
-const splashIconPath = join(androidRoot, 'res', 'drawable-nodpi', 'card_nest_splash_icon.png');
+const legacySplashIconPath = join(
+  androidRoot,
+  'res',
+  'drawable-nodpi',
+  'card_nest_splash_icon.png',
+);
+const splashLogoPath = join(androidRoot, 'res', 'drawable-nodpi', 'card_nest_splash_logo.png');
+if (existsSync(legacySplashIconPath)) rmSync(legacySplashIconPath);
 if (existsSync(splashIconSource)) {
-  mkdirSync(dirname(splashIconPath), { recursive: true });
-  copyFileSync(splashIconSource, splashIconPath);
+  mkdirSync(dirname(splashLogoPath), { recursive: true });
+  copyFileSync(splashIconSource, splashLogoPath);
 }
+const splashIconDrawablePath = join(androidRoot, 'res', 'drawable', 'card_nest_splash_icon.xml');
+mkdirSync(dirname(splashIconDrawablePath), { recursive: true });
+writeFileSync(
+  splashIconDrawablePath,
+  `<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:width="160dp"
+        android:height="160dp"
+        android:gravity="center">
+        <shape android:shape="oval">
+            <solid android:color="#FFFFFF" />
+        </shape>
+    </item>
+    <item
+        android:width="112dp"
+        android:height="112dp"
+        android:gravity="center">
+        <bitmap
+            android:gravity="fill"
+            android:src="@drawable/card_nest_splash_logo" />
+    </item>
+</layer-list>
+`,
+);
 const splashPath = join(androidRoot, 'res', 'drawable', 'splash.xml');
 mkdirSync(dirname(splashPath), { recursive: true });
 writeFileSync(
@@ -152,11 +196,9 @@ writeFileSync(
             <solid android:color="#28684E" />
         </shape>
     </item>
-    <item android:gravity="center">
-        <bitmap
-            android:gravity="center"
-            android:src="@drawable/card_nest_splash_icon" />
-    </item>
+    <item
+        android:drawable="@drawable/card_nest_splash_icon"
+        android:gravity="center" />
 </layer-list>
 `,
 );
@@ -184,16 +226,20 @@ if (existsSync(stylesPath)) {
       /(<style\b[^>]*>)([\s\S]*?)(<\/style>)/,
       (_m, open, body, close) => `${open}${body}${stylesItems}\n    ${close}`,
     );
-    // Ensure the launch theme references the branded splash.
-    if (styles.includes('NoActionBarLaunch') && !styles.includes('@drawable/splash')) {
-      styles = styles.replace(
-        /(<style name="AppTheme\.NoActionBarLaunch"[^>]*>)([\s\S]*?)(<\/style>)/,
-        (_m, open, body, close) =>
-          `${open}${body}        <item name="android:background">@drawable/splash</item>\n    ${close}`,
-      );
-    }
-    writeFileSync(stylesPath, styles);
   }
+  // Always repair the launch theme. Earlier patch versions could add the system-bar
+  // items without adding the branded splash reference.
+  styles = styles.replace(
+    /(<style name="AppTheme\.NoActionBarLaunch"[^>]*>)([\s\S]*?)(<\/style>)/,
+    (_match, open, body, close) => {
+      const splashItem = '        <item name="android:background">@drawable/splash</item>';
+      const patchedBody = body.match(/<item name="android:background">[\s\S]*?<\/item>/)
+        ? body.replace(/\s*<item name="android:background">[\s\S]*?<\/item>/, `\n${splashItem}`)
+        : `${body}${splashItem}\n`;
+      return `${open}${patchedBody}${close}`;
+    },
+  );
+  writeFileSync(stylesPath, styles);
 }
 
 // Night-mode override: keep the same green status bar but switch the nav bar to dark.
@@ -233,7 +279,7 @@ writeFileSync(
     <style name="AppTheme.NoActionBarLaunch" parent="AppTheme.NoActionBar">
         <item name="windowSplashScreenBackground">#28684E</item>
         <item name="windowSplashScreenAnimatedIcon">@drawable/card_nest_splash_icon</item>
-        <item name="windowSplashScreenIconBackgroundColor">#28684E</item>
+        <item name="windowSplashScreenIconBackgroundColor">#FFFFFF</item>
         <item name="postSplashScreenTheme">@style/AppTheme.NoActionBar</item>
         <item name="android:statusBarColor">#F5F6F1</item>
         <item name="android:windowLightStatusBar">true</item>
