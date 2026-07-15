@@ -20,8 +20,7 @@
   margin: auto;
   padding: 1.3rem;
   max-height: calc(
-    100dvh - max(4.75rem, calc(env(safe-area-inset-top) + 1rem)) - env(safe-area-inset-bottom) -
-      1rem
+    100dvh - calc(env(safe-area-inset-top) + 4.75rem) - env(safe-area-inset-bottom) - 1rem
   );
   overflow-x: hidden;
   overflow-y: auto;
@@ -33,7 +32,7 @@
   inset: 0;
   display: grid;
   align-items: start;
-  padding: max(4.75rem, calc(env(safe-area-inset-top) + 1rem)) max(1rem, env(safe-area-inset-right))
+  padding: calc(env(safe-area-inset-top) + 4.75rem) max(1rem, env(safe-area-inset-right))
     max(1rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
   overflow-y: auto;
   background: rgb(10 25 18 / 68%);

@@ -1,6 +1,14 @@
 #!/usr/bin/env node
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 
 const androidRoot = join(process.cwd(), 'android', 'app', 'src', 'main');
@@ -44,6 +52,7 @@ writeFileSync(
   mainActivityPath,
   `package com.actionanand.cardnest.app;
 
+import android.content.res.Configuration;
 import android.graphics.Color;
 import android.os.Build;
 import android.os.Bundle;
@@ -76,16 +85,19 @@ public class MainActivity extends BridgeActivity {
   @SuppressWarnings("deprecation")
   private void applySystemBarStyle() {
     Window window = getWindow();
-    window.setStatusBarColor(Color.rgb(40, 104, 78));
-    window.setNavigationBarColor(Color.rgb(245, 246, 241));
+    boolean darkMode = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
+      == Configuration.UI_MODE_NIGHT_YES;
+    window.setStatusBarColor(darkMode ? Color.rgb(23, 33, 28) : Color.rgb(245, 246, 241));
+    window.setNavigationBarColor(darkMode ? Color.rgb(23, 33, 28) : Color.rgb(245, 246, 241));
 
     View decor = window.getDecorView();
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
       WindowInsetsController controller = decor.getWindowInsetsController();
       if (controller != null) {
-        // No APPEARANCE_LIGHT_STATUS_BARS means white status-bar icons.
+        int appearance = darkMode ? 0 : WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+          | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
         controller.setSystemBarsAppearance(
-          WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS,
+          appearance,
           WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
             | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
         );
@@ -93,11 +105,14 @@ public class MainActivity extends BridgeActivity {
       return;
     }
 
-    // Clear SYSTEM_UI_FLAG_LIGHT_STATUS_BAR  → white status-bar icons on the dark-green bar.
-    // Set   SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR → dark nav-bar icons on the light nav bar.
     int flags = decor.getSystemUiVisibility();
-    flags &= ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
-    flags |= View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+    if (darkMode) {
+      flags &= ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+      flags &= ~View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+    } else {
+      flags |= View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+      flags |= View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+    }
     decor.setSystemUiVisibility(flags);
   }
 }
@@ -120,6 +135,12 @@ if (existsSync(drawableRoot)) {
     }
   }
 }
+const splashIconSource = join(process.cwd(), 'public', 'card-nest.png');
+const splashIconPath = join(androidRoot, 'res', 'drawable-nodpi', 'card_nest_splash_icon.png');
+if (existsSync(splashIconSource)) {
+  mkdirSync(dirname(splashIconPath), { recursive: true });
+  copyFileSync(splashIconSource, splashIconPath);
+}
 const splashPath = join(androidRoot, 'res', 'drawable', 'splash.xml');
 mkdirSync(dirname(splashPath), { recursive: true });
 writeFileSync(
@@ -134,7 +155,7 @@ writeFileSync(
     <item android:gravity="center">
         <bitmap
             android:gravity="center"
-            android:src="@mipmap/ic_launcher" />
+            android:src="@drawable/card_nest_splash_icon" />
     </item>
 </layer-list>
 `,
@@ -149,8 +170,8 @@ writeFileSync(
 //    changes and Capacitor WebView resets.
 // 2. Set the nav-bar colour so the launch theme matches the runtime theme.
 // 3. Reference the branded splash drawable in the launch theme.
-const stylesItems = `        <item name="android:statusBarColor">#28684E</item>
-        <item name="android:windowLightStatusBar">false</item>
+const stylesItems = `        <item name="android:statusBarColor">#F5F6F1</item>
+        <item name="android:windowLightStatusBar">true</item>
         <item name="android:navigationBarColor">#F5F6F1</item>
         <item name="android:windowLightNavigationBar">true</item>`;
 
@@ -190,7 +211,7 @@ if (
     <!-- Night-mode overrides: keep the brand-green status bar with white icons;
          switch the navigation bar to the dark app background. -->
     <style name="AppTheme" parent="Theme.AppCompat.DayNight.NoActionBar">
-        <item name="android:statusBarColor">#28684E</item>
+        <item name="android:statusBarColor">#17211C</item>
         <item name="android:windowLightStatusBar">false</item>
         <item name="android:navigationBarColor">#17211C</item>
         <item name="android:windowLightNavigationBar">false</item>
@@ -211,11 +232,11 @@ writeFileSync(
 <resources>
     <style name="AppTheme.NoActionBarLaunch" parent="AppTheme.NoActionBar">
         <item name="windowSplashScreenBackground">#28684E</item>
-        <item name="windowSplashScreenAnimatedIcon">@mipmap/ic_launcher</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/card_nest_splash_icon</item>
         <item name="windowSplashScreenIconBackgroundColor">#28684E</item>
         <item name="postSplashScreenTheme">@style/AppTheme.NoActionBar</item>
-        <item name="android:statusBarColor">#28684E</item>
-        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:statusBarColor">#F5F6F1</item>
+        <item name="android:windowLightStatusBar">true</item>
         <item name="android:navigationBarColor">#F5F6F1</item>
         <item name="android:windowLightNavigationBar">true</item>
     </style>
