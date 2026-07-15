@@ -143,8 +143,13 @@ public class CardNestExportPlugin extends Plugin {
     intent.putExtra(Intent.EXTRA_STREAM, uri);
     intent.putExtra(Intent.EXTRA_TITLE, title);
     intent.putExtra(Intent.EXTRA_SUBJECT, title);
+    // Android 6+ requires ClipData for FLAG_GRANT_READ_URI_PERMISSION to propagate
+    // through the chooser to any app the user selects.
+    intent.setClipData(android.content.ClipData.newRawUri("", uri));
     intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-    getActivity().startActivity(Intent.createChooser(intent, title));
+    Intent chooser = Intent.createChooser(intent, title);
+    chooser.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+    getActivity().startActivity(chooser);
   }
 
   private void writePdf(File file, String fallbackTitle, String content) throws Exception {

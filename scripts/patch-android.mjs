@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 const androidRoot = join(process.cwd(), 'android', 'app', 'src', 'main');
@@ -46,10 +46,8 @@ writeFileSync(
 
 import android.graphics.Color;
 import android.os.Bundle;
+import android.view.View;
 import android.view.Window;
-
-import androidx.core.view.WindowCompat;
-import androidx.core.view.WindowInsetsControllerCompat;
 
 import com.getcapacitor.BridgeActivity;
 
@@ -57,17 +55,35 @@ public class MainActivity extends BridgeActivity {
   @Override
   public void onCreate(Bundle savedInstanceState) {
     super.onCreate(savedInstanceState);
+    applySystemBarStyle();
+  }
 
+  @Override
+  public void onResume() {
+    super.onResume();
+    // Re-apply after Capacitor WebView reinitialises the window on config change.
+    applySystemBarStyle();
+  }
+
+  @Override
+  public void onWindowFocusChanged(boolean hasFocus) {
+    super.onWindowFocusChanged(hasFocus);
+    if (hasFocus) applySystemBarStyle();
+  }
+
+  @SuppressWarnings("deprecation")
+  private void applySystemBarStyle() {
     Window window = getWindow();
     window.setStatusBarColor(Color.rgb(40, 104, 78));
     window.setNavigationBarColor(Color.rgb(245, 246, 241));
 
-    // The status bar sits on the dark green brand colour, so its icons must stay
-    // white in both light and dark mode. The light navigation bar keeps dark icons.
-    WindowInsetsControllerCompat insetsController =
-        WindowCompat.getInsetsController(window, window.getDecorView());
-    insetsController.setAppearanceLightStatusBars(false);
-    insetsController.setAppearanceLightNavigationBars(true);
+    // Clear SYSTEM_UI_FLAG_LIGHT_STATUS_BAR  → white status-bar icons on the dark-green bar.
+    // Set   SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR → dark nav-bar icons on the light nav bar.
+    View decor = window.getDecorView();
+    int flags = decor.getSystemUiVisibility();
+    flags &= ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+    flags |= View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+    decor.setSystemUiVisibility(flags);
   }
 }
 `,
@@ -111,8 +127,66 @@ writeFileSync(
 
 // @capacitor/local-notifications contributes notification, boot, and wake-lock
 // manifest entries through Android manifest merging. No exact-alarm permission is requested.
+
+// ── Patch styles.xml ──────────────────────────────────────────────────────────
+// 1. Force white status-bar icons (dark green background) in ALL themes by setting
+//    android:windowLightStatusBar=false at the theme level so it survives configuration
+//    changes and Capacitor WebView resets.
+// 2. Set the nav-bar colour so the launch theme matches the runtime theme.
+// 3. Reference the branded splash drawable in the launch theme.
+const stylesItems = `        <item name="android:statusBarColor">#28684E</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:navigationBarColor">#F5F6F1</item>
+        <item name="android:windowLightNavigationBar">true</item>`;
+
+const stylesPath = join(androidRoot, 'res', 'values', 'styles.xml');
+if (existsSync(stylesPath)) {
+  let styles = readFileSync(stylesPath, 'utf8');
+  if (!styles.includes('android:windowLightStatusBar')) {
+    // Inject the status-bar items into the first <style …> block.
+    styles = styles.replace(
+      /(<style\b[^>]*>)([\s\S]*?)(<\/style>)/,
+      (_m, open, body, close) => `${open}${body}${stylesItems}\n    ${close}`,
+    );
+    // Ensure the launch theme references the branded splash.
+    if (styles.includes('NoActionBarLaunch') && !styles.includes('@drawable/splash')) {
+      styles = styles.replace(
+        /(<style name="AppTheme\.NoActionBarLaunch"[^>]*>)([\s\S]*?)(<\/style>)/,
+        (_m, open, body, close) =>
+          `${open}${body}        <item name="android:background">@drawable/splash</item>\n    ${close}`,
+      );
+    }
+    writeFileSync(stylesPath, styles);
+  }
+}
+
+// Night-mode override: keep the same green status bar but switch the nav bar to dark.
+const nightStylesDir = join(androidRoot, 'res', 'values-night');
+const nightStylesPath = join(nightStylesDir, 'styles.xml');
+mkdirSync(nightStylesDir, { recursive: true });
+if (
+  !existsSync(nightStylesPath) ||
+  !readFileSync(nightStylesPath, 'utf8').includes('android:windowLightStatusBar')
+) {
+  writeFileSync(
+    nightStylesPath,
+    `<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Night-mode overrides: keep the brand-green status bar with white icons;
+         switch the navigation bar to the dark app background. -->
+    <style name="AppTheme" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="android:statusBarColor">#28684E</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:navigationBarColor">#17211C</item>
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
+</resources>
+`,
+  );
+}
+
 console.log(
-  'CardNest Android shell, status-bar icons, splash screen, and notification icon patched.',
+  'CardNest Android shell, status-bar icons, splash screen, styles, and notification icon patched.',
 );
 
 await import('./patch-android-export.mjs');

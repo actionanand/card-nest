@@ -1,7 +1,8 @@
 import { Component, computed, inject, signal } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { ActivatedRoute, Router } from '@angular/router';
-import { Camera } from '@capacitor/camera';
+import { Camera, CameraPermissionType } from '@capacitor/camera';
 import { CardTransaction, TransactionType } from '../../core/models/domain';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { formatMoney, parseMoneyToMinor } from '../../core/services/money';
@@ -35,6 +36,7 @@ export class TransactionsPage {
   );
   readonly editingId = signal<string | null>(null);
   readonly receiptPreviews = signal<readonly string[]>([]);
+  readonly payFromOpen = signal(false);
   readonly actionMenuId = signal<string | null>(null);
   readonly summaryMenuOpen = signal(false);
   readonly manageCategoriesOpen = signal(false);
@@ -127,8 +129,18 @@ export class TransactionsPage {
   });
 
   constructor() {
+    // Handle edit requested via query param on first load.
     const transaction = this.store.transactions().find((item) => item.id === this.requestedEditId);
     if (transaction) this.edit(transaction);
+
+    // When the nav-bar FAB navigates to /transactions?add=true while Angular reuses
+    // this component (same route), the constructor doesn't re-run. Subscribe to
+    // queryParamMap so we detect the param change and open the form.
+    this.route.queryParamMap.pipe(takeUntilDestroyed()).subscribe((params) => {
+      if ((params.get('add') === 'true' || params.get('payment') === 'true') && !this.showForm()) {
+        this.openAdd();
+      }
+    });
   }
 
   money(value: number, currency: string): string {
@@ -177,13 +189,24 @@ export class TransactionsPage {
   }
   async pickReceipts(): Promise<void> {
     try {
+      // Request photo permission on devices that need it (Android < 13).
+      const permissions = await Camera.checkPermissions();
+      if (permissions.photos !== 'granted' && permissions.photos !== 'limited') {
+        const requested = await Camera.requestPermissions({
+          permissions: ['photos'] as CameraPermissionType[],
+        });
+        if (requested.photos !== 'granted' && requested.photos !== 'limited') {
+          this.snackbar.show('Gallery permission is required to add receipt images.', 'WARNING');
+          return;
+        }
+      }
       const selection = await Camera.pickImages({ quality: 70 });
       const paths = selection.photos
         .map((photo) => photo.webPath)
         .filter((path): path is string => Boolean(path));
       if (paths.length) this.receiptPreviews.update((current) => [...current, ...paths]);
     } catch {
-      // The native picker was dismissed; nothing to attach.
+      // Picker was dismissed by the user — nothing to attach.
     }
   }
   removeReceipt(index: number): void {
@@ -192,6 +215,18 @@ export class TransactionsPage {
   closeForm(): void {
     this.showForm.set(false);
     this.editingId.set(null);
+  }
+  selectPayFrom(id: string): void {
+    this.form.controls.cardId.setValue(id);
+    this.payFromOpen.set(false);
+  }
+  selectedSourceLabel(): string {
+    const id = this.form.controls.cardId.value;
+    const card = this.store.activeCards().find((c) => c.id === id);
+    if (card) return `${card.nickname} · ${card.lastDigits}`;
+    const source = this.store.activePaymentSources().find((s) => s.id === id);
+    if (source) return source.nickname;
+    return 'Select source';
   }
   edit(transaction: CardTransaction): void {
     this.editingId.set(transaction.id);
