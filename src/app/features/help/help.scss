@@ -1,0 +1,269 @@
+:host {
+  display: block;
+}
+
+.help-page {
+  width: min(100%, 68rem);
+}
+
+.help-hero {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 1.25rem;
+  margin-bottom: 1rem;
+  padding: clamp(1.25rem, 4vw, 2rem);
+  overflow: hidden;
+  background:
+    radial-gradient(
+      circle at 90% 10%,
+      color-mix(in srgb, var(--accent) 16%, transparent),
+      transparent 35%
+    ),
+    var(--surface);
+}
+
+.help-hero h1 {
+  margin-bottom: 0.4rem;
+}
+
+.help-hero p:not(.eyebrow) {
+  max-width: 42rem;
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.help-hero__icon {
+  display: grid;
+  width: 4.25rem;
+  height: 4.25rem;
+  place-items: center;
+  border-radius: 1.2rem;
+  color: var(--accent);
+  background: var(--accent-soft);
+  transform: rotate(3deg);
+}
+
+.help-hero__icon app-icon {
+  width: 2rem;
+  height: 2rem;
+}
+
+.help-search {
+  position: relative;
+  grid-column: 1 / -1;
+  display: block;
+  margin-top: 0.4rem;
+}
+
+.help-search app-icon {
+  position: absolute;
+  z-index: 1;
+  top: 50%;
+  left: 0.9rem;
+  width: 1.1rem;
+  height: 1.1rem;
+  color: var(--muted);
+  transform: translateY(-50%);
+}
+
+.help-search input {
+  min-height: 3.25rem;
+  padding-left: 2.7rem;
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--line));
+  background: var(--surface);
+  font-size: 1rem;
+}
+
+.result-count {
+  margin: 0 0 1rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.help-group {
+  margin-top: 1.5rem;
+}
+
+.help-group__heading {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.65rem;
+}
+
+.help-group__heading h2 {
+  margin: 0;
+}
+
+.help-group__heading span {
+  display: grid;
+  min-width: 1.7rem;
+  height: 1.7rem;
+  place-items: center;
+  border-radius: 999px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  font-size: 0.7rem;
+  font-weight: 800;
+}
+
+.faq-list {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.faq-item {
+  overflow: hidden;
+}
+
+.faq-item summary {
+  display: grid;
+  min-height: 4.75rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.9rem 1rem;
+  cursor: pointer;
+  list-style: none;
+}
+
+.faq-item summary::-webkit-details-marker {
+  display: none;
+}
+
+.faq-item summary > span {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.faq-item summary strong {
+  color: var(--ink);
+}
+
+.faq-item summary small {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 500;
+  line-height: 1.45;
+}
+
+.faq-item summary > app-icon {
+  width: 1.15rem;
+  height: 1.15rem;
+  color: var(--accent);
+  transition: transform 0.18s ease;
+}
+
+.faq-item[open] summary {
+  background: var(--accent-soft);
+}
+
+.faq-item[open] summary > app-icon {
+  transform: rotate(180deg);
+}
+
+.faq-answer {
+  padding: 1rem;
+  border-top: 1px solid var(--line);
+}
+
+.faq-answer ol,
+.faq-answer ul {
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
+.faq-answer li {
+  margin: 0.45rem 0;
+  line-height: 1.6;
+}
+
+.faq-answer aside {
+  margin-top: 1rem;
+  padding: 0.8rem 0.9rem;
+  border-left: 3px solid var(--accent);
+  border-radius: 0 0.6rem 0.6rem 0;
+  background: var(--canvas);
+}
+
+.faq-answer aside strong {
+  display: block;
+  margin-bottom: 0.35rem;
+  color: var(--accent);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+}
+
+.faq-answer .btn {
+  width: fit-content;
+  margin-top: 1rem;
+  color: var(--accent);
+}
+
+.faq-answer .btn app-icon {
+  width: 1rem;
+  height: 1rem;
+}
+
+.no-results {
+  display: grid;
+  min-height: 18rem;
+  place-items: center;
+  align-content: center;
+  padding: 2rem;
+  text-align: center;
+}
+
+.no-results > app-icon {
+  width: 2rem;
+  height: 2rem;
+  color: var(--muted);
+}
+
+.no-results h2 {
+  margin: 0.75rem 0 0.3rem;
+}
+
+.no-results p {
+  color: var(--muted);
+}
+
+@media (max-width: 600px) {
+  .help-page {
+    padding-inline: 0.7rem;
+  }
+
+  .help-hero {
+    grid-template-columns: minmax(0, 1fr) 3rem;
+    padding: 1rem;
+    border-radius: 0.85rem;
+  }
+
+  .help-hero__icon {
+    width: 3rem;
+    height: 3rem;
+    border-radius: 0.85rem;
+  }
+
+  .help-hero__icon app-icon {
+    width: 1.45rem;
+    height: 1.45rem;
+  }
+
+  .help-search input {
+    min-height: 3rem;
+  }
+
+  .faq-item summary {
+    min-height: 4.25rem;
+    padding: 0.8rem;
+  }
+
+  .faq-answer {
+    padding: 0.85rem;
+    font-size: 0.88rem;
+  }
+}

@@ -51,6 +51,8 @@ export class TransactionsPage {
   readonly showSplitForm = signal(false);
   readonly deleteCandidate = signal<CardTransaction | null>(null);
   readonly payFromOpen = signal(false);
+  readonly sourceFilterOpen = signal(false);
+  readonly filtersOpen = signal(false);
   readonly actionMenuId = signal<string | null>(null);
   readonly actionMenuOpensUp = signal(false);
   readonly summaryMenuOpen = signal(false);
@@ -65,6 +67,14 @@ export class TransactionsPage {
   readonly sourceFilter = signal(this.requestedSourceId ?? 'ALL');
   readonly categoryFilter = signal('ALL');
   readonly grouping = signal<GroupingMode>('MONTH');
+  readonly activeFilterCount = computed(
+    () =>
+      Number(Boolean(this.search().trim())) +
+      Number(this.typeFilter() !== 'ALL') +
+      Number(this.sourceFilter() !== 'ALL') +
+      Number(this.categoryFilter() !== 'ALL') +
+      Number(this.grouping() !== 'MONTH'),
+  );
   readonly repeatOptions = Array.from({ length: 36 }, (_, index) => index + 1);
   readonly types: readonly { value: TransactionType; label: string }[] = [
     { value: 'PURCHASE', label: 'Purchase' },
@@ -198,8 +208,18 @@ export class TransactionsPage {
   updateType(event: Event): void {
     this.typeFilter.set((event.target as HTMLSelectElement).value as TransactionType | 'ALL');
   }
-  updateSource(event: Event): void {
-    this.sourceFilter.set((event.target as HTMLSelectElement).value);
+  selectSourceFilter(id: string): void {
+    this.sourceFilter.set(id);
+    this.sourceFilterOpen.set(false);
+  }
+  sourceFilterLabel(): string {
+    if (this.sourceFilter() === 'ALL') return 'All cards and sources';
+    const card = this.store.activeCards().find((item) => item.id === this.sourceFilter());
+    if (card) return `${card.nickname} · ${card.lastDigits}`;
+    return (
+      this.store.activePaymentSources().find((item) => item.id === this.sourceFilter())?.nickname ??
+      'All cards and sources'
+    );
   }
   updateCategory(event: Event): void {
     this.categoryFilter.set((event.target as HTMLSelectElement).value);
@@ -543,6 +563,14 @@ export class TransactionsPage {
     });
   }
   closeOverlays(): void {
+    if (this.sourceFilterOpen()) {
+      this.sourceFilterOpen.set(false);
+      return;
+    }
+    if (this.payFromOpen()) {
+      this.payFromOpen.set(false);
+      return;
+    }
     if (this.deleteCandidate()) {
       this.deleteCandidate.set(null);
       return;

@@ -34,7 +34,10 @@ export class AppLockService {
   private listening = false;
 
   async initialise(): Promise<void> {
-    this.biometricAvailable.set(this.hasNativeBiometrics());
+    this.refreshBiometricAvailability();
+    for (const delay of [150, 600, 1500]) {
+      globalThis.setTimeout(() => this.refreshBiometricAvailability(), delay);
+    }
     if (this.database.ready()) {
       this.lockOnBackground.set((await this.readPreference(LOCK_ON_BACKGROUND_KEY)) ?? true);
       this.biometricEnabled.set((await this.readPreference(BIOMETRIC_KEY)) ?? false);
@@ -69,6 +72,7 @@ export class AppLockService {
   }
 
   async authenticateWithBiometrics(): Promise<boolean> {
+    this.refreshBiometricAvailability();
     if (!this.biometricAvailable() || this.biometricInProgress()) return false;
     const nativeBridge = (this.document.defaultView as CardNestNativeWindow | null)?.CardNestNative;
     if (!nativeBridge) return false;
@@ -109,6 +113,10 @@ export class AppLockService {
     } catch {
       return false;
     }
+  }
+
+  private refreshBiometricAvailability(): void {
+    this.biometricAvailable.set(this.hasNativeBiometrics());
   }
 
   private startListening(): void {

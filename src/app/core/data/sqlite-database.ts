@@ -7,6 +7,66 @@ interface JeepSqliteElement extends HTMLElement {
   wasmPath: string;
 }
 
+interface PortableBackupTable {
+  readonly name: string;
+  readonly rows: readonly Record<string, unknown>[];
+}
+
+interface PortableBackup {
+  readonly format: 'cardnest-portable-sqlite';
+  readonly version: 1;
+  readonly databaseVersion: number;
+  readonly tables: readonly PortableBackupTable[];
+}
+
+// The Android SQLite JSON exporter fails when a newer migration makes the SQL text
+// longer than the table definition it cached. Exporting the application tables directly
+// avoids that native substring bug and also gives CardNest a stable, plugin-independent
+// backup format.
+const BACKUP_TABLES = [
+  'app_preferences',
+  'categories',
+  'credit_cards',
+  'card_relationship_groups',
+  'card_relationship_members',
+  'card_benefits',
+  'card_important_links',
+  'card_secrets',
+  'card_transactions',
+  'transaction_links',
+  'transaction_split_groups',
+  'transaction_split_members',
+  'statements',
+  'recurring_rules',
+  'attachments',
+  'emi_plans',
+  'emi_installments',
+  'monthly_income',
+  'category_limits',
+] as const;
+
+const DELETE_TABLES = [
+  'transaction_links',
+  'transaction_split_members',
+  'transaction_split_groups',
+  'attachments',
+  'emi_installments',
+  'emi_plans',
+  'statements',
+  'recurring_rules',
+  'card_transactions',
+  'card_benefits',
+  'card_important_links',
+  'card_relationship_members',
+  'card_relationship_groups',
+  'card_secrets',
+  'credit_cards',
+  'category_limits',
+  'categories',
+  'monthly_income',
+  'app_preferences',
+] as const;
+
 /** SQLite gateway. The web build uses the jeep-sqlite WASM database, never key/value app storage. */
 @Service()
 export class SqliteDatabase {
@@ -105,6 +165,7 @@ export class SqliteDatabase {
 
   async exportBackupJson(): Promise<string> {
     if (!this.ready()) throw new Error('SQLite database is unavailable.');
+    if (!this.isWeb) return this.exportPortableBackupJson();
     const result = await CapacitorSQLite.exportToJson({
       database: this.databaseName,
       jsonexportmode: 'full',
@@ -119,6 +180,10 @@ export class SqliteDatabase {
   async restoreBackupJson(json: string): Promise<void> {
     if (!this.ready()) throw new Error('SQLite database is unavailable.');
     const parsed = JSON.parse(json) as Record<string, unknown>;
+    if (parsed['format'] === 'cardnest-portable-sqlite') {
+      await this.restorePortableBackup(parsed);
+      return;
+    }
     parsed['database'] = this.databaseName;
     parsed['overwrite'] = true;
     parsed['encrypted'] = false;
@@ -147,29 +212,86 @@ export class SqliteDatabase {
     await CapacitorSQLite.execute({
       database: this.databaseName,
       transaction: true,
-      statements: [
-        'DELETE FROM transaction_links',
-        'DELETE FROM transaction_split_members',
-        'DELETE FROM transaction_split_groups',
-        'DELETE FROM attachments',
-        'DELETE FROM emi_installments',
-        'DELETE FROM emi_plans',
-        'DELETE FROM statements',
-        'DELETE FROM recurring_rules',
-        'DELETE FROM card_transactions',
-        'DELETE FROM card_benefits',
-        'DELETE FROM card_important_links',
-        'DELETE FROM card_relationship_members',
-        'DELETE FROM card_relationship_groups',
-        'DELETE FROM card_secrets',
-        'DELETE FROM credit_cards',
-        'DELETE FROM category_limits',
-        'DELETE FROM categories',
-        'DELETE FROM monthly_income',
-        'DELETE FROM app_preferences',
-      ].join(';\n'),
+      statements: DELETE_TABLES.map((table) => `DELETE FROM ${table}`).join(';\n'),
     });
     if (this.isWeb) await CapacitorSQLite.saveToStore({ database: this.databaseName });
+  }
+
+  private async exportPortableBackupJson(): Promise<string> {
+    const versionResult = await CapacitorSQLite.query({
+      database: this.databaseName,
+      statement: 'PRAGMA user_version;',
+      values: [],
+    });
+    const tables: PortableBackupTable[] = [];
+    for (const name of BACKUP_TABLES) {
+      const result = await CapacitorSQLite.query({
+        database: this.databaseName,
+        statement: `SELECT * FROM ${name}`,
+        values: [],
+      });
+      tables.push({ name, rows: (result.values ?? []) as Record<string, unknown>[] });
+    }
+    const backup: PortableBackup = {
+      format: 'cardnest-portable-sqlite',
+      version: 1,
+      databaseVersion: Number(versionResult.values?.[0]?.['user_version'] ?? 0),
+      tables,
+    };
+    return JSON.stringify(backup);
+  }
+
+  private async restorePortableBackup(value: Record<string, unknown>): Promise<void> {
+    if (value['version'] !== 1 || !Array.isArray(value['tables'])) {
+      throw new Error('The backup database is invalid.');
+    }
+    const allowedTables = new Set<string>(BACKUP_TABLES);
+    const backupTables = new Map<string, readonly Record<string, unknown>[]>();
+    for (const item of value['tables']) {
+      if (
+        !this.isRecord(item) ||
+        typeof item['name'] !== 'string' ||
+        !Array.isArray(item['rows'])
+      ) {
+        throw new Error('The backup database is invalid.');
+      }
+      if (!allowedTables.has(item['name']) || !item['rows'].every((row) => this.isRecord(row))) {
+        throw new Error('The backup database contains an unsupported table.');
+      }
+      backupTables.set(item['name'], item['rows'] as readonly Record<string, unknown>[]);
+    }
+
+    await CapacitorSQLite.beginTransaction({ database: this.databaseName });
+    try {
+      await CapacitorSQLite.execute({
+        database: this.databaseName,
+        transaction: false,
+        statements: DELETE_TABLES.map((table) => `DELETE FROM ${table}`).join(';\n'),
+      });
+      for (const table of BACKUP_TABLES) {
+        for (const row of backupTables.get(table) ?? []) {
+          const columns = Object.keys(row);
+          if (!columns.length || columns.some((column) => !/^[a-z][a-z0-9_]*$/i.test(column))) {
+            throw new Error('The backup database contains invalid columns.');
+          }
+          await CapacitorSQLite.run({
+            database: this.databaseName,
+            statement: `INSERT INTO ${table} (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`,
+            values: columns.map((column) => row[column]),
+            transaction: false,
+          });
+        }
+      }
+      await CapacitorSQLite.commitTransaction({ database: this.databaseName });
+    } catch (error: unknown) {
+      await CapacitorSQLite.rollbackTransaction({ database: this.databaseName });
+      throw error;
+    }
+    if (this.isWeb) await CapacitorSQLite.saveToStore({ database: this.databaseName });
+  }
+
+  private isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
   }
 
   private async initialiseWebStore(): Promise<void> {
