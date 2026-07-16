@@ -45,9 +45,12 @@
             <div class="type-picker">
               @for (type of types; track type.value) {
                 <label
-                  ><input type="radio" formControlName="type" [value]="type.value" /><span>{{
-                    type.label
-                  }}</span></label
+                  ><input
+                    type="radio"
+                    formControlName="type"
+                    [value]="type.value"
+                    (change)="transactionTypeChanged(type.value)"
+                  /><span>{{ type.label }}</span></label
                 >
               }
             </div>
@@ -143,6 +146,30 @@
               }
             </label>
             <label>Date<input formControlName="transactionDate" type="date" /></label>
+            @if (
+              form.controls.type.value === 'REFUND' || form.controls.type.value === 'ADJUSTMENT'
+            ) {
+              <label class="full">
+                {{
+                  form.controls.type.value === 'REFUND'
+                    ? 'Refund for transaction (optional)'
+                    : 'Adjustment for transaction (optional)'
+                }}
+                <select formControlName="relatedTransactionId">
+                  <option value="">Not linked</option>
+                  @for (related of relatedTransactionOptions(); track related.id) {
+                    <option [value]="related.id">
+                      {{ related.transactionDate }} · {{ related.merchant || related.type }} ·
+                      {{ money(related.amountMinor, related.currencyCode) }} ·
+                      {{ store.sourceName(related.cardId) }}
+                    </option>
+                  }
+                </select>
+                @if (!relatedTransactionOptions().length) {
+                  <small>No matching recent transactions were found.</small>
+                }
+              </label>
+            }
             <label>
               Category
               <select formControlName="categoryId">
@@ -175,12 +202,32 @@
             <label class="full"
               >Notes<textarea formControlName="notes" placeholder="Optional details"></textarea>
             </label>
+            <label class="tax-option full">
+              <input type="checkbox" formControlName="taxIncluded" />
+              <span
+                ><strong>Tax included</strong
+                ><small>Track tax, handling, or other charges within the total.</small></span
+              >
+            </label>
+            @if (form.controls.taxIncluded.value) {
+              <label class="full">
+                Tax and other charges included in total
+                <input formControlName="taxAmount" inputmode="decimal" placeholder="0.00" />
+                @if (form.controls.taxAmount.invalid) {
+                  <small>Enter a charge smaller than the transaction total.</small>
+                }
+              </label>
+            }
             <div class="attachment full">
               <span class="attachment__label">Receipt images</span>
-              <button type="button" class="attachment__pick" (click)="pickReceipts()">
-                <app-icon name="plus" />
-                Add from gallery or camera
-              </button>
+              <div class="attachment__actions">
+                <button type="button" class="attachment__pick" (click)="pickReceipts()">
+                  <app-icon name="gallery" /> Choose from gallery
+                </button>
+                <button type="button" class="attachment__pick" (click)="captureReceipt()">
+                  <app-icon name="camera" /> Take a photo
+                </button>
+              </div>
               @if (receiptPreviews().length) {
                 <ul class="attachment__previews">
                   @for (preview of receiptPreviews(); track preview; let i = $index) {
@@ -344,30 +391,42 @@
         <div class="month-entries">
           @for (transaction of group.transactions; track transaction.id) {
             <article [class.menu-open]="actionMenuId() === transaction.id">
-              <span class="tx-icon" [class.credit]="isCredit(transaction.type)" aria-hidden="true">
-                <app-icon [name]="isCredit(transaction.type) ? 'incoming' : 'outgoing'" />
-              </span>
-              <div class="tx-main">
-                <strong>{{ transaction.merchant || transaction.type.replace('_', ' ') }}</strong>
-                <small
-                  >{{ categoryName(transaction.categoryId) }} ·
-                  {{ store.sourceDetail(transaction.cardId) }}</small
-                >
-                @if (transaction.recurringRuleId) {
-                  <span class="repeat-badge"><app-icon name="repeat" /> Repeats</span>
-                }
-              </div>
-              <div class="tx-date">
-                <span>{{ transaction.transactionDate }}</span
-                ><small>{{ transaction.type.replace('_', ' ') }}</small>
-              </div>
-              <strong class="tx-amount" [class.credit]="isCredit(transaction.type)"
-                >{{ isCredit(transaction.type) ? '+' : '−'
-                }}{{ money(transaction.amountMinor, transaction.currencyCode) }}</strong
+              <button
+                class="transaction-open-button"
+                type="button"
+                (click)="openDetails(transaction)"
+                aria-label="View details for {{ transaction.merchant || 'transaction' }}"
               >
-              @if (transaction.type === 'PURCHASE' && !transaction.emiPlanId) {
-                <button class="emi-button" type="button">Convert to EMI</button>
-              }
+                <span
+                  class="tx-icon"
+                  [class.credit]="isCredit(transaction.type)"
+                  aria-hidden="true"
+                >
+                  <app-icon [name]="isCredit(transaction.type) ? 'incoming' : 'outgoing'" />
+                </span>
+                <span class="tx-main">
+                  <strong>{{ transaction.merchant || transaction.type.replace('_', ' ') }}</strong>
+                  <small
+                    >{{ categoryName(transaction.categoryId) }} ·
+                    {{ store.sourceDetail(transaction.cardId) }}</small
+                  >
+                  @if (transaction.emiPlanId) {
+                    <span class="repeat-badge"><app-icon name="schedule" /> EMI</span>
+                  } @else if (transaction.recurringRuleId) {
+                    <span class="repeat-badge"><app-icon name="repeat" /> Repeats</span>
+                  }
+                </span>
+                <span class="tx-date">
+                  <span>{{ transaction.transactionDate }}</span
+                  ><small>{{
+                    transaction.emiPlanId ? 'EMI' : transaction.type.replace('_', ' ')
+                  }}</small>
+                </span>
+                <strong class="tx-amount" [class.credit]="isCredit(transaction.type)"
+                  >{{ isCredit(transaction.type) ? '+' : '−'
+                  }}{{ money(transaction.amountMinor, transaction.currencyCode) }}</strong
+                >
+              </button>
               <div class="transaction-menu-anchor" data-action-menu>
                 <button
                   class="menu-button"
@@ -413,6 +472,282 @@
   </section>
 </div>
 
+@if (detailTransaction(); as transaction) {
+  <div
+    class="detail-backdrop"
+    tabindex="-1"
+    (click)="closeDetails()"
+    (keydown.escape)="closeDetails()"
+  >
+    <section
+      class="panel transaction-detail"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="transaction-detail-title"
+      tabindex="-1"
+      (click)="$event.stopPropagation()"
+      (keydown)="$event.stopPropagation()"
+    >
+      <header class="detail-heading">
+        <div>
+          <p class="eyebrow">
+            {{ transaction.emiPlanId ? 'EMI' : transaction.type.replace('_', ' ') }}
+          </p>
+          <h2 id="transaction-detail-title">{{ transaction.merchant || 'Transaction details' }}</h2>
+        </div>
+        <button type="button" (click)="closeDetails()" aria-label="Close transaction details">
+          <app-icon name="close" />
+        </button>
+      </header>
+      <div class="detail-amount" [class.credit]="isCredit(transaction.type)">
+        {{ isCredit(transaction.type) ? '+' : '−'
+        }}{{ money(transaction.amountMinor, transaction.currencyCode) }}
+      </div>
+      <dl class="detail-grid">
+        <div>
+          <dt>Date</dt>
+          <dd>{{ transaction.transactionDate }}</dd>
+        </div>
+        <div>
+          <dt>Category</dt>
+          <dd>{{ categoryName(transaction.categoryId) }}</dd>
+        </div>
+        <div>
+          <dt>Payment source</dt>
+          <dd>{{ store.sourceDetail(transaction.cardId) }}</dd>
+        </div>
+        @if (transaction.notes) {
+          <div class="detail-wide">
+            <dt>Notes</dt>
+            <dd>{{ transaction.notes }}</dd>
+          </div>
+        }
+        @if (transaction.taxIncluded && transaction.taxMinor) {
+          <div>
+            <dt>Tax and charges</dt>
+            <dd>
+              {{ money(transaction.taxMinor, transaction.currencyCode) }} ({{
+                taxPercentage(transaction)
+              }}%)
+            </dd>
+          </div>
+        }
+        @if (linkedTransactions(transaction).length) {
+          <div class="detail-wide">
+            <dt>Linked transactions</dt>
+            @for (related of linkedTransactions(transaction); track related.id) {
+              <dd>
+                {{ related.transactionDate }} · {{ related.merchant || related.type }} ·
+                {{ money(related.amountMinor, related.currencyCode) }}
+              </dd>
+            }
+          </div>
+        }
+      </dl>
+      @if (transaction.attachmentIds.length) {
+        <section class="detail-receipts" aria-label="Receipt images">
+          <h3>Receipt images</h3>
+          <div>
+            @for (receipt of transaction.attachmentIds; track receipt) {
+              <a [href]="receipt" target="_blank" rel="noopener">
+                <img [src]="receipt" alt="Receipt attached to transaction" />
+              </a>
+            }
+          </div>
+        </section>
+      }
+      @if (splitSiblings(transaction).length > 1) {
+        <section class="detail-section">
+          <h3>Split payments</h3>
+          @for (part of splitSiblings(transaction); track part.id) {
+            <div class="schedule-row">
+              <span>{{ store.sourceName(part.cardId) }}</span>
+              <strong>{{ money(part.amountMinor, part.currencyCode) }}</strong>
+            </div>
+          }
+        </section>
+      }
+      @if (emiPlan(transaction); as plan) {
+        <section class="detail-section">
+          <h3>EMI plan · {{ plan.tenureMonths }} months</h3>
+          <p>
+            {{
+              plan.interestType === 'NO_COST'
+                ? 'No-cost EMI'
+                : 'Standard EMI at ' + plan.annualRateBasisPoints / 100 + '% p.a.'
+            }}
+          </p>
+          @for (installment of emiInstallments(transaction); track installment.installmentNumber) {
+            <div class="schedule-row">
+              <span>#{{ installment.installmentNumber }} · {{ installment.dueDate }}</span>
+              <strong>{{ money(installment.totalMinor, transaction.currencyCode) }}</strong>
+            </div>
+          }
+          <button class="btn view-emi" type="button" (click)="goToEmi(plan.id)">
+            View in Loans &amp; EMIs <app-icon name="chevron_right" />
+          </button>
+        </section>
+      }
+      <div class="detail-actions">
+        <button class="btn" type="button" (click)="edit(transaction)">
+          <app-icon name="edit" /> Edit
+        </button>
+        <button class="btn" type="button" (click)="duplicate(transaction)">
+          <app-icon name="duplicate" /> Duplicate
+        </button>
+        <button class="btn" type="button" (click)="goToSource(transaction)">
+          <app-icon name="go_to_source" /> Payment source
+        </button>
+        @if (canSplit(transaction)) {
+          <button class="btn" type="button" (click)="openSplit(transaction)">
+            <app-icon name="split" /> Split payment
+          </button>
+        }
+        @if (canConvertToEmi(transaction)) {
+          <button class="btn btn-primary" type="button" (click)="openEmi(transaction)">
+            <app-icon name="schedule" /> Convert to EMI
+          </button>
+        }
+        <button class="btn danger-item" type="button" (click)="delete(transaction)">
+          <app-icon name="delete" /> Delete
+        </button>
+      </div>
+    </section>
+  </div>
+
+  @if (showEmiForm()) {
+    <div
+      class="subdialog-backdrop"
+      tabindex="-1"
+      (click)="showEmiForm.set(false)"
+      (keydown.escape)="showEmiForm.set(false)"
+    >
+      <section
+        class="panel subdialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="emi-title"
+        tabindex="-1"
+        (click)="$event.stopPropagation()"
+        (keydown)="$event.stopPropagation()"
+      >
+        <header class="detail-heading">
+          <div>
+            <p class="eyebrow">Flexible installment plan</p>
+            <h2 id="emi-title">Convert to EMI</h2>
+          </div>
+          <button type="button" (click)="showEmiForm.set(false)" aria-label="Close EMI form">
+            <app-icon name="close" />
+          </button>
+        </header>
+        <p>
+          Split {{ money(transaction.amountMinor, transaction.currencyCode) }} into traceable
+          monthly installments.
+        </p>
+        <form [formGroup]="emiForm" (ngSubmit)="saveEmi(transaction)">
+          <label
+            >EMI type<select formControlName="kind">
+              <option value="NO_COST">No-cost EMI</option>
+              <option value="STANDARD">Standard EMI with interest</option>
+            </select></label
+          >
+          <label>Months<input formControlName="months" type="number" min="2" max="36" /></label>
+          @if (emiForm.controls.kind.value === 'STANDARD') {
+            <label
+              >Annual interest rate (%)<input formControlName="annualRate" inputmode="decimal"
+            /></label>
+          }
+          <label
+            >First installment<select formControlName="startMode">
+              <option value="THIS_MONTH">This month's statement</option>
+              <option value="NEXT_MONTH">Next month's statement</option>
+              <option value="CUSTOM">Custom month</option>
+            </select></label
+          >
+          @if (emiForm.controls.startMode.value === 'CUSTOM') {
+            <label>Starting month<input formControlName="customStart" type="month" /></label>
+          }
+          <div class="form-actions">
+            <button class="btn" type="button" (click)="showEmiForm.set(false)">Cancel</button>
+            <button class="btn btn-primary" type="submit">Create EMI plan</button>
+          </div>
+        </form>
+      </section>
+    </div>
+  }
+
+  @if (showSplitForm()) {
+    <div
+      class="subdialog-backdrop"
+      tabindex="-1"
+      (click)="showSplitForm.set(false)"
+      (keydown.escape)="showSplitForm.set(false)"
+    >
+      <section
+        class="panel subdialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="split-title"
+        tabindex="-1"
+        (click)="$event.stopPropagation()"
+        (keydown)="$event.stopPropagation()"
+      >
+        <header class="detail-heading">
+          <div>
+            <p class="eyebrow">Two to four payments</p>
+            <h2 id="split-title">Split transaction</h2>
+          </div>
+          <button type="button" (click)="showSplitForm.set(false)" aria-label="Close split form">
+            <app-icon name="close" />
+          </button>
+        </header>
+        <p>
+          The split amounts must total
+          {{ money(transaction.amountMinor, transaction.currencyCode) }}.
+        </p>
+        <form [formGroup]="splitForm" (ngSubmit)="saveSplit(transaction)">
+          <div formArrayName="parts" class="split-parts">
+            @for (part of splitForm.controls.parts.controls; track $index; let index = $index) {
+              <fieldset [formGroupName]="index">
+                <legend>Payment {{ index + 1 }}</legend>
+                <label
+                  >Source<select formControlName="sourceId">
+                    <optgroup label="Credit cards">
+                      @for (card of store.activeCards(); track card.id) {
+                        <option [value]="card.id">{{ store.sourceDetail(card.id) }}</option>
+                      }
+                    </optgroup>
+                    <optgroup label="Other sources">
+                      @for (source of store.activePaymentSources(); track source.id) {
+                        <option [value]="source.id">{{ store.sourceDetail(source.id) }}</option>
+                      }
+                    </optgroup>
+                  </select></label
+                >
+                <label>Amount<input formControlName="amount" inputmode="decimal" /></label>
+                @if (splitForm.controls.parts.length > 2) {
+                  <button class="remove-part" type="button" (click)="removeSplitPart(index)">
+                    <app-icon name="delete" /> Remove
+                  </button>
+                }
+              </fieldset>
+            }
+          </div>
+          @if (splitForm.controls.parts.length < 4) {
+            <button class="btn" type="button" (click)="addSplitPart()">
+              <app-icon name="plus" /> Add payment
+            </button>
+          }
+          <div class="form-actions">
+            <button class="btn" type="button" (click)="showSplitForm.set(false)">Cancel</button>
+            <button class="btn btn-primary" type="submit">Save split</button>
+          </div>
+        </form>
+      </section>
+    </div>
+  }
+}
+
 @if (manageCategoriesOpen()) {
   <div class="category-manager-backdrop">
     <section
@@ -431,5 +766,17 @@
     [transactions]="filtered()"
     [initialFormat]="exportFormat()"
     (closed)="exportOpen.set(false)"
+  />
+}
+
+@if (deleteCandidate(); as transaction) {
+  <app-confirmation-dialog
+    title="Delete transaction?"
+    [message]="
+      'Delete ' + (transaction.merchant || 'this transaction') + '? This action cannot be undone.'
+    "
+    confirmLabel="Delete transaction"
+    (confirmed)="confirmDelete()"
+    (cancelled)="deleteCandidate.set(null)"
   />
 }

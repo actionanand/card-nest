@@ -5,6 +5,7 @@ import { estimatedGracePeriod } from '../../core/services/billing-cycle';
 import { formatMoney } from '../../core/services/money';
 import { NotificationService } from '../../core/services/notification.service';
 import { AppIcon } from '../../shared/app-icon';
+import { SnackbarService } from '../../core/services/snackbar.service';
 
 type ReminderFilter = 'ALL' | 'DUE' | 'GRACE' | 'FEE' | 'EXPIRING';
 
@@ -17,6 +18,7 @@ type ReminderFilter = 'ALL' | 'DUE' | 'GRACE' | 'FEE' | 'EXPIRING';
 export class RemindersPage {
   readonly store = inject(CardNestStore);
   readonly notifications = inject(NotificationService);
+  private readonly snackbar = inject(SnackbarService);
   readonly disabled = signal<readonly string[]>([]);
   readonly filter = signal<ReminderFilter>('DUE');
   readonly reminders = computed(() =>
@@ -51,7 +53,8 @@ export class RemindersPage {
     return formatMoney(value, currency);
   }
   snooze(id: string): void {
-    this.disabled.update((items) => [...items, id]);
+    this.disabled.set([...new Set([...this.disabled(), id])]);
+    this.snackbar.show('Reminder snoozed.', 'INFO');
   }
 
   async enableNotifications(): Promise<void> {
@@ -59,11 +62,23 @@ export class RemindersPage {
       this.store.cardOutstanding(cardId),
     );
   }
-  async toggleNotifications(): Promise<void> {
+  async toggleNotifications(event: Event): Promise<void> {
+    const checkbox = event.target as HTMLInputElement;
     if (this.notifications.enabled()) {
       await this.notifications.cancelAll(this.store.cards());
+      checkbox.checked = false;
+      this.snackbar.show('Payment reminders disabled.', 'INFO');
     } else {
-      await this.enableNotifications();
+      const granted = await this.notifications.requestPermission(this.store.cards(), (cardId) =>
+        this.store.cardOutstanding(cardId),
+      );
+      checkbox.checked = granted;
+      this.snackbar.show(
+        granted
+          ? 'Payment reminders enabled and scheduled.'
+          : (this.notifications.lastError() ?? 'Notification permission denied.'),
+        granted ? 'SUCCESS' : 'WARNING',
+      );
     }
   }
   updateFilter(event: Event): void {
@@ -71,5 +86,7 @@ export class RemindersPage {
   }
   recordPayment(cardId: string, amount: number): void {
     this.store.recordPayment(cardId, amount, 'Reminder payment');
+    this.disabled.set([...new Set([...this.disabled(), cardId])]);
+    this.snackbar.show('Payment recorded.');
   }
 }

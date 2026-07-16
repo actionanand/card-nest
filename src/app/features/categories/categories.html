@@ -131,3 +131,15 @@
     </section>
   </div>
 }
+
+@if (deleteCandidate(); as category) {
+  <app-confirmation-dialog
+    title="Delete category?"
+    [message]="
+      'Delete ' + category.name + '? Existing transactions will be moved to the Other category.'
+    "
+    confirmLabel="Delete category"
+    (confirmed)="confirmDelete()"
+    (cancelled)="deleteCandidate.set(null)"
+  />
+}

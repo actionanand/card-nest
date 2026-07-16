@@ -4,10 +4,11 @@ import { Category } from '../../core/models/domain';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { SnackbarService } from '../../core/services/snackbar.service';
 import { AppIcon } from '../../shared/app-icon';
+import { ConfirmationDialog } from '../../shared/confirmation-dialog';
 
 @Component({
   selector: 'app-categories-page',
-  imports: [ReactiveFormsModule, AppIcon],
+  imports: [ReactiveFormsModule, AppIcon, ConfirmationDialog],
   templateUrl: './categories.html',
   styleUrl: './categories.scss',
 })
@@ -18,6 +19,7 @@ export class CategoriesPage {
   readonly closed = output<void>();
   readonly showForm = signal(false);
   readonly editingId = signal<string | null>(null);
+  readonly deleteCandidate = signal<Category | null>(null);
   readonly iconOptions = [
     'category',
     'shopping_basket',
@@ -50,6 +52,18 @@ export class CategoriesPage {
     'girl',
     'other',
     'family',
+    'hamburger',
+    'apple',
+    'shopping_cart',
+    'tag',
+    'film',
+    'popcorn',
+    'landmark',
+    'banknote_arrow_up',
+    'banknote_arrow_down',
+    'globe_check',
+    'globe_off',
+    'briefcase_business',
   ] as const;
   readonly sortedCategories = computed(() =>
     [...this.store.categories()].sort((a, b) => a.name.localeCompare(b.name)),
@@ -126,12 +140,13 @@ export class CategoriesPage {
   }
   requestDelete(categoryId: string): void {
     const category = this.store.categories().find((item) => item.id === categoryId);
-    if (
-      !category ||
-      !globalThis.confirm?.(`Delete ${category.name}? Existing transactions will move to Other.`)
-    )
-      return;
-    this.store.deleteCategory(categoryId);
+    if (category) this.deleteCandidate.set(category);
+  }
+  confirmDelete(): void {
+    const category = this.deleteCandidate();
+    if (!category) return;
+    this.store.deleteCategory(category.id);
+    this.deleteCandidate.set(null);
     this.snackbar.show(`${category.name} deleted. Existing entries moved to Other.`, 'WARNING');
   }
 }

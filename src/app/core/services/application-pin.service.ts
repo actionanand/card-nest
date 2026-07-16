@@ -69,6 +69,15 @@ export class ApplicationPinService {
     return this.verify(pin);
   }
 
+  async disablePin(currentPin: string): Promise<boolean> {
+    if (!this.database.ready()) throw new Error('SQLite storage is unavailable.');
+    if (!this.storedHash || !(await this.verify(currentPin))) return false;
+    await this.database.run('DELETE FROM app_preferences WHERE key = ?', [PIN_PREFERENCE_KEY]);
+    this.storedHash = null;
+    this.hasPin.set(false);
+    return true;
+  }
+
   private async verify(pin: string): Promise<boolean> {
     if (!this.storedHash) return false;
     const expected = this.fromBase64(this.storedHash.hash);

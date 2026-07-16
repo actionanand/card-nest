@@ -263,6 +263,27 @@ legend {
   margin-bottom: 0.5rem;
   font-weight: 600;
 }
+.attachment__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.tax-option {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 0.6rem;
+}
+.tax-option input {
+  width: 1.2rem;
+  min-height: 1.2rem;
+}
+.tax-option span {
+  display: grid;
+  gap: 0.1rem;
+}
 .attachment__pick {
   display: inline-flex;
   align-items: center;
@@ -506,11 +527,27 @@ label small {
 .month-entries article {
   position: relative;
   display: grid;
-  grid-template-columns: auto minmax(10rem, 1fr) 7rem 8rem auto auto;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.25rem;
+  border-bottom: 1px solid var(--line);
+}
+.transaction-open-button {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  grid-template-columns: auto minmax(10rem, 1fr) 7rem 8rem;
   align-items: center;
   gap: 0.75rem;
-  padding: 0.75rem 1rem;
-  border-bottom: 1px solid var(--line);
+  padding: 0.75rem 0.25rem 0.75rem 1rem;
+  border: 0;
+  color: var(--ink);
+  background: transparent;
+  text-align: left;
+}
+.transaction-open-button:hover,
+.transaction-open-button:focus-visible {
+  background: var(--canvas);
 }
 .month-entries article.menu-open {
   z-index: 12;
@@ -573,18 +610,162 @@ label small {
   width: 0.7rem;
   height: 0.7rem;
 }
-.emi-button {
-  padding: 0.28rem 0.42rem;
-  border: 0;
-  border-radius: 0.4rem;
-  color: var(--accent);
-  background: var(--accent-soft);
-  font-size: 0.62rem;
-  font-weight: 750;
-}
 .transaction-menu-anchor {
-  grid-column: 6;
-  grid-row: 1;
+  padding-right: 0.6rem;
+}
+.detail-backdrop,
+.subdialog-backdrop {
+  position: fixed;
+  z-index: 800;
+  inset: 0;
+  display: grid;
+  align-items: start;
+  padding: calc(env(safe-area-inset-top) + 4.75rem) max(1rem, env(safe-area-inset-right))
+    max(1rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
+  overflow-y: auto;
+  background: rgb(10 25 18 / 68%);
+  backdrop-filter: blur(4px);
+}
+.subdialog-backdrop {
+  z-index: 850;
+}
+.transaction-detail,
+.subdialog {
+  width: min(100%, 42rem);
+  max-height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 6rem);
+  margin: auto;
+  padding: 1.25rem;
+  overflow-y: auto;
+}
+.subdialog {
+  width: min(100%, 34rem);
+}
+.detail-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.detail-heading h2 {
+  margin: 0;
+}
+.detail-heading > button {
+  display: grid;
+  width: 2.5rem;
+  height: 2.5rem;
+  place-items: center;
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 50%;
+  color: var(--muted);
+  background: var(--surface-2);
+}
+.detail-amount {
+  margin: 1rem 0;
+  font-size: clamp(1.8rem, 6vw, 2.5rem);
+  font-weight: 750;
+  font-variant-numeric: lining-nums tabular-nums;
+}
+.detail-amount.credit {
+  color: var(--success);
+}
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin: 0;
+}
+.detail-grid > div {
+  min-width: 0;
+  padding: 0.75rem;
+  border-radius: 0.65rem;
+  background: var(--canvas);
+}
+.detail-grid .detail-wide {
+  grid-column: 1 / -1;
+}
+.detail-grid dt {
+  margin-bottom: 0.2rem;
+  color: var(--muted);
+  font-size: 0.67rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.detail-grid dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.detail-receipts,
+.detail-section {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+}
+.detail-receipts h3,
+.detail-section h3 {
+  margin: 0 0 0.65rem;
+  font-size: 1rem;
+}
+.detail-receipts > div {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(6rem, 1fr));
+  gap: 0.65rem;
+}
+.detail-receipts img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 0.65rem;
+  object-fit: cover;
+}
+.schedule-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.55rem 0;
+  border-bottom: 1px solid var(--line);
+}
+.detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+.detail-actions .btn,
+.subdialog .btn,
+.remove-part {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.detail-actions app-icon,
+.subdialog .btn app-icon,
+.remove-part app-icon {
+  width: 1rem;
+  height: 1rem;
+}
+.subdialog form,
+.split-parts {
+  display: grid;
+  gap: 0.75rem;
+}
+.split-parts fieldset {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(8rem, 0.6fr) auto;
+  align-items: end;
+  gap: 0.65rem;
+  padding: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 0.65rem;
+}
+.split-parts legend {
+  padding: 0 0.25rem;
+}
+.remove-part {
+  min-height: 2.8rem;
+  border: 0;
+  color: var(--danger);
+  background: transparent;
 }
 .empty {
   padding: 3rem 1rem;
@@ -597,8 +778,8 @@ label small {
   .toolbar .manage-categories {
     grid-column: 1/-1;
   }
-  .month-entries article {
-    grid-template-columns: auto minmax(0, 1fr) auto auto;
+  .transaction-open-button {
+    grid-template-columns: auto minmax(0, 1fr) auto;
   }
   .tx-date {
     display: none;
@@ -607,23 +788,26 @@ label small {
     grid-column: 3;
     grid-row: 1;
   }
-  .emi-button {
-    grid-column: 2;
-    justify-self: start;
-  }
-  .transaction-menu-anchor {
-    grid-column: 4;
-  }
 }
 @media (max-width: 600px) {
   .transaction-modal-backdrop,
-  .category-manager-backdrop {
+  .category-manager-backdrop,
+  .detail-backdrop,
+  .subdialog-backdrop {
     inset: calc(3.5rem + env(safe-area-inset-top)) 0 0;
     padding: 0;
   }
   .transaction-form {
     height: 100%;
     min-height: 0;
+    max-height: none;
+    margin: 0;
+    border-radius: 0;
+  }
+  .transaction-detail,
+  .subdialog {
+    width: 100%;
+    height: 100%;
     max-height: none;
     margin: 0;
     border-radius: 0;
@@ -678,7 +862,10 @@ label small {
   }
   .month-entries article {
     gap: 0.55rem;
-    padding: 0.7rem 0.75rem;
+  }
+  .transaction-open-button {
+    gap: 0.55rem;
+    padding: 0.7rem 0.25rem 0.7rem 0.75rem;
   }
   .ledger-summary > div:first-child {
     align-items: flex-start;
@@ -689,16 +876,9 @@ label small {
     width: min(15rem, calc(100vw - 2rem));
   }
   .export-choices button {
-    width: 2.35rem;
+    width: auto;
     justify-content: center;
-    padding: 0;
-  }
-  .export-choices span {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
+    padding: 0.4rem 0.55rem;
   }
   .tx-main small {
     max-width: 12rem;
@@ -708,5 +888,9 @@ label small {
   }
   .tx-amount {
     font-size: 0.78rem;
+  }
+  .detail-grid,
+  .split-parts fieldset {
+    grid-template-columns: 1fr;
   }
 }

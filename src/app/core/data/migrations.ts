@@ -48,4 +48,13 @@ export const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
       `CREATE TABLE IF NOT EXISTS card_secrets (card_id TEXT PRIMARY KEY NOT NULL, encrypted_number TEXT, encrypted_cvv TEXT, updated_at TEXT NOT NULL, FOREIGN KEY(card_id) REFERENCES credit_cards(id) ON DELETE CASCADE)`,
     ],
   },
+  {
+    version: 5,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS transaction_links (transaction_id TEXT PRIMARY KEY NOT NULL, related_transaction_id TEXT NOT NULL, relationship_type TEXT NOT NULL CHECK(relationship_type IN ('REFUND', 'ADJUSTMENT')), created_at TEXT NOT NULL, FOREIGN KEY(transaction_id) REFERENCES card_transactions(id) ON DELETE CASCADE, FOREIGN KEY(related_transaction_id) REFERENCES card_transactions(id) ON DELETE CASCADE)`,
+      `CREATE INDEX IF NOT EXISTS idx_transaction_links_related ON transaction_links(related_transaction_id)`,
+      `CREATE TABLE IF NOT EXISTS transaction_split_groups (id TEXT PRIMARY KEY NOT NULL, original_amount_minor INTEGER NOT NULL, created_at TEXT NOT NULL)`,
+      `CREATE TABLE IF NOT EXISTS transaction_split_members (group_id TEXT NOT NULL, transaction_id TEXT NOT NULL UNIQUE, PRIMARY KEY(group_id, transaction_id), FOREIGN KEY(group_id) REFERENCES transaction_split_groups(id) ON DELETE CASCADE, FOREIGN KEY(transaction_id) REFERENCES card_transactions(id) ON DELETE CASCADE)`,
+    ],
+  },
 ];

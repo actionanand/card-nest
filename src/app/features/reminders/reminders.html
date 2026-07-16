@@ -11,7 +11,7 @@
         type="checkbox"
         role="switch"
         [checked]="notifications.enabled()"
-        (change)="toggleNotifications()"
+        (change)="toggleNotifications($event)"
       />
     </label>
   </header>

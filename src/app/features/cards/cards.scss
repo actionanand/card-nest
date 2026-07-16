@@ -18,6 +18,23 @@
   gap: 0.75rem;
   margin-bottom: 0.8rem;
 }
+.card-search {
+  position: relative;
+  flex: 1 1 18rem;
+}
+.card-search app-icon {
+  position: absolute;
+  top: 50%;
+  left: 0.75rem;
+  width: 1rem;
+  height: 1rem;
+  transform: translateY(-50%);
+  color: var(--muted);
+}
+.card-search input {
+  min-height: 2.65rem;
+  padding-left: 2.25rem;
+}
 .view-switch {
   display: inline-flex;
   padding: 0.2rem;
@@ -130,6 +147,30 @@
 .checkbox-row small,
 label small {
   color: var(--muted);
+}
+.validation-error,
+label small.validation-error {
+  color: var(--danger);
+}
+.form-error-summary {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.7rem;
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--line));
+  border-radius: 0.6rem;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 8%, var(--surface));
+}
+.form-error-summary app-icon {
+  width: 1rem;
+  height: 1rem;
+}
+.card-form input.ng-invalid.ng-touched,
+.card-form select.ng-invalid.ng-touched,
+.card-form textarea.ng-invalid.ng-touched {
+  border-color: var(--danger);
+  outline-color: var(--danger);
 }
 .form-actions {
   display: flex;
@@ -349,6 +390,13 @@ label small {
 .action-menu button:hover {
   background: var(--accent-soft);
 }
+.action-menu button:disabled,
+.card-actions .btn:disabled {
+  cursor: not-allowed;
+  color: var(--muted);
+  background: var(--surface-2);
+  opacity: 0.5;
+}
 .action-menu .danger-item {
   color: var(--danger);
 }
@@ -383,6 +431,120 @@ label small {
   height: 0.45rem;
   margin: 0.35rem 0;
   accent-color: var(--accent);
+}
+.linked-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.45rem;
+  margin-top: 0.25rem;
+}
+.linked-cards > small {
+  flex-basis: 100%;
+}
+.linked-cards span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.18rem 0.45rem;
+  border-radius: 999px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  font-weight: 650;
+}
+.linked-cards app-icon {
+  width: 0.75rem;
+  height: 0.75rem;
+}
+.archived-badge {
+  width: fit-content;
+  padding: 0.12rem 0.35rem;
+  border-radius: 999px;
+  color: var(--muted);
+  background: var(--surface-2);
+  font-size: 0.56rem;
+  font-style: normal;
+}
+.waiver-progress {
+  display: grid;
+  gap: 0.4rem;
+  margin-top: 0.8rem;
+  padding: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 0.65rem;
+  background: var(--surface);
+}
+.waiver-progress > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.waiver-progress progress {
+  width: 100%;
+  accent-color: var(--accent);
+}
+.waiver-progress small {
+  color: var(--muted);
+}
+.payment-backdrop {
+  position: fixed;
+  z-index: 850;
+  inset: 0;
+  display: grid;
+  align-items: start;
+  padding: calc(env(safe-area-inset-top) + 4.75rem) max(1rem, env(safe-area-inset-right))
+    max(1rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
+  overflow-y: auto;
+  background: rgb(10 25 18 / 68%);
+  backdrop-filter: blur(4px);
+}
+.payment-dialog {
+  width: min(100%, 34rem);
+  margin: auto;
+  padding: 1.2rem;
+}
+.payment-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.payment-heading h2 {
+  margin: 0;
+}
+.payment-heading > button {
+  display: grid;
+  width: 2.5rem;
+  height: 2.5rem;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  color: var(--muted);
+  background: var(--surface-2);
+}
+.payment-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.6rem;
+  margin: 1rem 0;
+}
+.payment-summary div {
+  display: grid;
+  gap: 0.15rem;
+  padding: 0.65rem;
+  border-radius: 0.6rem;
+  background: var(--canvas);
+}
+.payment-summary dt {
+  color: var(--muted);
+  font-size: 0.62rem;
+}
+.payment-summary dd {
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+.payment-dialog form > small {
+  color: var(--muted);
 }
 .card-notes {
   margin: 0.7rem 0 0;
@@ -488,6 +650,11 @@ label small {
   }
   .card-toolbar {
     align-items: stretch;
+    flex-wrap: wrap;
+  }
+  .card-search {
+    flex-basis: 100%;
+    order: -1;
   }
   .view-switch {
     flex: 0 0 auto;
@@ -533,6 +700,19 @@ label small {
     max-height: none;
     margin: 0;
     border-radius: 0;
+  }
+  .payment-backdrop {
+    inset: calc(3.5rem + env(safe-area-inset-top)) 0 0;
+    padding: 0;
+  }
+  .payment-dialog {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    border-radius: 0;
+  }
+  .payment-summary {
+    grid-template-columns: 1fr;
   }
   .benefit-entry {
     grid-template-columns: 1fr;

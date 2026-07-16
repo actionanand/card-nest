@@ -70,6 +70,8 @@ export interface CreditCard {
   supportEmails: readonly string[];
   notes?: string;
   archived: boolean;
+  archivedAt?: string;
+  deletedAt?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -89,10 +91,19 @@ export interface CardTransaction {
   merchant?: string;
   categoryId: string;
   notes?: string;
+  relatedTransactionId?: string;
+  taxIncluded?: boolean;
+  taxMinor?: Money;
+  splitGroupId?: string;
+  splitOriginalAmountMinor?: Money;
   recurringRuleId?: string;
   generatedOccurrenceDate?: string;
   attachmentIds: readonly string[];
   emiPlanId?: string;
+  emiInstallmentNumber?: number;
+  emiTenureMonths?: number;
+  emiOriginalAmountMinor?: Money;
+  emiCancelled?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -199,10 +210,15 @@ export interface EmiPlan {
   taxMinor: Money;
   startDate: string;
   status: 'ACTIVE' | 'PAUSED' | 'COMPLETED' | 'CANCELLED';
+  originalTransactionDate?: string;
+  originalMerchant?: string;
+  closedAt?: string;
   notes?: string;
 }
 
 export interface EmiInstallment {
+  id?: string;
+  emiPlanId?: string;
   installmentNumber: number;
   statementDate: string;
   dueDate: string;

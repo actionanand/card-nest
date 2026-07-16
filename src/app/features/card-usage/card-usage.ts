@@ -21,7 +21,8 @@ export class CardUsagePage {
       const key = card.relationshipGroupId?.trim() || card.id;
       groups.set(key, [...(groups.get(key) ?? []), card]);
     }
-    return [...groups.entries()]
+    const entries = [...groups.entries()];
+    return entries
       .map(([key, cards]) => {
         const cardIds = new Set(cards.map((card) => card.id));
         const lastUsed = this.store
@@ -34,9 +35,21 @@ export class CardUsagePage {
           .map((transaction) => transaction.transactionDate)
           .sort()
           .at(-1);
+        const issuer = cards[0]?.issuerName || 'Bank';
+        const linkedSetNumber =
+          entries
+            .filter(
+              ([, candidates]) => candidates.length > 1 && candidates[0]?.issuerName === issuer,
+            )
+            .map(([groupKey]) => groupKey)
+            .sort()
+            .indexOf(key) + 1;
         return {
           key,
-          name: cards[0]?.relationshipGroupId || cards[0]?.nickname || key,
+          name:
+            cards.length > 1
+              ? `${issuer} linked cards set ${linkedSetNumber}`
+              : (cards[0]?.nickname ?? 'Card'),
           cards,
           lastUsed,
           band: this.band(lastUsed),

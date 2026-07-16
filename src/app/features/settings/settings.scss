@@ -69,6 +69,10 @@
   color: var(--accent);
   background: var(--accent-soft);
 }
+.setting-heading > span app-icon {
+  width: 1.2rem;
+  height: 1.2rem;
+}
 .setting-heading h2 {
   margin: 0;
 }
@@ -100,6 +104,12 @@
 .setting-row > span {
   display: grid;
   gap: 0.2rem;
+}
+.pin-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.5rem;
 }
 .setting-row small {
   color: var(--muted);
@@ -269,6 +279,33 @@ button:disabled {
 }
 .pin-dialog label small {
   color: var(--muted);
+}
+.password-field {
+  position: relative;
+  display: block;
+}
+.password-field input {
+  padding-right: 3rem;
+}
+.password-field button {
+  position: absolute;
+  top: 50%;
+  right: 0.45rem;
+  display: grid;
+  width: 2.2rem;
+  height: 2.2rem;
+  min-height: 0;
+  padding: 0;
+  place-items: center;
+  transform: translateY(-50%);
+  border: 0;
+  border-radius: 50%;
+  color: var(--muted);
+  background: transparent;
+}
+.password-field app-icon {
+  width: 1rem;
+  height: 1rem;
 }
 .pin-error {
   margin: 0;

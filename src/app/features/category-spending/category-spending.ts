@@ -7,6 +7,7 @@ import { SnackbarService } from '../../core/services/snackbar.service';
 import { AppIcon } from '../../shared/app-icon';
 
 interface SpendingPeriod {
+  readonly offset: number;
   readonly key: string;
   readonly label: string;
   readonly startDate: string;
@@ -28,8 +29,23 @@ export class CategorySpendingPage {
   readonly limitCategory = computed(() =>
     this.store.categories().find((category) => category.id === this.limitCategoryId()),
   );
-  readonly periods = Array.from({ length: 36 }, (_, index) => this.periodForOffset(index));
-  readonly period = computed(() => this.periodForOffset(this.periodOffset()));
+  readonly periods = computed(() => {
+    const candidates = Array.from({ length: 120 }, (_, index) => this.periodForOffset(index));
+    const transactionDates = this.store
+      .transactions()
+      .map((transaction) => transaction.transactionDate);
+    const incomePeriods = new Set(this.store.incomeHistory().map((income) => income.periodKey));
+    const available = candidates.filter(
+      (period) =>
+        incomePeriods.has(period.key) ||
+        transactionDates.some((date) => date >= period.startDate && date <= period.endDate),
+    );
+    return available.length ? available : [candidates[0]];
+  });
+  readonly period = computed(
+    () =>
+      this.periods().find((period) => period.offset === this.periodOffset()) ?? this.periods()[0],
+  );
   readonly transactions = computed(() => {
     const period = this.period();
     return this.store
@@ -47,9 +63,14 @@ export class CategorySpendingPage {
   readonly incomeMinor = computed(
     () =>
       this.store.incomeHistory().find((income) => income.periodKey === this.period().key)
-        ?.amountMinor ?? (this.periodOffset() === 0 ? this.store.monthlyIncomeMinor() : 0),
+        ?.amountMinor ?? (this.period().offset === 0 ? this.store.monthlyIncomeMinor() : 0),
   );
   readonly remainingMinor = computed(() => this.incomeMinor() - this.spentMinor());
+  readonly overallPercent = computed(() =>
+    this.store.monthlyBudgetMinor()
+      ? Math.round((this.spentMinor() / this.store.monthlyBudgetMinor()) * 100)
+      : 0,
+  );
   readonly categoryRows = computed(() =>
     this.store
       .categories()
@@ -67,7 +88,7 @@ export class CategorySpendingPage {
           configuredLimit: category.monthlyLimitMinor,
           limit,
           remaining: limit === undefined ? undefined : limit - spent,
-          percent: limit ? Math.min(100, Math.round((spent / limit) * 100)) : 0,
+          percent: limit ? Math.round((spent / limit) * 100) : 0,
         };
       })
       .sort((a, b) => b.spent - a.spent),
@@ -87,8 +108,16 @@ export class CategorySpendingPage {
   }
 
   movePeriod(direction: -1 | 1): void {
-    this.periodOffset.update((offset) => Math.min(35, Math.max(0, offset + direction)));
+    const periods = this.periods();
+    const index = periods.findIndex((period) => period.offset === this.periodOffset());
+    const target = periods[index + direction];
+    if (target) this.periodOffset.set(target.offset);
     this.selectedCategoryId.set(null);
+  }
+
+  canMovePeriod(direction: -1 | 1): boolean {
+    const index = this.periods().findIndex((period) => period.offset === this.periodOffset());
+    return Boolean(this.periods()[index + direction]);
   }
 
   toggleCategory(categoryId: string): void {
@@ -136,6 +165,7 @@ export class CategorySpendingPage {
     start.setMonth(start.getMonth() - offset);
     const end = new Date(start.getFullYear(), start.getMonth() + 1, startDay - 1);
     return {
+      offset,
       key: `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, '0')}`,
       label: `${start.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} – ${end.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}`,
       startDate: this.localDate(start),

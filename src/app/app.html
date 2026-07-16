@@ -218,6 +218,20 @@
         <button type="submit" class="btn btn-primary" [disabled]="unlocking() || !lockPin()">
           Unlock
         </button>
+        @if (appLock.biometricEnabled() && appLock.biometricAvailable()) {
+          <button
+            type="button"
+            class="btn"
+            [disabled]="appLock.biometricInProgress()"
+            (click)="appLock.authenticateWithBiometrics()"
+          >
+            <app-icon name="fingerprint" />
+            {{ appLock.biometricInProgress() ? 'Checking…' : 'Use biometrics' }}
+          </button>
+        }
+        @if (appLock.biometricError(); as error) {
+          <p class="lock-error" role="alert">{{ error }}</p>
+        }
       </form>
     </section>
   </div>

@@ -38,6 +38,94 @@
   display: grid;
   gap: 0.7rem;
 }
+.emi-list {
+  display: grid;
+  gap: 0.7rem;
+  margin-bottom: 1.2rem;
+}
+.emi-list > h2 {
+  margin: 0.4rem 0 0;
+  font-size: 1.1rem;
+}
+.emi-card {
+  overflow: hidden;
+}
+.emi-summary {
+  display: grid;
+  width: 100%;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 1rem;
+  border: 0;
+  color: var(--ink);
+  background: transparent;
+  text-align: left;
+}
+.emi-summary > span:not(.loan-icon) {
+  display: grid;
+  min-width: 0;
+  gap: 0.15rem;
+}
+.emi-summary > span:nth-child(3) {
+  justify-items: end;
+}
+.emi-summary small {
+  color: var(--muted);
+  font-size: 0.67rem;
+}
+.emi-summary > app-icon {
+  transition: transform 0.18s ease;
+}
+.emi-summary > app-icon.expanded {
+  transform: rotate(180deg);
+}
+.emi-details {
+  padding: 0 1rem 1rem;
+  border-top: 1px solid var(--line);
+}
+.emi-details dl {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.6rem;
+  margin: 1rem 0;
+}
+.emi-details dl div {
+  display: grid;
+  gap: 0.15rem;
+  padding: 0.65rem;
+  border-radius: 0.6rem;
+  background: var(--canvas);
+}
+.emi-details dt,
+.emi-schedule small {
+  color: var(--muted);
+  font-size: 0.63rem;
+}
+.emi-details dd {
+  margin: 0;
+  font-weight: 700;
+}
+.emi-schedule > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.65rem 0;
+  border-bottom: 1px solid var(--line);
+}
+.emi-schedule span {
+  display: grid;
+  gap: 0.12rem;
+}
+.emi-schedule .upcoming-closed {
+  opacity: 0.45;
+  text-decoration: line-through;
+}
+.close-emi {
+  margin-top: 0.8rem;
+  color: var(--danger);
+}
 .loan-list article {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
@@ -107,6 +195,20 @@
   }
   .loan-list .btn {
     width: 100%;
+  }
+  .emi-summary {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+  .emi-summary > span:nth-child(3) {
+    grid-column: 2;
+    justify-items: start;
+  }
+  .emi-summary > app-icon {
+    grid-column: 3;
+    grid-row: 1 / 3;
+  }
+  .emi-details dl {
+    grid-template-columns: 1fr;
   }
   .form-actions .btn {
     flex: 1;

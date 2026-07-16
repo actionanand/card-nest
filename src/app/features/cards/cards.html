@@ -17,6 +17,16 @@
   </header>
 
   <div class="card-toolbar">
+    <label class="card-search">
+      <span class="sr-only">Search cards</span>
+      <app-icon name="search" />
+      <input
+        type="search"
+        placeholder="Search bank, nickname, network or digits"
+        [value]="search()"
+        (input)="updateSearch($event)"
+      />
+    </label>
     <div class="view-switch" role="group" aria-label="Card status">
       <button type="button" [class.active]="!showArchived()" (click)="showArchived.set(false)">
         Active
@@ -70,6 +80,9 @@
           used in notifications.
         </p>
         <form [formGroup]="form" (ngSubmit)="save()" novalidate>
+          @if (formError(); as error) {
+            <p class="form-error-summary" role="alert"><app-icon name="warning" /> {{ error }}</p>
+          }
           <div class="form-grid">
             <label
               >Card nickname<input
@@ -78,7 +91,7 @@
                 placeholder="Everyday rewards"
               />
               @if (form.controls.nickname.touched && form.controls.nickname.invalid) {
-                <small>Enter a nickname.</small>
+                <small class="validation-error">Enter a nickname.</small>
               }
             </label>
             <label
@@ -87,7 +100,11 @@
                 autocomplete="organization"
                 placeholder="Bank name"
                 (input)="issuerChanged()"
-            /></label>
+              />
+              @if (form.controls.issuerName.touched && form.controls.issuerName.invalid) {
+                <small class="validation-error">Enter the bank or issuer name.</small>
+              }
+            </label>
             <label
               >Card network<select formControlName="network" (change)="networkChanged()">
                 @for (network of networks; track network.value) {
@@ -107,9 +124,12 @@
                 inputmode="numeric"
                 [maxlength]="isAmex() ? 5 : 4"
                 [placeholder]="isAmex() ? '12345' : '1234'"
+                (input)="digitsOnly($event, 'lastDigits')"
               />
               @if (form.controls.lastDigits.touched && form.controls.lastDigits.invalid) {
-                <small>Enter exactly {{ isAmex() ? 'five' : 'four' }} digits.</small>
+                <small class="validation-error"
+                  >Enter exactly {{ isAmex() ? 'five' : 'four' }} digits.</small
+                >
               }
             </label>
             <label
@@ -117,10 +137,16 @@
                 formControlName="fullNumber"
                 inputmode="numeric"
                 autocomplete="off"
-                placeholder="Encrypted and hidden"
+                [maxlength]="isAmex() ? 17 : 19"
+                [placeholder]="isAmex() ? 'xxxx-xxxxxx-xxxxx' : 'xxxx-xxxx-xxxx-xxxx'"
+                (input)="formatCardNumberInput($event)"
               />
               @if (form.controls.fullNumber.hasError('cardNumber')) {
-                <small>Check the number length and ensure it ends with the saved digits.</small>
+                <small class="validation-error"
+                  >Enter exactly
+                  {{ isAmex() ? '15 digits in 4–6–5 format' : '16 digits in 4–4–4–4 format' }} and
+                  ensure it is a valid number ending with the saved digits.</small
+                >
               }
             </label>
             <label
@@ -131,9 +157,12 @@
                 autocomplete="off"
                 [maxlength]="isAmex() ? 4 : 3"
                 placeholder="Encrypted"
+                (input)="digitsOnly($event, 'cvv')"
               />
               @if (form.controls.cvv.hasError('cvv')) {
-                <small>Enter {{ isAmex() ? 'four' : 'three' }} digits.</small>
+                <small class="validation-error"
+                  >Enter {{ isAmex() ? 'four' : 'three' }} digits.</small
+                >
               }
             </label>
             <div class="paired-fields full">
@@ -153,6 +182,14 @@
                 </select></label
               >
             </div>
+            @if (
+              (form.controls.expiryMonth.touched && form.controls.expiryMonth.invalid) ||
+              (form.controls.expiryYear.touched && form.controls.expiryYear.invalid)
+            ) {
+              <small class="validation-error full"
+                >Choose a complete expiry date that has not passed.</small
+              >
+            }
             <div class="paired-fields full">
               <label
                 >Statement date<select formControlName="statementDay">
@@ -170,6 +207,13 @@
                 /><small>Days after statement</small></label
               >
             </div>
+            @if (
+              form.controls.daysAfterStatement.touched && form.controls.daysAfterStatement.invalid
+            ) {
+              <small class="validation-error full"
+                >Payment due must be between 1 and 60 days after the statement.</small
+              >
+            }
             <label class="full"
               >Credit limit (optional)<input
                 formControlName="creditLimit"
@@ -177,7 +221,7 @@
                 placeholder="250000.00"
               />
               @if (form.controls.creditLimit.hasError('money')) {
-                <small>Enter a valid amount.</small>
+                <small class="validation-error">Enter a valid positive amount.</small>
               }
             </label>
             <label class="full checkbox-row"
@@ -193,7 +237,11 @@
                     formControlName="annualFeeAmount"
                     inputmode="decimal"
                     placeholder="999.00"
-                /></label>
+                  />
+                  @if (form.controls.annualFeeAmount.hasError('money')) {
+                    <small class="validation-error">Enter the annual fee amount.</small>
+                  }
+                </label>
                 <label
                   >Renewal month<select formControlName="renewalMonth">
                     @for (month of months; track month) {
@@ -213,7 +261,11 @@
                     formControlName="waiverThreshold"
                     inputmode="decimal"
                     placeholder="100000.00"
-                /></label>
+                  />
+                  @if (form.controls.waiverThreshold.hasError('money')) {
+                    <small class="validation-error">Enter a valid positive waiver target.</small>
+                  }
+                </label>
                 <label
                   >Waiver period<select formControlName="waiverPeriod">
                     <option value="ANNIVERSARY">Card anniversary</option>
@@ -237,6 +289,11 @@
                 placeholder="1800 000 000, +91 22 0000 0000"
               /><small>Separate multiple numbers with commas.</small></label
             >
+            @if (form.controls.emergencyPhones.touched && form.controls.emergencyPhones.invalid) {
+              <small class="validation-error full"
+                >Use only phone-number digits and standard separators.</small
+              >
+            }
             <label class="full"
               >Support email IDs<input
                 formControlName="supportEmails"
@@ -244,6 +301,11 @@
                 placeholder="cards@example.com"
               /><small>Separate multiple addresses with commas.</small></label
             >
+            @if (form.controls.supportEmails.hasError('email')) {
+              <small class="validation-error full"
+                >Enter valid email addresses separated by commas.</small
+              >
+            }
             <fieldset class="benefit-builder full">
               <legend>Card benefits (optional)</legend>
               <div class="benefit-entry">
@@ -350,6 +412,9 @@
               @if (card.subtype) {
                 <em class="compact-subtype">{{ card.subtype }}</em>
               }
+              @if (card.archived) {
+                <em class="archived-badge">Archived {{ archivedDate(card) }}</em>
+              }
             </span>
             <span class="card-balance"
               ><small>Outstanding</small
@@ -375,22 +440,21 @@
                 <button
                   type="button"
                   role="menuitem"
-                  (click)="pay(card, dueAmount(card), 'Due amount paid')"
+                  [disabled]="dueAmount(card) <= 0"
+                  (click)="openPayment(card, 'DUE')"
                 >
                   Pay due amount
                 </button>
                 <button
                   type="button"
                   role="menuitem"
-                  (click)="pay(card, store.cardOutstanding(card.id), 'Outstanding paid')"
+                  [disabled]="store.cardOutstanding(card.id) <= 0"
+                  (click)="openPayment(card, 'OUTSTANDING')"
                 >
                   Pay outstanding
                 </button>
-                <button type="button" role="menuitem" (click)="markSettled(card)">
-                  Mark as settled
-                </button>
                 <button type="button" role="menuitem" (click)="edit(card)">Edit</button>
-                <button type="button" role="menuitem" (click)="archive(card)">
+                <button type="button" role="menuitem" (click)="requestArchive(card)">
                   {{ card.archived ? 'Restore' : 'Archive' }}
                 </button>
                 <button class="danger-item" type="button" role="menuitem" (click)="delete(card)">
@@ -433,7 +497,37 @@
               </div>
               <progress [value]="utilisation(card)" max="100">{{ utilisation(card) }}%</progress
               ><small>{{ money(availableCredit(card), card.currencyCode) }} available</small>
+              @if (linkedCardsFor(card).length) {
+                <div class="linked-cards" aria-label="Linked cards">
+                  <small>Linked cards</small>
+                  @for (linked of linkedCardsFor(card); track linked.id) {
+                    <span
+                      ><app-icon name="cards" /> {{ linked.nickname }} ·
+                      {{ linked.lastDigits }}</span
+                    >
+                  }
+                </div>
+              }
             </div>
+            @if (card.annualFee?.waiverThresholdMinor && waiverDeadline(card); as deadline) {
+              <section class="waiver-progress" aria-label="Annual fee waiver progress">
+                <div>
+                  <strong>Annual fee waiver</strong>
+                  <span>{{ waiverProgress(card) }}%</span>
+                </div>
+                <progress [value]="waiverProgress(card)" max="100">
+                  {{ waiverProgress(card) }}%
+                </progress>
+                <small>
+                  @if (waiverRemaining(card) > 0) {
+                    Spend {{ money(waiverRemaining(card), card.currencyCode) }} more by
+                    {{ date(deadline) }} to reach the waiver target.
+                  } @else {
+                    Waiver spend target reached for the period ending {{ date(deadline) }}.
+                  }
+                </small>
+              </section>
+            }
             @if (card.notes) {
               <p class="card-notes">{{ card.notes }}</p>
             }
@@ -496,9 +590,10 @@
               ><button
                 class="btn"
                 type="button"
-                (click)="pay(card, store.cardOutstanding(card.id), 'Payment received')"
+                [disabled]="store.cardOutstanding(card.id) <= 0"
+                (click)="openPayment(card, 'CUSTOM')"
               >
-                Record payment
+                Record custom payment
               </button>
             </div>
           </div>
@@ -520,3 +615,108 @@
     ><app-icon name="plus"
   /></a>
 </div>
+
+@if (deleteCandidate(); as card) {
+  <app-confirmation-dialog
+    title="Delete card?"
+    [message]="
+      'Delete ' +
+      card.nickname +
+      '? Its transactions will remain and will be labelled as belonging to a deleted card.'
+    "
+    confirmLabel="Delete card"
+    (confirmed)="confirmDelete()"
+    (cancelled)="deleteCandidate.set(null)"
+  />
+}
+
+@if (archiveCandidate(); as candidate) {
+  <app-confirmation-dialog
+    [title]="candidate.action === 'ARCHIVE' ? 'Archive card?' : 'Restore card?'"
+    [message]="
+      candidate.action === 'ARCHIVE'
+        ? 'Archive ' +
+          candidate.card.nickname +
+          '? Its transactions and history will remain available.'
+        : 'Restore ' + candidate.card.nickname + ' to the active cards list?'
+    "
+    [confirmLabel]="candidate.action === 'ARCHIVE' ? 'Archive card' : 'Restore card'"
+    (confirmed)="confirmArchive()"
+    (cancelled)="archiveCandidate.set(null)"
+  />
+}
+
+@if (paymentCard(); as card) {
+  <div
+    class="payment-backdrop"
+    tabindex="-1"
+    (click)="paymentCard.set(null)"
+    (keydown.escape)="$event.stopPropagation(); paymentCard.set(null)"
+  >
+    <section
+      class="panel payment-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="payment-title"
+      tabindex="-1"
+      (click)="$event.stopPropagation()"
+      (keydown)="$event.stopPropagation()"
+    >
+      <div class="payment-heading">
+        <div>
+          <p class="eyebrow">Card payment</p>
+          <h2 id="payment-title">Record payment</h2>
+        </div>
+        <button type="button" (click)="paymentCard.set(null)" aria-label="Close payment dialog">
+          <app-icon name="close" />
+        </button>
+      </div>
+      <dl class="payment-summary">
+        <div>
+          <dt>Due amount</dt>
+          <dd>{{ money(dueAmount(card), card.currencyCode) }}</dd>
+        </div>
+        <div>
+          <dt>Next due date</dt>
+          <dd>{{ date(dueDate(card)) }}</dd>
+        </div>
+        <div>
+          <dt>Current outstanding</dt>
+          <dd>{{ money(store.cardOutstanding(card.id), card.currencyCode) }}</dd>
+        </div>
+      </dl>
+      <form (submit)="reviewPayment($event)">
+        <label
+          >Payment amount<input
+            inputmode="decimal"
+            [value]="paymentAmount()"
+            (input)="paymentAmount.set($any($event.target).value)"
+        /></label>
+        <small>You can reduce the suggested amount or enter an additional payment.</small>
+        @if (paymentError(); as error) {
+          <p class="validation-error" role="alert">{{ error }}</p>
+        }
+        <div class="form-actions">
+          <button class="btn" type="button" (click)="paymentCard.set(null)">Cancel</button
+          ><button class="btn btn-primary" type="submit">Review payment</button>
+        </div>
+      </form>
+    </section>
+  </div>
+}
+
+@if (paymentConfirmationOpen() && paymentCard(); as card) {
+  <app-confirmation-dialog
+    title="Confirm card payment?"
+    [message]="
+      'Record a payment of ' +
+      money(paymentMinor(), card.currencyCode) +
+      ' for ' +
+      card.nickname +
+      '? This will reduce the current outstanding.'
+    "
+    confirmLabel="Record payment"
+    (confirmed)="confirmPayment()"
+    (cancelled)="paymentConfirmationOpen.set(false)"
+  />
+}

@@ -83,6 +83,26 @@
   height: 0.5rem;
   accent-color: var(--accent);
 }
+.overall-budget progress.usage-low,
+.category-spend > progress.usage-low {
+  accent-color: #2f9e62;
+}
+.overall-budget progress.usage-medium,
+.category-spend > progress.usage-medium {
+  accent-color: #55a86d;
+}
+.overall-budget progress.usage-high,
+.category-spend > progress.usage-high {
+  accent-color: #d39b34;
+}
+.overall-budget progress.usage-warning,
+.category-spend > progress.usage-warning {
+  accent-color: #e06b38;
+}
+.overall-budget progress.usage-over,
+.category-spend > progress.usage-over {
+  accent-color: var(--danger);
+}
 .overall-budget small,
 .category-heading small {
   color: var(--muted);
@@ -134,6 +154,12 @@
   display: grid;
   min-width: 0;
   gap: 0.15rem;
+}
+.category-summary > app-icon {
+  transition: transform 0.18s ease;
+}
+.category-summary > app-icon.expanded {
+  transform: rotate(180deg);
 }
 .category-summary small {
   color: var(--muted);
@@ -196,6 +222,12 @@
 .category-transactions small {
   color: var(--muted);
   font-size: 0.65rem;
+}
+.category-empty {
+  margin: 0;
+  padding: 1rem;
+  color: var(--muted);
+  text-align: center;
 }
 .empty {
   padding: 3rem 1rem;

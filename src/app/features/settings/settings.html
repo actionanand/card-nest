@@ -1,7 +1,7 @@
 <div
   class="page settings"
-  [attr.aria-hidden]="showPinForm() ? 'true' : null"
-  [attr.inert]="showPinForm() ? '' : null"
+  [attr.aria-hidden]="showPinForm() || showBackupDialog() ? 'true' : null"
+  [attr.inert]="showPinForm() || showBackupDialog() ? '' : null"
 >
   <header class="page-header">
     <div>
@@ -12,7 +12,7 @@
   </header>
   @if (!database.ready()) {
     <div class="database-warning" role="status">
-      <span aria-hidden="true">i</span>
+      <span aria-hidden="true"><app-icon name="warning" /></span>
       <div>
         <strong>SQLite storage is unavailable</strong>
         <p>
@@ -30,7 +30,7 @@
     <div class="settings-content">
       <section id="security" class="panel">
         <div class="setting-heading">
-          <span aria-hidden="true">⌾</span>
+          <span aria-hidden="true"><app-icon name="privacy" /></span>
           <div>
             <h2>Security</h2>
             <p>Protect access to sensitive card data.</p>
@@ -41,15 +41,22 @@
             <strong>Application PIN</strong
             ><small>Required for reveal, backup and destructive actions</small>
           </div>
-          <button
-            #pinButton
-            class="btn"
-            type="button"
-            (click)="openPinForm()"
-            [disabled]="!database.ready()"
-          >
-            {{ pin.hasPin() ? 'Change PIN' : 'Set PIN' }}
-          </button>
+          <div class="pin-buttons">
+            <button
+              #pinButton
+              class="btn"
+              type="button"
+              (click)="openPinForm()"
+              [disabled]="!database.ready()"
+            >
+              {{ pin.hasPin() ? 'Change PIN' : 'Set PIN' }}
+            </button>
+            @if (pin.hasPin()) {
+              <button class="btn danger" type="button" (click)="openPinForm('DISABLE')">
+                Disable PIN
+              </button>
+            }
+          </div>
         </div>
         @if (pinMessage(); as message) {
           <p class="setting-status" role="status">{{ message }}</p>
@@ -58,14 +65,14 @@
           ><span
             ><strong>Biometric unlock</strong
             ><small>{{
-              biometricAvailable
-                ? 'Use Android device biometrics after native setup'
-                : 'Available only in the Android app'
+              biometricAvailable()
+                ? 'Use your enrolled fingerprint or device biometric'
+                : 'No enrolled Android biometric is available'
             }}</small></span
           ><input
             type="checkbox"
             [checked]="biometric()"
-            [disabled]="!biometricAvailable"
+            [disabled]="!biometricAvailable() || !pin.hasPin()"
             (change)="toggleBiometric()" /></label
         ><label class="setting-row toggle"
           ><span
@@ -89,7 +96,7 @@
       </section>
       <section id="appearance" class="panel">
         <div class="setting-heading">
-          <span aria-hidden="true">◐</span>
+          <span aria-hidden="true"><app-icon name="appearance" /></span>
           <div>
             <h2>Appearance</h2>
             <p>Choose how CardNest looks.</p>
@@ -105,8 +112,15 @@
                 [checked]="theme() === option"
                 (change)="setTheme(option)"
               /><span
-                >{{ option === 'SYSTEM' ? '◐' : option === 'LIGHT' ? '☀' : '☾'
-                }}<strong>{{ option.toLowerCase() }}</strong></span
+                ><app-icon
+                  [name]="
+                    option === 'SYSTEM'
+                      ? 'system_theme'
+                      : option === 'LIGHT'
+                        ? 'light_theme'
+                        : 'dark_theme'
+                  "
+                /><strong>{{ option.toLowerCase() }}</strong></span
               ></label
             >
           }
@@ -114,7 +128,7 @@
       </section>
       <section id="defaults" class="panel">
         <div class="setting-heading">
-          <span aria-hidden="true">₹</span>
+          <span aria-hidden="true"><app-icon name="spending" /></span>
           <div>
             <h2>Cards & currency</h2>
             <p>Defaults used for new records.</p>
@@ -179,8 +193,15 @@
               type="number"
               min="1"
               max="28"
-              (change)="updateCycleDay($event)"
-          /></label>
+              (change)="updateCycleDay($event)" /></label
+          ><label
+            >Minimum amount for Convert to EMI<input
+              [value]="store.emiMinimumMinor() / 100"
+              [disabled]="!database.ready()"
+              inputmode="decimal"
+              (change)="updateEmiMinimum($event)"
+            /><small>Purchases below this amount will not show the EMI action.</small></label
+          >
         </div>
         @if (preferenceMessage(); as message) {
           <p class="setting-status" role="status">{{ message }}</p>
@@ -201,7 +222,7 @@
       </section>
       <section id="notifications" class="panel">
         <div class="setting-heading">
-          <span aria-hidden="true">◷</span>
+          <span aria-hidden="true"><app-icon name="reminders" /></span>
           <div>
             <h2>Notifications</h2>
             <p>Local reminders never contain a full card number.</p>
@@ -226,33 +247,151 @@
       </section>
       <section id="data" class="panel">
         <div class="setting-heading">
-          <span aria-hidden="true">⇩</span>
+          <span aria-hidden="true"><app-icon name="backup" /></span>
           <div>
             <h2>Backup & data</h2>
             <p>Encrypted local files protected by a separate passphrase.</p>
           </div>
         </div>
         <div class="data-actions">
-          <button class="btn btn-primary" type="button" [disabled]="!database.ready()">
-            Create encrypted backup</button
-          ><button class="btn" type="button" [disabled]="!database.ready()">Restore backup</button
-          ><button class="btn" type="button">Export masked CSV</button>
+          <button
+            class="btn btn-primary"
+            type="button"
+            [disabled]="!database.ready()"
+            (click)="openCreateBackup()"
+          >
+            <app-icon name="cloud_backup" /> Create encrypted backup</button
+          ><button
+            class="btn"
+            type="button"
+            [disabled]="!database.ready()"
+            (click)="openRestoreBackup()"
+          >
+            <app-icon name="cloud_restore" /> Restore backup</button
+          ><button class="btn" type="button" (click)="exportMaskedCsv()">
+            <app-icon name="file_csv" /> Export masked CSV
+          </button>
         </div>
         <p class="fine-print">
-          Backup validation, authenticated encryption and transactional restore become available
-          through the native adapter. Backup passphrases are never stored in the file.
+          Save to or restore from local storage, Google Drive, OneDrive, Dropbox, ownCloud, or any
+          Android document provider. Backup passphrases are never stored in the file.
         </p>
         <div class="danger-zone">
           <div>
             <strong>Delete all data</strong
-            ><small>Requires PIN and a second explicit confirmation.</small>
+            ><small>Requires an explicit confirmation and cannot be undone.</small>
           </div>
-          <button class="btn danger" type="button">Delete all data</button>
+          <button class="btn danger" type="button" (click)="deleteAllConfirmationOpen.set(true)">
+            Delete all data
+          </button>
         </div>
       </section>
     </div>
   </div>
 </div>
+
+@if (showBackupDialog()) {
+  <div class="pin-backdrop">
+    <section
+      class="panel pin-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="backup-dialog-title"
+    >
+      <div class="pin-heading">
+        <div>
+          <p class="eyebrow">Backup & data</p>
+          <h2 id="backup-dialog-title">
+            {{ backupAction() === 'CREATE' ? 'Create encrypted backup' : 'Restore backup' }}
+          </h2>
+        </div>
+        <button
+          class="pin-close"
+          type="button"
+          (click)="closeBackupDialog()"
+          aria-label="Close backup dialog"
+        >
+          <app-icon name="close" />
+        </button>
+      </div>
+      <form (submit)="submitBackup($event)">
+        @if (pin.hasPin()) {
+          <label
+            >Application PIN<input
+              type="password"
+              inputmode="numeric"
+              autocomplete="current-password"
+              maxlength="8"
+              [value]="backupPin()"
+              (input)="backupPin.set($any($event.target).value)"
+          /></label>
+        }
+        <label>
+          Backup passphrase
+          <span class="password-field">
+            <input
+              [type]="revealBackupPassphrase() ? 'text' : 'password'"
+              autocomplete="off"
+              minlength="8"
+              [value]="backupPassphrase()"
+              (input)="backupPassphrase.set($any($event.target).value)"
+            />
+            <button
+              type="button"
+              (click)="revealBackupPassphrase.set(!revealBackupPassphrase())"
+              [attr.aria-label]="
+                revealBackupPassphrase() ? 'Hide backup passphrase' : 'Show backup passphrase'
+              "
+            >
+              <app-icon [name]="revealBackupPassphrase() ? 'hide_credit' : 'show_credit'" />
+            </button>
+          </span>
+          <small>At least 8 characters. This cannot be recovered if forgotten.</small>
+        </label>
+        @if (backupAction() === 'CREATE') {
+          <label>
+            Confirm backup passphrase
+            <span class="password-field">
+              <input
+                [type]="revealBackupConfirmation() ? 'text' : 'password'"
+                autocomplete="off"
+                minlength="8"
+                [value]="backupConfirmation()"
+                (input)="backupConfirmation.set($any($event.target).value)"
+              />
+              <button
+                type="button"
+                (click)="revealBackupConfirmation.set(!revealBackupConfirmation())"
+                [attr.aria-label]="
+                  revealBackupConfirmation()
+                    ? 'Hide backup confirmation'
+                    : 'Show backup confirmation'
+                "
+              >
+                <app-icon [name]="revealBackupConfirmation() ? 'hide_credit' : 'show_credit'" />
+              </button>
+            </span>
+          </label>
+        }
+        @if (backupError(); as error) {
+          <p class="pin-error" role="alert">{{ error }}</p>
+        }
+        <div class="pin-actions">
+          <button class="btn" type="button" (click)="closeBackupDialog()">Cancel</button>
+          <button class="btn btn-primary" type="submit" [disabled]="processingBackup()">
+            {{
+              processingBackup()
+                ? 'Working…'
+                : backupAction() === 'CREATE'
+                  ? 'Choose save location'
+                  : 'Restore data'
+            }}
+          </button>
+        </div>
+      </form>
+    </section>
+  </div>
+}
 
 @if (showPinForm()) {
   <div class="pin-backdrop">
@@ -266,7 +405,13 @@
         <div>
           <p class="eyebrow">Security</p>
           <h2 id="pin-dialog-title">
-            {{ pin.hasPin() ? 'Change application PIN' : 'Set application PIN' }}
+            {{
+              pinAction() === 'DISABLE'
+                ? 'Disable application PIN'
+                : pin.hasPin()
+                  ? 'Change application PIN'
+                  : 'Set application PIN'
+            }}
           </h2>
         </div>
         <button
@@ -290,36 +435,58 @@
               maxlength="8"
           /></label>
         }
-        <label
-          >New PIN<input
-            #newPinInput
-            formControlName="newPin"
-            type="password"
-            inputmode="numeric"
-            autocomplete="new-password"
-            minlength="4"
-            maxlength="8"
-          /><small>Use 4 to 8 digits.</small></label
-        >
-        <label
-          >Confirm new PIN<input
-            formControlName="confirmPin"
-            type="password"
-            inputmode="numeric"
-            autocomplete="new-password"
-            minlength="4"
-            maxlength="8"
-        /></label>
+        @if (pinAction() === 'CHANGE') {
+          <label
+            >New PIN<input
+              #newPinInput
+              formControlName="newPin"
+              type="password"
+              inputmode="numeric"
+              autocomplete="new-password"
+              minlength="4"
+              maxlength="8"
+            /><small>Use 4 to 8 digits.</small></label
+          >
+          <label
+            >Confirm new PIN<input
+              formControlName="confirmPin"
+              type="password"
+              inputmode="numeric"
+              autocomplete="new-password"
+              minlength="4"
+              maxlength="8"
+          /></label>
+        }
         @if (pinError(); as error) {
           <p class="pin-error" role="alert">{{ error }}</p>
         }
         <div class="pin-actions">
           <button class="btn" type="button" (click)="closePinForm()">Cancel</button
           ><button class="btn btn-primary" type="submit" [disabled]="savingPin()">
-            {{ savingPin() ? 'Saving…' : 'Save PIN' }}
+            {{ savingPin() ? 'Saving…' : pinAction() === 'DISABLE' ? 'Disable PIN' : 'Save PIN' }}
           </button>
         </div>
       </form>
     </section>
   </div>
+}
+
+@if (restoreConfirmationOpen()) {
+  <app-confirmation-dialog
+    title="Replace all CardNest data?"
+    message="Restoring this backup will replace the cards, transactions, settings, and history currently stored on this device."
+    confirmLabel="Restore backup"
+    (confirmed)="confirmRestoreBackup()"
+    (cancelled)="restoreConfirmationOpen.set(false)"
+  />
+}
+
+@if (deleteAllConfirmationOpen()) {
+  <app-confirmation-dialog
+    title="Delete all CardNest data?"
+    message="This permanently deletes every card, transaction, EMI, category, backup preference, and setting stored by CardNest on this device."
+    confirmLabel="Delete everything"
+    (confirmed)="confirmDeleteAllData()"
+    (cancelled)="deleteAllConfirmationOpen.set(false)"
+  />
 }

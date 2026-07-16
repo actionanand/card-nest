@@ -4,6 +4,8 @@ import {
   Category,
   CreditCard,
   DashboardSnapshot,
+  EmiInstallment,
+  EmiPlan,
   LoanCommitment,
   MonthlyIncomeRecord,
   PaymentSource,
@@ -83,6 +85,7 @@ const CATEGORIES: readonly Category[] = [
   ['healthcare', 'Healthcare', 'health_and_safety', '#d56a7b'],
   ['subscription', 'Subscription', 'subscriptions', '#65758b'],
   ['payment', 'Card Payment', 'payments', '#4e9d73'],
+  ['contra-expenses', 'Contra-expenses', 'banknote_arrow_down', '#4e9d73'],
   ['other', 'Other', 'category', '#7a8797'],
 ].map(
   ([id, name, icon, colour]) =>
@@ -91,7 +94,7 @@ const CATEGORIES: readonly Category[] = [
       name,
       icon,
       colour,
-      appliesTo: id === 'payment' ? 'CREDIT' : 'BOTH',
+      appliesTo: id === 'payment' || id === 'contra-expenses' ? 'CREDIT' : 'BOTH',
       archived: false,
     }) as Category,
 );
@@ -189,6 +192,7 @@ const PAYMENT_SOURCES: readonly PaymentSource[] = [
 @Service()
 export class CardNestStore {
   private readonly database = inject(SqliteDatabase);
+  private dataWasCleared = false;
   readonly cards = signal<readonly CreditCard[]>(SAMPLE_CARDS);
   readonly transactions = signal<readonly CardTransaction[]>(
     readCachedTransactions() ?? SAMPLE_TRANSACTIONS,
@@ -197,12 +201,15 @@ export class CardNestStore {
   readonly paymentSources = signal<readonly PaymentSource[]>(PAYMENT_SOURCES);
   readonly recurringRules = signal<readonly RecurringRule[]>([]);
   readonly loans = signal<readonly LoanCommitment[]>([]);
+  readonly emiPlans = signal<readonly EmiPlan[]>([]);
+  readonly emiInstallments = signal<readonly EmiInstallment[]>([]);
   readonly monthlyBudgetMinor = signal(6000000);
   readonly monthlyIncomeMinor = signal(8000000);
   readonly budgetCycleStartDay = signal(1);
   readonly incomeHistory = signal<readonly MonthlyIncomeRecord[]>([]);
   readonly profileTitle = signal('');
   readonly profileName = signal('');
+  readonly emiMinimumMinor = signal(250_000);
   readonly profileDisplayName = computed(() => {
     const name = this.profileName().trim();
     return name ? [this.profileTitle(), name].filter(Boolean).join(' ') : '';
@@ -216,7 +223,9 @@ export class CardNestStore {
     const end = new Date(`${period.cycleEndDate}T12:00:00`);
     return `${start.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} – ${end.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}`;
   });
-  readonly activeCards = computed(() => this.cards().filter((card) => !card.archived));
+  readonly activeCards = computed(() =>
+    this.cards().filter((card) => !card.archived && !card.deletedAt),
+  );
   readonly activePaymentSources = computed(() =>
     this.paymentSources().filter((source) => !source.archived),
   );
@@ -225,15 +234,7 @@ export class CardNestStore {
     const cards = this.activeCards();
     const transactions = this.transactions();
     const outstandingMinor = cards.reduce(
-      (sum, card) =>
-        sum +
-        Math.max(
-          0,
-          calculateOutstanding(
-            card.openingBalanceMinor,
-            transactions.filter((item) => item.cardId === card.id),
-          ),
-        ),
+      (sum, card) => sum + Math.max(0, this.cardOutstanding(card.id)),
       0,
     );
     const totalCredit = cards.reduce((sum, card) => sum + (card.creditLimitMinor ?? 0), 0);
@@ -261,21 +262,26 @@ export class CardNestStore {
     if (!this.database.ready()) return;
     const preferences = await this.database.query<{ key: string; encrypted_value: string }>(
       `SELECT key, encrypted_value FROM app_preferences
-       WHERE key IN ('budget_cycle_start_day', 'monthly_budget_minor', 'profile_title', 'profile_name')`,
+       WHERE key IN ('budget_cycle_start_day', 'monthly_budget_minor', 'profile_title', 'profile_name', 'emi_minimum_minor', 'data_cleared')`,
     );
     const values = new Map(preferences.map((item) => [item.key, item.encrypted_value]));
+    this.dataWasCleared = values.get('data_cleared') === '1';
     const cycleDay = Number(values.get('budget_cycle_start_day'));
     const budget = Number(values.get('monthly_budget_minor'));
     if (Number.isInteger(cycleDay) && cycleDay >= 1 && cycleDay <= 28) {
       this.budgetCycleStartDay.set(cycleDay);
     }
     if (Number.isFinite(budget) && budget >= 0) this.monthlyBudgetMinor.set(budget);
+    else if (this.dataWasCleared) this.monthlyBudgetMinor.set(0);
     this.profileTitle.set(values.get('profile_title') ?? '');
     this.profileName.set(values.get('profile_name') ?? '');
+    const emiMinimum = Number(values.get('emi_minimum_minor'));
+    if (Number.isFinite(emiMinimum) && emiMinimum >= 0) this.emiMinimumMinor.set(emiMinimum);
     await Promise.all([this.loadCurrentIncome(), this.loadCards()]);
     await this.loadCategories();
     await this.loadCategoryLimits();
     await this.loadTransactions();
+    await this.loadEmiPlans();
   }
 
   async setMonthlyIncome(amountMinor: number): Promise<void> {
@@ -327,12 +333,23 @@ export class CardNestStore {
     await this.upsertPreference('profile_name', cleanName);
   }
 
+  async setEmiMinimum(amountMinor: number): Promise<void> {
+    this.emiMinimumMinor.set(amountMinor);
+    await this.upsertPreference('emi_minimum_minor', String(amountMinor));
+  }
+
   cardOutstanding(cardId: string): number {
     const card = this.cards().find((item) => item.id === cardId);
+    const currentMonth = new Date().toISOString().slice(0, 7);
     return card
       ? calculateOutstanding(
           card.openingBalanceMinor,
-          this.transactions().filter((item) => item.cardId === cardId),
+          this.transactions().filter(
+            (item) =>
+              item.cardId === cardId &&
+              !item.emiCancelled &&
+              item.transactionDate.slice(0, 7) <= currentMonth,
+          ),
         )
       : 0;
   }
@@ -394,11 +411,117 @@ export class CardNestStore {
       recurringRuleId: undefined,
       generatedOccurrenceDate: undefined,
       emiPlanId: undefined,
+      emiInstallmentNumber: undefined,
+      emiTenureMonths: undefined,
+      emiOriginalAmountMinor: undefined,
+      emiCancelled: undefined,
+      relatedTransactionId: undefined,
+      splitGroupId: undefined,
+      splitOriginalAmountMinor: undefined,
       createdAt: timestamp,
       updatedAt: timestamp,
     };
     this.addTransaction(duplicate);
     return duplicate;
+  }
+  saveEmiPlan(plan: EmiPlan, installments: readonly EmiInstallment[]): void {
+    this.emiPlans.update((plans) => [plan, ...plans.filter((item) => item.id !== plan.id)]);
+    const storedInstallments = installments.map((installment) => ({
+      ...installment,
+      id: installment.id ?? crypto.randomUUID(),
+      emiPlanId: plan.id,
+    }));
+    this.emiInstallments.update((items) => [
+      ...items.filter((item) => item.emiPlanId !== plan.id),
+      ...storedInstallments,
+    ]);
+    const transaction = this.transactions().find((item) => item.id === plan.transactionId);
+    if (transaction && storedInstallments.length) {
+      const merchant = transaction.merchant?.replace(/ · EMI \d+\/\d+$/, '') || 'Purchase';
+      const [firstInstallment, ...futureInstallments] = storedInstallments;
+      this.updateTransaction({
+        ...transaction,
+        amountMinor: firstInstallment.totalMinor,
+        transactionDate: firstInstallment.statementDate,
+        merchant: `${merchant} · EMI 1/${plan.tenureMonths}`,
+        emiPlanId: plan.id,
+        emiInstallmentNumber: 1,
+        emiTenureMonths: plan.tenureMonths,
+        emiOriginalAmountMinor: plan.convertedAmountMinor,
+        updatedAt: new Date().toISOString(),
+      });
+      for (const installment of futureInstallments) {
+        const timestamp = new Date().toISOString();
+        this.addTransaction({
+          ...transaction,
+          id: crypto.randomUUID(),
+          amountMinor: installment.totalMinor,
+          transactionDate: installment.statementDate,
+          merchant: `${merchant} · EMI ${installment.installmentNumber}/${plan.tenureMonths}`,
+          taxIncluded: false,
+          taxMinor: undefined,
+          relatedTransactionId: undefined,
+          attachmentIds: [],
+          recurringRuleId: undefined,
+          generatedOccurrenceDate: undefined,
+          emiPlanId: plan.id,
+          emiInstallmentNumber: installment.installmentNumber,
+          emiTenureMonths: plan.tenureMonths,
+          emiOriginalAmountMinor: undefined,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        });
+      }
+    }
+    if (this.database.ready()) void this.persistEmiPlan(plan, storedInstallments);
+  }
+
+  closeEmiPlan(planId: string): void {
+    const plan = this.emiPlans().find((item) => item.id === planId);
+    if (!plan || plan.status !== 'ACTIVE') return;
+    const closedAt = new Date().toISOString();
+    const currentMonth = closedAt.slice(0, 7);
+    const updatedPlan: EmiPlan = { ...plan, status: 'CANCELLED', closedAt };
+    this.emiPlans.update((plans) => plans.map((item) => (item.id === planId ? updatedPlan : item)));
+    for (const transaction of this.transactions().filter(
+      (item) => item.emiPlanId === planId && item.transactionDate.slice(0, 7) > currentMonth,
+    )) {
+      this.updateTransaction({ ...transaction, emiCancelled: true, updatedAt: closedAt });
+    }
+    if (this.database.ready()) {
+      void this.persistEmiPlan(
+        updatedPlan,
+        this.emiInstallments().filter((item) => item.emiPlanId === planId),
+      );
+    }
+  }
+
+  splitTransaction(
+    transactionId: string,
+    parts: readonly { sourceId: string; amountMinor: number }[],
+  ): readonly CardTransaction[] {
+    const original = this.transactions().find((item) => item.id === transactionId);
+    if (!original || parts.length < 2 || parts.length > 4) return [];
+    const total = parts.reduce((sum, part) => sum + part.amountMinor, 0);
+    if (total !== original.amountMinor) return [];
+    const groupId = crypto.randomUUID();
+    const timestamp = new Date().toISOString();
+    const splitTransactions = parts.map((part, index): CardTransaction => ({
+      ...original,
+      id: index === 0 ? original.id : crypto.randomUUID(),
+      cardId: part.sourceId,
+      amountMinor: part.amountMinor,
+      splitGroupId: groupId,
+      splitOriginalAmountMinor: original.amountMinor,
+      emiPlanId: undefined,
+      createdAt: index === 0 ? original.createdAt : timestamp,
+      updatedAt: timestamp,
+    }));
+    this.updateTransaction(splitTransactions[0]);
+    for (const transaction of splitTransactions.slice(1)) this.addTransaction(transaction);
+    if (this.database.ready())
+      void this.persistSplitGroup(groupId, original.amountMinor, splitTransactions);
+    return splitTransactions;
   }
   addRecurringRule(rule: RecurringRule): void {
     this.recurringRules.update((rules) => [...rules, rule]);
@@ -419,11 +542,14 @@ export class CardNestStore {
     );
   }
   deleteCard(cardId: string): void {
-    this.cards.update((cards) => cards.filter((card) => card.id !== cardId));
-    this.transactions.update((items) => items.filter((item) => item.cardId !== cardId));
-    if (this.database.ready()) {
-      void this.database.run('DELETE FROM credit_cards WHERE id = ?', [cardId]);
-    }
+    const card = this.cards().find((item) => item.id === cardId);
+    if (!card) return;
+    this.updateCard({
+      ...card,
+      archived: true,
+      deletedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
   }
   recordPayment(cardId: string, amountMinor: number, label = 'Card payment'): void {
     if (amountMinor <= 0) return;
@@ -444,12 +570,44 @@ export class CardNestStore {
   }
   archiveCard(cardId: string): void {
     const card = this.cards().find((item) => item.id === cardId);
-    if (card) this.updateCard({ ...card, archived: true, updatedAt: new Date().toISOString() });
+    if (card) {
+      const timestamp = new Date().toISOString();
+      this.updateCard({ ...card, archived: true, archivedAt: timestamp, updatedAt: timestamp });
+    }
   }
 
   restoreCard(cardId: string): void {
     const card = this.cards().find((item) => item.id === cardId);
-    if (card) this.updateCard({ ...card, archived: false, updatedAt: new Date().toISOString() });
+    if (card)
+      this.updateCard({
+        ...card,
+        archived: false,
+        archivedAt: undefined,
+        updatedAt: new Date().toISOString(),
+      });
+  }
+
+  async deleteAllData(): Promise<void> {
+    await this.database.deleteAllData();
+    this.cards.set([]);
+    this.transactions.set([]);
+    this.categories.set(CATEGORIES);
+    this.paymentSources.set(PAYMENT_SOURCES);
+    this.recurringRules.set([]);
+    this.loans.set([]);
+    this.emiPlans.set([]);
+    this.emiInstallments.set([]);
+    this.incomeHistory.set([]);
+    this.monthlyIncomeMinor.set(0);
+    this.monthlyBudgetMinor.set(0);
+    this.budgetCycleStartDay.set(1);
+    this.profileTitle.set('');
+    this.profileName.set('');
+    this.emiMinimumMinor.set(250_000);
+    writeCachedTransactions([]);
+    for (const category of CATEGORIES) await this.persistCategory(category);
+    this.dataWasCleared = true;
+    await this.upsertPreference('data_cleared', '1');
   }
 
   addCategory(category: Category): void {
@@ -517,8 +675,9 @@ export class CardNestStore {
   }
 
   sourceName(sourceId: string): string {
+    const card = this.cards().find((item) => item.id === sourceId);
     return (
-      this.cards().find((card) => card.id === sourceId)?.nickname ??
+      (card ? `${card.nickname}${card.deletedAt ? ' (deleted card)' : ''}` : undefined) ??
       this.paymentSources().find((source) => source.id === sourceId)?.nickname ??
       'Unknown source'
     );
@@ -526,7 +685,8 @@ export class CardNestStore {
 
   sourceDetail(sourceId: string): string {
     const card = this.cards().find((item) => item.id === sourceId);
-    if (card) return `${card.nickname} •••• ${card.lastDigits} · ${card.issuerName}`;
+    if (card)
+      return `${card.nickname} •••• ${card.lastDigits} · ${card.issuerName}${card.deletedAt ? ' · Deleted card' : ''}`;
     const source = this.paymentSources().find((item) => item.id === sourceId);
     return source
       ? `${source.nickname}${source.institution ? ` · ${source.institution}` : ''}`
@@ -661,6 +821,11 @@ export class CardNestStore {
   private async loadCurrentIncome(): Promise<void> {
     const income = await this.findIncome(this.currentIncomePeriod().periodKey);
     if (!income) {
+      if (this.dataWasCleared) {
+        this.monthlyIncomeMinor.set(0);
+        await this.refreshIncomeHistory();
+        return;
+      }
       await this.setMonthlyIncome(this.monthlyIncomeMinor());
       return;
     }
@@ -681,6 +846,10 @@ export class CardNestStore {
         }
       });
       if (cards.length) this.cards.set(cards);
+      return;
+    }
+    if (this.dataWasCleared) {
+      this.cards.set([]);
       return;
     }
     for (const card of this.cards()) await this.persistCard(card);
@@ -727,16 +896,19 @@ export class CardNestStore {
        FROM categories ORDER BY name COLLATE NOCASE`,
     );
     if (rows.length) {
-      this.categories.set(
-        rows.map((row) => ({
-          id: row.id,
-          name: row.name,
-          icon: row.icon,
-          colour: row.colour ?? undefined,
-          appliesTo: row.appliesTo,
-          archived: Boolean(row.archived),
-        })),
+      const storedCategories = rows.map((row) => ({
+        id: row.id,
+        name: row.name,
+        icon: row.icon,
+        colour: row.colour ?? undefined,
+        appliesTo: row.appliesTo,
+        archived: Boolean(row.archived),
+      }));
+      const missingDefaults = CATEGORIES.filter(
+        (category) => !storedCategories.some((stored) => stored.id === category.id),
       );
+      this.categories.set([...storedCategories, ...missingDefaults]);
+      for (const category of missingDefaults) await this.persistCategory(category);
       return;
     }
     for (const category of this.categories()) await this.persistCategory(category);
@@ -760,6 +932,50 @@ export class CardNestStore {
     });
     this.transactions.set(transactions);
     this.cacheTransactions(transactions);
+  }
+
+  private async loadEmiPlans(): Promise<void> {
+    const planRows = await this.database.query<{ payload: string }>(
+      'SELECT payload FROM emi_plans ORDER BY rowid DESC',
+    );
+    this.emiPlans.set(
+      planRows.flatMap((row) => {
+        try {
+          return [JSON.parse(row.payload) as EmiPlan];
+        } catch {
+          return [];
+        }
+      }),
+    );
+    const installmentRows = await this.database.query<
+      { id: string; emiPlanId: string; payload: string } & Record<string, unknown>
+    >('SELECT id, emi_plan_id AS emiPlanId, payload FROM emi_installments ORDER BY statement_date');
+    this.emiInstallments.set(
+      installmentRows.flatMap((row) => {
+        try {
+          return [
+            { ...JSON.parse(row.payload), id: row.id, emiPlanId: row.emiPlanId } as EmiInstallment,
+          ];
+        } catch {
+          return [];
+        }
+      }),
+    );
+    for (const plan of this.emiPlans()) {
+      const transaction = this.transactions().find((item) => item.id === plan.transactionId);
+      if (!transaction || transaction.emiInstallmentNumber) continue;
+      const installments = this.emiInstallments().filter((item) => item.emiPlanId === plan.id);
+      if (!installments.length) continue;
+      this.saveEmiPlan(
+        {
+          ...plan,
+          remainingPurchaseMinor: 0,
+          originalTransactionDate: plan.originalTransactionDate ?? transaction.transactionDate,
+          originalMerchant: plan.originalMerchant ?? transaction.merchant,
+        },
+        installments,
+      );
+    }
   }
 
   private cacheTransactions(transactions: readonly CardTransaction[]): void {
@@ -797,6 +1013,71 @@ export class CardNestStore {
         transaction.updatedAt,
       ],
     );
+    await this.database.run('DELETE FROM transaction_links WHERE transaction_id = ?', [
+      transaction.id,
+    ]);
+    if (
+      transaction.relatedTransactionId &&
+      (transaction.type === 'REFUND' || transaction.type === 'ADJUSTMENT')
+    ) {
+      await this.database.run(
+        `INSERT INTO transaction_links
+         (transaction_id, related_transaction_id, relationship_type, created_at)
+         VALUES (?, ?, ?, ?)`,
+        [transaction.id, transaction.relatedTransactionId, transaction.type, transaction.createdAt],
+      );
+    }
+  }
+
+  private async persistEmiPlan(
+    plan: EmiPlan,
+    installments: readonly EmiInstallment[],
+  ): Promise<void> {
+    await this.database.run(
+      `INSERT INTO emi_plans (id, transaction_id, card_id, status, payload)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET status = excluded.status, payload = excluded.payload`,
+      [plan.id, plan.transactionId, plan.cardId, plan.status, JSON.stringify(plan)],
+    );
+    await this.database.run('DELETE FROM emi_installments WHERE emi_plan_id = ?', [plan.id]);
+    for (const installment of installments) {
+      await this.database.run(
+        `INSERT INTO emi_installments
+         (id, emi_plan_id, installment_number, statement_date, due_date,
+          principal_minor, interest_minor, paid, payload)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          installment.id,
+          plan.id,
+          installment.installmentNumber,
+          installment.statementDate,
+          installment.dueDate,
+          installment.principalMinor,
+          installment.interestMinor,
+          installment.paid ? 1 : 0,
+          JSON.stringify(installment),
+        ],
+      );
+    }
+  }
+
+  private async persistSplitGroup(
+    groupId: string,
+    originalAmountMinor: number,
+    transactions: readonly CardTransaction[],
+  ): Promise<void> {
+    for (const transaction of transactions) await this.persistTransaction(transaction);
+    await this.database.run(
+      `INSERT INTO transaction_split_groups (id, original_amount_minor, created_at)
+       VALUES (?, ?, ?)`,
+      [groupId, originalAmountMinor, new Date().toISOString()],
+    );
+    for (const transaction of transactions) {
+      await this.database.run(
+        `INSERT INTO transaction_split_members (group_id, transaction_id) VALUES (?, ?)`,
+        [groupId, transaction.id],
+      );
+    }
   }
 
   private async persistCategory(category: Category): Promise<void> {

@@ -103,6 +103,75 @@ export class SqliteDatabase {
     return result.changes?.changes ?? 0;
   }
 
+  async exportBackupJson(): Promise<string> {
+    if (!this.ready()) throw new Error('SQLite database is unavailable.');
+    const result = await CapacitorSQLite.exportToJson({
+      database: this.databaseName,
+      jsonexportmode: 'full',
+      // CardNest keeps a read/write jeep-sqlite connection on web. Asking the plugin
+      // for a separate read-only connection produces "No available connection".
+      readonly: false,
+    });
+    if (!result.export) throw new Error('The database could not be exported.');
+    return JSON.stringify(result.export);
+  }
+
+  async restoreBackupJson(json: string): Promise<void> {
+    if (!this.ready()) throw new Error('SQLite database is unavailable.');
+    const parsed = JSON.parse(json) as Record<string, unknown>;
+    parsed['database'] = this.databaseName;
+    parsed['overwrite'] = true;
+    parsed['encrypted'] = false;
+    parsed['mode'] = 'full';
+    const jsonstring = JSON.stringify(parsed);
+    const validation = await CapacitorSQLite.isJsonValid({ jsonstring });
+    if (!validation.result) throw new Error('The backup database is invalid.');
+
+    try {
+      await CapacitorSQLite.close({ database: this.databaseName });
+    } catch {
+      // A closed connection is safe to continue with.
+    }
+    try {
+      await CapacitorSQLite.closeConnection({ database: this.databaseName, readonly: false });
+    } catch {
+      // The importer can continue when no retained connection exists.
+    }
+    this.ready.set(false);
+    await CapacitorSQLite.importFromJson({ jsonstring });
+    if (this.isWeb) await CapacitorSQLite.saveToStore({ database: this.databaseName });
+  }
+
+  async deleteAllData(): Promise<void> {
+    if (!this.ready()) throw new Error('SQLite database is unavailable.');
+    await CapacitorSQLite.execute({
+      database: this.databaseName,
+      transaction: true,
+      statements: [
+        'DELETE FROM transaction_links',
+        'DELETE FROM transaction_split_members',
+        'DELETE FROM transaction_split_groups',
+        'DELETE FROM attachments',
+        'DELETE FROM emi_installments',
+        'DELETE FROM emi_plans',
+        'DELETE FROM statements',
+        'DELETE FROM recurring_rules',
+        'DELETE FROM card_transactions',
+        'DELETE FROM card_benefits',
+        'DELETE FROM card_important_links',
+        'DELETE FROM card_relationship_members',
+        'DELETE FROM card_relationship_groups',
+        'DELETE FROM card_secrets',
+        'DELETE FROM credit_cards',
+        'DELETE FROM category_limits',
+        'DELETE FROM categories',
+        'DELETE FROM monthly_income',
+        'DELETE FROM app_preferences',
+      ].join(';\n'),
+    });
+    if (this.isWeb) await CapacitorSQLite.saveToStore({ database: this.databaseName });
+  }
+
   private async initialiseWebStore(): Promise<void> {
     await customElements.whenDefined('jeep-sqlite');
     const element = document.querySelector<JeepSqliteElement>('jeep-sqlite');

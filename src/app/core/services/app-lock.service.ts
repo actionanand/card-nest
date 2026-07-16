@@ -6,6 +6,15 @@ import { ApplicationPinService } from './application-pin.service';
 const LOCK_ON_BACKGROUND_KEY = 'security_lock_on_background';
 const BIOMETRIC_KEY = 'security_biometric_unlock';
 
+interface CardNestNativeBridge {
+  isBiometricAvailable(): boolean;
+  authenticateBiometric(): void;
+}
+
+interface CardNestNativeWindow extends Window {
+  CardNestNative?: CardNestNativeBridge;
+}
+
 /**
  * Locks the application behind the PIN when it returns from the background so card
  * data is never exposed in recent-app previews or on a shared device.
@@ -19,9 +28,13 @@ export class AppLockService {
   readonly locked = signal(false);
   readonly lockOnBackground = signal(true);
   readonly biometricEnabled = signal(false);
+  readonly biometricAvailable = signal(false);
+  readonly biometricInProgress = signal(false);
+  readonly biometricError = signal<string | null>(null);
   private listening = false;
 
   async initialise(): Promise<void> {
+    this.biometricAvailable.set(this.hasNativeBiometrics());
     if (this.database.ready()) {
       this.lockOnBackground.set((await this.readPreference(LOCK_ON_BACKGROUND_KEY)) ?? true);
       this.biometricEnabled.set((await this.readPreference(BIOMETRIC_KEY)) ?? false);
@@ -42,13 +55,60 @@ export class AppLockService {
     await this.writePreference(LOCK_ON_BACKGROUND_KEY, enabled);
   }
 
-  async setBiometricEnabled(enabled: boolean): Promise<void> {
+  async setBiometricEnabled(enabled: boolean): Promise<boolean> {
+    if (enabled) {
+      if (!this.pin.hasPin()) {
+        this.biometricError.set('Set an application PIN before enabling biometric unlock.');
+        return false;
+      }
+      if (!(await this.authenticateWithBiometrics())) return false;
+    }
     this.biometricEnabled.set(enabled);
     await this.writePreference(BIOMETRIC_KEY, enabled);
+    return enabled;
+  }
+
+  async authenticateWithBiometrics(): Promise<boolean> {
+    if (!this.biometricAvailable() || this.biometricInProgress()) return false;
+    const nativeBridge = (this.document.defaultView as CardNestNativeWindow | null)?.CardNestNative;
+    if (!nativeBridge) return false;
+    this.biometricInProgress.set(true);
+    this.biometricError.set(null);
+    try {
+      const success = await new Promise<boolean>((resolve) => {
+        const handleResult = (event: Event) => {
+          const detail = (
+            event as CustomEvent<{ action: string; success: boolean; message?: string }>
+          ).detail;
+          if (detail.action !== 'biometric') return;
+          this.document.defaultView?.removeEventListener('cardnest-native-result', handleResult);
+          if (!detail.success) this.biometricError.set(detail.message ?? 'Biometric check failed.');
+          resolve(detail.success);
+        };
+        this.document.defaultView?.addEventListener('cardnest-native-result', handleResult);
+        nativeBridge.authenticateBiometric();
+      });
+      if (success) this.locked.set(false);
+      return success;
+    } finally {
+      this.biometricInProgress.set(false);
+    }
   }
 
   private canLock(): boolean {
     return this.pin.hasPin() && this.lockOnBackground();
+  }
+
+  private hasNativeBiometrics(): boolean {
+    try {
+      return (
+        (
+          this.document.defaultView as CardNestNativeWindow | null
+        )?.CardNestNative?.isBiometricAvailable() === true
+      );
+    } catch {
+      return false;
+    }
   }
 
   private startListening(): void {
