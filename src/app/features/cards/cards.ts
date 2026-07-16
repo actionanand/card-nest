@@ -15,12 +15,15 @@ import { SensitiveCardDataService } from '../../core/services/sensitive-card-dat
 import { SnackbarService } from '../../core/services/snackbar.service';
 import { CardNetworkLogo } from '../../shared/card-network-logo';
 import { AppIcon } from '../../shared/app-icon';
+import { ConfirmationDialog } from '../../shared/confirmation-dialog';
 
 type CardFilter = 'ALL' | 'DUE' | 'GRACE' | 'FEE' | 'EXPIRING';
+type PaymentMode = 'DUE' | 'OUTSTANDING' | 'CUSTOM';
+type ArchiveAction = 'ARCHIVE' | 'RESTORE';
 
 @Component({
   selector: 'app-cards-page',
-  imports: [ReactiveFormsModule, CardNetworkLogo, RouterLink, AppIcon],
+  imports: [ReactiveFormsModule, CardNetworkLogo, RouterLink, AppIcon, ConfirmationDialog],
   templateUrl: './cards.html',
   styleUrl: './cards.scss',
   host: {
@@ -40,6 +43,15 @@ export class CardsPage {
   readonly showArchived = signal(false);
   readonly actionMenuId = signal<string | null>(null);
   readonly actionMenuOpensUp = signal(false);
+  readonly deleteCandidate = signal<CreditCard | null>(null);
+  readonly archiveCandidate = signal<{ card: CreditCard; action: ArchiveAction } | null>(null);
+  readonly paymentCard = signal<CreditCard | null>(null);
+  readonly paymentMode = signal<PaymentMode>('CUSTOM');
+  readonly paymentAmount = signal('');
+  readonly paymentError = signal<string | null>(null);
+  readonly paymentConfirmationOpen = signal(false);
+  readonly search = signal('');
+  readonly formError = signal<string | null>(null);
   readonly draftBenefits = signal<readonly CardBenefit[]>([]);
   readonly revealedCardId = signal<string | null>(null);
   readonly revealedNumber = signal('');
@@ -48,8 +60,20 @@ export class CardsPage {
   readonly visibleCards = computed(() =>
     this.store
       .cards()
+      .filter((card) => !card.deletedAt)
       .filter((card) => (this.showArchived() ? card.archived : !card.archived))
       .filter((card) => this.matchesFilter(card))
+      .filter((card) => {
+        const term = this.search().trim().toLocaleLowerCase();
+        return (
+          !term ||
+          card.nickname.toLocaleLowerCase().includes(term) ||
+          card.issuerName.toLocaleLowerCase().includes(term) ||
+          card.network.replaceAll('_', ' ').toLocaleLowerCase().includes(term) ||
+          card.subtype?.toLocaleLowerCase().includes(term) ||
+          card.lastDigits.includes(term)
+        );
+      })
       .sort((a, b) =>
         this.cardFilter() === 'GRACE'
           ? this.grace(b) - this.grace(a)
@@ -96,8 +120,13 @@ export class CardsPage {
     subtype: new FormControl('', { nonNullable: true, validators: [Validators.maxLength(60)] }),
     fullNumber: new FormControl('', { nonNullable: true }),
     cvv: new FormControl('', { nonNullable: true }),
-    expiryMonth: new FormControl<number | null>(null, [Validators.min(1), Validators.max(12)]),
+    expiryMonth: new FormControl<number | null>(null, [
+      Validators.required,
+      Validators.min(1),
+      Validators.max(12),
+    ]),
     expiryYear: new FormControl<number | null>(null, [
+      Validators.required,
       Validators.min(new Date().getFullYear()),
       Validators.max(2100),
     ]),
@@ -122,9 +151,18 @@ export class CardsPage {
       },
     ),
     notes: new FormControl('', { nonNullable: true, validators: [Validators.maxLength(500)] }),
-    emergencyPhones: new FormControl('', { nonNullable: true }),
-    supportEmails: new FormControl('', { nonNullable: true }),
-    importantLinks: new FormControl('', { nonNullable: true }),
+    emergencyPhones: new FormControl('', {
+      nonNullable: true,
+      validators: [Validators.maxLength(300), Validators.pattern(/^[+\d\s(),-]*$/)],
+    }),
+    supportEmails: new FormControl('', {
+      nonNullable: true,
+      validators: [Validators.maxLength(500)],
+    }),
+    importantLinks: new FormControl('', {
+      nonNullable: true,
+      validators: [Validators.maxLength(1000)],
+    }),
     benefitName: new FormControl('', { nonNullable: true, validators: [Validators.maxLength(40)] }),
     benefitNote: new FormControl('', {
       nonNullable: true,
@@ -192,6 +230,35 @@ export class CardsPage {
   digitsLabel(): string {
     return this.isAmex() ? 'Last five digits' : 'Last four digits';
   }
+  updateSearch(event: Event): void {
+    this.search.set((event.target as HTMLInputElement).value);
+  }
+  digitsOnly(event: Event, control: 'lastDigits' | 'cvv'): void {
+    const input = event.target as HTMLInputElement;
+    const limit = control === 'lastDigits' ? (this.isAmex() ? 5 : 4) : this.isAmex() ? 4 : 3;
+    const value = input.value.replace(/\D/g, '').slice(0, limit);
+    input.value = value;
+    this.form.controls[control].setValue(value);
+  }
+  formatCardNumberInput(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    const digits = input.value.replace(/\D/g, '').slice(0, this.isAmex() ? 15 : 16);
+    const formatted = this.formatCardNumber(digits, this.form.controls.network.value);
+    input.value = formatted;
+    this.form.controls.fullNumber.setValue(formatted);
+  }
+  formatCardNumber(value: string, network: CardNetwork): string {
+    const digits = value.replace(/\D/g, '');
+    const groups = network === 'AMERICAN_EXPRESS' ? [4, 6, 5] : [4, 4, 4, 4];
+    const parts: string[] = [];
+    let offset = 0;
+    for (const size of groups) {
+      const part = digits.slice(offset, offset + size);
+      if (part) parts.push(part);
+      offset += size;
+    }
+    return parts.join('-');
+  }
 
   selectCard(card: CreditCard): void {
     this.actionMenuId.set(null);
@@ -242,13 +309,36 @@ export class CardsPage {
     globalThis.scrollTo?.({ top: 0, behavior: 'smooth' });
   }
   closeForm(): void {
+    if (this.deleteCandidate()) {
+      this.deleteCandidate.set(null);
+      return;
+    }
+    if (this.archiveCandidate()) {
+      this.archiveCandidate.set(null);
+      return;
+    }
+    if (this.paymentConfirmationOpen()) {
+      this.paymentConfirmationOpen.set(false);
+      return;
+    }
+    if (this.paymentCard()) {
+      this.paymentCard.set(null);
+      return;
+    }
     this.showForm.set(false);
     this.editingId.set(null);
     this.resetForm();
+    this.formError.set(null);
   }
   networkChanged(): void {
     this.form.controls.lastDigits.setValue('');
     this.form.controls.lastDigits.markAsUntouched();
+    const fullNumber = this.form.controls.fullNumber.value;
+    if (fullNumber) {
+      this.form.controls.fullNumber.setValue(
+        this.formatCardNumber(fullNumber, this.form.controls.network.value),
+      );
+    }
   }
 
   issuerChanged(): void {
@@ -270,7 +360,10 @@ export class CardsPage {
     return this.store
       .cards()
       .filter(
-        (card) => card.id !== this.editingId() && this.normaliseIssuer(card.issuerName) === issuer,
+        (card) =>
+          !card.deletedAt &&
+          card.id !== this.editingId() &&
+          this.normaliseIssuer(card.issuerName) === issuer,
       )
       .sort((left, right) => left.nickname.localeCompare(right.nickname));
   }
@@ -299,6 +392,7 @@ export class CardsPage {
   }
 
   async save(): Promise<void> {
+    this.formError.set(null);
     this.form.markAllAsTouched();
     const value = this.form.getRawValue();
     const expectedDigits = value.network === 'AMERICAN_EXPRESS' ? 5 : 4;
@@ -311,21 +405,38 @@ export class CardsPage {
     const waiverThreshold = value.waiverThreshold
       ? parseMoneyToMinor(value.waiverThreshold)
       : undefined;
-    if (parsedCreditLimit === null) this.form.controls.creditLimit.setErrors({ money: true });
+    if (parsedCreditLimit === null || (parsedCreditLimit !== undefined && parsedCreditLimit <= 0))
+      this.form.controls.creditLimit.setErrors({ money: true });
     if (value.annualFeeEnabled && (!annualFeeAmount || annualFeeAmount < 1))
       this.form.controls.annualFeeAmount.setErrors({ money: true });
-    if (waiverThreshold === null) this.form.controls.waiverThreshold.setErrors({ money: true });
+    if (waiverThreshold === null || (waiverThreshold !== undefined && waiverThreshold <= 0))
+      this.form.controls.waiverThreshold.setErrors({ money: true });
     const fullNumber = value.fullNumber.replace(/\D/g, '');
     const cvv = value.cvv.replace(/\D/g, '');
-    const validFullNumber = value.network === 'AMERICAN_EXPRESS' ? /^\d{15}$/ : /^\d{13,19}$/;
+    const validFullNumber = value.network === 'AMERICAN_EXPRESS' ? /^\d{15}$/ : /^\d{16}$/;
     const validCvv = value.network === 'AMERICAN_EXPRESS' ? /^\d{4}$/ : /^\d{3}$/;
     if (
       fullNumber &&
-      (!validFullNumber.test(fullNumber) || !fullNumber.endsWith(value.lastDigits))
+      (!validFullNumber.test(fullNumber) ||
+        !fullNumber.endsWith(value.lastDigits) ||
+        !this.passesLuhn(fullNumber))
     ) {
       this.form.controls.fullNumber.setErrors({ cardNumber: true });
     }
     if (cvv && !validCvv.test(cvv)) this.form.controls.cvv.setErrors({ cvv: true });
+    const expiryIncomplete = (value.expiryMonth === null) !== (value.expiryYear === null);
+    const expiryDate =
+      value.expiryMonth && value.expiryYear
+        ? new Date(value.expiryYear, value.expiryMonth, 0, 23, 59, 59)
+        : null;
+    if (expiryIncomplete || (expiryDate && expiryDate < new Date())) {
+      this.form.controls.expiryMonth.setErrors({ expiry: true });
+      this.form.controls.expiryYear.setErrors({ expiry: true });
+    }
+    const invalidEmails = this.splitValues(value.supportEmails).some(
+      (email) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email),
+    );
+    if (invalidEmails) this.form.controls.supportEmails.setErrors({ email: true });
     const importantLinks = this.parseImportantLinks(value.importantLinks);
     if (importantLinks === null) this.form.controls.importantLinks.setErrors({ links: true });
     const linkedCard = value.relationshipGroup
@@ -339,7 +450,15 @@ export class CardsPage {
     ) {
       this.form.controls.relationshipGroup.setErrors({ issuerMismatch: true });
     }
-    if (this.form.invalid || parsedCreditLimit === null || waiverThreshold === null) return;
+    if (this.form.invalid || parsedCreditLimit === null || waiverThreshold === null) {
+      this.formError.set('Check the fields marked in red before saving the card.');
+      queueMicrotask(() =>
+        globalThis.document
+          ?.querySelector<HTMLElement>('.card-form')
+          ?.scrollTo({ top: 0, behavior: 'smooth' }),
+      );
+      return;
+    }
     const existing = this.store.cards().find((card) => card.id === this.editingId());
     const timestamp = new Date().toISOString();
     const relationshipGroupId = linkedCard
@@ -435,30 +554,133 @@ export class CardsPage {
     this.actionMenuId.set(null);
     void this.router.navigate(['/transactions'], { queryParams: { source: cardId } });
   }
-  pay(card: CreditCard, amount: number, label: string): void {
-    this.store.recordPayment(card.id, Math.max(0, amount), label);
+  openPayment(card: CreditCard, mode: PaymentMode): void {
+    const outstanding = Math.max(0, this.store.cardOutstanding(card.id));
+    const amount = mode === 'DUE' ? this.dueAmount(card) : outstanding;
+    if (amount <= 0) return;
+    this.paymentCard.set(card);
+    this.paymentMode.set(mode);
+    this.paymentAmount.set(String(amount / 100));
+    this.paymentError.set(null);
     this.actionMenuId.set(null);
-    this.snackbar.show(`${label} for ${card.nickname}.`);
   }
-  markSettled(card: CreditCard): void {
-    this.pay(card, Math.max(0, this.store.cardOutstanding(card.id)), 'Marked as settled');
+  reviewPayment(event: Event): void {
+    event.preventDefault();
+    const amount = parseMoneyToMinor(this.paymentAmount());
+    if (!amount || amount <= 0) {
+      this.paymentError.set('Enter a valid payment amount.');
+      return;
+    }
+    this.paymentError.set(null);
+    this.paymentConfirmationOpen.set(true);
+  }
+  paymentMinor(): number {
+    return parseMoneyToMinor(this.paymentAmount()) ?? 0;
+  }
+  confirmPayment(): void {
+    const card = this.paymentCard();
+    const amount = parseMoneyToMinor(this.paymentAmount());
+    if (!card || !amount) return;
+    const label =
+      this.paymentMode() === 'DUE'
+        ? 'Due amount paid'
+        : this.paymentMode() === 'OUTSTANDING'
+          ? 'Outstanding paid'
+          : 'Card payment';
+    this.store.recordPayment(card.id, amount, label);
+    this.paymentConfirmationOpen.set(false);
+    this.paymentCard.set(null);
+    this.snackbar.show(`${this.money(amount, card.currencyCode)} payment recorded.`);
   }
   delete(card: CreditCard): void {
-    if (!globalThis.confirm?.(`Delete ${card.nickname} and its transactions?`)) return;
+    this.deleteCandidate.set(card);
+    this.actionMenuId.set(null);
+  }
+  confirmDelete(): void {
+    const card = this.deleteCandidate();
+    if (!card) return;
     this.store.deleteCard(card.id);
+    this.deleteCandidate.set(null);
     this.actionMenuId.set(null);
     this.selectedCardId.set(null);
     this.snackbar.show(`${card.nickname} deleted.`, 'WARNING');
   }
-  archive(card: CreditCard): void {
-    if (card.archived) {
-      this.store.restoreCard(card.id);
-      this.snackbar.show(`${card.nickname} restored.`);
-    } else {
-      this.store.archiveCard(card.id);
-      this.snackbar.show(`${card.nickname} archived.`, 'INFO');
-    }
+  linkedCardsFor(card: CreditCard): readonly CreditCard[] {
+    if (!card.relationshipGroupId) return [];
+    return this.store
+      .cards()
+      .filter(
+        (candidate) =>
+          !candidate.deletedAt &&
+          candidate.id !== card.id &&
+          candidate.relationshipGroupId === card.relationshipGroupId,
+      );
+  }
+  requestArchive(card: CreditCard): void {
+    this.archiveCandidate.set({ card, action: card.archived ? 'RESTORE' : 'ARCHIVE' });
     this.actionMenuId.set(null);
+  }
+  confirmArchive(): void {
+    const candidate = this.archiveCandidate();
+    if (!candidate) return;
+    if (candidate.action === 'RESTORE') {
+      this.store.restoreCard(candidate.card.id);
+      this.snackbar.show(`${candidate.card.nickname} restored.`);
+    } else {
+      this.store.archiveCard(candidate.card.id);
+      this.snackbar.show(`${candidate.card.nickname} archived.`, 'INFO');
+    }
+    this.archiveCandidate.set(null);
+  }
+  archivedDate(card: CreditCard): string {
+    return card.archivedAt ? this.date(new Date(card.archivedAt)) : 'Date unavailable';
+  }
+  waiverDeadline(card: CreditCard): Date | null {
+    const fee = card.annualFee;
+    if (!fee?.waiverThresholdMinor) return null;
+    const now = new Date();
+    if (fee.waiverPeriod === 'CALENDAR') return new Date(now.getFullYear(), 11, 31);
+    if (fee.waiverPeriod === 'FINANCIAL') {
+      return now.getMonth() < 3
+        ? new Date(now.getFullYear(), 2, 31)
+        : new Date(now.getFullYear() + 1, 2, 31);
+    }
+    const thisYear = new Date(now.getFullYear(), fee.renewalMonth - 1, fee.renewalDay);
+    return thisYear >= now
+      ? thisYear
+      : new Date(now.getFullYear() + 1, fee.renewalMonth - 1, fee.renewalDay);
+  }
+  waiverSpent(card: CreditCard): number {
+    const deadline = this.waiverDeadline(card);
+    if (!deadline) return 0;
+    const start = new Date(deadline);
+    start.setFullYear(start.getFullYear() - 1);
+    const startDate = toIsoDate(start);
+    const now = new Date();
+    const endDate = toIsoDate(now < deadline ? now : deadline);
+    return Math.max(
+      0,
+      this.store
+        .transactions()
+        .filter(
+          (item) =>
+            item.cardId === card.id &&
+            ['PURCHASE', 'REFUND', 'CASHBACK'].includes(item.type) &&
+            item.transactionDate > startDate &&
+            item.transactionDate <= endDate,
+        )
+        .reduce(
+          (sum, item) => sum + (item.type === 'PURCHASE' ? item.amountMinor : -item.amountMinor),
+          0,
+        ),
+    );
+  }
+  waiverRemaining(card: CreditCard): number {
+    return Math.max(0, (card.annualFee?.waiverThresholdMinor ?? 0) - this.waiverSpent(card));
+  }
+  waiverProgress(card: CreditCard): number {
+    const threshold = card.annualFee?.waiverThresholdMinor ?? 0;
+    return threshold ? Math.min(100, Math.round((this.waiverSpent(card) / threshold) * 100)) : 0;
   }
   async revealSecrets(card: CreditCard): Promise<void> {
     if (this.revealedCardId() === card.id) {
@@ -472,7 +694,7 @@ export class CardsPage {
         card.encryptedFullNumber ? this.secrets.decrypt(card.encryptedFullNumber) : '',
         card.encryptedCvv ? this.secrets.decrypt(card.encryptedCvv) : '',
       ]);
-      this.revealedNumber.set(number);
+      this.revealedNumber.set(this.formatCardNumber(number, card.network));
       this.revealedCvv.set(cvv);
       this.revealedCardId.set(card.id);
     } catch {
@@ -512,6 +734,7 @@ export class CardsPage {
       .cards()
       .find(
         (candidate) =>
+          !candidate.deletedAt &&
           candidate.id !== card.id &&
           candidate.relationshipGroupId === card.relationshipGroupId &&
           this.normaliseIssuer(candidate.issuerName) === issuer,
@@ -522,6 +745,20 @@ export class CardsPage {
       .normalize('NFKC')
       .toLocaleLowerCase()
       .replace(/[^a-z0-9]/g, '');
+  }
+  private passesLuhn(value: string): boolean {
+    let sum = 0;
+    let double = false;
+    for (let index = value.length - 1; index >= 0; index -= 1) {
+      let digit = Number(value[index]);
+      if (double) {
+        digit *= 2;
+        if (digit > 9) digit -= 9;
+      }
+      sum += digit;
+      double = !double;
+    }
+    return sum % 10 === 0;
   }
   private resetForm(): void {
     this.form.reset({

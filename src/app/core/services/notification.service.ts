@@ -47,6 +47,8 @@ export class NotificationService {
   ): Promise<boolean> {
     if (!this.isAndroid()) {
       this.permission.set('unavailable');
+      this.enabled.set(false);
+      this.lastError.set('Payment notifications are available in the Android app.');
       return false;
     }
     try {

@@ -75,15 +75,22 @@ export class BackupService {
       canShare?: (data: ShareData) => boolean;
     };
     if (navigatorWithShare?.share && navigatorWithShare.canShare?.({ files: [file] })) {
-      await navigatorWithShare.share({ files: [file], title: 'CardNest encrypted backup' });
-      return;
+      try {
+        await navigatorWithShare.share({ files: [file], title: 'CardNest encrypted backup' });
+        return;
+      } catch {
+        // Browsers can expose file sharing but reject it because of permissions or policy.
+        // Continue to the normal download path so web backup remains available.
+      }
     }
     const url = URL.createObjectURL(file);
     const anchor = this.document.createElement('a');
     anchor.href = url;
     anchor.download = fileName;
+    this.document.body.append(anchor);
     anchor.click();
-    URL.revokeObjectURL(url);
+    anchor.remove();
+    globalThis.setTimeout(() => URL.revokeObjectURL(url), 1_000);
   }
 
   async chooseBackup(): Promise<string> {

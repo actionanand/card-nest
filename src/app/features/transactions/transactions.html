@@ -410,13 +410,17 @@
                     >{{ categoryName(transaction.categoryId) }} ·
                     {{ store.sourceDetail(transaction.cardId) }}</small
                   >
-                  @if (transaction.recurringRuleId) {
+                  @if (transaction.emiPlanId) {
+                    <span class="repeat-badge"><app-icon name="schedule" /> EMI</span>
+                  } @else if (transaction.recurringRuleId) {
                     <span class="repeat-badge"><app-icon name="repeat" /> Repeats</span>
                   }
                 </span>
                 <span class="tx-date">
                   <span>{{ transaction.transactionDate }}</span
-                  ><small>{{ transaction.type.replace('_', ' ') }}</small>
+                  ><small>{{
+                    transaction.emiPlanId ? 'EMI' : transaction.type.replace('_', ' ')
+                  }}</small>
                 </span>
                 <strong class="tx-amount" [class.credit]="isCredit(transaction.type)"
                   >{{ isCredit(transaction.type) ? '+' : '−'
@@ -486,7 +490,9 @@
     >
       <header class="detail-heading">
         <div>
-          <p class="eyebrow">{{ transaction.type.replace('_', ' ') }}</p>
+          <p class="eyebrow">
+            {{ transaction.emiPlanId ? 'EMI' : transaction.type.replace('_', ' ') }}
+          </p>
           <h2 id="transaction-detail-title">{{ transaction.merchant || 'Transaction details' }}</h2>
         </div>
         <button type="button" (click)="closeDetails()" aria-label="Close transaction details">
@@ -526,13 +532,15 @@
             </dd>
           </div>
         }
-        @if (relatedTransaction(transaction); as related) {
+        @if (linkedTransactions(transaction).length) {
           <div class="detail-wide">
-            <dt>Linked transaction</dt>
-            <dd>
-              {{ related.transactionDate }} · {{ related.merchant || related.type }} ·
-              {{ money(related.amountMinor, related.currencyCode) }}
-            </dd>
+            <dt>Linked transactions</dt>
+            @for (related of linkedTransactions(transaction); track related.id) {
+              <dd>
+                {{ related.transactionDate }} · {{ related.merchant || related.type }} ·
+                {{ money(related.amountMinor, related.currencyCode) }}
+              </dd>
+            }
           </div>
         }
       </dl>
@@ -575,6 +583,9 @@
               <strong>{{ money(installment.totalMinor, transaction.currencyCode) }}</strong>
             </div>
           }
+          <button class="btn view-emi" type="button" (click)="goToEmi(plan.id)">
+            View in Loans &amp; EMIs <app-icon name="chevron_right" />
+          </button>
         </section>
       }
       <div class="detail-actions">
@@ -755,5 +766,17 @@
     [transactions]="filtered()"
     [initialFormat]="exportFormat()"
     (closed)="exportOpen.set(false)"
+  />
+}
+
+@if (deleteCandidate(); as transaction) {
+  <app-confirmation-dialog
+    title="Delete transaction?"
+    [message]="
+      'Delete ' + (transaction.merchant || 'this transaction') + '? This action cannot be undone.'
+    "
+    confirmLabel="Delete transaction"
+    (confirmed)="confirmDelete()"
+    (cancelled)="deleteCandidate.set(null)"
   />
 }

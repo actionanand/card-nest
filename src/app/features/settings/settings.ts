@@ -11,13 +11,14 @@ import { AppIcon } from '../../shared/app-icon';
 import { SnackbarService } from '../../core/services/snackbar.service';
 import { BackupService } from '../../core/services/backup.service';
 import { ExportService } from '../../core/services/export.service';
+import { ConfirmationDialog } from '../../shared/confirmation-dialog';
 
 type PinAction = 'CHANGE' | 'DISABLE';
 type BackupAction = 'CREATE' | 'RESTORE';
 
 @Component({
   selector: 'app-settings-page',
-  imports: [ReactiveFormsModule, AppIcon],
+  imports: [ReactiveFormsModule, AppIcon, ConfirmationDialog],
   templateUrl: './settings.html',
   styleUrl: './settings.scss',
   host: { '(document:keydown.escape)': 'closeDialogs()' },
@@ -51,7 +52,12 @@ export class SettingsPage {
   readonly backupConfirmation = signal('');
   readonly backupError = signal<string | null>(null);
   readonly processingBackup = signal(false);
+  readonly revealBackupPassphrase = signal(false);
+  readonly revealBackupConfirmation = signal(false);
+  readonly restoreConfirmationOpen = signal(false);
+  readonly deleteAllConfirmationOpen = signal(false);
   private selectedBackupContents = '';
+  private pendingRestorePassphrase = '';
   readonly pinButton = viewChild<ElementRef<HTMLButtonElement>>('pinButton');
   readonly currentPinInput = viewChild<ElementRef<HTMLInputElement>>('currentPinInput');
   readonly newPinInput = viewChild<ElementRef<HTMLInputElement>>('newPinInput');
@@ -285,6 +291,11 @@ export class SettingsPage {
       this.backupError.set('The backup passphrases do not match.');
       return;
     }
+    if (this.backupAction() === 'RESTORE') {
+      this.pendingRestorePassphrase = passphrase;
+      this.restoreConfirmationOpen.set(true);
+      return;
+    }
     this.processingBackup.set(true);
     this.backupError.set(null);
     try {
@@ -295,13 +306,6 @@ export class SettingsPage {
         this.snackbar.show('Encrypted backup saved.');
         return;
       }
-      if (!globalThis.confirm?.('Restore this backup and replace all current CardNest data?')) {
-        return;
-      }
-      await this.backups.restore(this.selectedBackupContents, passphrase);
-      this.showBackupDialog.set(false);
-      this.snackbar.show('Backup restored. CardNest will reload now.');
-      globalThis.setTimeout(() => globalThis.location.reload(), 900);
     } catch (error: unknown) {
       this.backupError.set(
         error instanceof Error ? error.message : 'The backup operation could not be completed.',
@@ -311,11 +315,48 @@ export class SettingsPage {
     }
   }
 
+  async confirmRestoreBackup(): Promise<void> {
+    this.restoreConfirmationOpen.set(false);
+    this.processingBackup.set(true);
+    this.backupError.set(null);
+    try {
+      await this.backups.restore(this.selectedBackupContents, this.pendingRestorePassphrase);
+      this.showBackupDialog.set(false);
+      this.snackbar.show('Backup restored. CardNest will reload now.');
+      globalThis.setTimeout(() => globalThis.location.reload(), 900);
+    } catch (error: unknown) {
+      this.backupError.set(
+        error instanceof Error ? error.message : 'The backup operation could not be completed.',
+      );
+    } finally {
+      this.processingBackup.set(false);
+      this.pendingRestorePassphrase = '';
+    }
+  }
+
+  async confirmDeleteAllData(): Promise<void> {
+    this.deleteAllConfirmationOpen.set(false);
+    try {
+      await this.notifications.cancelAll(this.store.cards());
+      await this.store.deleteAllData();
+      this.snackbar.show('All CardNest data deleted.', 'WARNING');
+      globalThis.setTimeout(() => globalThis.location.reload(), 700);
+    } catch (error: unknown) {
+      this.snackbar.show(
+        error instanceof Error ? error.message : 'CardNest data could not be deleted.',
+        'WARNING',
+      );
+    }
+  }
+
   private resetBackupDialog(action: BackupAction): void {
     this.backupAction.set(action);
     this.backupPin.set('');
     this.backupPassphrase.set('');
     this.backupConfirmation.set('');
     this.backupError.set(null);
+    this.revealBackupPassphrase.set(false);
+    this.revealBackupConfirmation.set(false);
+    this.restoreConfirmationOpen.set(false);
   }
 }

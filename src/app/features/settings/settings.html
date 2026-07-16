@@ -279,9 +279,11 @@
         <div class="danger-zone">
           <div>
             <strong>Delete all data</strong
-            ><small>Requires PIN and a second explicit confirmation.</small>
+            ><small>Requires an explicit confirmation and cannot be undone.</small>
           </div>
-          <button class="btn danger" type="button">Delete all data</button>
+          <button class="btn danger" type="button" (click)="deleteAllConfirmationOpen.set(true)">
+            Delete all data
+          </button>
         </div>
       </section>
     </div>
@@ -324,24 +326,52 @@
               (input)="backupPin.set($any($event.target).value)"
           /></label>
         }
-        <label
-          >Backup passphrase<input
-            type="password"
-            autocomplete="off"
-            minlength="8"
-            [value]="backupPassphrase()"
-            (input)="backupPassphrase.set($any($event.target).value)"
-          /><small>At least 8 characters. This cannot be recovered if forgotten.</small></label
-        >
-        @if (backupAction() === 'CREATE') {
-          <label
-            >Confirm backup passphrase<input
-              type="password"
+        <label>
+          Backup passphrase
+          <span class="password-field">
+            <input
+              [type]="revealBackupPassphrase() ? 'text' : 'password'"
               autocomplete="off"
               minlength="8"
-              [value]="backupConfirmation()"
-              (input)="backupConfirmation.set($any($event.target).value)"
-          /></label>
+              [value]="backupPassphrase()"
+              (input)="backupPassphrase.set($any($event.target).value)"
+            />
+            <button
+              type="button"
+              (click)="revealBackupPassphrase.set(!revealBackupPassphrase())"
+              [attr.aria-label]="
+                revealBackupPassphrase() ? 'Hide backup passphrase' : 'Show backup passphrase'
+              "
+            >
+              <app-icon [name]="revealBackupPassphrase() ? 'hide_credit' : 'show_credit'" />
+            </button>
+          </span>
+          <small>At least 8 characters. This cannot be recovered if forgotten.</small>
+        </label>
+        @if (backupAction() === 'CREATE') {
+          <label>
+            Confirm backup passphrase
+            <span class="password-field">
+              <input
+                [type]="revealBackupConfirmation() ? 'text' : 'password'"
+                autocomplete="off"
+                minlength="8"
+                [value]="backupConfirmation()"
+                (input)="backupConfirmation.set($any($event.target).value)"
+              />
+              <button
+                type="button"
+                (click)="revealBackupConfirmation.set(!revealBackupConfirmation())"
+                [attr.aria-label]="
+                  revealBackupConfirmation()
+                    ? 'Hide backup confirmation'
+                    : 'Show backup confirmation'
+                "
+              >
+                <app-icon [name]="revealBackupConfirmation() ? 'hide_credit' : 'show_credit'" />
+              </button>
+            </span>
+          </label>
         }
         @if (backupError(); as error) {
           <p class="pin-error" role="alert">{{ error }}</p>
@@ -439,4 +469,24 @@
       </form>
     </section>
   </div>
+}
+
+@if (restoreConfirmationOpen()) {
+  <app-confirmation-dialog
+    title="Replace all CardNest data?"
+    message="Restoring this backup will replace the cards, transactions, settings, and history currently stored on this device."
+    confirmLabel="Restore backup"
+    (confirmed)="confirmRestoreBackup()"
+    (cancelled)="restoreConfirmationOpen.set(false)"
+  />
+}
+
+@if (deleteAllConfirmationOpen()) {
+  <app-confirmation-dialog
+    title="Delete all CardNest data?"
+    message="This permanently deletes every card, transaction, EMI, category, backup preference, and setting stored by CardNest on this device."
+    confirmLabel="Delete everything"
+    (confirmed)="confirmDeleteAllData()"
+    (cancelled)="deleteAllConfirmationOpen.set(false)"
+  />
 }

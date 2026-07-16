@@ -41,6 +41,83 @@
       </form>
     </section>
   }
+  @if (store.emiPlans().length) {
+    <section class="emi-list" aria-labelledby="converted-emi-heading">
+      <h2 id="converted-emi-heading">Converted purchase EMIs</h2>
+      @for (plan of store.emiPlans(); track plan.id) {
+        <article class="panel emi-card" [class.cancelled]="plan.status === 'CANCELLED'">
+          <button
+            class="emi-summary"
+            type="button"
+            (click)="toggleEmi(plan.id)"
+            [attr.aria-expanded]="selectedEmiId() === plan.id"
+          >
+            <span class="loan-icon" aria-hidden="true"><app-icon name="schedule" /></span>
+            <span
+              ><strong>{{ emiTitle(plan) }}</strong
+              ><small
+                >{{ store.sourceDetail(plan.cardId) }} · {{ plan.tenureMonths }} months ·
+                {{ plan.status.toLowerCase() }}</small
+              ></span
+            >
+            <span
+              ><small>Next EMI</small
+              ><strong>{{ money(nextInstallment(plan.id)?.totalMinor ?? 0) }}</strong></span
+            >
+            <app-icon name="chevron_down" [class.expanded]="selectedEmiId() === plan.id" />
+          </button>
+          @if (selectedEmiId() === plan.id) {
+            <div class="emi-details">
+              <dl>
+                <div>
+                  <dt>Original purchase</dt>
+                  <dd>{{ money(plan.convertedAmountMinor) }}</dd>
+                </div>
+                <div>
+                  <dt>Started</dt>
+                  <dd>{{ plan.startDate }}</dd>
+                </div>
+                <div>
+                  <dt>Interest</dt>
+                  <dd>
+                    {{
+                      plan.interestType === 'NO_COST'
+                        ? 'No-cost'
+                        : plan.annualRateBasisPoints / 100 + '% p.a.'
+                    }}
+                  </dd>
+                </div>
+              </dl>
+              <div class="emi-schedule">
+                @for (installment of installments(plan.id); track installment.installmentNumber) {
+                  <div
+                    [class.upcoming-closed]="
+                      plan.status === 'CANCELLED' &&
+                      installment.statementDate.slice(0, 7) > (plan.closedAt ?? '').slice(0, 7)
+                    "
+                  >
+                    <span
+                      >EMI {{ installment.installmentNumber }} of {{ plan.tenureMonths
+                      }}<small
+                        >{{ installment.statementDate }} statement · due
+                        {{ installment.dueDate }}</small
+                      ></span
+                    >
+                    <strong>{{ money(installment.totalMinor) }}</strong>
+                  </div>
+                }
+              </div>
+              @if (plan.status === 'ACTIVE') {
+                <button class="btn close-emi" type="button" (click)="requestCloseEmi(plan)">
+                  Close EMI
+                </button>
+              }
+            </div>
+          }
+        </article>
+      }
+    </section>
+  }
   <section class="loan-list">
     @for (loan of store.loans(); track loan.id) {
       <article class="panel" [class.cancelled]="loan.status === 'CANCELLED'">
@@ -82,3 +159,17 @@
     }
   </section>
 </div>
+
+@if (closeEmiCandidate(); as plan) {
+  <app-confirmation-dialog
+    title="Close this EMI?"
+    [message]="
+      'All upcoming installments for ' +
+      emiTitle(plan) +
+      ' will be cancelled. Installments already due will remain in your history.'
+    "
+    confirmLabel="Close EMI"
+    (confirmed)="confirmCloseEmi()"
+    (cancelled)="closeEmiCandidate.set(null)"
+  />
+}

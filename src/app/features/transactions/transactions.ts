@@ -10,6 +10,7 @@ import { SnackbarService } from '../../core/services/snackbar.service';
 import { AppIcon } from '../../shared/app-icon';
 import { CategoriesPage } from '../categories/categories';
 import { ExportDialog } from '../../shared/export-dialog';
+import { ConfirmationDialog } from '../../shared/confirmation-dialog';
 import { ExportFormat } from '../../core/models/export';
 import { createEmiSchedule } from '../../core/services/emi';
 
@@ -20,7 +21,7 @@ type EmiStartMode = 'THIS_MONTH' | 'NEXT_MONTH' | 'CUSTOM';
 
 @Component({
   selector: 'app-transactions-page',
-  imports: [ReactiveFormsModule, AppIcon, CategoriesPage, ExportDialog],
+  imports: [ReactiveFormsModule, AppIcon, CategoriesPage, ExportDialog, ConfirmationDialog],
   templateUrl: './transactions.html',
   styleUrl: './transactions.scss',
   host: {
@@ -48,6 +49,7 @@ export class TransactionsPage {
   );
   readonly showEmiForm = signal(false);
   readonly showSplitForm = signal(false);
+  readonly deleteCandidate = signal<CardTransaction | null>(null);
   readonly payFromOpen = signal(false);
   readonly actionMenuId = signal<string | null>(null);
   readonly actionMenuOpensUp = signal(false);
@@ -114,10 +116,15 @@ export class TransactionsPage {
   });
   readonly filtered = computed(() => {
     const term = this.search().trim().toLocaleLowerCase();
+    const currentMonth = new Date().toISOString().slice(0, 7);
     return this.store
       .transactions()
       .filter(
         (item) =>
+          !item.emiCancelled &&
+          (!item.emiInstallmentNumber ||
+            item.emiInstallmentNumber === 1 ||
+            item.transactionDate.slice(0, 7) <= currentMonth) &&
           (!this.hideCredits() || !this.isCredit(item.type)) &&
           (!this.creditCardsOnly() || this.store.cards().some((card) => card.id === item.cardId)) &&
           (this.typeFilter() === 'ALL' || item.type === this.typeFilter()) &&
@@ -360,6 +367,17 @@ export class TransactionsPage {
     );
   }
 
+  linkedTransactions(transaction: CardTransaction): readonly CardTransaction[] {
+    return this.store
+      .transactions()
+      .filter(
+        (item) =>
+          item.id !== transaction.id &&
+          (item.id === transaction.relatedTransactionId ||
+            item.relatedTransactionId === transaction.id),
+      );
+  }
+
   splitSiblings(transaction: CardTransaction): readonly CardTransaction[] {
     if (!transaction.splitGroupId) return [];
     return this.store
@@ -428,7 +446,7 @@ export class TransactionsPage {
       transactionId: transaction.id,
       cardId: transaction.cardId,
       convertedAmountMinor: transaction.amountMinor,
-      remainingPurchaseMinor: transaction.amountMinor,
+      remainingPurchaseMinor: 0,
       tenureMonths: value.months,
       annualRateBasisPoints: Math.round(rate * 100),
       interestType: value.kind,
@@ -436,6 +454,8 @@ export class TransactionsPage {
       taxMinor: 0,
       startDate,
       status: 'ACTIVE',
+      originalTransactionDate: transaction.transactionDate,
+      originalMerchant: transaction.merchant,
     };
     this.store.saveEmiPlan(plan, createEmiSchedule(plan, card));
     this.showEmiForm.set(false);
@@ -523,6 +543,10 @@ export class TransactionsPage {
     });
   }
   closeOverlays(): void {
+    if (this.deleteCandidate()) {
+      this.deleteCandidate.set(null);
+      return;
+    }
     if (this.showEmiForm()) {
       this.showEmiForm.set(false);
       return;
@@ -550,11 +574,16 @@ export class TransactionsPage {
     this.closeMenus();
   }
   delete(transaction: CardTransaction): void {
-    if (!globalThis.confirm?.(`Delete ${transaction.merchant || 'this transaction'}?`)) return;
+    this.deleteCandidate.set(transaction);
+    this.closeMenus();
+  }
+  confirmDelete(): void {
+    const transaction = this.deleteCandidate();
+    if (!transaction) return;
     this.store.deleteTransaction(transaction.id);
     if (this.detailTransactionId() === transaction.id) this.closeDetails();
+    this.deleteCandidate.set(null);
     this.snackbar.show('Transaction deleted.', 'WARNING');
-    this.closeMenus();
   }
   duplicate(transaction: CardTransaction): void {
     this.store.duplicateTransaction(transaction.id);
@@ -569,6 +598,10 @@ export class TransactionsPage {
       return;
     }
     void this.router.navigate(['/sources'], { fragment: transaction.cardId });
+  }
+  goToEmi(planId: string): void {
+    this.closeDetails();
+    void this.router.navigate(['/loans'], { queryParams: { emi: planId } });
   }
   clearFilters(): void {
     this.search.set('');

@@ -876,16 +876,9 @@ label small {
     width: min(15rem, calc(100vw - 2rem));
   }
   .export-choices button {
-    width: 2.35rem;
+    width: auto;
     justify-content: center;
-    padding: 0;
-  }
-  .export-choices span {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
+    padding: 0.4rem 0.55rem;
   }
   .tx-main small {
     max-width: 12rem;

@@ -53,7 +53,8 @@ export class RemindersPage {
     return formatMoney(value, currency);
   }
   snooze(id: string): void {
-    this.disabled.update((items) => [...items, id]);
+    this.disabled.set([...new Set([...this.disabled(), id])]);
+    this.snackbar.show('Reminder snoozed.', 'INFO');
   }
 
   async enableNotifications(): Promise<void> {
@@ -61,16 +62,21 @@ export class RemindersPage {
       this.store.cardOutstanding(cardId),
     );
   }
-  async toggleNotifications(): Promise<void> {
+  async toggleNotifications(event: Event): Promise<void> {
+    const checkbox = event.target as HTMLInputElement;
     if (this.notifications.enabled()) {
       await this.notifications.cancelAll(this.store.cards());
+      checkbox.checked = false;
       this.snackbar.show('Payment reminders disabled.', 'INFO');
     } else {
       const granted = await this.notifications.requestPermission(this.store.cards(), (cardId) =>
         this.store.cardOutstanding(cardId),
       );
+      checkbox.checked = granted;
       this.snackbar.show(
-        granted ? 'Payment reminders enabled and scheduled.' : 'Notification permission denied.',
+        granted
+          ? 'Payment reminders enabled and scheduled.'
+          : (this.notifications.lastError() ?? 'Notification permission denied.'),
         granted ? 'SUCCESS' : 'WARNING',
       );
     }
@@ -80,6 +86,7 @@ export class RemindersPage {
   }
   recordPayment(cardId: string, amount: number): void {
     this.store.recordPayment(cardId, amount, 'Reminder payment');
+    this.disabled.set([...new Set([...this.disabled(), cardId])]);
     this.snackbar.show('Payment recorded.');
   }
 }

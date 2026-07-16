@@ -1,19 +1,24 @@
 import { Component, inject, signal } from '@angular/core';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
-import { LoanCommitment } from '../../core/models/domain';
+import { ActivatedRoute } from '@angular/router';
+import { EmiInstallment, EmiPlan, LoanCommitment } from '../../core/models/domain';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { formatMoney, parseMoneyToMinor } from '../../core/services/money';
 import { AppIcon } from '../../shared/app-icon';
+import { ConfirmationDialog } from '../../shared/confirmation-dialog';
 
 @Component({
   selector: 'app-loans-page',
-  imports: [ReactiveFormsModule, AppIcon],
+  imports: [ReactiveFormsModule, AppIcon, ConfirmationDialog],
   templateUrl: './loans.html',
   styleUrl: './loans.scss',
 })
 export class LoansPage {
   readonly store = inject(CardNestStore);
+  private readonly route = inject(ActivatedRoute);
   readonly showForm = signal(false);
+  readonly selectedEmiId = signal<string | null>(this.route.snapshot.queryParamMap.get('emi'));
+  readonly closeEmiCandidate = signal<EmiPlan | null>(null);
   readonly days = Array.from({ length: 28 }, (_, index) => index + 1);
   readonly form = new FormGroup({
     name: new FormControl('', { nonNullable: true, validators: [Validators.required] }),
@@ -30,6 +35,33 @@ export class LoansPage {
   });
   money(value: number): string {
     return formatMoney(value, 'INR');
+  }
+  emiTitle(plan: EmiPlan): string {
+    return plan.originalMerchant || 'Card purchase';
+  }
+  installments(planId: string): readonly EmiInstallment[] {
+    return this.store
+      .emiInstallments()
+      .filter((item) => item.emiPlanId === planId)
+      .sort((a, b) => a.installmentNumber - b.installmentNumber);
+  }
+  nextInstallment(planId: string): EmiInstallment | undefined {
+    const month = new Date().toISOString().slice(0, 7);
+    return this.installments(planId).find(
+      (item) => !item.paid && item.statementDate.slice(0, 7) >= month,
+    );
+  }
+  toggleEmi(planId: string): void {
+    this.selectedEmiId.set(this.selectedEmiId() === planId ? null : planId);
+  }
+  requestCloseEmi(plan: EmiPlan): void {
+    this.closeEmiCandidate.set(plan);
+  }
+  confirmCloseEmi(): void {
+    const plan = this.closeEmiCandidate();
+    if (!plan) return;
+    this.store.closeEmiPlan(plan.id);
+    this.closeEmiCandidate.set(null);
   }
   save(): void {
     this.form.markAllAsTouched();
