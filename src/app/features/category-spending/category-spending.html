@@ -11,7 +11,7 @@
     <button
       type="button"
       (click)="movePeriod(1)"
-      [disabled]="periodOffset() === 35"
+      [disabled]="!canMovePeriod(1)"
       aria-label="Previous period"
     >
       <app-icon name="back" />
@@ -19,15 +19,15 @@
     <label>
       <span class="sr-only">Budget period</span>
       <select [value]="periodOffset()" (change)="selectPeriod($event)">
-        @for (item of periods; track item.key; let offset = $index) {
-          <option [value]="offset">{{ item.label }}</option>
+        @for (item of periods(); track item.key) {
+          <option [value]="item.offset">{{ item.label }}</option>
         }
       </select>
     </label>
     <button
       type="button"
       (click)="movePeriod(-1)"
-      [disabled]="periodOffset() === 0"
+      [disabled]="!canMovePeriod(-1)"
       aria-label="Next period"
     >
       <app-icon name="chevron_right" />
@@ -51,7 +51,15 @@
       <span>Monthly budget used</span
       ><strong>{{ money(spentMinor()) }} / {{ money(store.monthlyBudgetMinor()) }}</strong>
     </div>
-    <progress [value]="spentMinor()" [max]="store.monthlyBudgetMinor() || 1"></progress>
+    <progress
+      [class.usage-low]="overallPercent() < 30"
+      [class.usage-medium]="overallPercent() >= 30 && overallPercent() < 50"
+      [class.usage-high]="overallPercent() >= 50 && overallPercent() < 85"
+      [class.usage-warning]="overallPercent() >= 85 && overallPercent() <= 100"
+      [class.usage-over]="overallPercent() > 100"
+      [value]="spentMinor()"
+      [max]="store.monthlyBudgetMinor() || 1"
+    ></progress>
     <small
       >{{ money(store.monthlyBudgetMinor() - spentMinor()) }} remaining against the overall
       budget</small
@@ -96,10 +104,21 @@
               }}</small>
             }
           </span>
-          <app-icon name="chevron_down" />
+          <app-icon
+            name="chevron_down"
+            [class.expanded]="selectedCategoryId() === row.category.id"
+          />
         </button>
         @if (row.limit !== undefined) {
-          <progress [value]="row.spent" [max]="row.limit || 1"></progress>
+          <progress
+            [class.usage-low]="row.percent < 30"
+            [class.usage-medium]="row.percent >= 30 && row.percent < 50"
+            [class.usage-high]="row.percent >= 50 && row.percent < 85"
+            [class.usage-warning]="row.percent >= 85 && row.percent <= 100"
+            [class.usage-over]="row.percent > 100"
+            [value]="row.spent"
+            [max]="row.limit || 1"
+          ></progress>
         }
         <button
           class="limit-button"
@@ -121,6 +140,10 @@
                   ></span
                 ><strong>{{ money(transaction.amountMinor) }}</strong>
               </div>
+            } @empty {
+              <p class="category-empty">
+                No transactions in this category for the selected period.
+              </p>
             }
           </div>
         }

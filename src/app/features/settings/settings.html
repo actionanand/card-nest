@@ -193,8 +193,15 @@
               type="number"
               min="1"
               max="28"
-              (change)="updateCycleDay($event)"
-          /></label>
+              (change)="updateCycleDay($event)" /></label
+          ><label
+            >Minimum amount for Convert to EMI<input
+              [value]="store.emiMinimumMinor() / 100"
+              [disabled]="!database.ready()"
+              inputmode="decimal"
+              (change)="updateEmiMinimum($event)"
+            /><small>Purchases below this amount will not show the EMI action.</small></label
+          >
         </div>
         @if (preferenceMessage(); as message) {
           <p class="setting-status" role="status">{{ message }}</p>

@@ -5,12 +5,16 @@
       <h1>Loans & EMIs</h1>
       <p class="subtitle">Track debit dates and know when every commitment ends.</p>
     </div>
-    <button class="btn btn-primary" type="button" (click)="showForm.set(true)">+ Add loan</button>
+    <button class="btn btn-primary" type="button" (click)="showForm.set(true)">
+      <app-icon name="plus" /> Add loan
+    </button>
   </header>
   @if (showForm()) {
     <section class="panel loan-form">
       <div class="form-heading">
-        <button type="button" (click)="showForm.set(false)" aria-label="Back">←</button>
+        <button type="button" (click)="showForm.set(false)" aria-label="Back">
+          <app-icon name="back" />
+        </button>
         <h2>Add loan or external EMI</h2>
       </div>
       <form [formGroup]="form" (ngSubmit)="save()">

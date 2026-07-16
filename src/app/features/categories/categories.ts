@@ -50,6 +50,18 @@ export class CategoriesPage {
     'girl',
     'other',
     'family',
+    'hamburger',
+    'apple',
+    'shopping_cart',
+    'tag',
+    'film',
+    'popcorn',
+    'landmark',
+    'banknote_arrow_up',
+    'banknote_arrow_down',
+    'globe_check',
+    'globe_off',
+    'briefcase_business',
   ] as const;
   readonly sortedCategories = computed(() =>
     [...this.store.categories()].sort((a, b) => a.name.localeCompare(b.name)),

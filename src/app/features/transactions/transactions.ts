@@ -1,9 +1,9 @@
 import { Component, computed, inject, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
+import { FormArray, FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { ActivatedRoute, Router } from '@angular/router';
-import { Camera } from '@capacitor/camera';
-import { CardTransaction, TransactionType } from '../../core/models/domain';
+import { Camera, CameraResultType, CameraSource } from '@capacitor/camera';
+import { CardTransaction, EmiPlan, TransactionType } from '../../core/models/domain';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { formatMoney, parseMoneyToMinor } from '../../core/services/money';
 import { SnackbarService } from '../../core/services/snackbar.service';
@@ -11,9 +11,12 @@ import { AppIcon } from '../../shared/app-icon';
 import { CategoriesPage } from '../categories/categories';
 import { ExportDialog } from '../../shared/export-dialog';
 import { ExportFormat } from '../../core/models/export';
+import { createEmiSchedule } from '../../core/services/emi';
 
 type GroupingMode = 'MONTH' | 'CYCLE' | 'STATEMENT';
 type RepeatChoice = 'NONE' | 'INFINITE' | `${number}`;
+type EmiKind = 'NO_COST' | 'STANDARD';
+type EmiStartMode = 'THIS_MONTH' | 'NEXT_MONTH' | 'CUSTOM';
 
 @Component({
   selector: 'app-transactions-page',
@@ -39,6 +42,12 @@ export class TransactionsPage {
   );
   readonly editingId = signal<string | null>(null);
   readonly receiptPreviews = signal<readonly string[]>([]);
+  readonly detailTransactionId = signal<string | null>(null);
+  readonly detailTransaction = computed(
+    () => this.store.transactions().find((item) => item.id === this.detailTransactionId()) ?? null,
+  );
+  readonly showEmiForm = signal(false);
+  readonly showSplitForm = signal(false);
   readonly payFromOpen = signal(false);
   readonly actionMenuId = signal<string | null>(null);
   readonly actionMenuOpensUp = signal(false);
@@ -57,13 +66,13 @@ export class TransactionsPage {
   readonly repeatOptions = Array.from({ length: 36 }, (_, index) => index + 1);
   readonly types: readonly { value: TransactionType; label: string }[] = [
     { value: 'PURCHASE', label: 'Purchase' },
+    { value: 'ADJUSTMENT', label: 'Adjustment' },
     { value: 'PAYMENT', label: 'Card payment' },
     { value: 'REFUND', label: 'Refund' },
     { value: 'CASHBACK', label: 'Cashback' },
     { value: 'CREDIT', label: 'Credit' },
     { value: 'FEE', label: 'Fee' },
     { value: 'INTEREST', label: 'Interest' },
-    { value: 'ADJUSTMENT', label: 'Adjustment' },
   ];
   readonly form = new FormGroup({
     cardId: new FormControl(this.defaultSourceId(), {
@@ -79,13 +88,29 @@ export class TransactionsPage {
       nonNullable: true,
       validators: [Validators.required],
     }),
-    categoryId: new FormControl(this.store.categories()[0]?.id ?? 'other', {
+    categoryId: new FormControl('other', {
       nonNullable: true,
       validators: [Validators.required],
     }),
     merchant: new FormControl('', { nonNullable: true, validators: [Validators.maxLength(100)] }),
     notes: new FormControl('', { nonNullable: true, validators: [Validators.maxLength(500)] }),
+    relatedTransactionId: new FormControl('', { nonNullable: true }),
+    taxIncluded: new FormControl(false, { nonNullable: true }),
+    taxAmount: new FormControl('', { nonNullable: true }),
     repeat: new FormControl<RepeatChoice>('NONE', { nonNullable: true }),
+  });
+  readonly emiForm = new FormGroup({
+    kind: new FormControl<EmiKind>('NO_COST', { nonNullable: true }),
+    months: new FormControl(3, {
+      nonNullable: true,
+      validators: [Validators.required, Validators.min(2), Validators.max(36)],
+    }),
+    annualRate: new FormControl('15', { nonNullable: true }),
+    startMode: new FormControl<EmiStartMode>('THIS_MONTH', { nonNullable: true }),
+    customStart: new FormControl('', { nonNullable: true }),
+  });
+  readonly splitForm = new FormGroup({
+    parts: new FormArray([this.createSplitPart(), this.createSplitPart()]),
   });
   readonly filtered = computed(() => {
     const term = this.search().trim().toLocaleLowerCase();
@@ -204,6 +229,18 @@ export class TransactionsPage {
       // Picker was dismissed by the user — nothing to attach.
     }
   }
+  async captureReceipt(): Promise<void> {
+    try {
+      const photo = await Camera.getPhoto({
+        source: CameraSource.Camera,
+        resultType: CameraResultType.Uri,
+        quality: 70,
+      });
+      if (photo.webPath) this.receiptPreviews.update((current) => [...current, photo.webPath!]);
+    } catch {
+      // Camera was dismissed by the user.
+    }
+  }
   removeReceipt(index: number): void {
     this.receiptPreviews.update((current) => current.filter((_, position) => position !== index));
   }
@@ -231,6 +268,7 @@ export class TransactionsPage {
     return 'Select source';
   }
   edit(transaction: CardTransaction): void {
+    this.closeDetails();
     this.editingId.set(transaction.id);
     this.form.reset({
       cardId: transaction.cardId,
@@ -240,11 +278,210 @@ export class TransactionsPage {
       categoryId: transaction.categoryId,
       merchant: transaction.merchant ?? '',
       notes: transaction.notes ?? '',
+      relatedTransactionId: transaction.relatedTransactionId ?? '',
+      taxIncluded: transaction.taxIncluded ?? false,
+      taxAmount: transaction.taxMinor === undefined ? '' : String(transaction.taxMinor / 100),
       repeat: 'NONE',
     });
+    this.receiptPreviews.set(transaction.attachmentIds);
     this.showForm.set(true);
     this.closeMenus();
     globalThis.scrollTo?.({ top: 0, behavior: 'smooth' });
+  }
+  transactionTypeChanged(type: TransactionType): void {
+    if (type === 'REFUND' || type === 'CASHBACK') {
+      this.form.controls.categoryId.setValue('contra-expenses');
+    } else if (type === 'CREDIT' || type === 'PAYMENT') {
+      this.form.controls.categoryId.setValue('payment');
+    } else {
+      this.form.controls.categoryId.setValue('other');
+    }
+    this.form.controls.relatedTransactionId.setValue('');
+  }
+
+  relatedTransactionOptions(): readonly CardTransaction[] {
+    const type = this.form.controls.type.value;
+    const selectedDate = new Date(`${this.form.controls.transactionDate.value}T12:00:00`);
+    if (type === 'REFUND') {
+      const cutoff = new Date(selectedDate);
+      cutoff.setMonth(cutoff.getMonth() - 3);
+      return this.store
+        .transactions()
+        .filter(
+          (item) =>
+            item.id !== this.editingId() &&
+            item.cardId === this.form.controls.cardId.value &&
+            item.type === 'PURCHASE' &&
+            new Date(`${item.transactionDate}T12:00:00`) >= cutoff &&
+            new Date(`${item.transactionDate}T12:00:00`) <= selectedDate,
+        )
+        .sort((a, b) => b.transactionDate.localeCompare(a.transactionDate));
+    }
+    if (type === 'ADJUSTMENT') {
+      const previousDate = new Date(selectedDate);
+      previousDate.setDate(previousDate.getDate() - 1);
+      const previous = previousDate.toISOString().slice(0, 10);
+      const current = this.form.controls.transactionDate.value;
+      return this.store
+        .transactions()
+        .filter(
+          (item) =>
+            item.id !== this.editingId() &&
+            (item.transactionDate === current || item.transactionDate === previous),
+        )
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    }
+    return [];
+  }
+
+  taxPercentage(transaction: CardTransaction): number {
+    if (!transaction.taxMinor || transaction.amountMinor <= transaction.taxMinor) return 0;
+    return (
+      Math.round(
+        (transaction.taxMinor / (transaction.amountMinor - transaction.taxMinor)) * 10000,
+      ) / 100
+    );
+  }
+
+  openDetails(transaction: CardTransaction): void {
+    this.detailTransactionId.set(transaction.id);
+    this.closeMenus();
+  }
+
+  closeDetails(): void {
+    this.detailTransactionId.set(null);
+    this.showEmiForm.set(false);
+    this.showSplitForm.set(false);
+  }
+
+  relatedTransaction(transaction: CardTransaction): CardTransaction | null {
+    return (
+      this.store.transactions().find((item) => item.id === transaction.relatedTransactionId) ?? null
+    );
+  }
+
+  splitSiblings(transaction: CardTransaction): readonly CardTransaction[] {
+    if (!transaction.splitGroupId) return [];
+    return this.store
+      .transactions()
+      .filter((item) => item.splitGroupId === transaction.splitGroupId);
+  }
+
+  emiPlan(transaction: CardTransaction): EmiPlan | null {
+    return this.store.emiPlans().find((plan) => plan.id === transaction.emiPlanId) ?? null;
+  }
+
+  emiInstallments(transaction: CardTransaction) {
+    return this.store
+      .emiInstallments()
+      .filter((installment) => installment.emiPlanId === transaction.emiPlanId)
+      .sort((a, b) => a.installmentNumber - b.installmentNumber);
+  }
+
+  canConvertToEmi(transaction: CardTransaction): boolean {
+    return (
+      transaction.type === 'PURCHASE' &&
+      !transaction.emiPlanId &&
+      transaction.amountMinor >= this.store.emiMinimumMinor() &&
+      this.store.cards().some((card) => card.id === transaction.cardId)
+    );
+  }
+
+  canSplit(transaction: CardTransaction): boolean {
+    return !transaction.emiPlanId && !transaction.splitGroupId;
+  }
+
+  openEmi(transaction: CardTransaction): void {
+    if (!this.canConvertToEmi(transaction)) return;
+    this.emiForm.reset({
+      kind: 'NO_COST',
+      months: 3,
+      annualRate: '15',
+      startMode: 'THIS_MONTH',
+      customStart: transaction.transactionDate.slice(0, 7),
+    });
+    this.showEmiForm.set(true);
+  }
+
+  saveEmi(transaction: CardTransaction): void {
+    this.emiForm.markAllAsTouched();
+    if (this.emiForm.invalid) return;
+    const card = this.store.cards().find((item) => item.id === transaction.cardId);
+    if (!card) return;
+    const value = this.emiForm.getRawValue();
+    const rate = value.kind === 'NO_COST' ? 0 : Number(value.annualRate);
+    if (!Number.isFinite(rate) || rate < 0 || rate > 100) {
+      this.emiForm.controls.annualRate.setErrors({ rate: true });
+      return;
+    }
+    const startDate = this.emiStartDate(
+      transaction.transactionDate,
+      value.startMode,
+      value.customStart,
+    );
+    if (!startDate) {
+      this.emiForm.controls.customStart.setErrors({ required: true });
+      return;
+    }
+    const plan: EmiPlan = {
+      id: crypto.randomUUID(),
+      transactionId: transaction.id,
+      cardId: transaction.cardId,
+      convertedAmountMinor: transaction.amountMinor,
+      remainingPurchaseMinor: transaction.amountMinor,
+      tenureMonths: value.months,
+      annualRateBasisPoints: Math.round(rate * 100),
+      interestType: value.kind,
+      processingFeeMinor: 0,
+      taxMinor: 0,
+      startDate,
+      status: 'ACTIVE',
+    };
+    this.store.saveEmiPlan(plan, createEmiSchedule(plan, card));
+    this.showEmiForm.set(false);
+    this.snackbar.show(`Converted into ${value.months} EMI installments.`);
+  }
+
+  openSplit(transaction: CardTransaction): void {
+    if (!this.canSplit(transaction)) return;
+    const half = Math.floor(transaction.amountMinor / 2);
+    this.splitForm.setControl(
+      'parts',
+      new FormArray([
+        this.createSplitPart(transaction.cardId, half),
+        this.createSplitPart(transaction.cardId, transaction.amountMinor - half),
+      ]),
+    );
+    this.showSplitForm.set(true);
+  }
+
+  addSplitPart(): void {
+    if (this.splitForm.controls.parts.length < 4)
+      this.splitForm.controls.parts.push(this.createSplitPart());
+  }
+
+  removeSplitPart(index: number): void {
+    if (this.splitForm.controls.parts.length > 2) this.splitForm.controls.parts.removeAt(index);
+  }
+
+  saveSplit(transaction: CardTransaction): void {
+    const parts = this.splitForm.controls.parts.controls.map((part) => ({
+      sourceId: part.controls.sourceId.value,
+      amountMinor: parseMoneyToMinor(part.controls.amount.value) ?? 0,
+    }));
+    if (parts.some((part) => !part.sourceId || part.amountMinor <= 0)) {
+      this.snackbar.show('Choose a source and valid amount for every split.', 'WARNING');
+      return;
+    }
+    if (parts.reduce((sum, part) => sum + part.amountMinor, 0) !== transaction.amountMinor) {
+      this.snackbar.show('Split amounts must equal the original transaction total.', 'WARNING');
+      return;
+    }
+    const created = this.store.splitTransaction(transaction.id, parts);
+    if (!created.length) return;
+    this.detailTransactionId.set(created[0].id);
+    this.showSplitForm.set(false);
+    this.snackbar.show(`Transaction split into ${created.length} payments.`);
   }
   toggleActionMenu(event: MouseEvent, transactionId: string): void {
     this.summaryMenuOpen.set(false);
@@ -286,6 +523,18 @@ export class TransactionsPage {
     });
   }
   closeOverlays(): void {
+    if (this.showEmiForm()) {
+      this.showEmiForm.set(false);
+      return;
+    }
+    if (this.showSplitForm()) {
+      this.showSplitForm.set(false);
+      return;
+    }
+    if (this.detailTransactionId()) {
+      this.closeDetails();
+      return;
+    }
     if (this.exportOpen()) {
       this.exportOpen.set(false);
       return;
@@ -303,6 +552,7 @@ export class TransactionsPage {
   delete(transaction: CardTransaction): void {
     if (!globalThis.confirm?.(`Delete ${transaction.merchant || 'this transaction'}?`)) return;
     this.store.deleteTransaction(transaction.id);
+    if (this.detailTransactionId() === transaction.id) this.closeDetails();
     this.snackbar.show('Transaction deleted.', 'WARNING');
     this.closeMenus();
   }
@@ -312,6 +562,7 @@ export class TransactionsPage {
     this.closeMenus();
   }
   goToSource(transaction: CardTransaction): void {
+    this.closeDetails();
     this.closeMenus();
     if (this.store.cards().some((card) => card.id === transaction.cardId)) {
       void this.router.navigate(['/cards'], { queryParams: { open: transaction.cardId } });
@@ -336,6 +587,14 @@ export class TransactionsPage {
       this.form.controls.amount.setErrors({ money: true });
       return;
     }
+    const parsedTaxMinor = this.form.controls.taxIncluded.value
+      ? parseMoneyToMinor(this.form.controls.taxAmount.value)
+      : undefined;
+    const taxMinor = parsedTaxMinor ?? undefined;
+    if (this.form.controls.taxIncluded.value && (!taxMinor || taxMinor >= amountMinor)) {
+      this.form.controls.taxAmount.setErrors({ money: true });
+      return;
+    }
     if (this.form.invalid) return;
     const value = this.form.getRawValue();
     const timestamp = new Date().toISOString();
@@ -353,7 +612,10 @@ export class TransactionsPage {
       merchant: value.merchant.trim() || undefined,
       categoryId: value.categoryId,
       notes: value.notes.trim() || undefined,
-      attachmentIds: existing?.attachmentIds ?? [],
+      relatedTransactionId: value.relatedTransactionId || undefined,
+      taxIncluded: value.taxIncluded,
+      taxMinor,
+      attachmentIds: this.receiptPreviews(),
       createdAt: existing?.createdAt ?? timestamp,
       updatedAt: timestamp,
     };
@@ -441,11 +703,36 @@ export class TransactionsPage {
       type: 'PURCHASE',
       amount: '',
       transactionDate: new Date().toISOString().slice(0, 10),
-      categoryId: this.store.categories()[0]?.id ?? 'other',
+      categoryId: 'other',
       merchant: '',
       notes: '',
+      relatedTransactionId: '',
+      taxIncluded: false,
+      taxAmount: '',
       repeat: 'NONE',
     });
+  }
+
+  private createSplitPart(sourceId = this.defaultSourceId(), amountMinor = 0) {
+    return new FormGroup({
+      sourceId: new FormControl(sourceId, { nonNullable: true, validators: [Validators.required] }),
+      amount: new FormControl(amountMinor ? String(amountMinor / 100) : '', {
+        nonNullable: true,
+        validators: [Validators.required],
+      }),
+    });
+  }
+
+  private emiStartDate(
+    transactionDate: string,
+    mode: EmiStartMode,
+    customStart: string,
+  ): string | null {
+    if (mode === 'CUSTOM') return /^\d{4}-\d{2}$/.test(customStart) ? `${customStart}-01` : null;
+    const date = new Date(`${transactionDate}T12:00:00`);
+    date.setDate(1);
+    if (mode === 'NEXT_MONTH') date.setMonth(date.getMonth() + 1);
+    return date.toISOString().slice(0, 10);
   }
 
   private nextMonthlyOccurrence(dateValue: string): string {

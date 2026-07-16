@@ -22,10 +22,14 @@
   font-size: 0.82rem;
 }
 .hero-total strong {
-  font-family: var(--display);
+  font-family: var(--font, system-ui, sans-serif);
   font-size: clamp(2rem, 4vw, 3rem);
   font-weight: 500;
   letter-spacing: -0.03em;
+  font-feature-settings:
+    'lnum' 1,
+    'tnum' 1;
+  font-variant-numeric: lining-nums tabular-nums;
 }
 .hero-total span {
   margin-top: 0.75rem;
@@ -57,9 +61,13 @@
   font-size: 0.72rem;
 }
 .hero-metrics b {
-  font-family: var(--display);
+  font-family: var(--font, system-ui, sans-serif);
   font-size: 1.3rem;
   font-weight: 500;
+  font-feature-settings:
+    'lnum' 1,
+    'tnum' 1;
+  font-variant-numeric: lining-nums tabular-nums;
 }
 .dashboard-grid {
   display: grid;

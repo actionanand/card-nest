@@ -203,6 +203,16 @@ export class SettingsPage {
     );
   }
 
+  async updateEmiMinimum(event: Event): Promise<void> {
+    const amount = parseMoneyToMinor((event.target as HTMLInputElement).value);
+    if (amount === null || amount <= 0) {
+      this.preferenceMessage.set('Enter a valid minimum amount for EMI conversion.');
+      return;
+    }
+    await this.store.setEmiMinimum(amount);
+    this.preferenceMessage.set('Minimum amount for EMI conversion updated.');
+  }
+
   async updateProfileTitle(event: Event): Promise<void> {
     await this.store.setProfileTitle((event.target as HTMLSelectElement).value);
   }

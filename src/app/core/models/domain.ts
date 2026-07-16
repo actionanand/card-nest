@@ -89,6 +89,11 @@ export interface CardTransaction {
   merchant?: string;
   categoryId: string;
   notes?: string;
+  relatedTransactionId?: string;
+  taxIncluded?: boolean;
+  taxMinor?: Money;
+  splitGroupId?: string;
+  splitOriginalAmountMinor?: Money;
   recurringRuleId?: string;
   generatedOccurrenceDate?: string;
   attachmentIds: readonly string[];
@@ -203,6 +208,8 @@ export interface EmiPlan {
 }
 
 export interface EmiInstallment {
+  id?: string;
+  emiPlanId?: string;
   installmentNumber: number;
   statementDate: string;
   dueDate: string;
