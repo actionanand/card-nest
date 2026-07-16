@@ -291,20 +291,30 @@ export class SqliteDatabase {
         transaction: false,
         statements: DELETE_TABLES.map((table) => `DELETE FROM ${table}`).join(';\n'),
       });
+      let pendingInserts: { statement: string; values: unknown[] }[] = [];
+      const flushInserts = async () => {
+        if (!pendingInserts.length) return;
+        await CapacitorSQLite.executeSet({
+          database: this.databaseName,
+          set: pendingInserts,
+          transaction: false,
+        });
+        pendingInserts = [];
+      };
       for (const table of BACKUP_TABLES) {
         for (const row of backupTables.get(table) ?? []) {
           const columns = Object.keys(row);
           if (!columns.length || columns.some((column) => !/^[a-z][a-z0-9_]*$/i.test(column))) {
             throw new Error('The backup database contains invalid columns.');
           }
-          await CapacitorSQLite.run({
-            database: this.databaseName,
+          pendingInserts.push({
             statement: `INSERT INTO ${table} (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`,
             values: columns.map((column) => row[column]),
-            transaction: false,
           });
+          if (pendingInserts.length >= 250) await flushInserts();
         }
       }
+      await flushInserts();
       await CapacitorSQLite.commitTransaction({ database: this.databaseName });
     } catch (error: unknown) {
       await CapacitorSQLite.rollbackTransaction({ database: this.databaseName });
