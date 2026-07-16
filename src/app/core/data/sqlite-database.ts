@@ -204,7 +204,9 @@ export class SqliteDatabase {
     }
     this.ready.set(false);
     await CapacitorSQLite.importFromJson({ jsonstring });
-    if (this.isWeb) await CapacitorSQLite.saveToStore({ database: this.databaseName });
+    // jeep-sqlite imports through a temporary Database and persists it while closing that
+    // database. There is no retained RW connection after import, so calling saveToStore()
+    // here fails with "No available connection for cardnest" even though import succeeded.
   }
 
   async deleteAllData(): Promise<void> {
