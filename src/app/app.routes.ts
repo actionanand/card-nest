@@ -52,6 +52,10 @@ export const routes: Routes = [
     loadComponent: () => import('./features/settings/settings').then((item) => item.SettingsPage),
   },
   {
+    path: 'help',
+    loadComponent: () => import('./features/help/help').then((item) => item.HelpPage),
+  },
+  {
     path: 'sources',
     loadComponent: () => import('./features/sources/sources').then((item) => item.SourcesPage),
   },

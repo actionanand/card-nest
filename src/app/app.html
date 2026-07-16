@@ -76,6 +76,9 @@
         <a routerLink="/settings" (click)="mobileMenuOpen.set(false)"
           ><app-icon name="settings" /> Settings</a
         >
+        <a routerLink="/help" (click)="mobileMenuOpen.set(false)"
+          ><app-icon name="help" /> Help &amp; FAQ</a
+        >
       </nav>
     </aside>
   }
@@ -115,6 +118,7 @@
       <a routerLink="/loans" routerLinkActive="active"><app-icon name="loans" /> Loans & EMIs</a>
     </nav>
     <div class="sidebar-footer">
+      <a routerLink="/help" routerLinkActive="active"><app-icon name="help" /> Help &amp; FAQ</a>
       <a routerLink="/settings" routerLinkActive="active"><app-icon name="settings" /> Settings</a>
       <div class="privacy">
         <app-icon name="privacy" />

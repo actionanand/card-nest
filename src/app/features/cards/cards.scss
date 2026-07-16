@@ -166,6 +166,39 @@ label small.validation-error {
   width: 1rem;
   height: 1rem;
 }
+.protected-field-label {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.stored-secret-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.2rem 0.4rem;
+  border-radius: 999px;
+  color: var(--success);
+  background: var(--success-soft);
+  font-size: 0.58rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.stored-secret-badge app-icon,
+.stored-secret-hint app-icon {
+  width: 0.75rem;
+  height: 0.75rem;
+}
+.stored-secret-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.3rem;
+  color: var(--success);
+}
+.stored-secret-hint app-icon {
+  margin-top: 0.08rem;
+}
 .card-form input.ng-invalid.ng-touched,
 .card-form select.ng-invalid.ng-touched,
 .card-form textarea.ng-invalid.ng-touched {
@@ -582,6 +615,10 @@ label small.validation-error {
   font-family: ui-monospace, monospace;
   font-size: 0.72rem;
   letter-spacing: 0.08em;
+}
+.secret-details strong.protected-text {
+  font-family: inherit;
+  letter-spacing: normal;
 }
 .important-links a {
   display: inline-flex;

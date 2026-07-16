@@ -1,0 +1,302 @@
+import { Component, computed, signal } from '@angular/core';
+import { RouterLink } from '@angular/router';
+import { AppIcon } from '../../shared/app-icon';
+
+interface HelpTopic {
+  readonly id: string;
+  readonly group: string;
+  readonly title: string;
+  readonly summary: string;
+  readonly steps: readonly string[];
+  readonly tips?: readonly string[];
+  readonly keywords: readonly string[];
+  readonly link?: string;
+  readonly linkLabel?: string;
+  readonly queryParams?: Readonly<Record<string, string | boolean>>;
+}
+
+const HELP_TOPICS: readonly HelpTopic[] = [
+  {
+    id: 'add-transaction',
+    group: 'Transactions',
+    title: 'How do I record a new transaction?',
+    summary:
+      'Record purchases, adjustments, payments, refunds, cashback, credits, fees, and interest.',
+    steps: [
+      'Tap the large + button in the bottom navigation, or open Activity and choose Add transaction.',
+      'Choose the transaction type and the payment source. Credit cards and other sources are grouped separately.',
+      'Enter the amount, date, category, merchant or title, and any notes.',
+      'Optionally add receipt images, tax information, or a monthly repeat rule, then choose Save transaction.',
+    ],
+    tips: [
+      'Adjustment appears beside Purchase for quick access.',
+      'Refund, cashback, credit, and card-payment entries are treated as credits when totals are calculated.',
+    ],
+    keywords: ['new', 'add', 'purchase', 'payment', 'credit', 'cashback', 'fee', 'interest'],
+    link: '/transactions',
+    linkLabel: 'Record a transaction',
+    queryParams: { add: true },
+  },
+  {
+    id: 'receipts-tax-repeat',
+    group: 'Transactions',
+    title: 'Can I attach receipts, record tax, or repeat an entry?',
+    summary:
+      'Transaction entry supports gallery images, camera capture, tax breakdowns, and monthly repetition.',
+    steps: [
+      'Use Gallery to select one or more existing receipt images, or Camera to take a new picture.',
+      'Enable Tax included and enter the tax or handling-charge portion of the total. CardNest shows the percentage later.',
+      'Use Repeat monthly to choose a fixed number of months or an ongoing monthly rule.',
+    ],
+    tips: [
+      'Receipt images remain private to the device and appear in transaction details and while editing.',
+    ],
+    keywords: ['receipt', 'image', 'gallery', 'camera', 'tax', 'charges', 'monthly', 'recurring'],
+    link: '/transactions',
+    linkLabel: 'Open Activity',
+  },
+  {
+    id: 'refund-adjustment',
+    group: 'Transactions',
+    title: 'How do linked refunds and adjustments work?',
+    summary:
+      'Link credits or corrections to the transaction that caused them so the history remains understandable.',
+    steps: [
+      'For a refund, the optional linked-transaction list contains purchases from the selected card during the previous three months.',
+      'For an adjustment, the list contains transactions from the selected date and the previous day across all payment sources.',
+      'Choose the related entry before saving. Both transactions display the relationship in their detail view.',
+    ],
+    keywords: ['refund', 'partial refund', 'adjustment', 'linked', 'related', 'correction'],
+    link: '/transactions',
+    linkLabel: 'View transactions',
+  },
+  {
+    id: 'transaction-details',
+    group: 'Transactions',
+    title: 'What can I do from transaction details?',
+    summary: 'Tap any transaction to see its complete information and available actions.',
+    steps: [
+      'Tap a transaction row to view its amount, date, type, category, source, notes, receipts, tax, links, and EMI information.',
+      'Use Edit, Duplicate, Delete, or Go to payment source as needed.',
+      'Eligible purchases also show Convert to EMI and Split transaction actions.',
+    ],
+    keywords: ['details', 'edit', 'duplicate', 'delete', 'source', 'notes', 'open'],
+    link: '/transactions',
+    linkLabel: 'Open Activity',
+  },
+  {
+    id: 'split-transaction',
+    group: 'Transactions',
+    title: 'How do I split a transaction between payment sources?',
+    summary: 'Divide one purchase into two to four records while preserving the original total.',
+    steps: [
+      'Open the transaction and choose Split transaction.',
+      'Choose between two and four parts, select a payment source for each part, and enter each amount.',
+      'The parts must add up exactly to the original transaction amount before they can be saved.',
+    ],
+    tips: [
+      'You may use the same payment source more than once or combine cards, cash, bank/UPI, and meal cards.',
+    ],
+    keywords: ['split', 'multiple cards', 'pluxee', 'cash', 'upi', 'two payments'],
+    link: '/transactions',
+    linkLabel: 'View transactions',
+  },
+  {
+    id: 'convert-emi',
+    group: 'Transactions',
+    title: 'How do I convert a purchase to EMI?',
+    summary:
+      'Create a traceable no-cost or standard-interest installment plan from an eligible purchase.',
+    steps: [
+      'Open an eligible purchase and choose Convert to EMI. The default minimum is ₹2,500 and can be changed in Settings.',
+      'Choose no-cost EMI or standard EMI, the number of months, and an interest rate when required.',
+      'Choose whether installments start in this statement month, next month, or a custom month.',
+      'CardNest replaces the purchase in activity calculations with the applicable installments and creates a plan under Loans & EMIs.',
+    ],
+    tips: ['Closing an EMI plan stops all upcoming installments while retaining its history.'],
+    keywords: ['emi', 'installment', 'interest', 'no cost', 'loan', 'minimum'],
+    link: '/loans',
+    linkLabel: 'Open Loans & EMIs',
+  },
+  {
+    id: 'add-card',
+    group: 'Cards & sources',
+    title: 'How do I add and manage a credit card?',
+    summary:
+      'Store card identity, billing dates, limits, fees, benefits, links, and protected card details.',
+    steps: [
+      'Open Cards and choose Add card.',
+      'Enter a nickname, issuer, card network, last four digits, statement day, due-date rules, and any credit limit.',
+      'Optional sections cover annual fees, waiver targets, benefits, important links, and protected full-number/CVV storage.',
+      'Open a saved card to record a payment, pay due or outstanding amounts, edit it, archive it, or restore it.',
+    ],
+    tips: [
+      'Archiving hides a card from normal choices but keeps its transactions. Deleting marks the source as deleted while historical transactions remain readable.',
+    ],
+    keywords: ['card', 'add card', 'statement', 'due date', 'limit', 'fee', 'archive', 'delete'],
+    link: '/cards',
+    linkLabel: 'Manage cards',
+  },
+  {
+    id: 'linked-cards',
+    group: 'Cards & sources',
+    title: 'What are linked cards?',
+    summary:
+      'Group cards that share one credit account or limit without losing their individual identities.',
+    steps: [
+      'Edit a card and place related cards into the same linked-card group.',
+      'Cards continue to show their own nicknames and final digits.',
+      'Usage and credit summaries can identify the shared account while displaying all member cards as badges.',
+    ],
+    keywords: ['linked', 'supplementary', 'add-on', 'shared limit', 'relationship', 'group'],
+    link: '/cards',
+    linkLabel: 'View cards',
+  },
+  {
+    id: 'other-sources',
+    group: 'Cards & sources',
+    title: 'Where do I manage cash, bank/UPI, and meal cards?',
+    summary: 'Non-credit-card payment sources have their own balances and usage view.',
+    steps: [
+      'Open Cash, Banks & Pluxee from the navigation drawer or sidebar.',
+      'Choose a source to update its name, institution, balance behavior, or meal-card auto-load settings.',
+      'These sources appear beside credit cards in transaction entry and activity filters.',
+    ],
+    keywords: ['cash', 'bank', 'upi', 'pluxee', 'meal card', 'source', 'balance'],
+    link: '/sources',
+    linkLabel: 'Manage payment sources',
+  },
+  {
+    id: 'categories-budgets',
+    group: 'Planning & insights',
+    title: 'How do categories and spending limits work?',
+    summary: 'Organize transactions and compare category spending with optional monthly limits.',
+    steps: [
+      'Open Categories to add, edit, archive, or choose icons and colors for categories.',
+      'Set a category limit when you want progress tracking.',
+      'Open Category spending to expand a category, inspect transactions, and compare usage against its limit.',
+    ],
+    tips: [
+      'Progress colors change as spending moves through the lower, middle, warning, and over-limit ranges.',
+    ],
+    keywords: ['category', 'budget', 'limit', 'progress', 'spending', 'color'],
+    link: '/category-spending',
+    linkLabel: 'View category spending',
+  },
+  {
+    id: 'reports-export',
+    group: 'Planning & insights',
+    title: 'How do I filter, review, or export activity?',
+    summary: 'Search and group transactions, review charts, and create masked PDF or CSV reports.',
+    steps: [
+      'In Activity, expand Filters on mobile to search or narrow by transaction type, source, category, and grouping cycle.',
+      'Use PDF or CSV beside the activity summary to export the currently selected report scope.',
+      'Open Reports, Card usage, and Category spending for visual summaries and planning views.',
+    ],
+    tips: ['Exports are masked and must never contain full card numbers or CVVs.'],
+    keywords: ['filter', 'search', 'pdf', 'csv', 'export', 'report', 'chart', 'activity'],
+    link: '/reports',
+    linkLabel: 'Open reports',
+  },
+  {
+    id: 'reminders',
+    group: 'Planning & insights',
+    title: 'How do reminders and notifications work?',
+    summary: 'Receive local reminders for payments, statements, annual fees, and card expiry.',
+    steps: [
+      'Open Reminders and enable Notifications, then grant Android notification permission when prompted.',
+      'Filter the reminder list by payments, grace period, annual fee, expiry, or all cards.',
+      'Record a payment or snooze a reminder; the list updates immediately.',
+    ],
+    tips: [
+      'Notifications contain only a nickname and masked digits. They never reveal a full card number.',
+    ],
+    keywords: ['notification', 'reminder', 'snooze', 'payment due', 'fee', 'expiry'],
+    link: '/reminders',
+    linkLabel: 'Open reminders',
+  },
+  {
+    id: 'security',
+    group: 'Security & data',
+    title: 'How do PIN and biometric unlock work?',
+    summary:
+      'Use an application PIN as the recovery credential and Android biometrics for convenient unlocking.',
+    steps: [
+      'Open Settings and set a four-to-eight-digit application PIN.',
+      'On an Android device with an enrolled fingerprint or biometric, enable Biometric unlock.',
+      'Choose whether CardNest locks whenever it enters the background.',
+      'To disable or change the PIN, confirm the existing PIN first.',
+    ],
+    tips: [
+      'Biometrics cannot be enabled until both an application PIN and an Android biometric are available.',
+    ],
+    keywords: ['pin', 'fingerprint', 'biometric', 'lock', 'security', 'disable pin'],
+    link: '/settings',
+    linkLabel: 'Open security settings',
+  },
+  {
+    id: 'backup-restore',
+    group: 'Security & data',
+    title: 'How do encrypted backup and restore work?',
+    summary:
+      'Create a passphrase-protected .cnbak file or restore one through the system file picker.',
+    steps: [
+      'Open Settings, then Backup & data, and choose Create encrypted backup.',
+      'Enter and confirm a passphrase of at least eight characters. If an application PIN exists, confirm it too.',
+      'Choose a save location for the .cnbak file and keep the passphrase somewhere safe.',
+      'To restore, choose Restore backup, select the file, enter its passphrase, and confirm replacing current CardNest data.',
+    ],
+    tips: [
+      'The backup passphrase cannot be recovered.',
+      'A .cnbak file is encrypted CardNest data, not a SQLite file that can be opened directly in a database viewer.',
+    ],
+    keywords: ['backup', 'restore', 'cnbak', 'passphrase', 'file', 'encrypted', 'data'],
+    link: '/settings',
+    linkLabel: 'Open Backup & data',
+    queryParams: {},
+  },
+  {
+    id: 'privacy-delete',
+    group: 'Security & data',
+    title: 'Where is my data stored, and how do I delete it?',
+    summary:
+      'CardNest is local-first: records stay in SQLite on this device unless you explicitly export a file.',
+    steps: [
+      'Android stores the database inside CardNest private application storage; web stores SQLite bytes inside browser IndexedDB.',
+      'Use Delete all data under Settings > Backup & data to remove CardNest records after confirmation.',
+      'Create an encrypted backup first if you may need the data later.',
+    ],
+    keywords: ['privacy', 'sqlite', 'local', 'delete all', 'storage', 'indexeddb'],
+    link: '/settings',
+    linkLabel: 'Open data settings',
+  },
+];
+
+@Component({
+  selector: 'app-help-page',
+  imports: [RouterLink, AppIcon],
+  templateUrl: './help.html',
+  styleUrl: './help.scss',
+})
+export class HelpPage {
+  readonly search = signal('');
+  readonly groups = [...new Set(HELP_TOPICS.map((topic) => topic.group))];
+  readonly filteredTopics = computed(() => {
+    const term = this.search().trim().toLocaleLowerCase();
+    if (!term) return HELP_TOPICS;
+    return HELP_TOPICS.filter((topic) =>
+      [topic.title, topic.summary, ...topic.steps, ...(topic.tips ?? []), ...topic.keywords]
+        .join(' ')
+        .toLocaleLowerCase()
+        .includes(term),
+    );
+  });
+
+  updateSearch(event: Event): void {
+    this.search.set((event.target as HTMLInputElement).value);
+  }
+
+  topicsFor(group: string): readonly HelpTopic[] {
+    return this.filteredTopics().filter((topic) => topic.group === group);
+  }
+}

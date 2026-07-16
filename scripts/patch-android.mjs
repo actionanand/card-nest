@@ -83,14 +83,19 @@ import android.content.res.Configuration;
 import android.app.Activity;
 import android.content.Intent;
 import android.graphics.Color;
+import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.util.Base64;
+import android.view.Gravity;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowInsetsController;
 import android.webkit.JavascriptInterface;
+import android.widget.FrameLayout;
+import android.widget.ImageView;
 
 import androidx.biometric.BiometricManager;
 import androidx.biometric.BiometricPrompt;
@@ -110,31 +115,33 @@ public class MainActivity extends BridgeActivity {
   private static final int OPEN_BACKUP_REQUEST = 4102;
   private boolean darkMode;
   private byte[] pendingBackup;
+  private View launchOverlay;
 
   @Override
   public void onCreate(Bundle savedInstanceState) {
     super.onCreate(savedInstanceState);
+    showLaunchOverlay();
     darkMode = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
       == Configuration.UI_MODE_NIGHT_YES;
     getBridge().getWebView().addJavascriptInterface(new SystemBarsBridge(), "CardNestSystemBars");
     getBridge().getWebView().addJavascriptInterface(new CardNestNativeBridge(), "CardNestNative");
-    applySystemBarStyle(darkMode);
+    applyLaunchBarStyle();
   }
 
   @Override
   public void onResume() {
     super.onResume();
     // Re-apply after Capacitor WebView reinitialises the window on config change.
-    applySystemBarStyle(darkMode);
+    if (launchOverlay == null) applySystemBarStyle(darkMode);
   }
 
   @Override
   public void onWindowFocusChanged(boolean hasFocus) {
     super.onWindowFocusChanged(hasFocus);
-    if (hasFocus) applySystemBarStyle(darkMode);
+    if (hasFocus && launchOverlay == null) applySystemBarStyle(darkMode);
   }
 
-  private class SystemBarsBridge {
+  public class SystemBarsBridge {
     @JavascriptInterface
     public void setDarkMode(boolean enabled) {
       darkMode = enabled;
@@ -142,7 +149,12 @@ public class MainActivity extends BridgeActivity {
     }
   }
 
-  private class CardNestNativeBridge {
+  public class CardNestNativeBridge {
+    @JavascriptInterface
+    public void hideSplash() {
+      runOnUiThread(() -> hideLaunchOverlay());
+    }
+
     @JavascriptInterface
     public boolean isBiometricAvailable() {
       return BiometricManager.from(MainActivity.this).canAuthenticate(
@@ -176,6 +188,7 @@ public class MainActivity extends BridgeActivity {
           .setTitle("Unlock CardNest")
           .setSubtitle("Confirm your identity to access your cards")
           .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_WEAK)
+          .setNegativeButtonText("Use application PIN")
           .build();
         prompt.authenticate(promptInfo);
       });
@@ -206,6 +219,79 @@ public class MainActivity extends BridgeActivity {
         startActivityForResult(intent, OPEN_BACKUP_REQUEST);
       });
     }
+  }
+
+  private void showLaunchOverlay() {
+    FrameLayout overlay = new FrameLayout(this);
+    overlay.setBackgroundColor(Color.rgb(40, 104, 78));
+    overlay.setClickable(true);
+
+    ImageView icon = new ImageView(this);
+    icon.setImageResource(R.drawable.card_nest_splash_logo);
+    icon.setScaleType(ImageView.ScaleType.FIT_CENTER);
+    int padding = dp(25);
+    icon.setPadding(padding, padding, padding, padding);
+    GradientDrawable tile = new GradientDrawable();
+    tile.setShape(GradientDrawable.OVAL);
+    tile.setColor(Color.rgb(245, 246, 241));
+    icon.setBackground(tile);
+    icon.setElevation(dp(6));
+
+    FrameLayout.LayoutParams iconLayout = new FrameLayout.LayoutParams(dp(164), dp(164));
+    iconLayout.gravity = Gravity.CENTER;
+    overlay.addView(icon, iconLayout);
+    addContentView(
+      overlay,
+      new ViewGroup.LayoutParams(
+        ViewGroup.LayoutParams.MATCH_PARENT,
+        ViewGroup.LayoutParams.MATCH_PARENT
+      )
+    );
+    launchOverlay = overlay;
+  }
+
+  private void hideLaunchOverlay() {
+    View overlay = launchOverlay;
+    if (overlay == null) return;
+    launchOverlay = null;
+    overlay.animate()
+      .alpha(0f)
+      .setDuration(180)
+      .withEndAction(() -> {
+        if (overlay.getParent() instanceof ViewGroup) {
+          ((ViewGroup) overlay.getParent()).removeView(overlay);
+        }
+        applySystemBarStyle(darkMode);
+      })
+      .start();
+  }
+
+  private int dp(int value) {
+    return Math.round(value * getResources().getDisplayMetrics().density);
+  }
+
+  @SuppressWarnings("deprecation")
+  private void applyLaunchBarStyle() {
+    Window window = getWindow();
+    int green = Color.rgb(40, 104, 78);
+    window.setStatusBarColor(green);
+    window.setNavigationBarColor(green);
+    View decor = window.getDecorView();
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+      WindowInsetsController controller = decor.getWindowInsetsController();
+      if (controller != null) {
+        controller.setSystemBarsAppearance(
+          0,
+          WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+            | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+        );
+      }
+      return;
+    }
+    int flags = decor.getSystemUiVisibility();
+    flags &= ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+    flags &= ~View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+    decor.setSystemUiVisibility(flags);
   }
 
   @Override
@@ -340,7 +426,7 @@ writeFileSync(
         android:height="160dp"
         android:gravity="center">
         <shape android:shape="oval">
-            <solid android:color="#FFFFFF" />
+            <solid android:color="#F5F6F1" />
         </shape>
     </item>
     <item
@@ -362,7 +448,7 @@ writeFileSync(
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
     <item>
         <shape android:shape="rectangle">
-            <solid android:color="#F5F6F1" />
+            <solid android:color="#28684E" />
         </shape>
     </item>
     <item
@@ -446,14 +532,14 @@ writeFileSync(
   `<?xml version="1.0" encoding="utf-8"?>
 <resources>
     <style name="AppTheme.NoActionBarLaunch" parent="AppTheme.NoActionBar">
-        <item name="windowSplashScreenBackground">#F5F6F1</item>
+        <item name="windowSplashScreenBackground">#28684E</item>
         <item name="windowSplashScreenAnimatedIcon">@drawable/card_nest_splash_icon</item>
-        <item name="windowSplashScreenIconBackgroundColor">#FFFFFF</item>
+        <item name="windowSplashScreenIconBackgroundColor">#F5F6F1</item>
         <item name="postSplashScreenTheme">@style/AppTheme.NoActionBar</item>
-        <item name="android:statusBarColor">#F5F6F1</item>
-        <item name="android:windowLightStatusBar">true</item>
-        <item name="android:navigationBarColor">#F5F6F1</item>
-        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:statusBarColor">#28684E</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:navigationBarColor">#28684E</item>
+        <item name="android:windowLightNavigationBar">false</item>
     </style>
 </resources>
 `,

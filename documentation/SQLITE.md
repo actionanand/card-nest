@@ -1,5 +1,7 @@
 # SQLite in CardNest: Angular, Android, WebAssembly, and migrations
 
+For step-by-step browser inspection and live SQL queries against the IndexedDB-backed web database, see [`WEB_SQLITE_INDEXEDDB_INSPECTION.md`](./WEB_SQLITE_INDEXEDDB_INSPECTION.md).
+
 CardNest uses SQLite as its structured application database. Angular signals are the live UI state; they are not the durable storage layer. The same SQL gateway is used on Android and the web, but the engine and physical storage are platform-specific.
 
 ## Platform architecture

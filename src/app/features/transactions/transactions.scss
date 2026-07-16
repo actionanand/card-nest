@@ -354,8 +354,42 @@ label small {
   min-width: 0;
   grid-template-columns: minmax(12rem, 1fr) repeat(4, minmax(9rem, 0.7fr)) auto;
   gap: 0.55rem;
-  margin-bottom: 0.75rem;
   padding: 0.7rem;
+}
+.filter-panel {
+  margin-bottom: 0.75rem;
+}
+.filter-panel__toggle {
+  display: none;
+}
+.source-filter-field {
+  min-width: 0;
+}
+.source-filter-trigger {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 2.65rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 0.6rem;
+  color: var(--ink);
+  background: var(--canvas);
+  text-align: left;
+}
+.source-filter-trigger span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.source-filter-trigger app-icon {
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 auto;
+  color: var(--muted);
 }
 .toolbar input,
 .toolbar select,
@@ -841,8 +875,52 @@ label small {
   .transaction-form {
     padding: 0.9rem;
   }
+  .filter-panel {
+    overflow: hidden;
+    border-radius: 0.85rem;
+  }
+  .filter-panel__toggle {
+    display: flex;
+    width: 100%;
+    min-height: 4rem;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.75rem 0.9rem;
+    border: 0;
+    color: var(--ink);
+    background: var(--surface);
+    text-align: left;
+  }
+  .filter-panel__toggle > span {
+    display: grid;
+    gap: 0.15rem;
+  }
+  .filter-panel__toggle strong {
+    font-size: 0.85rem;
+  }
+  .filter-panel__toggle small {
+    color: var(--muted);
+    font-size: 0.65rem;
+  }
+  .filter-panel__toggle app-icon {
+    width: 1.1rem;
+    height: 1.1rem;
+    color: var(--accent);
+    transition: transform 0.18s ease;
+  }
+  .filter-panel__toggle app-icon.open {
+    transform: rotate(180deg);
+  }
   .toolbar {
+    display: none;
     grid-template-columns: 1fr;
+    padding: 0.75rem;
+    border-top: 1px solid var(--line);
+    background: var(--surface-2);
+  }
+  .toolbar.mobile-open {
+    display: grid;
   }
   .toolbar .manage-categories {
     grid-column: auto;

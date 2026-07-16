@@ -15,6 +15,14 @@ import { NotificationService } from './core/services/notification.service';
 import { SnackbarService } from './core/services/snackbar.service';
 import { AppIcon } from './shared/app-icon';
 
+interface NativeLaunchBridge {
+  hideSplash(): void;
+}
+
+interface NativeLaunchWindow extends Window {
+  CardNestNative?: NativeLaunchBridge;
+}
+
 @Component({
   selector: 'app-root',
   imports: [RouterOutlet, RouterLink, RouterLinkActive, AppIcon],
@@ -59,6 +67,7 @@ export class App {
     });
 
     afterNextRender(() => {
+      (globalThis.window as NativeLaunchWindow | undefined)?.CardNestNative?.hideSplash();
       this.store.materializeRecurringTransactions();
       void this.openNotificationPermissionConfirmationIfNeeded();
     });

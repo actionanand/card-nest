@@ -1,0 +1,83 @@
+<div class="page help-page">
+  <header class="help-hero panel">
+    <div>
+      <p class="eyebrow">Help centre</p>
+      <h1>How can we help?</h1>
+      <p>Find clear instructions for transactions, cards, EMIs, reminders, security, and data.</p>
+    </div>
+    <span class="help-hero__icon" aria-hidden="true"><app-icon name="help" /></span>
+    <label class="help-search">
+      <span class="sr-only">Search CardNest help</span>
+      <app-icon name="search" />
+      <input
+        type="search"
+        placeholder="Search: refund, EMI, backup…"
+        [value]="search()"
+        (input)="updateSearch($event)"
+      />
+    </label>
+  </header>
+
+  @if (filteredTopics().length) {
+    <p class="result-count" role="status">
+      {{ filteredTopics().length }} {{ filteredTopics().length === 1 ? 'answer' : 'answers' }}
+      {{ search().trim() ? 'found' : 'available' }}
+    </p>
+    @for (group of groups; track group) {
+      @if (topicsFor(group).length) {
+        <section class="help-group" [attr.aria-labelledby]="'help-group-' + $index">
+          <div class="help-group__heading">
+            <h2 [id]="'help-group-' + $index">{{ group }}</h2>
+            <span>{{ topicsFor(group).length }}</span>
+          </div>
+          <div class="faq-list">
+            @for (topic of topicsFor(group); track topic.id) {
+              <details class="panel faq-item" [id]="topic.id">
+                <summary>
+                  <span
+                    ><strong>{{ topic.title }}</strong
+                    ><small>{{ topic.summary }}</small></span
+                  >
+                  <app-icon name="chevron_down" />
+                </summary>
+                <div class="faq-answer">
+                  <ol>
+                    @for (step of topic.steps; track step) {
+                      <li>{{ step }}</li>
+                    }
+                  </ol>
+                  @if (topic.tips?.length) {
+                    <aside>
+                      <strong>Good to know</strong>
+                      <ul>
+                        @for (tip of topic.tips; track tip) {
+                          <li>{{ tip }}</li>
+                        }
+                      </ul>
+                    </aside>
+                  }
+                  @if (topic.link && topic.linkLabel) {
+                    <a
+                      class="btn"
+                      [routerLink]="topic.link"
+                      [queryParams]="topic.queryParams ?? null"
+                    >
+                      {{ topic.linkLabel }} <app-icon name="chevron_right" />
+                    </a>
+                  }
+                </div>
+              </details>
+            }
+          </div>
+        </section>
+      }
+    }
+  } @else {
+    <section class="panel no-results" role="status">
+      <app-icon name="search" />
+      <h2>No matching help topic</h2>
+      <p>Try a shorter phrase such as “refund”, “card”, “EMI”, or “backup”.</p>
+      <button class="btn" type="button" (click)="search.set('')">Show all help</button>
+    </section>
+  }
+</div>

@@ -83,6 +83,9 @@ export class CardsPage {
   readonly selectedCard = computed(
     () => this.store.cards().find((card) => card.id === this.selectedCardId()) ?? null,
   );
+  readonly editingCard = computed(
+    () => this.store.cards().find((card) => card.id === this.editingId()) ?? null,
+  );
   readonly networks: readonly { value: CardNetwork; label: string }[] = [
     { value: 'VISA', label: 'Visa' },
     { value: 'MASTERCARD', label: 'Mastercard' },
@@ -111,13 +114,16 @@ export class CardsPage {
     }),
     lastDigits: new FormControl('', {
       nonNullable: true,
-      validators: [Validators.required, Validators.pattern(/^\d{4,5}$/)],
     }),
     network: new FormControl<CardNetwork>('VISA', {
       nonNullable: true,
       validators: [Validators.required],
     }),
     subtype: new FormControl('', { nonNullable: true, validators: [Validators.maxLength(60)] }),
+    cardholderName: new FormControl('', {
+      nonNullable: true,
+      validators: [Validators.maxLength(80)],
+    }),
     fullNumber: new FormControl('', { nonNullable: true }),
     cvv: new FormControl('', { nonNullable: true }),
     expiryMonth: new FormControl<number | null>(null, [
@@ -239,6 +245,7 @@ export class CardsPage {
     const value = input.value.replace(/\D/g, '').slice(0, limit);
     input.value = value;
     this.form.controls[control].setValue(value);
+    if (control === 'lastDigits') this.form.controls.fullNumber.setErrors(null);
   }
   formatCardNumberInput(event: Event): void {
     const input = event.target as HTMLInputElement;
@@ -246,6 +253,14 @@ export class CardsPage {
     const formatted = this.formatCardNumber(digits, this.form.controls.network.value);
     input.value = formatted;
     this.form.controls.fullNumber.setValue(formatted);
+    const expectedLength = this.isAmex() ? 15 : 16;
+    if (digits.length === expectedLength) {
+      const finalDigitCount = this.isAmex() ? 5 : 4;
+      this.form.controls.lastDigits.setValue(digits.slice(-finalDigitCount));
+      this.form.controls.lastDigits.setErrors(null);
+    }
+    this.form.controls.fullNumber.setErrors(null);
+    this.formError.set(null);
   }
   formatCardNumber(value: string, network: CardNetwork): string {
     const digits = value.replace(/\D/g, '');
@@ -279,6 +294,7 @@ export class CardsPage {
       lastDigits: card.lastDigits,
       network: card.network,
       subtype: card.subtype ?? '',
+      cardholderName: card.cardholderName ?? '',
       fullNumber: '',
       cvv: '',
       expiryMonth: card.expiryMonth ?? null,
@@ -335,10 +351,15 @@ export class CardsPage {
     this.form.controls.lastDigits.markAsUntouched();
     const fullNumber = this.form.controls.fullNumber.value;
     if (fullNumber) {
+      const digits = fullNumber.replace(/\D/g, '').slice(0, this.isAmex() ? 15 : 16);
       this.form.controls.fullNumber.setValue(
-        this.formatCardNumber(fullNumber, this.form.controls.network.value),
+        this.formatCardNumber(digits, this.form.controls.network.value),
       );
+      if (digits.length === (this.isAmex() ? 15 : 16)) {
+        this.form.controls.lastDigits.setValue(digits.slice(this.isAmex() ? -5 : -4));
+      }
     }
+    this.form.controls.fullNumber.setErrors(null);
   }
 
   issuerChanged(): void {
@@ -396,8 +417,13 @@ export class CardsPage {
     this.form.markAllAsTouched();
     const value = this.form.getRawValue();
     const expectedDigits = value.network === 'AMERICAN_EXPRESS' ? 5 : 4;
-    if (!new RegExp(`^\\d{${expectedDigits}}$`).test(value.lastDigits))
+    const fullNumber = value.fullNumber.replace(/\D/g, '');
+    const lastDigits = fullNumber ? fullNumber.slice(-expectedDigits) : value.lastDigits;
+    this.form.controls.lastDigits.setValue(lastDigits);
+    this.form.controls.lastDigits.setErrors(null);
+    if (!new RegExp(`^\\d{${expectedDigits}}$`).test(lastDigits)) {
       this.form.controls.lastDigits.setErrors({ cardDigits: true });
+    }
     const parsedCreditLimit = value.creditLimit ? parseMoneyToMinor(value.creditLimit) : undefined;
     const annualFeeAmount = value.annualFeeAmount
       ? parseMoneyToMinor(value.annualFeeAmount)
@@ -411,17 +437,16 @@ export class CardsPage {
       this.form.controls.annualFeeAmount.setErrors({ money: true });
     if (waiverThreshold === null || (waiverThreshold !== undefined && waiverThreshold <= 0))
       this.form.controls.waiverThreshold.setErrors({ money: true });
-    const fullNumber = value.fullNumber.replace(/\D/g, '');
     const cvv = value.cvv.replace(/\D/g, '');
     const validFullNumber = value.network === 'AMERICAN_EXPRESS' ? /^\d{15}$/ : /^\d{16}$/;
     const validCvv = value.network === 'AMERICAN_EXPRESS' ? /^\d{4}$/ : /^\d{3}$/;
-    if (
-      fullNumber &&
-      (!validFullNumber.test(fullNumber) ||
-        !fullNumber.endsWith(value.lastDigits) ||
-        !this.passesLuhn(fullNumber))
-    ) {
-      this.form.controls.fullNumber.setErrors({ cardNumber: true });
+    this.form.controls.fullNumber.setErrors(null);
+    if (fullNumber) {
+      if (!validFullNumber.test(fullNumber)) {
+        this.form.controls.fullNumber.setErrors({ cardLength: true });
+      } else if (!this.passesLuhn(fullNumber)) {
+        this.form.controls.fullNumber.setErrors({ cardChecksum: true });
+      }
     }
     if (cvv && !validCvv.test(cvv)) this.form.controls.cvv.setErrors({ cvv: true });
     const expiryIncomplete = (value.expiryMonth === null) !== (value.expiryYear === null);
@@ -469,13 +494,14 @@ export class CardsPage {
       id: existing?.id ?? crypto.randomUUID(),
       nickname: value.nickname.trim(),
       issuerName: value.issuerName.trim(),
-      lastDigits: value.lastDigits,
+      lastDigits,
       encryptedFullNumber: fullNumber
         ? await this.secrets.encrypt(fullNumber)
         : existing?.encryptedFullNumber,
       encryptedCvv: cvv ? await this.secrets.encrypt(cvv) : existing?.encryptedCvv,
       network: value.network,
       subtype: value.subtype.trim() || undefined,
+      cardholderName: value.cardholderName.trim() || undefined,
       benefits: this.draftBenefits(),
       importantLinks: importantLinks ?? [],
       relationshipGroupId,
@@ -764,6 +790,7 @@ export class CardsPage {
     this.form.reset({
       network: 'VISA',
       subtype: '',
+      cardholderName: '',
       fullNumber: '',
       cvv: '',
       statementDay: 15,

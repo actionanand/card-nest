@@ -72,12 +72,13 @@
           </div>
         </div>
         <p class="security-note">
-          American Express uses 15 digits in a 4–6–5 format. Save only its last five digits; save
-          the last four for other cards.
+          American Express uses 15 digits in a 4–6–5 format. If no full number is provided, enter
+          its last five digits; enter the last four for other cards. A complete full number fills
+          these digits automatically.
         </p>
         <p class="security-note">
           Full card number and CVV are optional, encrypted locally, hidden by default, and never
-          used in notifications.
+          used in notifications. The optional name on card is also hidden with protected details.
         </p>
         <form [formGroup]="form" (ngSubmit)="save()" novalidate>
           @if (formError(); as error) {
@@ -118,14 +119,27 @@
                 placeholder="Visa Signature, RuPay Select…"
             /></label>
             <label
+              >Name on card (optional)<input
+                formControlName="cardholderName"
+                autocomplete="cc-name"
+                maxlength="80"
+                placeholder="As printed on the card"
+            /></label>
+            <label
               >{{ digitsLabel()
               }}<input
                 formControlName="lastDigits"
                 inputmode="numeric"
                 [maxlength]="isAmex() ? 5 : 4"
                 [placeholder]="isAmex() ? '12345' : '1234'"
+                [readOnly]="form.controls.fullNumber.value.length > 0"
                 (input)="digitsOnly($event, 'lastDigits')"
               />
+              @if (form.controls.fullNumber.value.length > 0) {
+                <small>Filled automatically from the full card number.</small>
+              } @else {
+                <small>Required only when the full card number is not provided.</small>
+              }
               @if (form.controls.lastDigits.touched && form.controls.lastDigits.invalid) {
                 <small class="validation-error"
                   >Enter exactly {{ isAmex() ? 'five' : 'four' }} digits.</small
@@ -133,32 +147,80 @@
               }
             </label>
             <label
-              >Full card number (optional)<input
+              ><span class="protected-field-label">
+                <span>Full card number (optional)</span>
+                @if (editingCard()?.encryptedFullNumber) {
+                  <span class="stored-secret-badge"
+                    ><app-icon name="success" /> Saved securely</span
+                  >
+                }
+              </span>
+              <input
                 formControlName="fullNumber"
                 inputmode="numeric"
                 autocomplete="off"
                 [maxlength]="isAmex() ? 17 : 19"
-                [placeholder]="isAmex() ? 'xxxx-xxxxxx-xxxxx' : 'xxxx-xxxx-xxxx-xxxx'"
+                [placeholder]="
+                  editingCard()?.encryptedFullNumber
+                    ? 'Saved — enter a new number to replace it'
+                    : isAmex()
+                      ? 'xxxx-xxxxxx-xxxxx'
+                      : 'xxxx-xxxx-xxxx-xxxx'
+                "
                 (input)="formatCardNumberInput($event)"
               />
-              @if (form.controls.fullNumber.hasError('cardNumber')) {
+              @if (editingCard()?.encryptedFullNumber && !form.controls.fullNumber.value) {
+                <small class="stored-secret-hint"
+                  ><app-icon name="privacy" /> A full card number is already stored. Leave this
+                  blank to keep it.</small
+                >
+              }
+              <small
+                >The optional full number is checked for length and checksum. Final digits are
+                filled automatically.</small
+              >
+              @if (form.controls.fullNumber.hasError('cardLength')) {
                 <small class="validation-error"
                   >Enter exactly
-                  {{ isAmex() ? '15 digits in 4–6–5 format' : '16 digits in 4–4–4–4 format' }} and
-                  ensure it is a valid number ending with the saved digits.</small
+                  {{
+                    isAmex() ? '15 digits in 4–6–5 format.' : '16 digits in 4–4–4–4 format.'
+                  }}</small
+                >
+              } @else if (form.controls.fullNumber.hasError('cardChecksum')) {
+                <small class="validation-error"
+                  >The number does not pass the standard card-number checksum. Check for a mistyped
+                  digit.</small
                 >
               }
             </label>
             <label
-              >CVV (optional)<input
+              ><span class="protected-field-label">
+                <span>CVV (optional)</span>
+                @if (editingCard()?.encryptedCvv) {
+                  <span class="stored-secret-badge"
+                    ><app-icon name="success" /> Saved securely</span
+                  >
+                }
+              </span>
+              <input
                 formControlName="cvv"
                 type="password"
                 inputmode="numeric"
                 autocomplete="off"
                 [maxlength]="isAmex() ? 4 : 3"
-                placeholder="Encrypted"
+                [placeholder]="
+                  editingCard()?.encryptedCvv
+                    ? 'Saved — enter a new CVV to replace it'
+                    : 'Encrypted'
+                "
                 (input)="digitsOnly($event, 'cvv')"
               />
+              @if (editingCard()?.encryptedCvv && !form.controls.cvv.value) {
+                <small class="stored-secret-hint"
+                  ><app-icon name="privacy" /> A CVV is already stored. Leave this blank to keep
+                  it.</small
+                >
+              }
               @if (form.controls.cvv.hasError('cvv')) {
                 <small class="validation-error"
                   >Enter {{ isAmex() ? 'four' : 'three' }} digits.</small
@@ -550,7 +612,12 @@
                 }
               </div>
             }
-            @if (card.encryptedFullNumber || card.encryptedCvv) {
+            @if (
+              card.encryptedFullNumber ||
+              card.encryptedCvv ||
+              card.cardholderName ||
+              (card.expiryMonth && card.expiryYear)
+            ) {
               <div class="secret-details">
                 <button class="btn btn-quiet" type="button" (click)="revealSecrets(card)">
                   <app-icon [name]="revealedCardId() === card.id ? 'hide_credit' : 'show_credit'" />
@@ -562,11 +629,18 @@
                 </button>
                 @if (revealedCardId() === card.id) {
                   <div>
+                    @if (card.cardholderName) {
+                      <span>Name on card</span
+                      ><strong class="protected-text">{{ card.cardholderName }}</strong>
+                    }
                     @if (revealedNumber()) {
                       <span>Number</span><strong>{{ revealedNumber() }}</strong>
                     }
                     @if (revealedCvv()) {
                       <span>CVV</span><strong>{{ revealedCvv() }}</strong>
+                    }
+                    @if (card.expiryMonth && card.expiryYear) {
+                      <span>Expiry date</span><strong>{{ expiry(card) }}</strong>
                     }
                   </div>
                 }
