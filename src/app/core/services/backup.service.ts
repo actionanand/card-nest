@@ -126,6 +126,8 @@ export class BackupService {
     ) {
       throw new Error('This is not a supported CardNest backup.');
     }
+
+    let decryptedJson: string;
     try {
       const key = await this.deriveKey(
         passphrase,
@@ -137,12 +139,23 @@ export class BackupService {
         key,
         this.fromBase64(parsed.cipher.data),
       );
-      await this.database.restoreBackupJson(new TextDecoder().decode(decrypted));
+      decryptedJson = new TextDecoder().decode(decrypted);
     } catch (error: unknown) {
-      if (error instanceof Error && error.message.includes('backup database')) throw error;
       throw new Error('The backup passphrase is incorrect or the file is damaged.', {
         cause: error,
       });
+    }
+
+    try {
+      await this.database.restoreBackupJson(decryptedJson);
+    } catch (error: unknown) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `The backup was decrypted, but its database could not be restored. (${detail})`,
+        {
+          cause: error,
+        },
+      );
     }
   }
 
