@@ -165,16 +165,10 @@ export class SqliteDatabase {
 
   async exportBackupJson(): Promise<string> {
     if (!this.ready()) throw new Error('SQLite database is unavailable.');
-    if (!this.isWeb) return this.exportPortableBackupJson();
-    const result = await CapacitorSQLite.exportToJson({
-      database: this.databaseName,
-      jsonexportmode: 'full',
-      // CardNest keeps a read/write jeep-sqlite connection on web. Asking the plugin
-      // for a separate read-only connection produces "No available connection".
-      readonly: false,
-    });
-    if (!result.export) throw new Error('The database could not be exported.');
-    return JSON.stringify(result.export);
+    // The plugin's schema parser treats commas inside CHECK constraints as column
+    // separators on web. Export rows directly so backups have the same stable format
+    // on every platform and do not depend on re-parsing CREATE TABLE SQL.
+    return this.exportPortableBackupJson();
   }
 
   async restoreBackupJson(json: string): Promise<void> {
@@ -184,6 +178,7 @@ export class SqliteDatabase {
       await this.restorePortableBackup(parsed);
       return;
     }
+    this.repairLegacyPluginExport(parsed);
     parsed['database'] = this.databaseName;
     parsed['overwrite'] = true;
     parsed['encrypted'] = false;
@@ -207,6 +202,32 @@ export class SqliteDatabase {
     // jeep-sqlite imports through a temporary Database and persists it while closing that
     // database. There is no retained RW connection after import, so calling saveToStore()
     // here fails with "No available connection for cardnest" even though import succeeded.
+  }
+
+  private repairLegacyPluginExport(value: Record<string, unknown>): void {
+    if (!Array.isArray(value['tables'])) return;
+
+    for (const table of value['tables']) {
+      if (!this.isRecord(table) || table['name'] !== 'credit_cards') continue;
+      if (!Array.isArray(table['schema']) || !Array.isArray(table['values'])) continue;
+
+      const schema = table['schema'];
+      const lastDigitsIndex = schema.findIndex(
+        (entry) => this.isRecord(entry) && entry['column'] === 'last_digits',
+      );
+      const phantomColumnIndex = schema.findIndex(
+        (entry) => this.isRecord(entry) && entry['column'] === '5' && entry['value'] === '(4, 5))',
+      );
+      const rowsHaveExpectedLength = table['values'].every(
+        (row) => Array.isArray(row) && row.length === schema.length - 1,
+      );
+      if (lastDigitsIndex < 0 || phantomColumnIndex < 0 || !rowsHaveExpectedLength) continue;
+
+      const lastDigitsSchema = schema[lastDigitsIndex];
+      if (!this.isRecord(lastDigitsSchema)) continue;
+      lastDigitsSchema['value'] = 'TEXT NOT NULL CHECK(length(last_digits) IN (4, 5))';
+      table['schema'] = schema.filter((_, index) => index !== phantomColumnIndex);
+    }
   }
 
   async deleteAllData(): Promise<void> {
