@@ -18,6 +18,7 @@ type GroupingMode = 'MONTH' | 'CYCLE' | 'STATEMENT';
 type RepeatChoice = 'NONE' | 'INFINITE' | `${number}`;
 type EmiKind = 'NO_COST' | 'STANDARD';
 type EmiStartMode = 'THIS_MONTH' | 'NEXT_MONTH' | 'CUSTOM';
+const TRANSACTION_PAGE_SIZE = 200;
 
 @Component({
   selector: 'app-transactions-page',
@@ -67,6 +68,7 @@ export class TransactionsPage {
   readonly sourceFilter = signal(this.requestedSourceId ?? 'ALL');
   readonly categoryFilter = signal('ALL');
   readonly grouping = signal<GroupingMode>('MONTH');
+  readonly visibleLimit = signal(TRANSACTION_PAGE_SIZE);
   readonly activeFilterCount = computed(
     () =>
       Number(Boolean(this.search().trim())) +
@@ -152,9 +154,22 @@ export class TransactionsPage {
       0,
     ),
   );
+  readonly visibleTransactions = computed(() => this.filtered().slice(0, this.visibleLimit()));
+  readonly remainingTransactions = computed(() =>
+    Math.max(0, this.filtered().length - this.visibleTransactions().length),
+  );
   readonly groups = computed(() => {
-    const grouped = new Map<string, { label: string; transactions: CardTransaction[] }>();
+    const totals = new Map<string, number>();
     for (const transaction of this.filtered()) {
+      const period = this.periodFor(transaction);
+      totals.set(
+        period.key,
+        (totals.get(period.key) ?? 0) +
+          (this.isCredit(transaction.type) ? transaction.amountMinor : -transaction.amountMinor),
+      );
+    }
+    const grouped = new Map<string, { label: string; transactions: CardTransaction[] }>();
+    for (const transaction of this.visibleTransactions()) {
       const period = this.periodFor(transaction);
       const group = grouped.get(period.key) ?? { label: period.label, transactions: [] };
       group.transactions.push(transaction);
@@ -168,10 +183,7 @@ export class TransactionsPage {
         transactions: group.transactions.sort((a, b) =>
           b.transactionDate.localeCompare(a.transactionDate),
         ),
-        totalMinor: group.transactions.reduce(
-          (sum, item) => sum + (this.isCredit(item.type) ? item.amountMinor : -item.amountMinor),
-          0,
-        ),
+        totalMinor: totals.get(key) ?? 0,
       }));
   });
 
@@ -204,13 +216,16 @@ export class TransactionsPage {
   }
   updateSearch(event: Event): void {
     this.search.set((event.target as HTMLInputElement).value);
+    this.resetVisibleTransactions();
   }
   updateType(event: Event): void {
     this.typeFilter.set((event.target as HTMLSelectElement).value as TransactionType | 'ALL');
+    this.resetVisibleTransactions();
   }
   selectSourceFilter(id: string): void {
     this.sourceFilter.set(id);
     this.sourceFilterOpen.set(false);
+    this.resetVisibleTransactions();
   }
   sourceFilterLabel(): string {
     if (this.sourceFilter() === 'ALL') return 'All cards and sources';
@@ -223,9 +238,24 @@ export class TransactionsPage {
   }
   updateCategory(event: Event): void {
     this.categoryFilter.set((event.target as HTMLSelectElement).value);
+    this.resetVisibleTransactions();
   }
   updateGrouping(event: Event): void {
     this.grouping.set((event.target as HTMLSelectElement).value as GroupingMode);
+    this.resetVisibleTransactions();
+  }
+  loadMoreTransactions(): void {
+    this.visibleLimit.update((value) => value + TRANSACTION_PAGE_SIZE);
+  }
+  toggleHideCredits(): void {
+    this.hideCredits.update((value) => !value);
+    this.resetVisibleTransactions();
+    this.closeMenus();
+  }
+  toggleCreditCardsOnly(): void {
+    this.creditCardsOnly.update((value) => !value);
+    this.resetVisibleTransactions();
+    this.closeMenus();
   }
   isCreditCardSelected(): boolean {
     return this.store.cards().some((card) => card.id === this.sourceFilter());
@@ -638,7 +668,12 @@ export class TransactionsPage {
     this.categoryFilter.set('ALL');
     this.hideCredits.set(false);
     this.creditCardsOnly.set(false);
+    this.resetVisibleTransactions();
     this.closeMenus();
+  }
+
+  private resetVisibleTransactions(): void {
+    this.visibleLimit.set(TRANSACTION_PAGE_SIZE);
   }
 
   save(): void {

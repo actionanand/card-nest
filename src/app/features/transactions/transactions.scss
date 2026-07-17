@@ -520,6 +520,35 @@ label small {
   display: grid;
   gap: 0.55rem;
 }
+.ledger-load-more {
+  display: grid;
+  justify-items: center;
+  gap: 0.55rem;
+  padding: 1rem;
+  color: var(--muted);
+  text-align: center;
+}
+.ledger-load-more p {
+  margin: 0;
+  font-size: 0.72rem;
+}
+.ledger-load-more button {
+  min-height: 2.75rem;
+  padding: 0.65rem 1rem;
+  border: 1px solid var(--accent);
+  border-radius: 0.65rem;
+  color: var(--accent);
+  background: var(--surface);
+  font-weight: 750;
+}
+.ledger-load-more button:hover,
+.ledger-load-more button:focus-visible {
+  color: var(--surface);
+  background: var(--accent);
+}
+.ledger-load-more button span {
+  font-weight: 500;
+}
 .month-group {
   overflow: visible;
 }
