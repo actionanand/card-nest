@@ -13,8 +13,9 @@ interface NativeBackupWindow extends Window {
 
 interface EncryptedBackup {
   readonly format: 'cardnest-encrypted-backup';
-  readonly version: 1;
+  readonly version: 1 | 2;
   readonly createdAt: string;
+  readonly compression?: 'gzip';
   readonly kdf: {
     readonly algorithm: 'PBKDF2-SHA256';
     readonly iterations: number;
@@ -33,18 +34,18 @@ export class BackupService {
   async create(passphrase: string): Promise<{ fileName: string; contents: string }> {
     this.validatePassphrase(passphrase);
     const databaseJson = await this.database.exportBackupJson();
+    const encodedDatabase = new TextEncoder().encode(databaseJson);
+    const canCompress = typeof CompressionStream === 'function';
+    const backupData = canCompress ? await this.compress(encodedDatabase) : encodedDatabase;
     const salt = crypto.getRandomValues(new Uint8Array(16));
     const iv = crypto.getRandomValues(new Uint8Array(12));
     const key = await this.deriveKey(passphrase, salt, BACKUP_ITERATIONS);
-    const encrypted = await crypto.subtle.encrypt(
-      { name: 'AES-GCM', iv },
-      key,
-      new TextEncoder().encode(databaseJson),
-    );
+    const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, backupData);
     const backup: EncryptedBackup = {
       format: 'cardnest-encrypted-backup',
-      version: 1,
+      version: canCompress ? 2 : 1,
       createdAt: new Date().toISOString(),
+      ...(canCompress ? { compression: 'gzip' as const } : {}),
       kdf: {
         algorithm: 'PBKDF2-SHA256',
         iterations: BACKUP_ITERATIONS,
@@ -120,14 +121,15 @@ export class BackupService {
     const parsed = JSON.parse(contents) as Partial<EncryptedBackup>;
     if (
       parsed.format !== 'cardnest-encrypted-backup' ||
-      parsed.version !== 1 ||
+      (parsed.version !== 1 && parsed.version !== 2) ||
       parsed.kdf?.algorithm !== 'PBKDF2-SHA256' ||
-      parsed.cipher?.algorithm !== 'AES-GCM'
+      parsed.cipher?.algorithm !== 'AES-GCM' ||
+      (parsed.version === 2 && parsed.compression !== 'gzip')
     ) {
       throw new Error('This is not a supported CardNest backup.');
     }
 
-    let decryptedJson: string;
+    let decryptedBytes: Uint8Array<ArrayBuffer>;
     try {
       const key = await this.deriveKey(
         passphrase,
@@ -139,11 +141,26 @@ export class BackupService {
         key,
         this.fromBase64(parsed.cipher.data),
       );
-      decryptedJson = new TextDecoder().decode(decrypted);
+      decryptedBytes = new Uint8Array(decrypted);
     } catch (error: unknown) {
       throw new Error('The backup passphrase is incorrect or the file is damaged.', {
         cause: error,
       });
+    }
+
+    let decryptedJson: string;
+    try {
+      const databaseBytes =
+        parsed.version === 2 ? await this.decompress(decryptedBytes) : decryptedBytes;
+      decryptedJson = new TextDecoder().decode(databaseBytes);
+    } catch (error: unknown) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `The backup was decrypted, but its compressed data could not be read. (${detail})`,
+        {
+          cause: error,
+        },
+      );
     }
 
     try {
@@ -178,6 +195,21 @@ export class BackupService {
       false,
       ['encrypt', 'decrypt'],
     );
+  }
+
+  private async compress(value: Uint8Array<ArrayBuffer>): Promise<Uint8Array<ArrayBuffer>> {
+    const stream = new Blob([value]).stream().pipeThrough(new CompressionStream('gzip'));
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  }
+
+  private async decompress(value: Uint8Array<ArrayBuffer>): Promise<Uint8Array<ArrayBuffer>> {
+    if (typeof DecompressionStream !== 'function') {
+      throw new Error(
+        'This device cannot decompress the CardNest backup. Update Android WebView and try again.',
+      );
+    }
+    const stream = new Blob([value]).stream().pipeThrough(new DecompressionStream('gzip'));
+    return new Uint8Array(await new Response(stream).arrayBuffer());
   }
 
   private waitForNativeResult(action: string, start: () => void): Promise<string> {

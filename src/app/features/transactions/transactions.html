@@ -447,19 +447,11 @@
       </button>
       @if (summaryMenuOpen()) {
         <div class="action-menu summary-menu" [class.menu-up]="summaryMenuOpensUp()" role="menu">
-          <button
-            type="button"
-            role="menuitem"
-            (click)="hideCredits.set(!hideCredits()); closeMenus()"
-          >
+          <button type="button" role="menuitem" (click)="toggleHideCredits()">
             <app-icon [name]="hideCredits() ? 'show_credit' : 'hide_credit'" />
             {{ hideCredits() ? 'Show payments and credits' : 'Hide payments and credits' }}
           </button>
-          <button
-            type="button"
-            role="menuitem"
-            (click)="creditCardsOnly.set(!creditCardsOnly()); closeMenus()"
-          >
+          <button type="button" role="menuitem" (click)="toggleCreditCardsOnly()">
             <app-icon name="cards" />
             {{ creditCardsOnly() ? 'Show every payment source' : 'Show credit cards only' }}
           </button>
@@ -560,6 +552,14 @@
       <div class="panel empty">
         <h2>No transactions found</h2>
         <p>Change the filters or add a transaction.</p>
+      </div>
+    }
+    @if (remainingTransactions() > 0) {
+      <div class="ledger-load-more">
+        <p>Showing {{ visibleTransactions().length }} of {{ filtered().length }} transactions</p>
+        <button type="button" (click)="loadMoreTransactions()">
+          Load 200 more <span>({{ remainingTransactions() }} remaining)</span>
+        </button>
       </div>
     }
   </section>

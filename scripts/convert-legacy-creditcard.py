@@ -1,11 +1,13 @@
 import argparse
 import base64
 import datetime
+import gzip
 import hashlib
 import json
 import os
 import re
 import sqlite3
+import unicodedata
 import uuid
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -88,6 +90,53 @@ NETWORKS = {
     "unionpay": "UNIONPAY",
 }
 
+CURRENT_CATEGORIES = (
+    ("groceries", "Groceries", "shopping_basket", "#e0a860", "BOTH"),
+    ("dining", "Dining", "restaurant", "#de7d68", "BOTH"),
+    ("fuel", "Fuel", "local_gas_station", "#5a9d90", "BOTH"),
+    ("shopping", "Shopping", "shopping_bag", "#9075b5", "BOTH"),
+    ("travel", "Travel", "flight", "#4e87c7", "BOTH"),
+    ("utilities", "Utilities", "bolt", "#c8a43b", "BOTH"),
+    ("healthcare", "Healthcare", "health_and_safety", "#d56a7b", "BOTH"),
+    ("subscription", "Subscription", "subscriptions", "#65758b", "BOTH"),
+    ("payment", "Card Payment", "payments", "#4e9d73", "CREDIT"),
+    (
+        "contra-expenses",
+        "Contra-expenses",
+        "banknote_arrow_down",
+        "#4e9d73",
+        "CREDIT",
+    ),
+    ("other", "Other", "category", "#7a8797", "BOTH"),
+)
+
+CATEGORY_TARGETS = {
+    "dining": "dining",
+    "pastry and snacks": "dining",
+    "meat fish and milk products": "groceries",
+    "veg and fruits": "groceries",
+    "groceries": "groceries",
+    "shopping and retail": "shopping",
+    "household": "shopping",
+    "online": "shopping",
+    "fashion": "shopping",
+    "electronics": "shopping",
+    "jewels": "shopping",
+    "voucher": "shopping",
+    "fuel": "fuel",
+    "utility bill": "utilities",
+    "mobile recharge": "utilities",
+    "electricity": "utilities",
+    "lpg and gas": "utilities",
+    "travel": "travel",
+    "accommodation": "travel",
+    "healthcare": "healthcare",
+    "payment": "payment",
+    "refund and cashback": "contra-expenses",
+    "other expenses": "other",
+    "wifey cc": "other",
+}
+
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -118,6 +167,33 @@ def icon_for(name):
         (icon for keyword, icon in ICON_KEYWORDS.items() if keyword in normalized),
         "category",
     )
+
+
+def clean_category_name(value):
+    without_symbols = "".join(
+        character
+        for character in unicodedata.normalize("NFKC", str(value or ""))
+        if unicodedata.category(character) not in {"So", "Sk"}
+        and character not in {"\ufe0f", "\u200d"}
+    )
+    return re.sub(r"\s+", " ", without_symbols).strip(" -")
+
+
+def normalized_category_name(value):
+    cleaned = clean_category_name(value).casefold().replace("&", " and ")
+    return re.sub(r"[^a-z0-9]+", " ", cleaned).strip()
+
+
+def category_target(value):
+    cleaned = clean_category_name(value)
+    normalized = normalized_category_name(cleaned)
+    current_id = CATEGORY_TARGETS.get(normalized)
+    if current_id:
+        return current_id, None
+    if normalized in {"cinema", "entertainment"}:
+        return "legacy-category-entertainment", "Entertainment"
+    slug = re.sub(r"[^a-z0-9]+", "-", normalized).strip("-") or "uncategorized"
+    return f"legacy-category-{slug}", cleaned or "Legacy uncategorized"
 
 
 def issuer_for(card_name):
@@ -217,21 +293,18 @@ def make_card(row, earliest_date):
     }
 
 
-def make_category(row, index):
-    name = str(row["categoryname"] or f"Legacy category {row['_id']}").strip()
-    normalized = name.casefold()
-    applies_to = "CREDIT" if "payment" in normalized or "refund" in normalized else "BOTH"
+def make_category(category_id, name, index):
     return {
-        "id": f"legacy-category-{row['_id']}",
+        "id": category_id,
         "name": name,
         "icon": icon_for(name),
         "colour": COLOURS[index % len(COLOURS)],
-        "applies_to": applies_to,
+        "applies_to": "BOTH",
         "archived": 0,
     }
 
 
-def make_transaction(row, category_names):
+def make_transaction(row, category_names, category_ids):
     raw_amount = int(row["transactionamount"])
     date = iso_date(row["transactiondate"])
     note = str(row["transactionnotes"] or "").strip()
@@ -240,7 +313,7 @@ def make_transaction(row, category_names):
     if row["categoryid"] == -1:
         category_id = "legacy-category-payment" if is_credit else "legacy-category-uncategorized"
     else:
-        category_id = f"legacy-category-{row['categoryid']}"
+        category_id = category_ids[row["categoryid"]]
     if is_credit:
         transaction_type = (
             "PAYMENT"
@@ -307,7 +380,28 @@ def convert(source, destination, passphrase):
     category_names = {
         row["_id"]: str(row["categoryname"] or "") for row in categories_source
     }
-    categories = [make_category(row, index) for index, row in enumerate(categories_source)]
+    categories = [
+        {
+            "id": category_id,
+            "name": name,
+            "icon": icon,
+            "colour": colour,
+            "applies_to": applies_to,
+            "archived": 0,
+        }
+        for category_id, name, icon, colour, applies_to in CURRENT_CATEGORIES
+    ]
+    category_ids = {}
+    custom_categories = {}
+    for row in categories_source:
+        target_id, custom_name = category_target(row["categoryname"])
+        category_ids[row["_id"]] = target_id
+        if custom_name:
+            custom_categories[target_id] = custom_name
+    categories.extend(
+        make_category(category_id, name, index)
+        for index, (category_id, name) in enumerate(sorted(custom_categories.items()))
+    )
     categories.extend(
         (
             {
@@ -333,7 +427,7 @@ def convert(source, destination, passphrase):
         for row in connection.execute("SELECT * FROM credit_card ORDER BY _id")
     ]
     transactions = [
-        make_transaction(row, category_names)
+        make_transaction(row, category_names, category_ids)
         for row in connection.execute("SELECT * FROM credit_card_transaction ORDER BY _id")
     ]
     connection.close()
@@ -351,15 +445,17 @@ def convert(source, destination, passphrase):
         ],
     }
     plaintext = json.dumps(portable, ensure_ascii=False, separators=(",", ":")).encode()
+    compressed = gzip.compress(plaintext, compresslevel=9, mtime=0)
     salt = os.urandom(16)
     iv = os.urandom(12)
     iterations = 310_000
     key = hashlib.pbkdf2_hmac("sha256", passphrase.encode(), salt, iterations, dklen=32)
-    encrypted = AESGCM(key).encrypt(iv, plaintext, None)
+    encrypted = AESGCM(key).encrypt(iv, compressed, None)
     envelope = {
         "format": "cardnest-encrypted-backup",
-        "version": 1,
+        "version": 2,
         "createdAt": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
+        "compression": "gzip",
         "kdf": {
             "algorithm": "PBKDF2-SHA256",
             "iterations": iterations,
