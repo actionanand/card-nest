@@ -114,8 +114,14 @@
     grid-template-columns: 1fr;
   }
   .page-header .btn {
-    width: 2.8rem;
+    width: 3.2rem;
+    height: 3.2rem;
+    flex: 0 0 3.2rem;
     padding: 0;
     font-size: 0;
+  }
+  .page-header .btn app-icon {
+    width: 1.45rem;
+    height: 1.45rem;
   }
 }

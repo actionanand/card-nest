@@ -145,6 +145,16 @@ export class App {
     if (event.target === event.currentTarget) this.closeFlashTransaction();
   }
 
+  async updateFlashSource(event: Event): Promise<void> {
+    const sourceId = (event.target as HTMLSelectElement).value;
+    this.flashSourceId.set(sourceId);
+    try {
+      await this.store.setFlashTransactionSource(sourceId);
+    } catch {
+      this.snackbar.show('Preferred Flash source could not be saved.', 'WARNING');
+    }
+  }
+
   saveFlashTransaction(event: Event): void {
     event.preventDefault();
     const amountMinor = parseMoneyToMinor(this.flashAmount());
@@ -167,6 +177,16 @@ export class App {
       updatedAt: timestamp,
     };
     this.store.addTransaction(transaction);
+    if (this.store.flashTransactionSourceId() !== this.flashSourceId()) {
+      void this.store
+        .setFlashTransactionSource(this.flashSourceId())
+        .catch(() =>
+          this.snackbar.show(
+            'Transaction saved, but the preferred Flash source was not.',
+            'WARNING',
+          ),
+        );
+    }
     this.closeFlashTransaction();
     this.snackbar.show('Flash transaction added.');
   }

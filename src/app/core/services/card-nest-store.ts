@@ -18,6 +18,31 @@ import { calculateNetSpending, calculateOutstanding, transactionEffect } from '.
 const now = new Date();
 const today = now.toISOString().slice(0, 10);
 const monthStart = `${today.slice(0, 7)}-01`;
+const FLASH_SOURCE_STORAGE_KEY = 'cardnest_flash_transaction_source_id';
+
+function readFlashSourcePreference(): string | null {
+  try {
+    return globalThis.localStorage?.getItem(FLASH_SOURCE_STORAGE_KEY) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function writeFlashSourcePreference(id: string): void {
+  try {
+    globalThis.localStorage?.setItem(FLASH_SOURCE_STORAGE_KEY, id);
+  } catch {
+    // SQLite remains the secondary preference store when browser storage is unavailable.
+  }
+}
+
+function clearFlashSourcePreference(): void {
+  try {
+    globalThis.localStorage?.removeItem(FLASH_SOURCE_STORAGE_KEY);
+  } catch {
+    // The in-memory signal is still reset below.
+  }
+}
 
 const SAMPLE_CARDS: readonly CreditCard[] = [
   {
@@ -211,7 +236,7 @@ export class CardNestStore {
   readonly profileTitle = signal('');
   readonly profileName = signal('');
   readonly emiMinimumMinor = signal(250_000);
-  readonly flashTransactionSourceId = signal('');
+  readonly flashTransactionSourceId = signal(readFlashSourcePreference() ?? '');
   readonly snoozedReminderCardIds = signal<readonly string[]>([]);
   readonly profileDisplayName = computed(() => {
     const name = this.profileName().trim();
@@ -281,7 +306,11 @@ export class CardNestStore {
     this.profileName.set(values.get('profile_name') ?? '');
     const emiMinimum = Number(values.get('emi_minimum_minor'));
     if (Number.isFinite(emiMinimum) && emiMinimum >= 0) this.emiMinimumMinor.set(emiMinimum);
-    this.flashTransactionSourceId.set(values.get('flash_transaction_source_id') ?? '');
+    const locallyStoredFlashSource = readFlashSourcePreference();
+    const preferredFlashSource =
+      locallyStoredFlashSource ?? values.get('flash_transaction_source_id') ?? '';
+    this.flashTransactionSourceId.set(preferredFlashSource);
+    writeFlashSourcePreference(preferredFlashSource);
     try {
       const snoozed = JSON.parse(values.get('snoozed_reminder_card_ids') ?? '[]') as unknown;
       this.snoozedReminderCardIds.set(
@@ -352,8 +381,14 @@ export class CardNestStore {
   }
 
   async setFlashTransactionSource(id: string): Promise<void> {
+    writeFlashSourcePreference(id);
     this.flashTransactionSourceId.set(id);
-    await this.upsertPreference('flash_transaction_source_id', id);
+    if (!this.database.ready()) return;
+    try {
+      await this.upsertPreference('flash_transaction_source_id', id);
+    } catch {
+      // This small device preference remains durable in local storage even if SQLite is busy.
+    }
   }
 
   async setReminderSnoozed(cardId: string, snoozed: boolean): Promise<void> {
@@ -659,6 +694,7 @@ export class CardNestStore {
     this.profileName.set('');
     this.emiMinimumMinor.set(250_000);
     this.flashTransactionSourceId.set('');
+    clearFlashSourcePreference();
     this.snoozedReminderCardIds.set([]);
     writeCachedTransactions([]);
     for (const category of CATEGORIES) await this.persistCategory(category);

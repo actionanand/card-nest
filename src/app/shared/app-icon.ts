@@ -202,7 +202,7 @@ const CUSTOM_ICONS: Readonly<Record<string, string>> = {
   imports: [LucideDynamicIcon],
   template: `
     @if (customIcon(); as svg) {
-      <span [innerHTML]="svg" aria-hidden="true"></span>
+      <span class="custom-svg" [innerHTML]="svg" aria-hidden="true"></span>
     } @else {
       <svg [lucideIcon]="icon()" aria-hidden="true" focusable="false"></svg>
     }
@@ -218,10 +218,14 @@ const CUSTOM_ICONS: Readonly<Record<string, string>> = {
     }
 
     svg,
-    span {
+    .custom-svg {
       display: block;
       width: 100%;
       height: 100%;
+    }
+
+    .custom-svg {
+      color: inherit;
     }
   `,
 })
@@ -232,13 +236,6 @@ export class AppIcon {
   readonly customIcon = computed(() => {
     const source = CUSTOM_ICONS[this.name()];
     if (!source) return null;
-    const normalized = source
-      .replace(/<\?xml[^>]*>/g, '')
-      .replace(/<!--[^]*?-->/g, '')
-      .replace(/width="[^"]*"/g, 'width="100%"')
-      .replace(/height="[^"]*"/g, 'height="100%"')
-      .replaceAll('#000000', 'currentColor')
-      .replaceAll('fill="#000000"', 'fill="currentColor"');
-    return this.sanitizer.bypassSecurityTrustHtml(normalized);
+    return this.sanitizer.bypassSecurityTrustHtml(source.trim());
   });
 }
