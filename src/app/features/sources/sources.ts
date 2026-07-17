@@ -6,12 +6,13 @@ import { formatMoney, parseMoneyToMinor } from '../../core/services/money';
 import { SnackbarService } from '../../core/services/snackbar.service';
 import { AppIcon } from '../../shared/app-icon';
 import { PaymentSourceLogo } from '../../shared/payment-source-logo';
+import { AppDatePipe } from '../../core/services/date-format.service';
 
 type SourceTab = 'ACCOUNTS' | 'ACTIVITY';
 
 @Component({
   selector: 'app-sources-page',
-  imports: [RouterLink, AppIcon, PaymentSourceLogo],
+  imports: [RouterLink, AppIcon, PaymentSourceLogo, AppDatePipe],
   templateUrl: './sources.html',
   styleUrl: './sources.scss',
 })

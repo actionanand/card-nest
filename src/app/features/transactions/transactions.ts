@@ -13,16 +13,26 @@ import { ExportDialog } from '../../shared/export-dialog';
 import { ConfirmationDialog } from '../../shared/confirmation-dialog';
 import { ExportFormat } from '../../core/models/export';
 import { createEmiSchedule } from '../../core/services/emi';
+import { AppDatePipe } from '../../core/services/date-format.service';
 
 type GroupingMode = 'MONTH' | 'CYCLE' | 'STATEMENT';
+type TransactionTypeFilter = TransactionType | 'ALL' | 'WITH_IMAGE';
 type RepeatChoice = 'NONE' | 'INFINITE' | `${number}`;
 type EmiKind = 'NO_COST' | 'STANDARD';
 type EmiStartMode = 'THIS_MONTH' | 'NEXT_MONTH' | 'CUSTOM';
 const TRANSACTION_PAGE_SIZE = 200;
+const MAX_RECEIPT_BYTES = 1_000_000;
 
 @Component({
   selector: 'app-transactions-page',
-  imports: [ReactiveFormsModule, AppIcon, CategoriesPage, ExportDialog, ConfirmationDialog],
+  imports: [
+    ReactiveFormsModule,
+    AppIcon,
+    AppDatePipe,
+    CategoriesPage,
+    ExportDialog,
+    ConfirmationDialog,
+  ],
   templateUrl: './transactions.html',
   styleUrl: './transactions.scss',
   host: {
@@ -64,7 +74,7 @@ export class TransactionsPage {
   readonly hideCredits = signal(false);
   readonly creditCardsOnly = signal(false);
   readonly search = signal('');
-  readonly typeFilter = signal<TransactionType | 'ALL'>('ALL');
+  readonly typeFilter = signal<TransactionTypeFilter>('ALL');
   readonly sourceFilter = signal(this.requestedSourceId ?? 'ALL');
   readonly categoryFilter = signal('ALL');
   readonly grouping = signal<GroupingMode>('MONTH');
@@ -139,7 +149,10 @@ export class TransactionsPage {
             item.transactionDate.slice(0, 7) <= currentMonth) &&
           (!this.hideCredits() || !this.isCredit(item.type)) &&
           (!this.creditCardsOnly() || this.store.cards().some((card) => card.id === item.cardId)) &&
-          (this.typeFilter() === 'ALL' || item.type === this.typeFilter()) &&
+          (this.typeFilter() === 'ALL' ||
+            (this.typeFilter() === 'WITH_IMAGE'
+              ? item.attachmentIds.length > 0
+              : item.type === this.typeFilter())) &&
           (this.sourceFilter() === 'ALL' || item.cardId === this.sourceFilter()) &&
           (this.categoryFilter() === 'ALL' || item.categoryId === this.categoryFilter()) &&
           (!term ||
@@ -219,7 +232,7 @@ export class TransactionsPage {
     this.resetVisibleTransactions();
   }
   updateType(event: Event): void {
-    this.typeFilter.set((event.target as HTMLSelectElement).value as TransactionType | 'ALL');
+    this.typeFilter.set((event.target as HTMLSelectElement).value as TransactionTypeFilter);
     this.resetVisibleTransactions();
   }
   selectSourceFilter(id: string): void {
@@ -281,7 +294,8 @@ export class TransactionsPage {
       const paths = selection.photos
         .map((photo) => photo.webPath)
         .filter((path): path is string => Boolean(path));
-      if (paths.length) this.receiptPreviews.update((current) => [...current, ...paths]);
+      const processed = await this.prepareReceiptImages(paths);
+      if (processed.length) this.receiptPreviews.update((current) => [...current, ...processed]);
     } catch {
       // Picker was dismissed by the user — nothing to attach.
     }
@@ -293,7 +307,10 @@ export class TransactionsPage {
         resultType: CameraResultType.Uri,
         quality: 70,
       });
-      if (photo.webPath) this.receiptPreviews.update((current) => [...current, photo.webPath!]);
+      if (photo.webPath) {
+        const processed = await this.prepareReceiptImages([photo.webPath]);
+        if (processed.length) this.receiptPreviews.update((current) => [...current, ...processed]);
+      }
     } catch {
       // Camera was dismissed by the user.
     }
@@ -670,6 +687,71 @@ export class TransactionsPage {
     this.creditCardsOnly.set(false);
     this.resetVisibleTransactions();
     this.closeMenus();
+  }
+
+  private async prepareReceiptImages(paths: readonly string[]): Promise<readonly string[]> {
+    const accepted: string[] = [];
+    let rejected = 0;
+    for (const path of paths) {
+      try {
+        const blob = await fetch(path).then((response) => response.blob());
+        if (blob.size <= MAX_RECEIPT_BYTES) {
+          accepted.push(path);
+          continue;
+        }
+        const compressed = await this.compressReceipt(blob);
+        if (!compressed || compressed.size > MAX_RECEIPT_BYTES) {
+          rejected += 1;
+          continue;
+        }
+        accepted.push(await this.blobToDataUrl(compressed));
+      } catch {
+        rejected += 1;
+      }
+    }
+    if (rejected) {
+      this.snackbar.show(
+        `${rejected} receipt image${rejected === 1 ? '' : 's'} could not be reduced below 1 MB.`,
+        'WARNING',
+      );
+    }
+    return accepted;
+  }
+
+  private async compressReceipt(source: Blob): Promise<Blob | null> {
+    const bitmap = await createImageBitmap(source);
+    try {
+      let width = Math.min(bitmap.width, 1800);
+      let height = Math.round((bitmap.height * width) / bitmap.width);
+      if (height > 1800) {
+        height = 1800;
+        width = Math.round((bitmap.width * height) / bitmap.height);
+      }
+      for (const quality of [0.82, 0.7, 0.58, 0.46, 0.36]) {
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        canvas.getContext('2d')?.drawImage(bitmap, 0, 0, width, height);
+        const result = await new Promise<Blob | null>((resolve) =>
+          canvas.toBlob(resolve, 'image/jpeg', quality),
+        );
+        if (result && result.size <= MAX_RECEIPT_BYTES) return result;
+        width = Math.max(640, Math.round(width * 0.82));
+        height = Math.max(640, Math.round(height * 0.82));
+      }
+      return null;
+    } finally {
+      bitmap.close();
+    }
+  }
+
+  private blobToDataUrl(value: Blob): Promise<string> {
+    return new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.addEventListener('load', () => resolve(String(reader.result)));
+      reader.addEventListener('error', () => reject(reader.error));
+      reader.readAsDataURL(value);
+    });
   }
 
   private resetVisibleTransactions(): void {

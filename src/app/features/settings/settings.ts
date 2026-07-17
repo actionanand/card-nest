@@ -12,6 +12,7 @@ import { SnackbarService } from '../../core/services/snackbar.service';
 import { BackupService } from '../../core/services/backup.service';
 import { ExportService } from '../../core/services/export.service';
 import { ConfirmationDialog } from '../../shared/confirmation-dialog';
+import { AppDateFormat, DateFormatService } from '../../core/services/date-format.service';
 
 type PinAction = 'CHANGE' | 'DISABLE';
 type BackupAction = 'CREATE' | 'RESTORE';
@@ -33,6 +34,7 @@ export class SettingsPage {
   private readonly snackbar = inject(SnackbarService);
   private readonly backups = inject(BackupService);
   private readonly exporter = inject(ExportService);
+  readonly dateFormats = inject(DateFormatService);
   readonly theme = this.themes.theme;
   readonly themeOptions: readonly AppTheme[] = ['SYSTEM', 'LIGHT', 'DARK'];
   readonly biometric = this.appLock.biometricEnabled;
@@ -230,6 +232,16 @@ export class SettingsPage {
     );
   }
 
+  async updateDateFormat(event: Event): Promise<void> {
+    await this.dateFormats.setFormat((event.target as HTMLSelectElement).value as AppDateFormat);
+    this.preferenceMessage.set('Date format updated.');
+  }
+
+  async updateFlashSource(event: Event): Promise<void> {
+    await this.store.setFlashTransactionSource((event.target as HTMLSelectElement).value);
+    this.preferenceMessage.set('Flash transaction source updated.');
+  }
+
   async toggleReminders(): Promise<void> {
     const enable = !this.reminders();
     if (!enable) {
@@ -238,7 +250,7 @@ export class SettingsPage {
       return;
     }
     const granted = await this.notifications.requestPermission(this.store.cards(), (cardId) =>
-      this.store.cardOutstanding(cardId),
+      this.store.cardDueAmount(cardId),
     );
     if (!granted) {
       this.reminders.set(false);

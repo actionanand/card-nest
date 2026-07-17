@@ -14,6 +14,8 @@ import { CardNestStore } from './core/services/card-nest-store';
 import { NotificationService } from './core/services/notification.service';
 import { SnackbarService } from './core/services/snackbar.service';
 import { AppIcon } from './shared/app-icon';
+import { CardTransaction } from './core/models/domain';
+import { parseMoneyToMinor } from './core/services/money';
 
 interface NativeLaunchBridge {
   hideSplash(): void;
@@ -33,7 +35,7 @@ interface NativeLaunchWindow extends Window {
   },
 })
 export class App {
-  private readonly store = inject(CardNestStore);
+  readonly store = inject(CardNestStore);
   private readonly notifications = inject(NotificationService);
   readonly database = inject(SqliteDatabase);
   readonly appLock = inject(AppLockService);
@@ -44,6 +46,11 @@ export class App {
   readonly lockPin = signal('');
   readonly lockError = signal<string | null>(null);
   readonly unlocking = signal(false);
+  readonly flashTransactionOpen = signal(false);
+  readonly flashSourceId = signal('');
+  readonly flashAmount = signal('');
+  readonly flashMerchant = signal('');
+  readonly flashError = signal<string | null>(null);
   readonly allowNotificationsButton = viewChild<ElementRef<HTMLButtonElement>>(
     'allowNotificationsButton',
   );
@@ -53,14 +60,17 @@ export class App {
     effect(() => {
       const cards = this.store.cards();
       this.store.transactions();
-      void this.notifications.reschedule(cards, (cardId) => this.store.cardOutstanding(cardId));
+      void this.notifications.reschedule(cards, (cardId) => this.store.cardDueAmount(cardId));
     });
 
     effect(() => {
       if (
         this.appLock.locked() &&
+        this.appLock.foreground() &&
         this.appLock.biometricEnabled() &&
-        this.appLock.biometricAvailable()
+        this.appLock.biometricAvailable() &&
+        this.appLock.biometricAutoAttemptAvailable() &&
+        !this.appLock.biometricInProgress()
       ) {
         queueMicrotask(() => void this.appLock.authenticateWithBiometrics());
       }
@@ -83,7 +93,7 @@ export class App {
   async confirmNotificationPermission(): Promise<void> {
     this.showNotificationPermissionConfirmation.set(false);
     const granted = await this.notifications.requestPermission(this.store.cards(), (cardId) =>
-      this.store.cardOutstanding(cardId),
+      this.store.cardDueAmount(cardId),
     );
 
     this.snackbar.show(
@@ -111,6 +121,54 @@ export class App {
     } finally {
       this.unlocking.set(false);
     }
+  }
+
+  openFlashTransaction(): void {
+    const availableIds = [
+      ...this.store.activeCards().map((card) => card.id),
+      ...this.store.activePaymentSources().map((source) => source.id),
+    ];
+    const preferred = this.store.flashTransactionSourceId();
+    this.flashSourceId.set(availableIds.includes(preferred) ? preferred : (availableIds[0] ?? ''));
+    this.flashAmount.set('');
+    this.flashMerchant.set('');
+    this.flashError.set(null);
+    this.flashTransactionOpen.set(true);
+  }
+
+  closeFlashTransaction(): void {
+    this.flashTransactionOpen.set(false);
+    this.flashError.set(null);
+  }
+
+  closeFlashFromBackdrop(event: MouseEvent): void {
+    if (event.target === event.currentTarget) this.closeFlashTransaction();
+  }
+
+  saveFlashTransaction(event: Event): void {
+    event.preventDefault();
+    const amountMinor = parseMoneyToMinor(this.flashAmount());
+    if (!this.flashSourceId() || amountMinor === null || amountMinor <= 0) {
+      this.flashError.set('Enter an amount and choose a payment source.');
+      return;
+    }
+    const timestamp = new Date().toISOString();
+    const transaction: CardTransaction = {
+      id: crypto.randomUUID(),
+      cardId: this.flashSourceId(),
+      type: 'PURCHASE',
+      amountMinor,
+      currencyCode: 'INR',
+      transactionDate: timestamp.slice(0, 10),
+      merchant: this.flashMerchant().trim() || undefined,
+      categoryId: 'other',
+      attachmentIds: [],
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    this.store.addTransaction(transaction);
+    this.closeFlashTransaction();
+    this.snackbar.show('Flash transaction added.');
   }
 
   private async openNotificationPermissionConfirmationIfNeeded(): Promise<void> {

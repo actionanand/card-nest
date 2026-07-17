@@ -4,10 +4,11 @@ import { CardNestStore } from '../../core/services/card-nest-store';
 import { daysBetween, paymentDueDate, statementDateFor } from '../../core/services/billing-cycle';
 import { formatMoney } from '../../core/services/money';
 import { AppIcon } from '../../shared/app-icon';
+import { AppDatePipe } from '../../core/services/date-format.service';
 
 @Component({
   selector: 'app-dashboard-page',
-  imports: [RouterLink, AppIcon],
+  imports: [RouterLink, AppIcon, AppDatePipe],
   templateUrl: './dashboard.html',
   styleUrl: './dashboard.scss',
 })

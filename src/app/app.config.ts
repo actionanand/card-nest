@@ -12,6 +12,7 @@ import { ThemeService } from './core/services/theme.service';
 import { ApplicationPinService } from './core/services/application-pin.service';
 import { AppLockService } from './core/services/app-lock.service';
 import { SensitiveCardDataService } from './core/services/sensitive-card-data.service';
+import { DateFormatService } from './core/services/date-format.service';
 import { routes } from './app.routes';
 
 export const appConfig: ApplicationConfig = {
@@ -26,6 +27,7 @@ export const appConfig: ApplicationConfig = {
       const pin = inject(ApplicationPinService);
       const appLock = inject(AppLockService);
       const cardSecrets = inject(SensitiveCardDataService);
+      const dateFormats = inject(DateFormatService);
       const initialiseStorage = database
         .initialise()
         .then(() =>
@@ -33,13 +35,14 @@ export const appConfig: ApplicationConfig = {
             themes.initialise(),
             pin.initialise(),
             cardSecrets.initialise(),
+            dateFormats.initialise(),
             store.initialisePreferences(),
           ]),
         )
         .then(() => appLock.initialise());
       return initialiseStorage
         .then(() =>
-          notifications.initialise(store.cards(), (cardId) => store.cardOutstanding(cardId)),
+          notifications.initialise(store.cards(), (cardId) => store.cardDueAmount(cardId)),
         )
         .catch(() => undefined);
     }),

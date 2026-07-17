@@ -34,49 +34,57 @@
     ></button>
     <aside class="mobile-drawer" aria-label="Mobile navigation">
       <div class="drawer-heading">
+        <span class="brand-mark" aria-hidden="true"><span></span><span></span></span>
         <strong>CardNest</strong>
         <button type="button" (click)="mobileMenuOpen.set(false)" aria-label="Close menu">
           <app-icon name="close" />
         </button>
       </div>
       <nav>
-        <a routerLink="/" (click)="mobileMenuOpen.set(false)"
+        <a
+          routerLink="/"
+          [routerLinkActiveOptions]="{ exact: true }"
+          routerLinkActive="active"
+          (click)="mobileMenuOpen.set(false)"
           ><app-icon name="overview" /> Overview</a
         >
-        <a routerLink="/cards" (click)="mobileMenuOpen.set(false)"
+        <a routerLink="/cards" routerLinkActive="active" (click)="mobileMenuOpen.set(false)"
           ><app-icon name="cards" /> Cards</a
         >
-        <a routerLink="/transactions" (click)="mobileMenuOpen.set(false)"
+        <a routerLink="/transactions" routerLinkActive="active" (click)="mobileMenuOpen.set(false)"
           ><app-icon name="transactions" /> Transactions</a
         >
-        <a routerLink="/sources" (click)="mobileMenuOpen.set(false)"
+        <a routerLink="/sources" routerLinkActive="active" (click)="mobileMenuOpen.set(false)"
           ><app-icon name="sources" /> Cash, Banks & Pluxee</a
         >
-        <a routerLink="/categories" (click)="mobileMenuOpen.set(false)"
+        <a routerLink="/categories" routerLinkActive="active" (click)="mobileMenuOpen.set(false)"
           ><app-icon name="categories" /> Categories</a
         >
-        <a routerLink="/reminders" (click)="mobileMenuOpen.set(false)"
+        <a routerLink="/reminders" routerLinkActive="active" (click)="mobileMenuOpen.set(false)"
           ><app-icon name="reminders" /> Reminders</a
         >
-        <a routerLink="/reports" (click)="mobileMenuOpen.set(false)"
+        <a routerLink="/reports" routerLinkActive="active" (click)="mobileMenuOpen.set(false)"
           ><app-icon name="reports" /> Stats & graphs</a
         >
-        <a routerLink="/category-spending" (click)="mobileMenuOpen.set(false)"
+        <a
+          routerLink="/category-spending"
+          routerLinkActive="active"
+          (click)="mobileMenuOpen.set(false)"
           ><app-icon name="spending" /> Category spending</a
         >
-        <a routerLink="/card-benefits" (click)="mobileMenuOpen.set(false)"
+        <a routerLink="/card-benefits" routerLinkActive="active" (click)="mobileMenuOpen.set(false)"
           ><app-icon name="benefits" /> Card benefits</a
         >
-        <a routerLink="/card-usage" (click)="mobileMenuOpen.set(false)"
+        <a routerLink="/card-usage" routerLinkActive="active" (click)="mobileMenuOpen.set(false)"
           ><app-icon name="card_usage" /> Card usage</a
         >
-        <a routerLink="/loans" (click)="mobileMenuOpen.set(false)"
+        <a routerLink="/loans" routerLinkActive="active" (click)="mobileMenuOpen.set(false)"
           ><app-icon name="loans" /> Loans & EMIs</a
         >
-        <a routerLink="/settings" (click)="mobileMenuOpen.set(false)"
+        <a routerLink="/settings" routerLinkActive="active" (click)="mobileMenuOpen.set(false)"
           ><app-icon name="settings" /> Settings</a
         >
-        <a routerLink="/help" (click)="mobileMenuOpen.set(false)"
+        <a routerLink="/help" routerLinkActive="active" (click)="mobileMenuOpen.set(false)"
           ><app-icon name="help" /> Help &amp; FAQ</a
         >
       </nav>
@@ -141,7 +149,7 @@
       routerLink="/transactions"
       [queryParams]="{ add: true }"
       aria-label="Add transaction"
-      ><app-icon name="plus"
+      ><app-icon name="shopping_cart_plus"
     /></a>
     <a routerLink="/transactions" routerLinkActive="active"
       ><app-icon name="transactions" /><small>Activity</small></a
@@ -150,6 +158,85 @@
       ><app-icon name="settings" /><small>Settings</small></a
     >
   </nav>
+
+  <button
+    class="flash-transaction-fab"
+    type="button"
+    (click)="openFlashTransaction()"
+    aria-label="Add flash transaction"
+  >
+    <app-icon name="flash_transaction" />
+  </button>
+
+  @if (flashTransactionOpen()) {
+    <div
+      class="flash-backdrop"
+      tabindex="-1"
+      (click)="closeFlashFromBackdrop($event)"
+      (keydown.escape)="closeFlashTransaction()"
+    >
+      <section
+        class="panel flash-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="flash-transaction-title"
+      >
+        <header>
+          <div>
+            <p class="eyebrow">Quick entry</p>
+            <h2 id="flash-transaction-title">Flash transaction</h2>
+          </div>
+          <button
+            type="button"
+            (click)="closeFlashTransaction()"
+            aria-label="Close flash transaction"
+          >
+            <app-icon name="close" />
+          </button>
+        </header>
+        <form (submit)="saveFlashTransaction($event)">
+          <label
+            >Pay from<select
+              [value]="flashSourceId()"
+              (change)="flashSourceId.set($any($event.target).value)"
+            >
+              <optgroup label="Credit cards">
+                @for (card of store.activeCards(); track card.id) {
+                  <option [value]="card.id">{{ card.nickname }} · {{ card.lastDigits }}</option>
+                }
+              </optgroup>
+              <optgroup label="Cash, bank & meal card">
+                @for (source of store.activePaymentSources(); track source.id) {
+                  <option [value]="source.id">{{ source.nickname }}</option>
+                }
+              </optgroup>
+            </select></label
+          >
+          <label
+            >Amount<input
+              inputmode="decimal"
+              autocomplete="off"
+              placeholder="0.00"
+              [value]="flashAmount()"
+              (input)="flashAmount.set($any($event.target).value)"
+          /></label>
+          <label
+            >Merchant or title <span>(optional)</span
+            ><input
+              maxlength="100"
+              autocomplete="off"
+              placeholder="Where did you spend?"
+              [value]="flashMerchant()"
+              (input)="flashMerchant.set($any($event.target).value)"
+          /></label>
+          @if (flashError(); as error) {
+            <p class="flash-error" role="alert">{{ error }}</p>
+          }
+          <button class="btn btn-primary" type="submit">Save purchase</button>
+        </form>
+      </section>
+    </div>
+  }
 </div>
 
 @if (showNotificationPermissionConfirmation()) {
@@ -188,6 +275,11 @@
   <div class="app-snackbar" [class]="'app-snackbar ' + message.tone.toLowerCase()" role="status">
     <app-icon [name]="message.tone === 'WARNING' ? 'warning' : 'success'" />
     <span>{{ message.text }}</span>
+    @if (message.actionLabel) {
+      <button class="snackbar-action" type="button" (click)="snackbar.runAction()">
+        {{ message.actionLabel }}
+      </button>
+    }
     <button type="button" (click)="snackbar.dismiss()" aria-label="Dismiss message">
       <app-icon name="close" />
     </button>

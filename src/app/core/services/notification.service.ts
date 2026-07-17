@@ -2,7 +2,7 @@ import { LocalNotifications } from '@capacitor/local-notifications';
 import { Capacitor } from '@capacitor/core';
 import { inject, Service, signal } from '@angular/core';
 import { CreditCard } from '../models/domain';
-import { paymentDueDate, statementDateFor } from './billing-cycle';
+import { paymentDueDate, previousStatementDate, statementDateFor } from './billing-cycle';
 import { formatMoney } from './money';
 import { SqliteDatabase } from '../data/sqlite-database';
 
@@ -21,7 +21,7 @@ interface ReminderTarget {
 export class NotificationService {
   private readonly database = inject(SqliteDatabase);
   private readonly channelId = 'card-nest-reminders';
-  private readonly paymentOffsets = [10, 7, 3, 1, 0] as const;
+  private readonly paymentOffsets = [5, 3, 1, 0] as const;
   readonly permission = signal<'unavailable' | 'prompt' | 'denied' | 'granted'>('unavailable');
   readonly enabled = signal(false);
   readonly lastError = signal<string | null>(null);
@@ -142,7 +142,11 @@ export class NotificationService {
     outstandingMinor: number,
     now: Date,
   ): readonly ReminderTarget[] {
-    const statement = statementDateFor(now, card.statementDay);
+    const nextStatement = statementDateFor(now, card.statementDay);
+    const statement =
+      outstandingMinor > 0 && nextStatement.getTime() > now.getTime()
+        ? previousStatementDate(nextStatement, card.statementDay)
+        : nextStatement;
     const due = paymentDueDate(statement, card);
     const maskedCard = `${card.nickname} ${card.network === 'AMERICAN_EXPRESS' ? '•••••' : '••••'} ${card.lastDigits}`;
     const amount = formatMoney(Math.max(0, outstandingMinor), card.currencyCode);

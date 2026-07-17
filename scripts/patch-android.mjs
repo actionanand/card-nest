@@ -116,6 +116,7 @@ public class MainActivity extends BridgeActivity {
   private boolean darkMode;
   private byte[] pendingBackup;
   private View launchOverlay;
+  private BiometricPrompt biometricPrompt;
 
   @Override
   public void onCreate(Bundle savedInstanceState) {
@@ -166,20 +167,23 @@ public class MainActivity extends BridgeActivity {
     @JavascriptInterface
     public void authenticateBiometric() {
       runOnUiThread(() -> {
+        if (biometricPrompt != null) biometricPrompt.cancelAuthentication();
         Executor executor = ContextCompat.getMainExecutor(MainActivity.this);
-        BiometricPrompt prompt = new BiometricPrompt(
+        biometricPrompt = new BiometricPrompt(
           MainActivity.this,
           executor,
           new BiometricPrompt.AuthenticationCallback() {
             @Override
             public void onAuthenticationSucceeded(BiometricPrompt.AuthenticationResult result) {
               super.onAuthenticationSucceeded(result);
+              biometricPrompt = null;
               dispatchNativeResult("biometric", true, "", "");
             }
 
             @Override
             public void onAuthenticationError(int errorCode, CharSequence errorMessage) {
               super.onAuthenticationError(errorCode, errorMessage);
+              biometricPrompt = null;
               dispatchNativeResult("biometric", false, "", errorMessage.toString());
             }
           }
@@ -190,7 +194,17 @@ public class MainActivity extends BridgeActivity {
           .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_WEAK)
           .setNegativeButtonText("Use application PIN")
           .build();
-        prompt.authenticate(promptInfo);
+        biometricPrompt.authenticate(promptInfo);
+      });
+    }
+
+    @JavascriptInterface
+    public void cancelBiometric() {
+      runOnUiThread(() -> {
+        if (biometricPrompt != null) {
+          biometricPrompt.cancelAuthentication();
+          biometricPrompt = null;
+        }
       });
     }
 

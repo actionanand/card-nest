@@ -1,4 +1,5 @@
-import { Component, computed, input } from '@angular/core';
+import { Component, computed, inject, input } from '@angular/core';
+import { DomSanitizer } from '@angular/platform-browser';
 import {
   LucideArrowDown,
   LucideArrowLeft,
@@ -10,7 +11,7 @@ import {
   LucideBanknoteArrowUp,
   LucideBell,
   LucideCalendarClock,
-  LucideChartNoAxesColumnIncreasing,
+  LucideChartLine,
   LucideCamera,
   LucideChevronDown,
   LucideChevronRight,
@@ -86,6 +87,12 @@ import {
   LucideZap,
   type LucideIconInput,
 } from '@lucide/angular';
+import {
+  CREDIT_CARD_EDIT,
+  CREDIT_CARD_PLUS,
+  FLASH_TRANSACTION,
+  SHOPPING_CART_PLUS,
+} from '../../imgData/svgIcon';
 
 const ICONS: Readonly<Record<string, LucideIconInput>> = {
   category: LucideShapes,
@@ -138,7 +145,7 @@ const ICONS: Readonly<Record<string, LucideIconInput>> = {
   transactions: LucideReceiptText,
   categories: LucideTags,
   reminders: LucideBell,
-  reports: LucideChartNoAxesColumnIncreasing,
+  reports: LucideChartLine,
   spending: LucideReceiptIndianRupee,
   benefits: LucideBadgeCheck,
   card_usage: LucideCalendarClock,
@@ -183,10 +190,23 @@ const ICONS: Readonly<Record<string, LucideIconInput>> = {
   file_csv: LucideFileSpreadsheet,
 };
 
+const CUSTOM_ICONS: Readonly<Record<string, string>> = {
+  shopping_cart_plus: SHOPPING_CART_PLUS,
+  credit_card_plus: CREDIT_CARD_PLUS,
+  credit_card_edit: CREDIT_CARD_EDIT,
+  flash_transaction: FLASH_TRANSACTION,
+};
+
 @Component({
   selector: 'app-icon',
   imports: [LucideDynamicIcon],
-  template: '<svg [lucideIcon]="icon()" aria-hidden="true" focusable="false"></svg>',
+  template: `
+    @if (customIcon(); as svg) {
+      <span [innerHTML]="svg" aria-hidden="true"></span>
+    } @else {
+      <svg [lucideIcon]="icon()" aria-hidden="true" focusable="false"></svg>
+    }
+  `,
   styles: `
     :host {
       display: inline-grid;
@@ -197,7 +217,8 @@ const ICONS: Readonly<Record<string, LucideIconInput>> = {
       line-height: 0;
     }
 
-    svg {
+    svg,
+    span {
       display: block;
       width: 100%;
       height: 100%;
@@ -205,6 +226,19 @@ const ICONS: Readonly<Record<string, LucideIconInput>> = {
   `,
 })
 export class AppIcon {
+  private readonly sanitizer = inject(DomSanitizer);
   readonly name = input('category');
   readonly icon = computed(() => ICONS[this.name()] ?? ICONS['category']);
+  readonly customIcon = computed(() => {
+    const source = CUSTOM_ICONS[this.name()];
+    if (!source) return null;
+    const normalized = source
+      .replace(/<\?xml[^>]*>/g, '')
+      .replace(/<!--[^]*?-->/g, '')
+      .replace(/width="[^"]*"/g, 'width="100%"')
+      .replace(/height="[^"]*"/g, 'height="100%"')
+      .replaceAll('#000000', 'currentColor')
+      .replaceAll('fill="#000000"', 'fill="currentColor"');
+    return this.sanitizer.bypassSecurityTrustHtml(normalized);
+  });
 }

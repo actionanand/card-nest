@@ -232,7 +232,8 @@ export interface EmiInstallment {
 export interface AppPreferences {
   setupComplete: boolean;
   currencyCode: string;
-  dateFormat: 'DD/MM/YYYY' | 'MM/DD/YYYY' | 'YYYY-MM-DD';
+  dateFormat:
+    'DD-MM-YYYY' | 'DD/MM/YYYY' | 'MM/DD/YYYY' | 'YYYY-MM-DD' | 'MMM-DD-YYYY' | 'DD-MMM-YYYY';
   theme: 'LIGHT' | 'DARK' | 'SYSTEM';
   reminderDaysBefore: number;
   monthlyBudgetMinor?: Money;

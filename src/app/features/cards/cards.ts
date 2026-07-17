@@ -6,6 +6,7 @@ import {
   daysBetween,
   estimatedGracePeriod,
   paymentDueDate,
+  previousStatementDate,
   statementDateFor,
   toIsoDate,
 } from '../../core/services/billing-cycle';
@@ -16,6 +17,7 @@ import { SnackbarService } from '../../core/services/snackbar.service';
 import { CardNetworkLogo } from '../../shared/card-network-logo';
 import { AppIcon } from '../../shared/app-icon';
 import { ConfirmationDialog } from '../../shared/confirmation-dialog';
+import { DateFormatService } from '../../core/services/date-format.service';
 
 type CardFilter = 'ALL' | 'DUE' | 'GRACE' | 'FEE' | 'EXPIRING';
 type PaymentMode = 'DUE' | 'OUTSTANDING' | 'CUSTOM';
@@ -37,6 +39,7 @@ export class CardsPage {
   private readonly router = inject(Router);
   private readonly secrets = inject(SensitiveCardDataService);
   private readonly snackbar = inject(SnackbarService);
+  private readonly dates = inject(DateFormatService);
   readonly showForm = signal(this.route.snapshot.queryParamMap.get('add') === 'true');
   readonly editingId = signal<string | null>(null);
   readonly selectedCardId = signal<string | null>(this.route.snapshot.queryParamMap.get('open'));
@@ -203,7 +206,12 @@ export class CardsPage {
     return statementDateFor(new Date(), card.statementDay);
   }
   dueDate(card: CreditCard): Date {
-    return paymentDueDate(this.nextStatement(card), card);
+    const nextStatement = this.nextStatement(card);
+    const statement =
+      this.dueAmount(card) > 0
+        ? previousStatementDate(nextStatement, card.statementDay)
+        : nextStatement;
+    return paymentDueDate(statement, card);
   }
   statementCountdown(card: CreditCard): string {
     const days = Math.max(0, daysBetween(new Date(), this.nextStatement(card)));
@@ -212,10 +220,10 @@ export class CardsPage {
       : `Bill generates in ${days} ${days === 1 ? 'day' : 'days'}`;
   }
   date(value: Date): string {
-    return value.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+    return this.dates.format(value);
   }
   dueAmount(card: CreditCard): number {
-    return Math.max(0, Math.round(this.store.cardOutstanding(card.id) * 0.62));
+    return this.store.cardDueAmount(card.id);
   }
   availableCredit(card: CreditCard): number {
     return Math.max(0, (card.creditLimitMinor ?? 0) - this.store.cardOutstanding(card.id));

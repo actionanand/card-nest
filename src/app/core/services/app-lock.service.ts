@@ -9,6 +9,7 @@ const BIOMETRIC_KEY = 'security_biometric_unlock';
 interface CardNestNativeBridge {
   isBiometricAvailable(): boolean;
   authenticateBiometric(): void;
+  cancelBiometric?(): void;
 }
 
 interface CardNestNativeWindow extends Window {
@@ -30,8 +31,11 @@ export class AppLockService {
   readonly biometricEnabled = signal(false);
   readonly biometricAvailable = signal(false);
   readonly biometricInProgress = signal(false);
+  readonly biometricAutoAttemptAvailable = signal(true);
   readonly biometricError = signal<string | null>(null);
+  readonly foreground = signal(this.document.visibilityState !== 'hidden');
   private listening = false;
+  private cancelBiometricAttempt: (() => void) | null = null;
 
   async initialise(): Promise<void> {
     this.refreshBiometricAvailability();
@@ -73,22 +77,37 @@ export class AppLockService {
 
   async authenticateWithBiometrics(): Promise<boolean> {
     this.refreshBiometricAvailability();
-    if (!this.biometricAvailable() || this.biometricInProgress()) return false;
+    if (!this.foreground() || !this.biometricAvailable() || this.biometricInProgress())
+      return false;
     const nativeBridge = (this.document.defaultView as CardNestNativeWindow | null)?.CardNestNative;
     if (!nativeBridge) return false;
     this.biometricInProgress.set(true);
+    this.biometricAutoAttemptAvailable.set(false);
     this.biometricError.set(null);
     try {
       const success = await new Promise<boolean>((resolve) => {
+        let completed = false;
+        const finish = (result: boolean) => {
+          if (completed) return;
+          completed = true;
+          globalThis.clearTimeout(timeout);
+          this.document.defaultView?.removeEventListener('cardnest-native-result', handleResult);
+          this.cancelBiometricAttempt = null;
+          resolve(result);
+        };
         const handleResult = (event: Event) => {
           const detail = (
             event as CustomEvent<{ action: string; success: boolean; message?: string }>
           ).detail;
           if (detail.action !== 'biometric') return;
-          this.document.defaultView?.removeEventListener('cardnest-native-result', handleResult);
           if (!detail.success) this.biometricError.set(detail.message ?? 'Biometric check failed.');
-          resolve(detail.success);
+          finish(detail.success);
         };
+        const timeout = globalThis.setTimeout(() => {
+          this.biometricError.set('Biometric check timed out. Please try again.');
+          finish(false);
+        }, 30_000);
+        this.cancelBiometricAttempt = () => finish(false);
         this.document.defaultView?.addEventListener('cardnest-native-result', handleResult);
         nativeBridge.authenticateBiometric();
       });
@@ -123,8 +142,25 @@ export class AppLockService {
     if (this.listening) return;
     this.listening = true;
     this.document.addEventListener('visibilitychange', () => {
-      if (this.document.visibilityState === 'hidden' && this.canLock()) this.locked.set(true);
+      const foreground = this.document.visibilityState !== 'hidden';
+      this.foreground.set(foreground);
+      if (!foreground) {
+        this.biometricAutoAttemptAvailable.set(true);
+        this.cancelActiveBiometricAttempt();
+        if (this.canLock()) this.locked.set(true);
+        return;
+      }
+      this.refreshBiometricAvailability();
     });
+  }
+
+  private cancelActiveBiometricAttempt(): void {
+    const nativeBridge = (this.document.defaultView as CardNestNativeWindow | null)?.CardNestNative;
+    nativeBridge?.cancelBiometric?.();
+    this.cancelBiometricAttempt?.();
+    this.cancelBiometricAttempt = null;
+    this.biometricInProgress.set(false);
+    this.biometricError.set(null);
   }
 
   private async readPreference(key: string): Promise<boolean | null> {

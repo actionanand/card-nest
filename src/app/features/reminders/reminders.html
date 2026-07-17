@@ -3,7 +3,7 @@
     <div>
       <p class="eyebrow">Stay ahead</p>
       <h1>Reminder centre</h1>
-      <p class="subtitle">Payment dates, statements, annual fees and expiries.</p>
+      <p class="subtitle">Statement dues, annual fees and expiries.</p>
     </div>
     <label class="notification-toggle">
       <span>Notifications</span>
@@ -21,16 +21,22 @@
       <span class="summary-icon" aria-hidden="true"><app-icon name="schedule" /></span>
       <div>
         <strong>{{ reminders().length }}</strong
-        ><small>Upcoming payments</small>
+        ><small>Active reminders</small>
       </div>
     </div>
     <div class="panel">
       <span class="summary-icon warning" aria-hidden="true"><app-icon name="warning" /></span>
-      <div><strong>0</strong><small>Overdue payments</small></div>
+      <div>
+        <strong>{{ overdueCount() }}</strong
+        ><small>Overdue payments</small>
+      </div>
     </div>
     <div class="panel">
       <span class="summary-icon" aria-hidden="true"><app-icon name="cards" /></span>
-      <div><strong>1</strong><small>Annual fee upcoming</small></div>
+      <div>
+        <strong>{{ annualFeeCount() }}</strong
+        ><small>Annual fees tracked</small>
+      </div>
     </div>
   </section>
 
@@ -38,19 +44,19 @@
     <div class="section-heading">
       <div>
         <p class="eyebrow">Payment schedule</p>
-        <h2 id="payment-reminders">Upcoming reminders</h2>
+        <h2 id="payment-reminders">Current reminders</h2>
       </div>
       <label class="reminder-filter">
         <span class="sr-only">Reminder view</span>
         <select [value]="filter()" (change)="updateFilter($event)">
-          <option value="DUE">Incoming payment due</option>
+          <option value="DUE">Statement amount due</option>
           <option value="GRACE">Longest grace period</option>
           <option value="FEE">Annual fee due</option>
           <option value="EXPIRING">Expiring soon</option>
           <option value="ALL">All cards</option>
         </select>
       </label>
-      <span class="pill"
+      <span class="pill permission-pill"
         ><i class="dot"></i
         >{{
           notifications.permission() === 'granted' ? 'Notifications ready' : 'Permission needed'
@@ -59,46 +65,104 @@
     </div>
 
     @for (reminder of reminders(); track reminder.id) {
-      <article>
+      <article [class]="'reminder-card ' + urgency(reminder)">
         <div class="date-block">
           <strong>{{ reminder.due.getDate() }}</strong>
           <span>{{ reminder.due.toLocaleDateString('en-IN', { month: 'short' }) }}</span>
         </div>
-        <div>
+        <div class="reminder-copy">
           <strong>Payment due · {{ reminder.card.nickname }}</strong>
-          <small>•••• {{ reminder.card.lastDigits }} · {{ reminder.days }} days remaining</small>
-          <p>{{ money(reminder.amount, reminder.card.currencyCode) }} estimated outstanding</p>
+          <small
+            >•••• {{ reminder.card.lastDigits }} ·
+            {{
+              reminder.days < 0
+                ? -reminder.days + ' days overdue'
+                : reminder.days + ' days remaining'
+            }}</small
+          >
+          <p>{{ money(reminder.amount, reminder.card.currencyCode) }} statement amount due</p>
         </div>
         <div class="actions">
           <button
             class="btn btn-primary"
             type="button"
-            (click)="recordPayment(reminder.card.id, reminder.amount)"
+            [disabled]="reminder.amount <= 0"
+            (click)="requestPayment(reminder)"
           >
             Record payment
           </button>
-          <button class="btn" type="button" (click)="snooze(reminder.id)">Snooze</button>
+          <button
+            class="btn"
+            type="button"
+            [disabled]="!canSnooze(reminder)"
+            [attr.title]="
+              canSnooze(reminder) ? null : 'Snooze is available five days before the due date'
+            "
+            (click)="snooze(reminder)"
+          >
+            Snooze
+          </button>
         </div>
       </article>
     } @empty {
-      <div class="empty">
+      <div class="empty compact-empty">
         <span class="empty-icon" aria-hidden="true"><app-icon name="success" /></span>
         <h2>You’re all caught up</h2>
         <p>No active reminders are waiting for attention.</p>
       </div>
     }
+
+    @if (upcomingReminders().length) {
+      <details class="upcoming-reminders">
+        <summary>{{ upcomingReminders().length }} later reminders</summary>
+        @for (reminder of upcomingReminders(); track reminder.id) {
+          <article class="reminder-card comfortable">
+            <div class="date-block">
+              <strong>{{ reminder.due.getDate() }}</strong
+              ><span>{{ reminder.due.toLocaleDateString('en-IN', { month: 'short' }) }}</span>
+            </div>
+            <div class="reminder-copy">
+              <strong>{{ reminder.card.nickname }}</strong>
+              <small>Due {{ date(reminder.due) }} · {{ reminder.days }} days remaining</small>
+              <p>{{ money(reminder.amount, reminder.card.currencyCode) }} statement amount due</p>
+            </div>
+          </article>
+        }
+      </details>
+    }
   </section>
 
-  <section class="panel fee-progress">
-    <div>
-      <p class="eyebrow">Annual fee estimate</p>
-      <h2>Everyday waiver progress</h2>
-      <p>Spend estimates may differ from the issuer’s final eligibility decision.</p>
-    </div>
-    <div>
-      <strong>36%</strong>
-      <progress value="36" max="100">36%</progress>
-      <small>₹36,000 of ₹1,00,000 eligible spend</small>
-    </div>
-  </section>
+  @if (snoozedReminders().length) {
+    <section class="panel snoozed-list" aria-labelledby="snoozed-title">
+      <div>
+        <p class="eyebrow">History</p>
+        <h2 id="snoozed-title">Snoozed reminders</h2>
+      </div>
+      @for (reminder of snoozedReminders(); track reminder.id) {
+        <div class="snoozed-row">
+          <span
+            ><strong>{{ reminder.card.nickname }}</strong
+            ><small>Due {{ date(reminder.due) }}</small></span
+          >
+          <button class="btn" type="button" (click)="restore(reminder.id)">Restore</button>
+        </div>
+      }
+    </section>
+  }
 </div>
+
+@if (paymentCandidate(); as reminder) {
+  <app-confirmation-dialog
+    title="Record statement payment?"
+    [message]="
+      'Record ' +
+      money(reminder.amount, reminder.card.currencyCode) +
+      ' as paid for ' +
+      reminder.card.nickname +
+      '? This uses the statement amount due, not the current outstanding.'
+    "
+    confirmLabel="Record payment"
+    (confirmed)="recordPayment()"
+    (cancelled)="paymentCandidate.set(null)"
+  />
+}

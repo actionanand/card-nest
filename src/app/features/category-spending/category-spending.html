@@ -135,7 +135,7 @@
                 <span
                   ><strong>{{ transaction.merchant || transaction.type }}</strong
                   ><small
-                    >{{ transaction.transactionDate }} ·
+                    >{{ transaction.transactionDate | appDate }} ·
                     {{ store.sourceName(transaction.cardId) }}</small
                   ></span
                 ><strong>{{ money(transaction.amountMinor) }}</strong>

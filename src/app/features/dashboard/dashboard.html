@@ -137,7 +137,7 @@
                   : '−'
               }}{{ money(transaction.amountMinor, transaction.currencyCode) }}</strong
             >
-            <small>{{ transaction.transactionDate }}</small>
+            <small>{{ transaction.transactionDate | appDate }}</small>
           </div>
         </article>
       }

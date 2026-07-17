@@ -159,7 +159,8 @@
                   <option value="">Not linked</option>
                   @for (related of relatedTransactionOptions(); track related.id) {
                     <option [value]="related.id">
-                      {{ related.transactionDate }} · {{ related.merchant || related.type }} ·
+                      {{ related.transactionDate | appDate }} ·
+                      {{ related.merchant || related.type }} ·
                       {{ money(related.amountMinor, related.currencyCode) }} ·
                       {{ store.sourceName(related.cardId) }}
                     </option>
@@ -244,7 +245,7 @@
                   }
                 </ul>
               }
-              <small>Images remain private on the device.</small>
+              <small>Images remain private on the device and are limited to 1 MB each.</small>
             </div>
           </div>
           <div class="form-actions">
@@ -290,6 +291,7 @@
           @for (type of types; track type.value) {
             <option [value]="type.value">{{ type.label }}</option>
           }
+          <option value="WITH_IMAGE">With image</option>
         </select>
       </label>
       <div class="source-filter-field">
@@ -464,8 +466,8 @@
   </section>
 
   <section class="month-ledger" aria-label="Transactions grouped by period">
-    @for (group of groups(); track group.key) {
-      <details class="panel month-group" open>
+    @for (group of groups(); track group.key; let first = $first) {
+      <details class="panel month-group" [open]="first">
         <summary>
           <span>{{ group.label }}</span>
           <strong [class.credit]="group.totalMinor >= 0">{{
@@ -502,7 +504,7 @@
                   }
                 </span>
                 <span class="tx-date">
-                  <span>{{ transaction.transactionDate }}</span
+                  <span>{{ transaction.transactionDate | appDate }}</span
                   ><small>{{
                     transaction.emiPlanId ? 'EMI' : transaction.type.replace('_', ' ')
                   }}</small>
@@ -599,7 +601,7 @@
       <dl class="detail-grid">
         <div>
           <dt>Date</dt>
-          <dd>{{ transaction.transactionDate }}</dd>
+          <dd>{{ transaction.transactionDate | appDate }}</dd>
         </div>
         <div>
           <dt>Category</dt>
@@ -630,7 +632,7 @@
             <dt>Linked transactions</dt>
             @for (related of linkedTransactions(transaction); track related.id) {
               <dd>
-                {{ related.transactionDate }} · {{ related.merchant || related.type }} ·
+                {{ related.transactionDate | appDate }} · {{ related.merchant || related.type }} ·
                 {{ money(related.amountMinor, related.currencyCode) }}
               </dd>
             }
@@ -672,7 +674,9 @@
           </p>
           @for (installment of emiInstallments(transaction); track installment.installmentNumber) {
             <div class="schedule-row">
-              <span>#{{ installment.installmentNumber }} · {{ installment.dueDate }}</span>
+              <span
+                >#{{ installment.installmentNumber }} · {{ installment.dueDate | appDate }}</span
+              >
               <strong>{{ money(installment.totalMinor, transaction.currencyCode) }}</strong>
             </div>
           }

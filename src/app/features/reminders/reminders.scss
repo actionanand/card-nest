@@ -63,12 +63,15 @@
   padding: 1.3rem;
 }
 .section-heading {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(12rem, 15rem);
   align-items: start;
-  justify-content: space-between;
+  gap: 0.65rem 1rem;
 }
 .section-heading .pill {
-  align-self: center;
+  grid-column: 1 / -1;
+  width: max-content;
+  max-width: 100%;
 }
 .section-heading h2 {
   margin: 0;
@@ -83,6 +86,25 @@
 }
 .reminder-list article:last-child {
   border: 0;
+}
+.reminder-card {
+  border-left: 3px solid transparent;
+  padding-left: 0.8rem !important;
+}
+.reminder-card.comfortable {
+  border-left-color: var(--success);
+}
+.reminder-card.soon {
+  border-left-color: var(--warning);
+}
+.reminder-card.urgent,
+.reminder-card.overdue {
+  border-left-color: var(--danger);
+}
+.reminder-card.overdue .date-block,
+.reminder-card.urgent .date-block {
+  color: var(--danger);
+  background: var(--danger-soft);
 }
 .date-block {
   display: grid;
@@ -115,6 +137,53 @@
 .actions {
   display: flex;
   gap: 0.5rem;
+}
+.actions .btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+.upcoming-reminders {
+  margin-top: 0.75rem;
+  border: 1px solid color-mix(in srgb, var(--success) 42%, var(--line));
+  border-radius: 0.85rem;
+  overflow: hidden;
+}
+.upcoming-reminders summary {
+  padding: 0.85rem 1rem;
+  cursor: pointer;
+  color: var(--success);
+  background: var(--success-soft);
+  font-weight: 800;
+}
+.upcoming-reminders article {
+  margin-inline: 0.8rem;
+}
+.snoozed-list {
+  display: grid;
+  gap: 0.6rem;
+  margin-top: 1rem;
+  padding: 1.3rem;
+}
+.snoozed-list h2 {
+  margin: 0;
+}
+.snoozed-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--line);
+}
+.snoozed-row span {
+  display: grid;
+  gap: 0.15rem;
+}
+.snoozed-row small {
+  color: var(--muted);
+}
+.compact-empty {
+  min-height: 10rem;
 }
 .fee-progress {
   display: grid;
@@ -158,13 +227,15 @@
 }
 @media (max-width: 700px) {
   .section-heading {
-    display: grid;
-    grid-template-columns: 1fr auto;
+    grid-template-columns: 1fr;
     gap: 0.75rem;
   }
   .reminder-filter {
-    grid-column: 1/-1;
+    grid-column: 1;
     width: 100%;
+  }
+  .section-heading .permission-pill {
+    grid-column: 1;
   }
   .summary-grid {
     grid-template-columns: 1fr;
