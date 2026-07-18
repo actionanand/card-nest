@@ -6,16 +6,13 @@
       <p class="subtitle">Income-aware analytics using your chosen budget cycle.</p>
     </div>
     <div class="report-actions">
-      <label class="period-select">
-        <span class="sr-only">Report period</span>
-        <select [value]="period()" (change)="updatePeriod($event)">
-          <option value="MONTH">This month</option>
-          <option value="THREE">Last 3 months</option>
-          <option value="SIX">Last 6 months</option>
-          <option value="YEAR">Last 1 year</option>
-          <option value="ALL">Overall</option>
-        </select>
-      </label>
+      <app-select-picker
+        class="period-select"
+        label="Report period"
+        [options]="periodOptions"
+        [value]="period()"
+        (valueChange)="updatePeriodValue($event)"
+      />
       <button class="btn btn-primary export-report" type="button" (click)="exportPdf()">
         <app-icon name="download" />
         <span class="export-label-wide">Export stats PDF</span>

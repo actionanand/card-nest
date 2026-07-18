@@ -8,12 +8,21 @@ import { AppIcon } from '../../shared/app-icon';
 import { ConfirmationDialog } from '../../shared/confirmation-dialog';
 import { AppDatePipe } from '../../core/services/date-format.service';
 import { SnackbarService } from '../../core/services/snackbar.service';
+import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
+import { AppDatePicker } from '../../shared/app-date-picker';
 
 type CommitmentFilter = 'ACTIVE' | 'INACTIVE' | 'ALL';
 
 @Component({
   selector: 'app-loans-page',
-  imports: [ReactiveFormsModule, AppIcon, AppDatePipe, ConfirmationDialog],
+  imports: [
+    ReactiveFormsModule,
+    AppIcon,
+    AppDatePipe,
+    ConfirmationDialog,
+    AppSelectPicker,
+    AppDatePicker,
+  ],
   templateUrl: './loans.html',
   styleUrl: './loans.scss',
 })
@@ -79,6 +88,15 @@ export class LoansPage {
     () => this.recurringDueThisMonth() + this.emiDueThisMonth() + this.loanDueThisMonth(),
   );
   readonly days = Array.from({ length: 28 }, (_, index) => index + 1);
+  readonly filterOptions: readonly AppSelectOption[] = [
+    { value: 'ACTIVE', label: 'Active' },
+    { value: 'INACTIVE', label: 'Completed / stopped' },
+    { value: 'ALL', label: 'All commitments' },
+  ];
+  readonly debitDayOptions: readonly AppSelectOption[] = this.days.map((day) => ({
+    value: String(day),
+    label: `Day ${day}`,
+  }));
   readonly form = new FormGroup({
     name: new FormControl('', { nonNullable: true, validators: [Validators.required] }),
     lender: new FormControl('', { nonNullable: true }),
@@ -95,8 +113,17 @@ export class LoansPage {
   money(value: number): string {
     return formatMoney(value, 'INR');
   }
-  updateCommitmentFilter(event: Event): void {
-    this.commitmentFilter.set((event.target as HTMLSelectElement).value as CommitmentFilter);
+  updateCommitmentFilter(value: string): void {
+    this.commitmentFilter.set(value as CommitmentFilter);
+  }
+  setDebitDay(value: string): void {
+    this.form.controls.debitDay.setValue(Number(value));
+  }
+  setStartDate(value: string): void {
+    this.form.controls.startDate.setValue(value);
+  }
+  setEndDate(value: string): void {
+    this.form.controls.endDate.setValue(value);
   }
   emiTitle(plan: EmiPlan): string {
     return plan.originalMerchant || 'Card purchase';

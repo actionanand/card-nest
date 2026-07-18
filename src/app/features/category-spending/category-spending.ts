@@ -6,6 +6,7 @@ import { formatMoney, parseMoneyToMinor } from '../../core/services/money';
 import { SnackbarService } from '../../core/services/snackbar.service';
 import { AppIcon } from '../../shared/app-icon';
 import { AppDatePipe } from '../../core/services/date-format.service';
+import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
 
 interface SpendingPeriod {
   readonly offset: number;
@@ -17,7 +18,7 @@ interface SpendingPeriod {
 
 @Component({
   selector: 'app-category-spending-page',
-  imports: [ReactiveFormsModule, AppIcon, AppDatePipe],
+  imports: [ReactiveFormsModule, AppIcon, AppDatePipe, AppSelectPicker],
   templateUrl: './category-spending.html',
   styleUrl: './category-spending.scss',
 })
@@ -46,6 +47,9 @@ export class CategorySpendingPage {
   readonly period = computed(
     () =>
       this.periods().find((period) => period.offset === this.periodOffset()) ?? this.periods()[0],
+  );
+  readonly periodOptions = computed<readonly AppSelectOption[]>(() =>
+    this.periods().map((period) => ({ value: String(period.offset), label: period.label })),
   );
   readonly transactions = computed(() => {
     const period = this.period();
@@ -103,8 +107,8 @@ export class CategorySpendingPage {
     return formatMoney(value, 'INR');
   }
 
-  selectPeriod(event: Event): void {
-    this.periodOffset.set(Number((event.target as HTMLSelectElement).value));
+  selectPeriod(value: string): void {
+    this.periodOffset.set(Number(value));
     this.selectedCategoryId.set(null);
   }
 

@@ -46,17 +46,13 @@
         <p class="eyebrow">Payment schedule</p>
         <h2 id="payment-reminders">{{ reminderHeading() }}</h2>
       </div>
-      <label class="reminder-filter">
-        <span class="sr-only">Reminder view</span>
-        <select [value]="filter()" (change)="updateFilter($event)">
-          <option value="DUE">Statement amount due</option>
-          <option value="CREDIT">Extra credit at bank</option>
-          <option value="GRACE">Longest grace period</option>
-          <option value="FEE">Annual fee due</option>
-          <option value="EXPIRING">Expiring soon</option>
-          <option value="ALL">All cards</option>
-        </select>
-      </label>
+      <app-select-picker
+        class="reminder-filter"
+        label="Reminder view"
+        [options]="filterOptions"
+        [value]="filter()"
+        (valueChange)="updateFilter($event)"
+      />
       <span class="pill permission-pill"
         ><i class="dot"></i
         >{{

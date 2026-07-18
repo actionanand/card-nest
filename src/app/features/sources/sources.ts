@@ -7,6 +7,7 @@ import { SnackbarService } from '../../core/services/snackbar.service';
 import { AppIcon } from '../../shared/app-icon';
 import { PaymentSourceLogo } from '../../shared/payment-source-logo';
 import { AppDatePipe } from '../../core/services/date-format.service';
+import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
 
 type SourceTab = 'ACCOUNTS' | 'ACTIVITY';
 
@@ -19,7 +20,7 @@ interface SourceCycleGroup {
 
 @Component({
   selector: 'app-sources-page',
-  imports: [RouterLink, AppIcon, PaymentSourceLogo, AppDatePipe],
+  imports: [RouterLink, AppIcon, PaymentSourceLogo, AppDatePipe, AppSelectPicker],
   templateUrl: './sources.html',
   styleUrl: './sources.scss',
 })
@@ -31,6 +32,18 @@ export class SourcesPage {
   readonly activeTab = signal<SourceTab>(this.requestedSourceId ? 'ACTIVITY' : 'ACCOUNTS');
   readonly selectedSourceId = signal(this.requestedSourceId ?? 'ALL');
   readonly days = Array.from({ length: 28 }, (_, index) => index + 1);
+  readonly loadDayOptions: readonly AppSelectOption[] = this.days.map((day) => ({
+    value: String(day),
+    label: `Day ${day}`,
+  }));
+  readonly sourceOptions = computed<readonly AppSelectOption[]>(() => [
+    { value: 'ALL', label: 'All cash, bank and meal sources' },
+    ...this.store.activePaymentSources().map((source) => ({
+      value: source.id,
+      label: source.nickname,
+      detail: source.institution,
+    })),
+  ]);
   readonly selectedSource = computed(() =>
     this.store.paymentSources().find((source) => source.id === this.selectedSourceId()),
   );
@@ -126,8 +139,8 @@ export class SourcesPage {
     queueMicrotask(() => document.querySelector<HTMLElement>('#source-activity')?.focus());
   }
 
-  updateSourceFilter(event: Event): void {
-    this.selectedSourceId.set((event.target as HTMLSelectElement).value);
+  updateSourceFilter(value: string): void {
+    this.selectedSourceId.set(value);
   }
 
   updateAmount(
@@ -141,10 +154,10 @@ export class SourcesPage {
     this.snackbar.show(`${source.nickname} updated.`);
   }
 
-  updateLoadDay(source: PaymentSource, event: Event): void {
+  updateLoadDay(source: PaymentSource, value: string): void {
     this.store.updatePaymentSource({
       ...source,
-      loadDay: Number((event.target as HTMLSelectElement).value),
+      loadDay: Number(value),
     });
     this.snackbar.show(`${source.nickname} load date updated.`);
   }

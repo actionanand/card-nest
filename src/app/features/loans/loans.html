@@ -6,14 +6,12 @@
       <p class="subtitle">Track debit dates and know when every commitment ends.</p>
     </div>
     <div class="loan-header-actions">
-      <label>
-        <span class="sr-only">Filter commitments</span>
-        <select [value]="commitmentFilter()" (change)="updateCommitmentFilter($event)">
-          <option value="ACTIVE">Active</option>
-          <option value="INACTIVE">Completed / stopped</option>
-          <option value="ALL">All commitments</option>
-        </select>
-      </label>
+      <app-select-picker
+        label="Filter commitments"
+        [options]="filterOptions"
+        [value]="commitmentFilter()"
+        (valueChange)="updateCommitmentFilter($event)"
+      />
       <button
         class="btn btn-primary add-loan-button"
         type="button"
@@ -59,15 +57,23 @@
           ><label>Original principal<input formControlName="principal" inputmode="decimal" /></label
           ><label
             >Monthly installment<input formControlName="installment" inputmode="decimal" /></label
-          ><label
-            >Debit date<select formControlName="debitDay">
-              @for (day of days; track day) {
-                <option [ngValue]="day">Day {{ day }}</option>
-              }
-            </select></label
-          ><label>Start date<input type="date" formControlName="startDate" /></label
-          ><label>End date<input type="date" formControlName="endDate" /></label
-          ><label class="full">Notes<textarea formControlName="notes"></textarea></label>
+          ><app-select-picker
+            label="Debit date"
+            [options]="debitDayOptions"
+            [value]="form.controls.debitDay.value.toString()"
+            (valueChange)="setDebitDay($event)"
+          />
+          <app-date-picker
+            label="Start date"
+            [value]="form.controls.startDate.value"
+            (valueChange)="setStartDate($event)"
+          />
+          <app-date-picker
+            label="End date"
+            [value]="form.controls.endDate.value"
+            (valueChange)="setEndDate($event)"
+          />
+          <label class="full">Notes<textarea formControlName="notes"></textarea></label>
         </div>
         <div class="form-actions">
           <button class="btn" type="button" (click)="showForm.set(false)">Cancel</button

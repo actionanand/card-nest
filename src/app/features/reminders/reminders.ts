@@ -15,6 +15,7 @@ import { NotificationService } from '../../core/services/notification.service';
 import { SnackbarService } from '../../core/services/snackbar.service';
 import { AppIcon } from '../../shared/app-icon';
 import { ConfirmationDialog } from '../../shared/confirmation-dialog';
+import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
 
 type ReminderFilter = 'ALL' | 'DUE' | 'CREDIT' | 'GRACE' | 'FEE' | 'EXPIRING';
 
@@ -34,7 +35,7 @@ interface PaymentReminder {
 
 @Component({
   selector: 'app-reminders-page',
-  imports: [AppIcon, ConfirmationDialog, RouterLink],
+  imports: [AppIcon, ConfirmationDialog, RouterLink, AppSelectPicker],
   templateUrl: './reminders.html',
   styleUrl: './reminders.scss',
 })
@@ -44,6 +45,14 @@ export class RemindersPage {
   private readonly snackbar = inject(SnackbarService);
   private readonly dates = inject(DateFormatService);
   readonly filter = signal<ReminderFilter>('DUE');
+  readonly filterOptions: readonly AppSelectOption[] = [
+    { value: 'DUE', label: 'Statement amount due' },
+    { value: 'CREDIT', label: 'Extra credit at bank' },
+    { value: 'GRACE', label: 'Longest grace period' },
+    { value: 'FEE', label: 'Annual fee due' },
+    { value: 'EXPIRING', label: 'Expiring soon' },
+    { value: 'ALL', label: 'All cards' },
+  ];
   readonly paymentCandidate = signal<PaymentReminder | null>(null);
   readonly snoozeCandidate = signal<PaymentReminder | null>(null);
   readonly revealedAction = signal<{
@@ -333,8 +342,8 @@ export class RemindersPage {
     );
   }
 
-  updateFilter(event: Event): void {
-    this.filter.set((event.target as HTMLSelectElement).value as ReminderFilter);
+  updateFilter(value: string): void {
+    this.filter.set(value as ReminderFilter);
   }
 
   requestPayment(item: PaymentReminder): void {

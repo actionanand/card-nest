@@ -5,10 +5,11 @@ import { CardNestStore } from '../../core/services/card-nest-store';
 import { SnackbarService } from '../../core/services/snackbar.service';
 import { AppIcon } from '../../shared/app-icon';
 import { ConfirmationDialog } from '../../shared/confirmation-dialog';
+import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
 
 @Component({
   selector: 'app-categories-page',
-  imports: [ReactiveFormsModule, AppIcon, ConfirmationDialog],
+  imports: [ReactiveFormsModule, AppIcon, ConfirmationDialog, AppSelectPicker],
   templateUrl: './categories.html',
   styleUrl: './categories.scss',
 })
@@ -65,6 +66,11 @@ export class CategoriesPage {
     'globe_off',
     'briefcase_business',
   ] as const;
+  readonly appliesToOptions: readonly AppSelectOption[] = [
+    { value: 'BOTH', label: 'Expenses and credits' },
+    { value: 'EXPENSE', label: 'Expenses only' },
+    { value: 'CREDIT', label: 'Credits only' },
+  ];
   readonly sortedCategories = computed(() =>
     [...this.store.categories()].sort((a, b) => a.name.localeCompare(b.name)),
   );
@@ -83,6 +89,10 @@ export class CategoriesPage {
     }),
     appliesTo: new FormControl<Category['appliesTo']>('BOTH', { nonNullable: true }),
   });
+  setAppliesTo(value: string): void {
+    this.form.controls.appliesTo.setValue(value as Category['appliesTo']);
+    this.form.controls.appliesTo.markAsDirty();
+  }
 
   usageCount(categoryId: string): number {
     const month = new Date().toISOString().slice(0, 7);

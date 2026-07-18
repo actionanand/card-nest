@@ -102,13 +102,13 @@
                 inputmode="decimal"
                 [value]="(source.loadAmountMinor ?? 0) / 100"
                 (change)="updateAmount(source, $event, 'loadAmountMinor')" /></label
-            ><label
-              >Load date<select [value]="source.loadDay" (change)="updateLoadDay(source, $event)">
-                @for (day of days; track day) {
-                  <option [value]="day">Day {{ day }}</option>
-                }
-              </select></label
-            ><label class="toggle-row"
+            ><app-select-picker
+              label="Load date"
+              [options]="loadDayOptions"
+              [value]="source.loadDay?.toString() ?? '25'"
+              (valueChange)="updateLoadDay(source, $event)"
+            />
+            <label class="toggle-row"
               ><span
                 ><strong>Load automatically</strong
                 ><small
@@ -145,17 +145,12 @@
       tabindex="-1"
     >
       <div class="activity-toolbar panel">
-        <label>
-          Show transactions from
-          <select [value]="selectedSourceId()" (change)="updateSourceFilter($event)">
-            <option value="ALL">All cash, bank and meal sources</option>
-            @for (source of store.activePaymentSources(); track source.id) {
-              <option [value]="source.id">
-                {{ source.nickname }}{{ source.institution ? ' · ' + source.institution : '' }}
-              </option>
-            }
-          </select>
-        </label>
+        <app-select-picker
+          label="Show transactions from"
+          [options]="sourceOptions()"
+          [value]="selectedSourceId()"
+          (valueChange)="updateSourceFilter($event)"
+        />
         @if (selectedSource(); as source) {
           <a
             class="btn btn-primary"

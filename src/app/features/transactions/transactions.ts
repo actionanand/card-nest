@@ -130,6 +130,63 @@ export class TransactionsPage {
   readonly categoryOptions = computed<readonly AppSelectOption[]>(() =>
     this.store.categories().map((category) => ({ value: category.id, label: category.name })),
   );
+  readonly categoryFilterOptions = computed<readonly AppSelectOption[]>(() => [
+    { value: 'ALL', label: 'All categories' },
+    ...this.categoryOptions(),
+  ]);
+  readonly typeFilterOptions: readonly AppSelectOption[] = [
+    { value: 'ALL', label: 'All transaction types' },
+    ...this.types,
+    { value: 'WITH_IMAGE', label: 'With image' },
+  ];
+  readonly groupingOptions = computed<readonly AppSelectOption[]>(() => [
+    { value: 'MONTH', label: 'Calendar month' },
+    { value: 'CYCLE', label: `Budget cycle (day ${this.store.budgetCycleStartDay()})` },
+    {
+      value: 'STATEMENT',
+      label: 'Selected card statement cycle',
+      disabled: !this.isCreditCardSelected(),
+    },
+  ]);
+  readonly repeatChoiceOptions: readonly AppSelectOption[] = [
+    { value: 'NONE', label: 'Do not repeat' },
+    ...this.repeatOptions.map((count) => ({
+      value: String(count),
+      label: `${count} more ${count === 1 ? 'month' : 'months'}`,
+    })),
+    { value: 'INFINITE', label: 'Every month · no end date' },
+  ];
+  readonly emiKindOptions: readonly AppSelectOption[] = [
+    { value: 'NO_COST', label: 'No-cost EMI' },
+    { value: 'STANDARD', label: 'Standard EMI with interest' },
+  ];
+  readonly emiStartOptions: readonly AppSelectOption[] = [
+    { value: 'THIS_MONTH', label: "This month's statement" },
+    { value: 'NEXT_MONTH', label: "Next month's statement" },
+    { value: 'CUSTOM', label: 'Custom month' },
+  ];
+  readonly monthOptions: readonly AppSelectOption[] = Array.from({ length: 60 }, (_, index) => {
+    const date = new Date();
+    date.setDate(1);
+    date.setMonth(date.getMonth() + index);
+    const value = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+    return {
+      value,
+      label: new Intl.DateTimeFormat('en-IN', { month: 'long', year: 'numeric' }).format(date),
+    };
+  });
+  readonly paymentSourceOptions = computed<readonly AppSelectOption[]>(() => [
+    ...this.store.alphabeticalActiveCards().map((card) => ({
+      value: card.id,
+      label: card.nickname,
+      detail: `${card.lastDigits} · ${card.issuerName}`,
+    })),
+    ...this.store.activePaymentSources().map((source) => ({
+      value: source.id,
+      label: source.nickname,
+      detail: source.institution || source.kind,
+    })),
+  ]);
   readonly form = new FormGroup({
     cardId: new FormControl(this.defaultSourceId(), {
       nonNullable: true,
@@ -179,6 +236,43 @@ export class TransactionsPage {
     this.form.controls.categoryId.setValue(value);
     this.form.controls.categoryId.markAsDirty();
     this.form.controls.categoryId.markAsTouched();
+  }
+
+  relatedOptions(): readonly AppSelectOption[] {
+    return [
+      { value: '', label: 'Not linked' },
+      ...this.relatedTransactionOptions().map((transaction) => ({
+        value: transaction.id,
+        label: transaction.merchant || transaction.type,
+        detail: `${transaction.transactionDate} · ${this.money(transaction.amountMinor, transaction.currencyCode)} · ${this.store.sourceName(transaction.cardId)}`,
+      })),
+    ];
+  }
+
+  setRelatedTransaction(value: string): void {
+    this.form.controls.relatedTransactionId.setValue(value);
+    this.form.controls.relatedTransactionId.markAsDirty();
+  }
+
+  setRepeatChoice(value: string): void {
+    this.form.controls.repeat.setValue(value as RepeatChoice);
+    this.form.controls.repeat.markAsDirty();
+  }
+
+  setEmiKind(value: string): void {
+    this.emiForm.controls.kind.setValue(value as EmiKind);
+  }
+
+  setEmiStart(value: string): void {
+    this.emiForm.controls.startMode.setValue(value as EmiStartMode);
+  }
+
+  setCustomStart(value: string): void {
+    this.emiForm.controls.customStart.setValue(value);
+  }
+
+  setSplitSource(index: number, value: string): void {
+    this.splitForm.controls.parts.at(index).controls.sourceId.setValue(value);
   }
   readonly filtered = computed(() => {
     const term = this.search().trim().toLocaleLowerCase();
@@ -277,8 +371,8 @@ export class TransactionsPage {
     this.search.set((event.target as HTMLInputElement).value);
     this.resetVisibleTransactions();
   }
-  updateType(event: Event): void {
-    this.typeFilter.set((event.target as HTMLSelectElement).value as TransactionTypeFilter);
+  updateType(value: string): void {
+    this.typeFilter.set(value as TransactionTypeFilter);
     this.resetVisibleTransactions();
   }
   selectSourceFilter(id: string): void {
@@ -295,12 +389,12 @@ export class TransactionsPage {
       'All cards and sources'
     );
   }
-  updateCategory(event: Event): void {
-    this.categoryFilter.set((event.target as HTMLSelectElement).value);
+  updateCategory(value: string): void {
+    this.categoryFilter.set(value);
     this.resetVisibleTransactions();
   }
-  updateGrouping(event: Event): void {
-    this.grouping.set((event.target as HTMLSelectElement).value as GroupingMode);
+  updateGrouping(value: string): void {
+    this.grouping.set(value as GroupingMode);
     this.resetVisibleTransactions();
   }
   loadMoreTransactions(): void {

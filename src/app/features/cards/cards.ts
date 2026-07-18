@@ -250,6 +250,22 @@ export class CardsPage {
     this.form.controls.statementDay.markAsDirty();
   }
 
+  setRelationshipGroup(value: string): void {
+    this.form.controls.relationshipGroup.setValue(value);
+    this.form.controls.relationshipGroup.markAsDirty();
+  }
+
+  relationshipOptions(): readonly AppSelectOption[] {
+    return [
+      { value: '', label: 'Not linked' },
+      ...this.linkableCards().map((card) => ({
+        value: card.id,
+        label: card.nickname,
+        detail: `${card.lastDigits} · ${card.network.replace('_', ' ')}${card.archived ? ' · Archived' : ''}`,
+      })),
+    ];
+  }
+
   setRenewalMonth(value: string): void {
     this.form.controls.renewalMonth.setValue(Number(value));
     this.form.controls.renewalMonth.markAsDirty();
@@ -265,22 +281,6 @@ export class CardsPage {
       value as 'ANNIVERSARY' | 'CALENDAR' | 'FINANCIAL' | 'CUSTOM',
     );
     this.form.controls.waiverPeriod.markAsDirty();
-  }
-
-  setRelationshipGroup(value: string): void {
-    this.form.controls.relationshipGroup.setValue(value);
-    this.form.controls.relationshipGroup.markAsDirty();
-  }
-
-  relationshipOptions(): readonly AppSelectOption[] {
-    return [
-      { value: '', label: 'Not linked' },
-      ...this.linkableCards().map((card) => ({
-        value: card.id,
-        label: card.nickname,
-        detail: `${card.lastDigits} · ${card.network.replace('_', ' ')}${card.archived ? ' · Archived' : ''}`,
-      })),
-    ];
   }
 
   constructor() {
