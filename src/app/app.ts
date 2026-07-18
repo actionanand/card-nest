@@ -25,6 +25,12 @@ interface NativeLaunchWindow extends Window {
   CardNestNative?: NativeLaunchBridge;
 }
 
+function sanitizedMoneyInput(value: string): string {
+  const numeric = value.replace(/[^0-9.]/g, '');
+  const [whole = '', ...fractions] = numeric.split('.');
+  return fractions.length ? `${whole}.${fractions.join('').slice(0, 2)}` : whole;
+}
+
 @Component({
   selector: 'app-root',
   imports: [RouterOutlet, RouterLink, RouterLinkActive, AppIcon],
@@ -143,6 +149,13 @@ export class App {
 
   closeFlashFromBackdrop(event: MouseEvent): void {
     if (event.target === event.currentTarget) this.closeFlashTransaction();
+  }
+
+  sanitizeFlashAmount(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    const sanitized = sanitizedMoneyInput(input.value);
+    input.value = sanitized;
+    this.flashAmount.set(sanitized);
   }
 
   async updateFlashSource(event: Event): Promise<void> {

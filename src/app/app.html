@@ -217,9 +217,10 @@
             >Amount<input
               inputmode="decimal"
               autocomplete="off"
+              pattern="[0-9]*[.]?[0-9]{0,2}"
               placeholder="0.00"
               [value]="flashAmount()"
-              (input)="flashAmount.set($any($event.target).value)"
+              (input)="sanitizeFlashAmount($event)"
           /></label>
           <label
             >Merchant or title <span>(optional)</span

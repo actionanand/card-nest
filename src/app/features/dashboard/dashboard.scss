@@ -148,6 +148,11 @@
   font-size: 0.62rem;
   font-weight: 700;
 }
+.due-empty {
+  margin: 1rem 0 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
 .budget-panel {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -330,11 +335,38 @@
     grid-row: auto;
   }
   .due-item {
-    grid-template-columns: auto 1fr;
+    grid-template-columns: 2rem minmax(0, 1fr) auto;
+    gap: 0.55rem;
+    padding: 0.7rem 0;
+  }
+  .due-panel {
+    padding: 1rem;
+  }
+  .card-mini {
+    width: 2rem;
+    height: 1.7rem;
+  }
+  .due-item > div:nth-child(2) {
+    min-width: 0;
+  }
+  .due-item > div:nth-child(2) strong,
+  .due-item > div:nth-child(2) small {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .due-amount {
-    grid-column: 2;
-    justify-items: start;
+    grid-column: 3;
+    grid-row: 1;
+    justify-items: end;
+    min-width: max-content;
+  }
+  .due-amount strong {
+    font-size: 0.84rem;
+  }
+  .due-amount span {
+    padding: 0.12rem 0.32rem;
+    font-size: 0.56rem;
   }
   .transaction-list article {
     align-items: start;

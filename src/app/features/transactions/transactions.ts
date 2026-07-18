@@ -32,6 +32,12 @@ type EmiStartMode = 'THIS_MONTH' | 'NEXT_MONTH' | 'CUSTOM';
 const TRANSACTION_PAGE_SIZE = 200;
 const MAX_RECEIPT_BYTES = 1_000_000;
 
+function sanitizedMoneyInput(value: string): string {
+  const numeric = value.replace(/[^0-9.]/g, '');
+  const [whole = '', ...fractions] = numeric.split('.');
+  return fractions.length ? `${whole}.${fractions.join('').slice(0, 2)}` : whole;
+}
+
 @Component({
   selector: 'app-transactions-page',
   imports: [
@@ -47,6 +53,7 @@ const MAX_RECEIPT_BYTES = 1_000_000;
   host: {
     '(document:keydown.escape)': 'closeOverlays()',
     '(document:click)': 'closeMenusFromOutside($event)',
+    '(window:beforeunload)': 'protectBrowserUnload($event)',
   },
 })
 export class TransactionsPage {
@@ -64,10 +71,14 @@ export class TransactionsPage {
   );
   readonly editingId = signal<string | null>(null);
   readonly receiptPreviews = signal<readonly string[]>([]);
+  readonly receiptDraftDirty = signal(false);
+  readonly discardConfirmationOpen = signal(false);
   readonly cameraAvailable = signal(Capacitor.getPlatform() !== 'web');
   readonly webCameraOpen = signal(false);
   readonly webCameraVideo = viewChild<ElementRef<HTMLVideoElement>>('webCameraVideo');
   private webCameraStream: MediaStream | null = null;
+  private deactivateResolver: ((allow: boolean) => void) | null = null;
+  private discardClosesEditor = false;
   readonly detailTransactionId = signal<string | null>(null);
   readonly detailTransaction = computed(
     () => this.store.transactions().find((item) => item.id === this.detailTransactionId()) ?? null,
@@ -311,7 +322,10 @@ export class TransactionsPage {
         .map((photo) => photo.webPath)
         .filter((path): path is string => Boolean(path));
       const processed = await this.prepareReceiptImages(paths);
-      if (processed.length) this.receiptPreviews.update((current) => [...current, ...processed]);
+      if (processed.length) {
+        this.receiptPreviews.update((current) => [...current, ...processed]);
+        this.receiptDraftDirty.set(true);
+      }
     } catch {
       // Picker was dismissed by the user — nothing to attach.
     }
@@ -329,7 +343,10 @@ export class TransactionsPage {
       });
       if (photo.webPath) {
         const processed = await this.prepareReceiptImages([photo.webPath]);
-        if (processed.length) this.receiptPreviews.update((current) => [...current, ...processed]);
+        if (processed.length) {
+          this.receiptPreviews.update((current) => [...current, ...processed]);
+          this.receiptDraftDirty.set(true);
+        }
       }
     } catch {
       // Camera was dismissed by the user.
@@ -347,7 +364,10 @@ export class TransactionsPage {
     canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
     canvas.getContext('2d')?.drawImage(video, 0, 0, canvas.width, canvas.height);
     const processed = await this.prepareReceiptImages([canvas.toDataURL('image/jpeg', 0.82)]);
-    if (processed.length) this.receiptPreviews.update((current) => [...current, ...processed]);
+    if (processed.length) {
+      this.receiptPreviews.update((current) => [...current, ...processed]);
+      this.receiptDraftDirty.set(true);
+    }
     this.closeWebCamera();
   }
   closeWebCamera(): void {
@@ -357,12 +377,63 @@ export class TransactionsPage {
   }
   removeReceipt(index: number): void {
     this.receiptPreviews.update((current) => current.filter((_, position) => position !== index));
+    this.receiptDraftDirty.set(true);
   }
   closeForm(): void {
+    if (this.hasUnsavedDraft()) {
+      this.discardClosesEditor = true;
+      this.discardConfirmationOpen.set(true);
+      return;
+    }
+    this.closeFormImmediately();
+  }
+
+  canDeactivate(): boolean | Promise<boolean> {
+    if (!this.hasUnsavedDraft()) return true;
+    this.discardClosesEditor = false;
+    this.discardConfirmationOpen.set(true);
+    return new Promise<boolean>((resolve) => {
+      this.deactivateResolver = resolve;
+    });
+  }
+
+  confirmDiscard(): void {
+    this.discardConfirmationOpen.set(false);
+    const resolver = this.deactivateResolver;
+    this.deactivateResolver = null;
+    if (resolver) {
+      resolver(true);
+      return;
+    }
+    if (this.discardClosesEditor) this.closeFormImmediately();
+  }
+
+  cancelDiscard(): void {
+    this.discardConfirmationOpen.set(false);
+    this.discardClosesEditor = false;
+    this.deactivateResolver?.(false);
+    this.deactivateResolver = null;
+  }
+
+  protectBrowserUnload(event: BeforeUnloadEvent): void {
+    if (!this.hasUnsavedDraft()) return;
+    event.preventDefault();
+    event.returnValue = '';
+  }
+
+  sanitizeAmountInput(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    const sanitized = sanitizedMoneyInput(input.value);
+    input.value = sanitized;
+    this.form.controls.amount.setValue(sanitized);
+  }
+
+  private closeFormImmediately(): void {
     this.closeWebCamera();
     this.showForm.set(false);
     this.editingId.set(null);
     this.receiptPreviews.set([]);
+    this.receiptDraftDirty.set(false);
     void this.router.navigate([], {
       relativeTo: this.route,
       queryParams: { add: null, payment: null, edit: null },
@@ -409,6 +480,7 @@ export class TransactionsPage {
   }
   selectPayFrom(id: string): void {
     this.form.controls.cardId.setValue(id);
+    this.form.controls.cardId.markAsDirty();
     this.payFromOpen.set(false);
   }
   selectedSourceLabel(): string {
@@ -436,6 +508,7 @@ export class TransactionsPage {
       repeat: 'NONE',
     });
     this.receiptPreviews.set(transaction.attachmentIds);
+    this.receiptDraftDirty.set(false);
     this.showForm.set(true);
     this.closeMenus();
     globalThis.scrollTo?.({ top: 0, behavior: 'smooth' });
@@ -954,6 +1027,7 @@ export class TransactionsPage {
 
   private resetForm(sourceId: string): void {
     this.receiptPreviews.set([]);
+    this.receiptDraftDirty.set(false);
     this.form.reset({
       cardId: sourceId,
       type: 'PURCHASE',
@@ -967,6 +1041,10 @@ export class TransactionsPage {
       taxAmount: '',
       repeat: 'NONE',
     });
+  }
+
+  private hasUnsavedDraft(): boolean {
+    return this.showForm() && (this.form.dirty || this.receiptDraftDirty());
   }
 
   private createSplitPart(sourceId = this.defaultSourceId(), amountMinor = 0) {

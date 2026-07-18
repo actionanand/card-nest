@@ -1,4 +1,11 @@
-import { Routes } from '@angular/router';
+import { CanDeactivateFn, Routes } from '@angular/router';
+
+interface DirtyTransactionEditor {
+  canDeactivate(): boolean | Promise<boolean>;
+}
+
+const confirmTransactionDraft: CanDeactivateFn<DirtyTransactionEditor> = (component) =>
+  component.canDeactivate();
 
 export const routes: Routes = [
   {
@@ -13,6 +20,7 @@ export const routes: Routes = [
   },
   {
     path: 'transactions',
+    canDeactivate: [confirmTransactionDraft],
     loadComponent: () =>
       import('./features/transactions/transactions').then((item) => item.TransactionsPage),
   },

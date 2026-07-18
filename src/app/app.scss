@@ -382,7 +382,7 @@ main {
   }
   .drawer-scrim {
     position: fixed;
-    z-index: 59;
+    z-index: 950;
     inset: 0;
     display: block;
     width: 100%;
@@ -392,7 +392,7 @@ main {
   }
   .mobile-drawer {
     position: fixed;
-    z-index: 60;
+    z-index: 960;
     inset: calc(env(safe-area-inset-top) + 0.65rem) auto max(0.65rem, env(safe-area-inset-bottom))
       0.65rem;
     display: block;

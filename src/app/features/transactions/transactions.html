@@ -140,7 +140,14 @@
             }
             <label>
               Amount
-              <input formControlName="amount" inputmode="decimal" placeholder="0.00" />
+              <input
+                formControlName="amount"
+                inputmode="decimal"
+                autocomplete="off"
+                pattern="[0-9]*[.]?[0-9]{0,2}"
+                placeholder="0.00"
+                (input)="sanitizeAmountInput($event)"
+              />
               @if (form.controls.amount.touched && form.controls.amount.invalid) {
                 <small>Enter a valid amount.</small>
               }
@@ -909,5 +916,15 @@
     confirmLabel="Delete transaction"
     (confirmed)="confirmDelete()"
     (cancelled)="deleteCandidate.set(null)"
+  />
+}
+
+@if (discardConfirmationOpen()) {
+  <app-confirmation-dialog
+    title="Discard unsaved transaction?"
+    message="The transaction has unsaved changes. Leave without saving them?"
+    confirmLabel="Discard changes"
+    (confirmed)="confirmDiscard()"
+    (cancelled)="cancelDiscard()"
   />
 }
