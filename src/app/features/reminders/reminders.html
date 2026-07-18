@@ -65,43 +65,69 @@
     </div>
 
     @for (reminder of reminders(); track reminder.id) {
-      <article [class]="'reminder-card ' + urgency(reminder)">
-        <div class="date-block">
-          <strong>{{ reminder.due.getDate() }}</strong>
-          <span>{{ reminder.due.toLocaleDateString('en-IN', { month: 'short' }) }}</span>
-        </div>
-        <div class="reminder-copy">
-          <strong>Payment due · {{ reminder.card.nickname }}</strong>
-          <small
-            >•••• {{ reminder.card.lastDigits }} ·
-            {{
-              reminder.days < 0
-                ? -reminder.days + ' days overdue'
-                : reminder.days + ' days remaining'
-            }}</small
-          >
-          <p>{{ money(reminder.amount, reminder.card.currencyCode) }} statement amount due</p>
-        </div>
-        <div class="actions">
-          <button
-            class="btn btn-primary"
-            type="button"
-            [disabled]="reminder.amount <= 0"
-            (click)="requestPayment(reminder)"
-          >
-            Record payment
-          </button>
-          <button
-            class="btn"
-            type="button"
-            [disabled]="!canSnooze(reminder)"
-            [attr.title]="
-              canSnooze(reminder) ? null : 'Snooze is available five days before the due date'
-            "
-            (click)="snooze(reminder)"
-          >
-            Snooze
-          </button>
+      <article
+        [class]="'reminder-card ' + urgency(reminder)"
+        (touchstart)="startSwipe($event)"
+        (touchend)="finishSwipe(reminder, $event)"
+      >
+        <button
+          class="swipe-action swipe-action--payment"
+          type="button"
+          [disabled]="reminder.amount <= 0"
+          (click)="requestPayment(reminder)"
+        >
+          Record payment
+        </button>
+        <button
+          class="swipe-action swipe-action--snooze"
+          type="button"
+          [disabled]="!canSnooze(reminder)"
+          (click)="snooze(reminder)"
+        >
+          Snooze
+        </button>
+        <div
+          class="reminder-card-content"
+          [class.reveal-payment]="isRevealed(reminder, 'PAYMENT')"
+          [class.reveal-snooze]="isRevealed(reminder, 'SNOOZE')"
+        >
+          <div class="date-block">
+            <strong>{{ reminder.due.getDate() }}</strong>
+            <span>{{ reminder.due.toLocaleDateString('en-IN', { month: 'short' }) }}</span>
+          </div>
+          <div class="reminder-copy">
+            <strong>Payment due · {{ reminder.card.nickname }}</strong>
+            <small
+              >•••• {{ reminder.card.lastDigits }} ·
+              {{
+                reminder.days < 0
+                  ? -reminder.days + ' days overdue'
+                  : reminder.days + ' days remaining'
+              }}</small
+            >
+            <p>{{ money(reminder.amount, reminder.card.currencyCode) }} statement amount due</p>
+          </div>
+          <div class="actions">
+            <button
+              class="btn btn-primary"
+              type="button"
+              [disabled]="reminder.amount <= 0"
+              (click)="$event.stopPropagation(); requestPayment(reminder)"
+            >
+              Record payment
+            </button>
+            <button
+              class="btn"
+              type="button"
+              [disabled]="!canSnooze(reminder)"
+              [attr.title]="
+                canSnooze(reminder) ? null : 'No active reminder is available to snooze'
+              "
+              (click)="$event.stopPropagation(); snooze(reminder)"
+            >
+              Snooze
+            </button>
+          </div>
         </div>
       </article>
     } @empty {

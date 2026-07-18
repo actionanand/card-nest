@@ -169,15 +169,27 @@
               [value]="store.flashTransactionSourceId()"
               (change)="updateFlashSource($event)"
             >
-              <option value="">First available source</option>
+              <option value="" [selected]="!store.flashTransactionSourceId()">
+                First available source
+              </option>
               <optgroup label="Credit cards">
                 @for (card of store.activeCards(); track card.id) {
-                  <option [value]="card.id">{{ card.nickname }} · {{ card.lastDigits }}</option>
+                  <option
+                    [value]="card.id"
+                    [selected]="store.flashTransactionSourceId() === card.id"
+                  >
+                    {{ card.nickname }} · {{ card.lastDigits }}
+                  </option>
                 }
               </optgroup>
               <optgroup label="Other payment sources">
                 @for (source of store.activePaymentSources(); track source.id) {
-                  <option [value]="source.id">{{ source.nickname }}</option>
+                  <option
+                    [value]="source.id"
+                    [selected]="store.flashTransactionSourceId() === source.id"
+                  >
+                    {{ source.nickname }}
+                  </option>
                 }
               </optgroup></select
             ><small>Used by the mobile flash-transaction button.</small></label

@@ -199,12 +199,16 @@
             >Pay from<select [value]="flashSourceId()" (change)="updateFlashSource($event)">
               <optgroup label="Credit cards">
                 @for (card of store.activeCards(); track card.id) {
-                  <option [value]="card.id">{{ card.nickname }} · {{ card.lastDigits }}</option>
+                  <option [value]="card.id" [selected]="flashSourceId() === card.id">
+                    {{ card.nickname }} · {{ card.lastDigits }}
+                  </option>
                 }
               </optgroup>
               <optgroup label="Cash, bank & meal card">
                 @for (source of store.activePaymentSources(); track source.id) {
-                  <option [value]="source.id">{{ source.nickname }}</option>
+                  <option [value]="source.id" [selected]="flashSourceId() === source.id">
+                    {{ source.nickname }}
+                  </option>
                 }
               </optgroup>
             </select></label

@@ -225,7 +225,13 @@
                 <button type="button" class="attachment__pick" (click)="pickReceipts()">
                   <app-icon name="gallery" /> Choose from gallery
                 </button>
-                <button type="button" class="attachment__pick" (click)="captureReceipt()">
+                <button
+                  type="button"
+                  class="attachment__pick"
+                  [disabled]="!cameraAvailable()"
+                  [attr.title]="cameraAvailable() ? null : 'No camera is available in this browser'"
+                  (click)="captureReceipt()"
+                >
                   <app-icon name="camera" /> Take a photo
                 </button>
               </div>
@@ -843,6 +849,34 @@
       </section>
     </div>
   }
+}
+
+@if (webCameraOpen()) {
+  <div class="subdialog-backdrop web-camera-backdrop">
+    <section
+      class="panel web-camera-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="web-camera-title"
+    >
+      <header>
+        <div>
+          <p class="eyebrow">Receipt image</p>
+          <h2 id="web-camera-title">Take a photo</h2>
+        </div>
+        <button type="button" (click)="closeWebCamera()" aria-label="Close camera">
+          <app-icon name="close" />
+        </button>
+      </header>
+      <video #webCameraVideo autoplay muted playsinline aria-label="Live camera preview"></video>
+      <div class="form-actions">
+        <button class="btn" type="button" (click)="closeWebCamera()">Cancel</button>
+        <button class="btn btn-primary" type="button" (click)="captureWebReceipt()">
+          <app-icon name="camera" /> Capture photo
+        </button>
+      </div>
+    </section>
+  </div>
 }
 
 @if (manageCategoriesOpen()) {

@@ -39,6 +39,11 @@ export class RemindersPage {
   private readonly dates = inject(DateFormatService);
   readonly filter = signal<ReminderFilter>('DUE');
   readonly paymentCandidate = signal<PaymentReminder | null>(null);
+  readonly revealedAction = signal<{
+    readonly id: string;
+    readonly action: 'PAYMENT' | 'SNOOZE';
+  } | null>(null);
+  private swipeStartX: number | null = null;
 
   readonly allReminders = computed<readonly PaymentReminder[]>(() =>
     this.store
@@ -93,12 +98,38 @@ export class RemindersPage {
   }
 
   canSnooze(item: PaymentReminder): boolean {
-    return item.days <= 5;
+    return item.card.remindToSettle && item.amount > 0 && item.days <= 5;
+  }
+
+  startSwipe(event: TouchEvent): void {
+    this.swipeStartX = event.changedTouches[0]?.clientX ?? null;
+  }
+
+  finishSwipe(item: PaymentReminder, event: TouchEvent): void {
+    const endX = event.changedTouches[0]?.clientX;
+    if (this.swipeStartX === null || endX === undefined) return;
+    const distance = endX - this.swipeStartX;
+    this.swipeStartX = null;
+    if (distance >= 55 && item.amount > 0) {
+      this.revealedAction.set({ id: item.id, action: 'PAYMENT' });
+      return;
+    }
+    if (distance <= -55 && this.canSnooze(item)) {
+      this.revealedAction.set({ id: item.id, action: 'SNOOZE' });
+      return;
+    }
+    this.revealedAction.set(null);
+  }
+
+  isRevealed(item: PaymentReminder, action: 'PAYMENT' | 'SNOOZE'): boolean {
+    const revealed = this.revealedAction();
+    return revealed?.id === item.id && revealed.action === action;
   }
 
   async snooze(item: PaymentReminder): Promise<void> {
     if (!this.canSnooze(item)) return;
     await this.store.setReminderSnoozed(item.id, true);
+    this.revealedAction.set(null);
     this.snackbar.show('Reminder snoozed.', 'INFO', 10_000, {
       label: 'Undo',
       run: () => void this.restore(item.id),
@@ -141,7 +172,10 @@ export class RemindersPage {
   }
 
   requestPayment(item: PaymentReminder): void {
-    if (item.amount > 0) this.paymentCandidate.set(item);
+    if (item.amount > 0) {
+      this.paymentCandidate.set(item);
+      this.revealedAction.set(null);
+    }
   }
 
   recordPayment(): void {

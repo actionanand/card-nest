@@ -1,8 +1,17 @@
-import { Component, computed, inject, signal } from '@angular/core';
+import {
+  Component,
+  computed,
+  DestroyRef,
+  ElementRef,
+  inject,
+  signal,
+  viewChild,
+} from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { FormArray, FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { ActivatedRoute, Router } from '@angular/router';
 import { Camera, CameraResultType, CameraSource } from '@capacitor/camera';
+import { Capacitor } from '@capacitor/core';
 import { CardTransaction, EmiPlan, TransactionType } from '../../core/models/domain';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { formatMoney, parseMoneyToMinor } from '../../core/services/money';
@@ -45,6 +54,7 @@ export class TransactionsPage {
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
   private readonly snackbar = inject(SnackbarService);
+  private readonly destroyRef = inject(DestroyRef);
   private readonly requestedSourceId = this.route.snapshot.queryParamMap.get('source');
   private readonly requestedEditId = this.route.snapshot.queryParamMap.get('edit');
   readonly showForm = signal(
@@ -54,6 +64,10 @@ export class TransactionsPage {
   );
   readonly editingId = signal<string | null>(null);
   readonly receiptPreviews = signal<readonly string[]>([]);
+  readonly cameraAvailable = signal(Capacitor.getPlatform() !== 'web');
+  readonly webCameraOpen = signal(false);
+  readonly webCameraVideo = viewChild<ElementRef<HTMLVideoElement>>('webCameraVideo');
+  private webCameraStream: MediaStream | null = null;
   readonly detailTransactionId = signal<string | null>(null);
   readonly detailTransaction = computed(
     () => this.store.transactions().find((item) => item.id === this.detailTransactionId()) ?? null,
@@ -201,6 +215,8 @@ export class TransactionsPage {
   });
 
   constructor() {
+    this.destroyRef.onDestroy(() => this.closeWebCamera());
+    if (Capacitor.getPlatform() === 'web') void this.detectWebCamera();
     // Handle edit requested via query param on first load.
     const transaction = this.store.transactions().find((item) => item.id === this.requestedEditId);
     if (transaction) this.edit(transaction);
@@ -301,6 +317,10 @@ export class TransactionsPage {
     }
   }
   async captureReceipt(): Promise<void> {
+    if (Capacitor.getPlatform() === 'web') {
+      await this.openWebCamera();
+      return;
+    }
     try {
       const photo = await Camera.getPhoto({
         source: CameraSource.Camera,
@@ -315,10 +335,31 @@ export class TransactionsPage {
       // Camera was dismissed by the user.
     }
   }
+  async captureWebReceipt(): Promise<void> {
+    const video = this.webCameraVideo()?.nativeElement;
+    if (!video || !video.videoWidth || !video.videoHeight) {
+      this.snackbar.show('The camera is not ready yet.', 'WARNING');
+      return;
+    }
+    const scale = Math.min(1, 1600 / Math.max(video.videoWidth, video.videoHeight));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+    canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+    canvas.getContext('2d')?.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const processed = await this.prepareReceiptImages([canvas.toDataURL('image/jpeg', 0.82)]);
+    if (processed.length) this.receiptPreviews.update((current) => [...current, ...processed]);
+    this.closeWebCamera();
+  }
+  closeWebCamera(): void {
+    this.webCameraStream?.getTracks().forEach((track) => track.stop());
+    this.webCameraStream = null;
+    this.webCameraOpen.set(false);
+  }
   removeReceipt(index: number): void {
     this.receiptPreviews.update((current) => current.filter((_, position) => position !== index));
   }
   closeForm(): void {
+    this.closeWebCamera();
     this.showForm.set(false);
     this.editingId.set(null);
     this.receiptPreviews.set([]);
@@ -328,6 +369,43 @@ export class TransactionsPage {
       queryParamsHandling: 'merge',
       replaceUrl: true,
     });
+  }
+
+  private async detectWebCamera(): Promise<void> {
+    const mediaDevices = globalThis.navigator?.mediaDevices;
+    if (!mediaDevices?.enumerateDevices || !mediaDevices.getUserMedia) {
+      this.cameraAvailable.set(false);
+      return;
+    }
+    try {
+      const devices = await mediaDevices.enumerateDevices();
+      this.cameraAvailable.set(devices.some((device) => device.kind === 'videoinput'));
+    } catch {
+      this.cameraAvailable.set(false);
+    }
+  }
+
+  private async openWebCamera(): Promise<void> {
+    if (!this.cameraAvailable()) return;
+    try {
+      this.webCameraStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' } },
+        audio: false,
+      });
+      this.webCameraOpen.set(true);
+      globalThis.setTimeout(() => {
+        const video = this.webCameraVideo()?.nativeElement;
+        if (!video || !this.webCameraStream) return;
+        video.srcObject = this.webCameraStream;
+        void video.play();
+      });
+    } catch (error: unknown) {
+      if (error instanceof DOMException && error.name === 'NotFoundError') {
+        this.cameraAvailable.set(false);
+      }
+      this.snackbar.show('The browser could not open the camera.', 'WARNING');
+      this.closeWebCamera();
+    }
   }
   selectPayFrom(id: string): void {
     this.form.controls.cardId.setValue(id);
