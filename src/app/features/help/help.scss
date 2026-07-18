@@ -230,6 +230,14 @@
 .no-results p {
   color: var(--muted);
 }
+.help-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.25rem 0.25rem 0.5rem;
+  color: var(--muted);
+  font-size: 0.68rem;
+}
 
 @media (max-width: 600px) {
   .help-page {
@@ -265,5 +273,10 @@
   .faq-answer {
     padding: 0.85rem;
     font-size: 0.88rem;
+  }
+  .help-footer {
+    align-items: center;
+    flex-direction: column;
+    text-align: center;
   }
 }

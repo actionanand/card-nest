@@ -14,14 +14,14 @@ interface ReminderTarget {
   readonly body: string;
   readonly at: Date;
   readonly cardId: string;
-  readonly kind: 'PAYMENT' | 'STATEMENT' | 'ANNUAL_FEE' | 'EXPIRY';
+  readonly kind: 'PAYMENT' | 'ANNUAL_FEE' | 'EXPIRY';
 }
 
 @Service()
 export class NotificationService {
   private readonly database = inject(SqliteDatabase);
   private readonly channelId = 'card-nest-reminders';
-  private readonly paymentOffsets = [5, 3, 1, 0] as const;
+  private readonly paymentOffsets = [5] as const;
   readonly permission = signal<'unavailable' | 'prompt' | 'denied' | 'granted'>('unavailable');
   readonly enabled = signal(false);
   readonly lastError = signal<string | null>(null);
@@ -95,7 +95,7 @@ export class NotificationService {
 
       const now = new Date();
       const targets = cards
-        .filter((card) => !card.archived && card.remindToSettle)
+        .filter((card) => !card.archived)
         .flatMap((card) => this.targetsForCard(card, outstandingFor(card.id), now))
         .filter((target) => target.at.getTime() > now.getTime() + 30_000);
 
@@ -154,14 +154,14 @@ export class NotificationService {
     const baseId = this.baseId(card.id);
 
     const paymentTargets =
-      outstandingMinor > 0
+      card.remindToSettle && outstandingMinor > 0
         ? this.paymentOffsets.map((daysBefore, index): ReminderTarget => {
             const at = new Date(due);
             at.setDate(at.getDate() - daysBefore);
             at.setHours(9, 0, 0, 0);
             return {
               id: baseId + index,
-              title: daysBefore === 0 ? 'Payment due today' : 'Payment reminder',
+              title: 'Statement payment reminder',
               body: `${amount} is due for ${maskedCard} on ${dueDisplay}.`,
               at,
               cardId: card.id,
@@ -170,19 +170,7 @@ export class NotificationService {
           })
         : [];
 
-    const statementAt = new Date(statement);
-    statementAt.setHours(9, 0, 0, 0);
-    const targets: ReminderTarget[] = [
-      ...paymentTargets,
-      {
-        id: baseId + 5,
-        title: 'Statement date',
-        body: `A new statement is expected for ${maskedCard}.`,
-        at: statementAt,
-        cardId: card.id,
-        kind: 'STATEMENT',
-      },
-    ];
+    const targets: ReminderTarget[] = [...paymentTargets];
 
     const annualFeeDate = this.nextAnnualFeeDate(card, now);
     if (annualFeeDate && card.annualFee) {
@@ -229,7 +217,7 @@ export class NotificationService {
     await LocalNotifications.createChannel({
       id: this.channelId,
       name: 'Card and payment reminders',
-      description: 'Masked payment, statement, annual-fee, and expiry reminders',
+      description: 'Masked statement-due, annual-fee, and expiry reminders',
       importance: 4,
       visibility: 0,
       lights: true,
@@ -256,8 +244,9 @@ export class NotificationService {
     if (!card.expiryMonth || !card.expiryYear) return null;
     const expires = new Date(card.expiryYear, card.expiryMonth, 0, 23, 59, 59);
     if (expires <= now) return null;
-    const at = new Date(card.expiryYear, card.expiryMonth - 1, 1, 9);
-    at.setMonth(at.getMonth() - 3);
+    const at = new Date(expires);
+    at.setDate(at.getDate() - 45);
+    at.setHours(9, 0, 0, 0);
     if (at <= now) at.setTime(now.getTime() + 60_000);
     return at;
   }

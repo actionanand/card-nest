@@ -46,6 +46,14 @@
   min-width: 0;
   gap: 1rem;
 }
+.app-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.5rem 0.2rem 1rem;
+  color: var(--muted);
+  font-size: 0.68rem;
+}
 .settings-content section {
   width: 100%;
   max-width: 100%;
@@ -172,6 +180,7 @@
   color: var(--muted);
   font-size: 0.7rem;
 }
+.cleanup-zone,
 .danger-zone {
   display: flex;
   align-items: center;
@@ -181,12 +190,35 @@
   padding-top: 1rem;
   border-top: 1px solid var(--line);
 }
-.danger-zone div {
+.cleanup-zone {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+}
+.cleanup-zone > div:first-child,
+.danger-zone > div:first-child {
   display: grid;
   gap: 0.2rem;
 }
+.cleanup-zone small,
 .danger-zone small {
   color: var(--muted);
+}
+.cleanup-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+.cleanup-controls select {
+  min-width: 7.5rem;
+  min-height: 2.5rem;
+}
+.cleanup-controls .btn {
+  min-height: 2.5rem;
+  padding: 0.48rem 0.75rem;
+  white-space: nowrap;
+  font-size: 0.72rem;
 }
 .danger {
   border-color: var(--danger);
@@ -259,6 +291,20 @@ button:disabled {
   align-items: flex-start;
   justify-content: space-between;
   gap: 1rem;
+}
+.auth-copy {
+  margin: 0 0 0.9rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+.protected-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+.biometric-action {
+  justify-content: center;
+  width: 100%;
 }
 .pin-heading h2 {
   margin-bottom: 0.8rem;
@@ -335,9 +381,26 @@ button:disabled {
   .theme-options {
     grid-template-columns: repeat(3, 1fr);
   }
+  .cleanup-zone,
   .danger-zone {
     align-items: flex-start;
     flex-direction: column;
+  }
+  .cleanup-controls {
+    width: 100%;
+    justify-content: stretch;
+  }
+  .cleanup-controls label,
+  .cleanup-controls .btn {
+    flex: 1;
+  }
+  .protected-actions .btn {
+    flex: 1;
+  }
+  .app-footer {
+    align-items: center;
+    flex-direction: column;
+    text-align: center;
   }
   .setting-row label {
     min-width: 0;

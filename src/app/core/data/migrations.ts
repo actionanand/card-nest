@@ -57,4 +57,11 @@ export const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
       `CREATE TABLE IF NOT EXISTS transaction_split_members (group_id TEXT NOT NULL, transaction_id TEXT NOT NULL UNIQUE, PRIMARY KEY(group_id, transaction_id), FOREIGN KEY(group_id) REFERENCES transaction_split_groups(id) ON DELETE CASCADE, FOREIGN KEY(transaction_id) REFERENCES card_transactions(id) ON DELETE CASCADE)`,
     ],
   },
+  {
+    version: 6,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS loan_commitments (id TEXT PRIMARY KEY NOT NULL, status TEXT NOT NULL, payload TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+      `CREATE INDEX IF NOT EXISTS idx_loan_commitments_status ON loan_commitments(status)`,
+    ],
+  },
 ];

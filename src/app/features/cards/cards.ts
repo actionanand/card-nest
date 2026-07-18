@@ -1,4 +1,4 @@
-import { Component, computed, inject, signal } from '@angular/core';
+import { Component, computed, effect, inject, signal } from '@angular/core';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { CardBenefit, CardImportantLink, CardNetwork, CreditCard } from '../../core/models/domain';
@@ -40,6 +40,8 @@ export class CardsPage {
   private readonly secrets = inject(SensitiveCardDataService);
   private readonly snackbar = inject(SnackbarService);
   private readonly dates = inject(DateFormatService);
+  private readonly requestedEditId = this.route.snapshot.queryParamMap.get('edit');
+  private requestedEditHandled = false;
   readonly showForm = signal(this.route.snapshot.queryParamMap.get('add') === 'true');
   readonly editingId = signal<string | null>(null);
   readonly selectedCardId = signal<string | null>(this.route.snapshot.queryParamMap.get('open'));
@@ -182,6 +184,16 @@ export class CardsPage {
       validators: [Validators.maxLength(80)],
     }),
   });
+
+  constructor() {
+    effect(() => {
+      if (!this.requestedEditId || this.requestedEditHandled) return;
+      const card = this.store.cards().find((item) => item.id === this.requestedEditId);
+      if (!card) return;
+      this.requestedEditHandled = true;
+      queueMicrotask(() => this.edit(card));
+    });
+  }
 
   money(value: number, currency: string): string {
     return formatMoney(value, currency);

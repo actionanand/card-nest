@@ -41,6 +41,99 @@
       </form>
     </section>
   }
+  @if (store.recurringRules().length) {
+    <section class="repeat-list" aria-labelledby="recurring-heading">
+      <div class="commitment-heading">
+        <p class="eyebrow">Scheduled spending</p>
+        <h2 id="recurring-heading">Recurring transactions</h2>
+      </div>
+      @for (rule of store.recurringRules(); track rule.id) {
+        <article class="panel repeat-card" [class.cancelled]="rule.status !== 'ACTIVE'">
+          <button
+            class="repeat-summary"
+            type="button"
+            (click)="toggleRepeat(rule.id)"
+            [attr.aria-expanded]="selectedRepeatId() === rule.id"
+          >
+            <span class="loan-icon" aria-hidden="true"><app-icon name="repeat" /></span>
+            <span>
+              <strong>{{ rule.title }}</strong>
+              <small>{{ store.sourceDetail(rule.cardId) }} · Recurring transaction</small>
+            </span>
+            <span>
+              <small>Progress</small>
+              <strong>({{ repeatProgress(rule) }})</strong>
+            </span>
+            <span>
+              <small>Future amount</small>
+              <strong>{{ money(rule.amountMinor) }}</strong>
+            </span>
+            <app-icon name="chevron_down" [class.expanded]="selectedRepeatId() === rule.id" />
+          </button>
+          @if (selectedRepeatId() === rule.id) {
+            <div class="repeat-details">
+              <dl>
+                <div>
+                  <dt>Generated</dt>
+                  <dd>{{ repeatTransactions(rule.id).length }}</dd>
+                </div>
+                <div>
+                  <dt>Schedule remaining</dt>
+                  <dd>{{ repeatRemaining(rule) }}</dd>
+                </div>
+                <div>
+                  <dt>Next transaction</dt>
+                  <dd>
+                    {{ rule.nextOccurrenceDate ? (rule.nextOccurrenceDate | appDate) : 'None' }}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Status</dt>
+                  <dd>{{ rule.status.toLowerCase() }}</dd>
+                </div>
+              </dl>
+              @if (editingRepeatId() === rule.id) {
+                <div class="repeat-edit">
+                  <label>
+                    Amount for upcoming transactions
+                    <input
+                      inputmode="decimal"
+                      [value]="repeatAmount()"
+                      (input)="repeatAmount.set($any($event.target).value)"
+                    />
+                  </label>
+                  @if (repeatAmountError()) {
+                    <p class="form-error">{{ repeatAmountError() }}</p>
+                  }
+                  <div>
+                    <button class="btn" type="button" (click)="editingRepeatId.set(null)">
+                      Cancel
+                    </button>
+                    <button class="btn btn-primary" type="button" (click)="saveFutureRepeat(rule)">
+                      Save future amount
+                    </button>
+                  </div>
+                </div>
+              } @else if (rule.status === 'ACTIVE') {
+                <div class="repeat-actions">
+                  <button class="btn" type="button" (click)="editFutureRepeat(rule)">
+                    <app-icon name="edit" /> Edit future amount
+                  </button>
+                  <button
+                    class="btn danger-item"
+                    type="button"
+                    (click)="requestTerminateRepeat(rule)"
+                  >
+                    Stop upcoming repeats
+                  </button>
+                </div>
+              }
+            </div>
+          }
+        </article>
+      }
+    </section>
+  }
   @if (store.emiPlans().length) {
     <section class="emi-list" aria-labelledby="converted-emi-heading">
       <h2 id="converted-emi-heading">Converted purchase EMIs</h2>
@@ -118,7 +211,11 @@
       }
     </section>
   }
-  <section class="loan-list">
+  <section class="loan-list" aria-labelledby="external-loan-heading">
+    <div class="commitment-heading">
+      <p class="eyebrow">Manually tracked</p>
+      <h2 id="external-loan-heading">External loans &amp; EMIs</h2>
+    </div>
     @for (loan of store.loans(); track loan.id) {
       <article class="panel" [class.cancelled]="loan.status === 'CANCELLED'">
         <div>
@@ -146,7 +243,7 @@
           class="btn"
           type="button"
           [disabled]="loan.status !== 'ACTIVE'"
-          (click)="store.cancelLoan(loan.id)"
+          (click)="requestCancelLoan(loan)"
         >
           {{ loan.status === 'ACTIVE' ? 'Cancel loan / EMI' : loan.status.toLowerCase() }}
         </button>
@@ -171,5 +268,31 @@
     confirmLabel="Close EMI"
     (confirmed)="confirmCloseEmi()"
     (cancelled)="closeEmiCandidate.set(null)"
+  />
+}
+
+@if (terminateRepeatCandidate(); as rule) {
+  <app-confirmation-dialog
+    title="Stop recurring transaction?"
+    [message]="
+      'No future transactions will be generated for ' +
+      rule.title +
+      '. Existing transactions will stay unchanged.'
+    "
+    confirmLabel="Stop upcoming repeats"
+    (confirmed)="confirmTerminateRepeat()"
+    (cancelled)="terminateRepeatCandidate.set(null)"
+  />
+}
+
+@if (cancelLoanCandidate(); as loan) {
+  <app-confirmation-dialog
+    title="Stop this loan schedule?"
+    [message]="
+      'Upcoming installments for ' + loan.name + ' will be stopped. Existing history is retained.'
+    "
+    confirmLabel="Stop schedule"
+    (confirmed)="confirmCancelLoan()"
+    (cancelled)="cancelLoanCandidate.set(null)"
   />
 }

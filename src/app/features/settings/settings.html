@@ -1,7 +1,7 @@
 <div
   class="page settings"
-  [attr.aria-hidden]="showPinForm() || showBackupDialog() ? 'true' : null"
-  [attr.inert]="showPinForm() || showBackupDialog() ? '' : null"
+  [attr.aria-hidden]="showPinForm() || showBackupDialog() || protectedAction() ? 'true' : null"
+  [attr.inert]="showPinForm() || showBackupDialog() || protectedAction() ? '' : null"
 >
   <header class="page-header">
     <div>
@@ -308,6 +308,34 @@
           Save to or restore from local storage, Google Drive, OneDrive, Dropbox, ownCloud, or any
           Android document provider. Backup passphrases are never stored in the file.
         </p>
+        <div class="cleanup-zone">
+          <div>
+            <strong>Keep recent history only</strong>
+            <small>
+              Permanently erase transactions older than the selected period while carrying their net
+              card balance forward.
+            </small>
+          </div>
+          <div class="cleanup-controls">
+            <label>
+              <span class="sr-only">History retention period</span>
+              <select [value]="retentionYears()" (change)="updateRetentionYears($event)">
+                <option value="3">3 years</option>
+                <option value="5">5 years</option>
+                <option value="7">7 years</option>
+                <option value="10">10 years</option>
+              </select>
+            </label>
+            <button
+              class="btn danger"
+              type="button"
+              [disabled]="!database.ready()"
+              (click)="retentionConfirmationOpen.set(true)"
+            >
+              Clean older data
+            </button>
+          </div>
+        </div>
         <div class="danger-zone">
           <div>
             <strong>Delete all data</strong
@@ -318,6 +346,10 @@
           </button>
         </div>
       </section>
+      <footer class="app-footer">
+        <span>© {{ copyright }} CardNest. All rights reserved.</span>
+        <span>Version {{ appVersion }}</span>
+      </footer>
     </div>
   </div>
 </div>
@@ -521,4 +553,80 @@
     (confirmed)="confirmDeleteAllData()"
     (cancelled)="deleteAllConfirmationOpen.set(false)"
   />
+}
+
+@if (retentionConfirmationOpen()) {
+  <app-confirmation-dialog
+    title="Delete older CardNest history?"
+    [message]="
+      retentionCandidateCount() +
+      (retentionCandidateCount() === 1 ? ' transaction is' : ' transactions are') +
+      ' older than ' +
+      retentionYears() +
+      ' years. This cleanup cannot be undone.'
+    "
+    confirmLabel="Delete older data"
+    (confirmed)="confirmRetentionCleanup()"
+    (cancelled)="retentionConfirmationOpen.set(false)"
+  />
+}
+
+@if (protectedAction() && pin.hasPin()) {
+  <div class="pin-backdrop">
+    <section
+      class="panel pin-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="destructive-auth-title"
+    >
+      <div class="pin-heading">
+        <div>
+          <p class="eyebrow">Security check</p>
+          <h2 id="destructive-auth-title">Confirm destructive action</h2>
+        </div>
+        <button
+          class="pin-close"
+          type="button"
+          aria-label="Cancel destructive action"
+          (click)="closeProtectedAction()"
+        >
+          <app-icon name="close" />
+        </button>
+      </div>
+      <p class="auth-copy">Verify your identity before CardNest changes stored data.</p>
+      <form (submit)="submitDestructivePin($event)">
+        <label>
+          Application PIN
+          <input
+            type="password"
+            inputmode="numeric"
+            autocomplete="current-password"
+            maxlength="8"
+            [value]="destructivePin()"
+            (input)="destructivePin.set($any($event.target).value)"
+          />
+        </label>
+        @if (destructiveAuthError(); as error) {
+          <p class="pin-error" role="alert">{{ error }}</p>
+        }
+        <div class="protected-actions">
+          <button class="btn" type="button" (click)="closeProtectedAction()">Cancel</button>
+          <button class="btn btn-primary" type="submit" [disabled]="processingProtectedAction()">
+            Verify PIN
+          </button>
+        </div>
+        @if (biometric() && biometricAvailable()) {
+          <button
+            class="btn biometric-action"
+            type="button"
+            [disabled]="appLock.biometricInProgress() || processingProtectedAction()"
+            (click)="authenticateDestructiveWithBiometrics()"
+          >
+            <app-icon name="fingerprint" />
+            {{ appLock.biometricInProgress() ? 'Checking…' : 'Use fingerprint or biometric' }}
+          </button>
+        }
+      </form>
+    </section>
+  </div>
 }

@@ -513,7 +513,10 @@
                   @if (transaction.emiPlanId) {
                     <span class="repeat-badge"><app-icon name="schedule" /> EMI</span>
                   } @else if (transaction.recurringRuleId) {
-                    <span class="repeat-badge"><app-icon name="repeat" /> Repeats</span>
+                    <span class="repeat-badge"
+                      ><app-icon name="repeat" /> Repeat
+                      {{ recurringProgressLabel(transaction) }}</span
+                    >
                   }
                 </span>
                 <span class="tx-date">
@@ -542,7 +545,12 @@
                     <button type="button" role="menuitem" (click)="edit(transaction)">
                       <app-icon name="edit" /> Edit transaction
                     </button>
-                    <button type="button" role="menuitem" (click)="duplicate(transaction)">
+                    <button
+                      type="button"
+                      role="menuitem"
+                      [disabled]="!canDuplicate(transaction)"
+                      (click)="duplicate(transaction)"
+                    >
                       <app-icon name="duplicate" /> Duplicate transaction
                     </button>
                     <button type="button" role="menuitem" (click)="goToSource(transaction)">
@@ -599,7 +607,13 @@
       <header class="detail-heading">
         <div>
           <p class="eyebrow">
-            {{ transaction.emiPlanId ? 'EMI' : transaction.type.replace('_', ' ') }}
+            {{
+              transaction.emiPlanId
+                ? 'EMI installment'
+                : transaction.recurringRuleId
+                  ? 'Recurring transaction'
+                  : transaction.type.replace('_', ' ')
+            }}
           </p>
           <h2 id="transaction-detail-title">{{ transaction.merchant || 'Transaction details' }}</h2>
         </div>
@@ -698,11 +712,34 @@
           </button>
         </section>
       }
+      @if (recurringRule(transaction); as rule) {
+        <section class="detail-section">
+          <h3>Recurring schedule {{ recurringProgressLabel(transaction) }}</h3>
+          <p>
+            {{ recurringTransactions(transaction).length }} generated ·
+            {{ recurringRemaining(transaction) }} · {{ rule.status.toLowerCase() }}
+          </p>
+          @if (rule.nextOccurrenceDate) {
+            <div class="schedule-row">
+              <span>Next transaction</span>
+              <strong>{{ rule.nextOccurrenceDate | appDate }}</strong>
+            </div>
+          }
+          <button class="btn view-emi" type="button" (click)="goToRecurring(rule.id)">
+            Manage in Loans &amp; EMIs <app-icon name="chevron_right" />
+          </button>
+        </section>
+      }
       <div class="detail-actions">
         <button class="btn" type="button" (click)="edit(transaction)">
           <app-icon name="edit" /> Edit
         </button>
-        <button class="btn" type="button" (click)="duplicate(transaction)">
+        <button
+          class="btn"
+          type="button"
+          [disabled]="!canDuplicate(transaction)"
+          (click)="duplicate(transaction)"
+        >
           <app-icon name="duplicate" /> Duplicate
         </button>
         <button class="btn" type="button" (click)="goToSource(transaction)">

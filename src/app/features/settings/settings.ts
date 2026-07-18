@@ -1,4 +1,4 @@
-import { Component, ElementRef, inject, signal, viewChild } from '@angular/core';
+import { Component, ElementRef, computed, inject, signal, viewChild } from '@angular/core';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { SqliteDatabase } from '../../core/data/sqlite-database';
 import { ApplicationPinService } from '../../core/services/application-pin.service';
@@ -13,9 +13,11 @@ import { BackupService } from '../../core/services/backup.service';
 import { ExportService } from '../../core/services/export.service';
 import { ConfirmationDialog } from '../../shared/confirmation-dialog';
 import { AppDateFormat, DateFormatService } from '../../core/services/date-format.service';
+import { APP_VERSION } from '../../core/app-version';
 
 type PinAction = 'CHANGE' | 'DISABLE';
 type BackupAction = 'CREATE' | 'RESTORE';
+type ProtectedDataAction = 'DELETE_ALL' | 'RETENTION';
 
 @Component({
   selector: 'app-settings-page',
@@ -25,6 +27,9 @@ type BackupAction = 'CREATE' | 'RESTORE';
   host: { '(document:keydown.escape)': 'closeDialogs()' },
 })
 export class SettingsPage {
+  readonly appVersion = APP_VERSION;
+  readonly copyright =
+    new Date().getFullYear() > 2026 ? `2026 – ${new Date().getFullYear()}` : '2026';
   readonly database = inject(SqliteDatabase);
   readonly store = inject(CardNestStore);
   readonly notifications = inject(NotificationService);
@@ -58,6 +63,20 @@ export class SettingsPage {
   readonly revealBackupConfirmation = signal(false);
   readonly restoreConfirmationOpen = signal(false);
   readonly deleteAllConfirmationOpen = signal(false);
+  readonly retentionConfirmationOpen = signal(false);
+  readonly retentionYears = signal(5);
+  readonly protectedAction = signal<ProtectedDataAction | null>(null);
+  readonly destructivePin = signal('');
+  readonly destructiveAuthError = signal<string | null>(null);
+  readonly processingProtectedAction = signal(false);
+  readonly retentionCandidateCount = computed(() => {
+    const cutoff = new Date();
+    cutoff.setFullYear(cutoff.getFullYear() - this.retentionYears());
+    const cutoffIso = cutoff.toISOString().slice(0, 10);
+    return this.store
+      .transactions()
+      .filter((transaction) => transaction.transactionDate < cutoffIso).length;
+  });
   private selectedBackupContents = '';
   private pendingRestorePassphrase = '';
   readonly pinButton = viewChild<ElementRef<HTMLButtonElement>>('pinButton');
@@ -98,6 +117,10 @@ export class SettingsPage {
   }
 
   closeDialogs(): void {
+    if (this.protectedAction()) {
+      this.closeProtectedAction();
+      return;
+    }
     if (this.showBackupDialog()) {
       this.closeBackupDialog();
       return;
@@ -348,17 +371,84 @@ export class SettingsPage {
 
   async confirmDeleteAllData(): Promise<void> {
     this.deleteAllConfirmationOpen.set(false);
-    try {
-      await this.notifications.cancelAll(this.store.cards());
-      await this.store.deleteAllData();
-      this.snackbar.show('All CardNest data deleted.', 'WARNING');
-      globalThis.setTimeout(() => globalThis.location.reload(), 700);
-    } catch (error: unknown) {
-      this.snackbar.show(
-        error instanceof Error ? error.message : 'CardNest data could not be deleted.',
-        'WARNING',
-      );
+    await this.requestProtectedAction('DELETE_ALL');
+  }
+
+  updateRetentionYears(event: Event): void {
+    this.retentionYears.set(Number((event.target as HTMLSelectElement).value));
+  }
+
+  async confirmRetentionCleanup(): Promise<void> {
+    this.retentionConfirmationOpen.set(false);
+    await this.requestProtectedAction('RETENTION');
+  }
+
+  async submitDestructivePin(event: Event): Promise<void> {
+    event.preventDefault();
+    if (!(await this.pin.verifyPin(this.destructivePin()))) {
+      this.destructiveAuthError.set('The application PIN is incorrect.');
+      return;
     }
+    await this.executeProtectedAction();
+  }
+
+  async authenticateDestructiveWithBiometrics(): Promise<void> {
+    this.destructiveAuthError.set(null);
+    if (!(await this.appLock.authenticateWithBiometrics())) {
+      this.destructiveAuthError.set(
+        this.appLock.biometricError() ?? 'Biometric authentication was not completed.',
+      );
+      return;
+    }
+    await this.executeProtectedAction();
+  }
+
+  closeProtectedAction(): void {
+    if (this.processingProtectedAction()) return;
+    this.protectedAction.set(null);
+    this.destructivePin.set('');
+    this.destructiveAuthError.set(null);
+  }
+
+  private async requestProtectedAction(action: ProtectedDataAction): Promise<void> {
+    if (!this.pin.hasPin()) {
+      this.protectedAction.set(action);
+      await this.executeProtectedAction();
+      return;
+    }
+    this.protectedAction.set(action);
+    this.destructivePin.set('');
+    this.destructiveAuthError.set(null);
+  }
+
+  private async executeProtectedAction(): Promise<void> {
+    const action = this.protectedAction();
+    if (!action || this.processingProtectedAction()) return;
+    this.processingProtectedAction.set(true);
+    try {
+      if (action === 'DELETE_ALL') {
+        await this.notifications.cancelAll(this.store.cards());
+        await this.store.deleteAllData();
+        this.snackbar.show('All CardNest data deleted.', 'WARNING');
+        globalThis.setTimeout(() => globalThis.location.reload(), 700);
+        return;
+      }
+      const removed = await this.store.retainRecentYears(this.retentionYears());
+      this.snackbar.show(
+        removed
+          ? `${removed} older ${removed === 1 ? 'transaction was' : 'transactions were'} deleted.`
+          : `No transactions older than ${this.retentionYears()} years were found.`,
+        removed ? 'WARNING' : 'INFO',
+      );
+    } catch (error: unknown) {
+      this.destructiveAuthError.set(
+        error instanceof Error ? error.message : 'The data cleanup could not be completed.',
+      );
+      return;
+    } finally {
+      this.processingProtectedAction.set(false);
+    }
+    this.closeProtectedAction();
   }
 
   private resetBackupDialog(action: BackupAction): void {

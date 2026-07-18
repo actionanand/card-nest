@@ -89,6 +89,7 @@ erDiagram
 | `transaction_split_members` | `(group_id, transaction_id)` | Associates two to four generated transactions with a split group                 | `transaction_id` is unique                                                                                           |
 | `attachments`               | `id`                         | Receipt metadata belonging to a transaction                                      | `transaction_id`, `private_path`, `encrypted_metadata`; image bytes live at the private path rather than in this row |
 | `recurring_rules`           | `id`                         | Rules that generate repeated transactions                                        | `card_id`, `next_occurrence_date`, `status`, `payload`                                                               |
+| `loan_commitments`          | `id`                         | User-managed external loan and EMI schedules                                     | `status`, `payload`, `updated_at`                                                                                    |
 
 ### EMI tables
 

@@ -38,6 +38,94 @@
   display: grid;
   gap: 0.7rem;
 }
+.commitment-heading {
+  margin: 0.4rem 0 0;
+}
+.commitment-heading p,
+.commitment-heading h2 {
+  margin: 0;
+}
+.commitment-heading h2 {
+  font-size: 1.1rem;
+}
+.repeat-list {
+  display: grid;
+  gap: 0.7rem;
+  margin-bottom: 1.2rem;
+}
+.repeat-card {
+  overflow: hidden;
+}
+.repeat-summary {
+  display: grid;
+  width: 100%;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: 0.8rem;
+  padding: 1rem;
+  border: 0;
+  color: var(--ink);
+  background: transparent;
+  text-align: left;
+}
+.repeat-summary > span:not(.loan-icon) {
+  display: grid;
+  gap: 0.12rem;
+}
+.repeat-summary small {
+  color: var(--muted);
+  font-size: 0.65rem;
+}
+.repeat-summary > app-icon {
+  transition: transform 0.18s ease;
+}
+.repeat-summary > app-icon.expanded {
+  transform: rotate(180deg);
+}
+.repeat-details {
+  padding: 1rem;
+  border-top: 1px solid var(--line);
+}
+.repeat-details dl {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.6rem;
+  margin: 0 0 1rem;
+}
+.repeat-details dl div {
+  padding: 0.65rem;
+  border-radius: 0.6rem;
+  background: var(--canvas);
+}
+.repeat-details dt {
+  color: var(--muted);
+  font-size: 0.62rem;
+}
+.repeat-details dd {
+  margin: 0.15rem 0 0;
+  font-size: 0.76rem;
+  font-weight: 750;
+}
+.repeat-actions,
+.repeat-edit > div {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.6rem;
+}
+.repeat-edit {
+  max-width: 28rem;
+}
+.repeat-edit label {
+  display: grid;
+  gap: 0.35rem;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+.form-error {
+  color: var(--danger);
+  font-size: 0.68rem;
+}
 .emi-list {
   display: grid;
   gap: 0.7rem;
@@ -208,6 +296,25 @@
     grid-row: 1 / 3;
   }
   .emi-details dl {
+    grid-template-columns: 1fr;
+  }
+  .repeat-summary {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+  .repeat-summary > span:nth-child(3),
+  .repeat-summary > span:nth-child(4) {
+    grid-column: 2;
+  }
+  .repeat-summary > app-icon {
+    grid-column: 3;
+    grid-row: 1 / 4;
+  }
+  .repeat-details dl {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .repeat-actions,
+  .repeat-edit > div {
+    display: grid;
     grid-template-columns: 1fr;
   }
   .form-actions .btn {

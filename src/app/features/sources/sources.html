@@ -82,6 +82,16 @@
               /></label>
             }
           } @else {
+            <div class="meal-cycle-summary" aria-label="Current Pluxee cycle summary">
+              <span
+                ><small>Used this cycle</small
+                ><strong>{{ money(monthlyUsed(source)) }}</strong></span
+              >
+              <span
+                ><small>Monthly amount remaining</small
+                ><strong>{{ money(monthlyRemaining(source)) }}</strong></span
+              >
+            </div>
             <label
               >Current Pluxee balance<input
                 inputmode="decimal"
@@ -169,13 +179,14 @@
           }}</strong>
         </article>
         <article class="panel">
-          <small>Spent</small><strong>{{ money(spentMinor()) }}</strong>
+          <small>Spent this cycle</small><strong>{{ money(spentMinor()) }}</strong>
         </article>
         <article class="panel credit">
-          <small>Credits / top-ups</small><strong>{{ money(creditsMinor()) }}</strong>
+          <small>Credits / top-ups this cycle</small><strong>{{ money(creditsMinor()) }}</strong>
         </article>
         <article class="panel">
-          <small>Transactions</small><strong>{{ visibleTransactions().length }}</strong>
+          <small>Transactions this cycle</small
+          ><strong>{{ currentCycleTransactions().length }}</strong>
         </article>
       </div>
 
@@ -189,38 +200,50 @@
           </div>
           <small>You can edit a transaction and move it to a credit card or another source.</small>
         </div>
-        <div class="source-transactions">
-          @for (transaction of visibleTransactions(); track transaction.id) {
-            <article>
-              <span
-                class="transaction-direction"
-                [class.credit]="isCredit(transaction.type)"
-                aria-hidden="true"
-              >
-                <app-icon [name]="isCredit(transaction.type) ? 'incoming' : 'outgoing'" />
-              </span>
-              <div>
-                <strong>{{ transactionLabel(transaction) }}</strong>
-                <small
-                  >{{ categoryName(transaction.categoryId) }} ·
-                  {{ sourceName(transaction.cardId) }}</small
-                >
+        <div class="source-cycle-groups">
+          @for (group of transactionGroups(); track group.key) {
+            <details class="source-cycle" [open]="group.key === currentCycle().startIso">
+              <summary>
+                <span>{{ group.label }}</span>
+                <strong>{{ money(group.spentMinor) }} used</strong>
+                <app-icon name="chevron_right" />
+              </summary>
+              <div class="source-transactions">
+                @for (transaction of group.transactions; track transaction.id) {
+                  <article>
+                    <span
+                      class="transaction-direction"
+                      [class.credit]="isCredit(transaction.type)"
+                      aria-hidden="true"
+                    >
+                      <app-icon [name]="isCredit(transaction.type) ? 'incoming' : 'outgoing'" />
+                    </span>
+                    <div>
+                      <strong>{{ transactionLabel(transaction) }}</strong>
+                      <small
+                        >{{ categoryName(transaction.categoryId) }} ·
+                        {{ sourceName(transaction.cardId) }}</small
+                      >
+                    </div>
+                    <time [attr.datetime]="transaction.transactionDate">{{
+                      transaction.transactionDate | appDate
+                    }}</time>
+                    <strong class="transaction-amount" [class.credit]="isCredit(transaction.type)">
+                      {{ isCredit(transaction.type) ? '+' : '−'
+                      }}{{ money(transaction.amountMinor) }}
+                    </strong>
+                    <a
+                      class="edit-transaction"
+                      routerLink="/transactions"
+                      [queryParams]="{ edit: transaction.id }"
+                      [attr.aria-label]="'Edit ' + transactionLabel(transaction)"
+                    >
+                      <app-icon name="edit" />
+                    </a>
+                  </article>
+                }
               </div>
-              <time [attr.datetime]="transaction.transactionDate">{{
-                transaction.transactionDate | appDate
-              }}</time>
-              <strong class="transaction-amount" [class.credit]="isCredit(transaction.type)">
-                {{ isCredit(transaction.type) ? '+' : '−' }}{{ money(transaction.amountMinor) }}
-              </strong>
-              <a
-                class="edit-transaction"
-                routerLink="/transactions"
-                [queryParams]="{ edit: transaction.id }"
-                [attr.aria-label]="'Edit ' + transactionLabel(transaction)"
-              >
-                <app-icon name="edit" />
-              </a>
-            </article>
+            </details>
           } @empty {
             <div class="source-empty">
               <app-icon name="transactions" />

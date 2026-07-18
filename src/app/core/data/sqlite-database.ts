@@ -41,6 +41,7 @@ const BACKUP_TABLES = [
   'attachments',
   'emi_plans',
   'emi_installments',
+  'loan_commitments',
   'monthly_income',
   'category_limits',
 ] as const;
@@ -52,6 +53,7 @@ const DELETE_TABLES = [
   'attachments',
   'emi_installments',
   'emi_plans',
+  'loan_commitments',
   'statements',
   'recurring_rules',
   'card_transactions',
@@ -238,6 +240,43 @@ export class SqliteDatabase {
       statements: DELETE_TABLES.map((table) => `DELETE FROM ${table}`).join(';\n'),
     });
     if (this.isWeb) await CapacitorSQLite.saveToStore({ database: this.databaseName });
+  }
+
+  async deleteDataOlderThan(cutoffIso: string): Promise<number> {
+    if (!this.ready()) throw new Error('SQLite database is unavailable.');
+    const countResult = await CapacitorSQLite.query({
+      database: this.databaseName,
+      statement: 'SELECT COUNT(*) AS count FROM card_transactions WHERE transaction_date < ?',
+      values: [cutoffIso],
+    });
+    const removed = Number(countResult.values?.[0]?.['count'] ?? 0);
+    await CapacitorSQLite.execute({
+      database: this.databaseName,
+      transaction: true,
+      statements: `
+        DELETE FROM transaction_links
+         WHERE transaction_id IN (SELECT id FROM card_transactions WHERE transaction_date < '${cutoffIso}')
+            OR related_transaction_id IN (SELECT id FROM card_transactions WHERE transaction_date < '${cutoffIso}');
+        DELETE FROM transaction_split_members
+         WHERE transaction_id IN (SELECT id FROM card_transactions WHERE transaction_date < '${cutoffIso}');
+        DELETE FROM emi_installments
+         WHERE emi_plan_id IN (
+           SELECT id FROM emi_plans
+            WHERE transaction_id IN (SELECT id FROM card_transactions WHERE transaction_date < '${cutoffIso}')
+         );
+        DELETE FROM emi_plans
+         WHERE transaction_id IN (SELECT id FROM card_transactions WHERE transaction_date < '${cutoffIso}');
+        DELETE FROM attachments
+         WHERE transaction_id IN (SELECT id FROM card_transactions WHERE transaction_date < '${cutoffIso}');
+        DELETE FROM card_transactions WHERE transaction_date < '${cutoffIso}';
+        DELETE FROM transaction_split_groups
+         WHERE id NOT IN (SELECT DISTINCT group_id FROM transaction_split_members);
+        DELETE FROM statements WHERE cycle_end_date < '${cutoffIso}';
+        DELETE FROM monthly_income WHERE cycle_end_date < '${cutoffIso}';
+      `,
+    });
+    if (this.isWeb) await CapacitorSQLite.saveToStore({ database: this.databaseName });
+    return removed;
   }
 
   private async exportPortableBackupJson(): Promise<string> {
