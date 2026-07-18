@@ -149,11 +149,21 @@ legend {
   gap: 0.3rem;
 }
 .icon-picker label {
+  position: relative;
   min-width: 0;
+  touch-action: pan-y;
 }
 .icon-picker input {
   position: absolute;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
   opacity: 0;
+  pointer-events: none;
 }
 .icon-picker span {
   display: grid;
@@ -167,6 +177,8 @@ legend {
   color: var(--muted);
   background: var(--canvas);
   text-align: center;
+  touch-action: pan-y;
+  user-select: none;
 }
 .icon-picker app-icon {
   width: 1rem;
