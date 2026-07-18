@@ -173,7 +173,7 @@
                 First available source
               </option>
               <optgroup label="Credit cards">
-                @for (card of store.activeCards(); track card.id) {
+                @for (card of store.alphabeticalActiveCards(); track card.id) {
                   <option
                     [value]="card.id"
                     [selected]="store.flashTransactionSourceId() === card.id"
@@ -348,7 +348,9 @@
       </section>
       <footer class="app-footer">
         <span>© {{ copyright }} CardNest. All rights reserved.</span>
-        <span>Version {{ appVersion }}</span>
+        @if (showAppVersion) {
+          <span>Version {{ appVersion }}</span>
+        }
       </footer>
     </div>
   </div>

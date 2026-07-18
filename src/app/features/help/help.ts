@@ -2,6 +2,7 @@ import { Component, computed, signal } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import { AppIcon } from '../../shared/app-icon';
 import { APP_VERSION } from '../../core/app-version';
+import { Capacitor } from '@capacitor/core';
 
 interface HelpTopic {
   readonly id: string;
@@ -317,6 +318,7 @@ const HELP_TOPICS: readonly HelpTopic[] = [
 })
 export class HelpPage {
   readonly appVersion = APP_VERSION;
+  readonly showAppVersion = Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android';
   readonly copyright =
     new Date().getFullYear() > 2026 ? `2026 – ${new Date().getFullYear()}` : '2026';
   readonly search = signal('');

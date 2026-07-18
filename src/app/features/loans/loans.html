@@ -5,10 +5,45 @@
       <h1>Loans & EMIs</h1>
       <p class="subtitle">Track debit dates and know when every commitment ends.</p>
     </div>
-    <button class="btn btn-primary" type="button" (click)="showForm.set(true)">
-      <app-icon name="plus" /> Add loan
-    </button>
+    <div class="loan-header-actions">
+      <label>
+        <span class="sr-only">Filter commitments</span>
+        <select [value]="commitmentFilter()" (change)="updateCommitmentFilter($event)">
+          <option value="ACTIVE">Active</option>
+          <option value="INACTIVE">Completed / stopped</option>
+          <option value="ALL">All commitments</option>
+        </select>
+      </label>
+      <button
+        class="btn btn-primary add-loan-button"
+        type="button"
+        (click)="showForm.set(true)"
+        aria-label="Add loan or external EMI"
+      >
+        <app-icon name="layers_plus" /> <span>Add loan</span>
+      </button>
+    </div>
   </header>
+  <section class="panel monthly-due-summary" aria-labelledby="monthly-due-title">
+    <div class="monthly-due-total">
+      <span class="monthly-due-icon" aria-hidden="true"><app-icon name="schedule" /></span>
+      <span>
+        <small id="monthly-due-title">Total due in {{ currentMonthLabel }}</small>
+        <strong>{{ money(totalDueThisMonth()) }}</strong>
+      </span>
+    </div>
+    <div class="monthly-due-breakdown">
+      <span
+        ><small>Repeats</small><strong>{{ money(recurringDueThisMonth()) }}</strong></span
+      >
+      <span
+        ><small>Converted EMIs</small><strong>{{ money(emiDueThisMonth()) }}</strong></span
+      >
+      <span
+        ><small>Loans</small><strong>{{ money(loanDueThisMonth()) }}</strong></span
+      >
+    </div>
+  </section>
   @if (showForm()) {
     <section class="panel loan-form">
       <div class="form-heading">
@@ -41,13 +76,13 @@
       </form>
     </section>
   }
-  @if (store.recurringRules().length) {
+  @if (visibleRepeats().length) {
     <section class="repeat-list" aria-labelledby="recurring-heading">
       <div class="commitment-heading">
         <p class="eyebrow">Scheduled spending</p>
         <h2 id="recurring-heading">Recurring transactions</h2>
       </div>
-      @for (rule of store.recurringRules(); track rule.id) {
+      @for (rule of visibleRepeats(); track rule.id) {
         <article class="panel repeat-card" [class.cancelled]="rule.status !== 'ACTIVE'">
           <button
             class="repeat-summary"
@@ -59,14 +94,21 @@
             <span>
               <strong>{{ rule.title }}</strong>
               <small>{{ store.sourceDetail(rule.cardId) }} · Recurring transaction</small>
+              @if (repeatDebitDate(rule); as debitDate) {
+                <span class="debit-date-badge repeat-date"
+                  ><app-icon name="schedule" /> {{ debitDate | appDate }}</span
+                >
+              }
             </span>
-            <span>
-              <small>Progress</small>
-              <strong>({{ repeatProgress(rule) }})</strong>
-            </span>
-            <span>
-              <small>Future amount</small>
-              <strong>{{ money(rule.amountMinor) }}</strong>
+            <span class="repeat-metrics">
+              <span>
+                <small>Progress</small>
+                <strong>({{ repeatProgress(rule) }})</strong>
+              </span>
+              <span>
+                <small>Future amount</small>
+                <strong>{{ money(rule.amountMinor) }}</strong>
+              </span>
             </span>
             <app-icon name="chevron_down" [class.expanded]="selectedRepeatId() === rule.id" />
           </button>
@@ -134,10 +176,10 @@
       }
     </section>
   }
-  @if (store.emiPlans().length) {
+  @if (visibleEmiPlans().length) {
     <section class="emi-list" aria-labelledby="converted-emi-heading">
       <h2 id="converted-emi-heading">Converted purchase EMIs</h2>
-      @for (plan of store.emiPlans(); track plan.id) {
+      @for (plan of visibleEmiPlans(); track plan.id) {
         <article class="panel emi-card" [class.cancelled]="plan.status === 'CANCELLED'">
           <button
             class="emi-summary"
@@ -146,13 +188,18 @@
             [attr.aria-expanded]="selectedEmiId() === plan.id"
           >
             <span class="loan-icon" aria-hidden="true"><app-icon name="schedule" /></span>
-            <span
-              ><strong>{{ emiTitle(plan) }}</strong
-              ><small
+            <span>
+              <strong>{{ emiTitle(plan) }}</strong>
+              <small
                 >{{ store.sourceDetail(plan.cardId) }} · {{ plan.tenureMonths }} months ·
                 {{ plan.status.toLowerCase() }}</small
-              ></span
-            >
+              >
+              @if (emiDebitDate(plan.id); as debitDate) {
+                <span class="debit-date-badge emi-date"
+                  ><app-icon name="schedule" /> {{ debitDate | appDate }}</span
+                >
+              }
+            </span>
             <span
               ><small>Next EMI</small
               ><strong>{{ money(nextInstallment(plan.id)?.totalMinor ?? 0) }}</strong></span
@@ -211,50 +258,59 @@
       }
     </section>
   }
-  <section class="loan-list" aria-labelledby="external-loan-heading">
-    <div class="commitment-heading">
-      <p class="eyebrow">Manually tracked</p>
-      <h2 id="external-loan-heading">External loans &amp; EMIs</h2>
-    </div>
-    @for (loan of store.loans(); track loan.id) {
-      <article class="panel" [class.cancelled]="loan.status === 'CANCELLED'">
-        <div>
-          <span class="loan-icon" aria-hidden="true"><app-icon name="spending" /></span>
-          <div>
-            <h2>{{ loan.name }}</h2>
-            <p>{{ loan.lender || 'Personal commitment' }}</p>
-          </div>
-        </div>
-        <dl>
-          <div>
-            <dt>Installment</dt>
-            <dd>{{ money(loan.installmentMinor) }}</dd>
-          </div>
-          <div>
-            <dt>Debit date</dt>
-            <dd>Day {{ loan.debitDay }}</dd>
-          </div>
-          <div>
-            <dt>Runs until</dt>
-            <dd>{{ loan.endDate }}</dd>
-          </div>
-        </dl>
-        <button
-          class="btn"
-          type="button"
-          [disabled]="loan.status !== 'ACTIVE'"
-          (click)="requestCancelLoan(loan)"
-        >
-          {{ loan.status === 'ACTIVE' ? 'Cancel loan / EMI' : loan.status.toLowerCase() }}
-        </button>
-      </article>
-    } @empty {
-      <div class="panel empty">
-        <h2>No loans or external EMIs</h2>
-        <p>Add one to include its monthly debit in your budget forecast.</p>
+  @if (visibleLoans().length) {
+    <section class="loan-list" aria-labelledby="external-loan-heading">
+      <div class="commitment-heading">
+        <p class="eyebrow">Manually tracked</p>
+        <h2 id="external-loan-heading">External loans &amp; EMIs</h2>
       </div>
-    }
-  </section>
+      @for (loan of visibleLoans(); track loan.id) {
+        <article class="panel" [class.cancelled]="loan.status === 'CANCELLED'">
+          <div>
+            <span class="loan-icon" aria-hidden="true"><app-icon name="spending" /></span>
+            <div>
+              <h2>{{ loan.name }}</h2>
+              <p>{{ loan.lender || 'Personal commitment' }}</p>
+              @if (loanDebitDate(loan); as debitDate) {
+                <span class="debit-date-badge loan-date"
+                  ><app-icon name="schedule" /> {{ debitDate | appDate }}</span
+                >
+              }
+            </div>
+          </div>
+          <dl>
+            <div>
+              <dt>Installment</dt>
+              <dd>{{ money(loan.installmentMinor) }}</dd>
+            </div>
+            <div>
+              <dt>Debit date</dt>
+              <dd>Day {{ loan.debitDay }}</dd>
+            </div>
+            <div>
+              <dt>Runs until</dt>
+              <dd>{{ loan.endDate }}</dd>
+            </div>
+          </dl>
+          <button
+            class="btn"
+            type="button"
+            [disabled]="loan.status !== 'ACTIVE'"
+            (click)="requestCancelLoan(loan)"
+          >
+            {{ loan.status === 'ACTIVE' ? 'Cancel loan / EMI' : loan.status.toLowerCase() }}
+          </button>
+        </article>
+      }
+    </section>
+  }
+  @if (!visibleRepeats().length && !visibleEmiPlans().length && !visibleLoans().length) {
+    <div class="panel empty">
+      <app-icon name="layers_plus" />
+      <h2>No {{ commitmentFilter() === 'ACTIVE' ? 'active ' : '' }}commitments</h2>
+      <p>Change the filter or add a loan, EMI, or recurring transaction.</p>
+    </div>
+  }
 </div>
 
 @if (closeEmiCandidate(); as plan) {

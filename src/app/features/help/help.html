@@ -82,6 +82,8 @@
   }
   <footer class="help-footer">
     <span>© {{ copyright }} CardNest. All rights reserved.</span>
-    <span>Version {{ appVersion }}</span>
+    @if (showAppVersion) {
+      <span>Version {{ appVersion }}</span>
+    }
   </footer>
 </div>

@@ -95,7 +95,7 @@
                   </div>
                   @if (store.activeCards().length) {
                     <p class="pay-from-group">Credit cards</p>
-                    @for (card of store.activeCards(); track card.id) {
+                    @for (card of store.alphabeticalActiveCards(); track card.id) {
                       <button
                         type="button"
                         class="pay-from-option"
@@ -545,14 +545,11 @@
                     <button type="button" role="menuitem" (click)="edit(transaction)">
                       <app-icon name="edit" /> Edit transaction
                     </button>
-                    <button
-                      type="button"
-                      role="menuitem"
-                      [disabled]="!canDuplicate(transaction)"
-                      (click)="duplicate(transaction)"
-                    >
-                      <app-icon name="duplicate" /> Duplicate transaction
-                    </button>
+                    @if (canDuplicate(transaction)) {
+                      <button type="button" role="menuitem" (click)="duplicate(transaction)">
+                        <app-icon name="duplicate" /> Duplicate transaction
+                      </button>
+                    }
                     <button type="button" role="menuitem" (click)="goToSource(transaction)">
                       <app-icon name="go_to_source" /> Go to payment source
                     </button>
@@ -597,6 +594,7 @@
   >
     <section
       class="panel transaction-detail"
+      [class.recurring-detail]="transaction.recurringRuleId"
       role="dialog"
       aria-modal="true"
       aria-labelledby="transaction-detail-title"
@@ -605,6 +603,9 @@
       (keydown)="$event.stopPropagation()"
     >
       <header class="detail-heading">
+        @if (transaction.recurringRuleId) {
+          <span class="recurring-detail-icon" aria-hidden="true"><app-icon name="repeat" /></span>
+        }
         <div>
           <p class="eyebrow">
             {{
@@ -713,15 +714,26 @@
         </section>
       }
       @if (recurringRule(transaction); as rule) {
-        <section class="detail-section">
-          <h3>Recurring schedule {{ recurringProgressLabel(transaction) }}</h3>
-          <p>
-            {{ recurringTransactions(transaction).length }} generated ·
-            {{ recurringRemaining(transaction) }} · {{ rule.status.toLowerCase() }}
-          </p>
+        <section class="detail-section recurring-schedule-card">
+          <div class="recurring-schedule-heading">
+            <div>
+              <p class="eyebrow">Monthly schedule</p>
+              <h3>Repeat {{ recurringProgressLabel(transaction) }}</h3>
+            </div>
+            <span class="recurring-status">{{ rule.status.toLowerCase() }}</span>
+          </div>
+          <div class="recurring-stats">
+            <span
+              ><small>Generated</small
+              ><strong>{{ recurringTransactions(transaction).length }}</strong></span
+            >
+            <span
+              ><small>Remaining</small><strong>{{ recurringRemaining(transaction) }}</strong></span
+            >
+          </div>
           @if (rule.nextOccurrenceDate) {
             <div class="schedule-row">
-              <span>Next transaction</span>
+              <span><app-icon name="schedule" /> Next transaction</span>
               <strong>{{ rule.nextOccurrenceDate | appDate }}</strong>
             </div>
           }
@@ -734,14 +746,11 @@
         <button class="btn" type="button" (click)="edit(transaction)">
           <app-icon name="edit" /> Edit
         </button>
-        <button
-          class="btn"
-          type="button"
-          [disabled]="!canDuplicate(transaction)"
-          (click)="duplicate(transaction)"
-        >
-          <app-icon name="duplicate" /> Duplicate
-        </button>
+        @if (canDuplicate(transaction)) {
+          <button class="btn" type="button" (click)="duplicate(transaction)">
+            <app-icon name="duplicate" /> Duplicate
+          </button>
+        }
         <button class="btn" type="button" (click)="goToSource(transaction)">
           <app-icon name="go_to_source" /> Payment source
         </button>

@@ -4,6 +4,82 @@
 .loans-page {
   max-width: 68rem;
 }
+.loan-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+.loan-header-actions select {
+  min-width: 9rem;
+  min-height: 2.65rem;
+}
+.add-loan-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+}
+.monthly-due-summary {
+  display: grid;
+  grid-template-columns: minmax(15rem, 1fr) minmax(20rem, 1.35fr);
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1.15rem;
+  padding: 1rem 1.1rem;
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--line));
+  background:
+    linear-gradient(
+      110deg,
+      color-mix(in srgb, var(--accent-soft) 72%, var(--surface)),
+      transparent
+    ),
+    var(--surface);
+}
+.monthly-due-total {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+.monthly-due-total > span:last-child,
+.monthly-due-breakdown span {
+  display: grid;
+  gap: 0.12rem;
+}
+.monthly-due-icon {
+  display: grid;
+  width: 3rem;
+  height: 3rem;
+  place-items: center;
+  border-radius: 0.85rem;
+  color: #fff;
+  background: var(--accent);
+  box-shadow: 0 0.45rem 1rem rgb(27 92 65 / 18%);
+}
+.monthly-due-total small,
+.monthly-due-breakdown small {
+  color: var(--muted);
+  font-size: 0.61rem;
+  font-weight: 700;
+}
+.monthly-due-total strong {
+  color: var(--accent);
+  font-size: 1.35rem;
+  font-variant-numeric: lining-nums tabular-nums;
+}
+.monthly-due-breakdown {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+.monthly-due-breakdown span {
+  padding: 0.6rem;
+  border-radius: 0.65rem;
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+}
+.monthly-due-breakdown strong {
+  font-size: 0.75rem;
+  font-variant-numeric: lining-nums tabular-nums;
+}
 .loan-form {
   margin-bottom: 1rem;
   padding: 1.2rem;
@@ -59,7 +135,7 @@
 .repeat-summary {
   display: grid;
   width: 100%;
-  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 0.8rem;
   padding: 1rem;
@@ -71,6 +147,44 @@
 .repeat-summary > span:not(.loan-icon) {
   display: grid;
   gap: 0.12rem;
+}
+.repeat-summary > span.repeat-metrics {
+  display: flex;
+  align-items: center;
+  gap: 1.2rem;
+}
+.repeat-metrics > span {
+  display: grid;
+  gap: 0.12rem;
+}
+.debit-date-badge {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  gap: 0.25rem;
+  margin-top: 0.25rem;
+  padding: 0.18rem 0.42rem;
+  border-radius: 999px;
+  font-size: 0.58rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.debit-date-badge app-icon {
+  width: 0.68rem;
+  height: 0.68rem;
+}
+.repeat-date {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.emi-date {
+  color: var(--warning);
+  background: var(--warning-soft);
+}
+.loan-date {
+  color: var(--success);
+  background: var(--success-soft);
 }
 .repeat-summary small {
   color: var(--muted);
@@ -274,6 +388,42 @@
   .loans-page {
     padding-inline: 0.7rem;
   }
+  .monthly-due-summary {
+    grid-template-columns: 1fr;
+    gap: 0.75rem;
+    padding: 0.85rem;
+  }
+  .monthly-due-breakdown {
+    gap: 0.35rem;
+  }
+  .monthly-due-breakdown span {
+    padding: 0.48rem;
+  }
+  .monthly-due-breakdown small {
+    font-size: 0.54rem;
+  }
+  .monthly-due-breakdown strong {
+    font-size: 0.68rem;
+  }
+  .loan-header-actions {
+    gap: 0.4rem;
+  }
+  .loan-header-actions select {
+    width: 8.2rem;
+    min-width: 0;
+  }
+  .add-loan-button {
+    width: 2.65rem;
+    min-width: 2.65rem;
+    padding: 0;
+  }
+  .add-loan-button span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+  }
   .loan-list article {
     grid-template-columns: 1fr;
   }
@@ -300,14 +450,30 @@
   }
   .repeat-summary {
     grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-rows: auto auto;
+    gap: 0.35rem 0.65rem;
+    padding: 0.75rem;
   }
-  .repeat-summary > span:nth-child(3),
-  .repeat-summary > span:nth-child(4) {
+  .repeat-summary > span:nth-child(2) {
     grid-column: 2;
+    grid-row: 1;
+  }
+  .repeat-summary > span.repeat-metrics {
+    grid-column: 2;
+    grid-row: 2;
+    align-items: end;
+    justify-content: space-between;
+    gap: 0.65rem;
   }
   .repeat-summary > app-icon {
     grid-column: 3;
-    grid-row: 1 / 4;
+    grid-row: 1 / 3;
+  }
+  .repeat-summary .loan-icon {
+    grid-row: 1 / 3;
+  }
+  .repeat-summary small {
+    font-size: 0.58rem;
   }
   .repeat-details dl {
     grid-template-columns: repeat(2, minmax(0, 1fr));

@@ -6,7 +6,7 @@ import { formatMoney, parseMoneyToMinor } from '../../core/services/money';
 import { SnackbarService } from '../../core/services/snackbar.service';
 import { AppIcon } from '../../shared/app-icon';
 import { PaymentSourceLogo } from '../../shared/payment-source-logo';
-import { AppDatePipe, DateFormatService } from '../../core/services/date-format.service';
+import { AppDatePipe } from '../../core/services/date-format.service';
 
 type SourceTab = 'ACCOUNTS' | 'ACTIVITY';
 
@@ -27,7 +27,6 @@ export class SourcesPage {
   readonly store = inject(CardNestStore);
   private readonly route = inject(ActivatedRoute);
   private readonly snackbar = inject(SnackbarService);
-  private readonly dates = inject(DateFormatService);
   private readonly requestedSourceId = this.route.snapshot.fragment;
   readonly activeTab = signal<SourceTab>(this.requestedSourceId ? 'ACTIVITY' : 'ACCOUNTS');
   readonly selectedSourceId = signal(this.requestedSourceId ?? 'ALL');
@@ -189,7 +188,7 @@ export class SourcesPage {
     return {
       startIso,
       endIso,
-      label: `${this.dates.format(start)} – ${this.dates.format(end)}`,
+      label: `${this.cycleDate(start)} – ${this.cycleDate(end)}`,
     };
   }
 
@@ -197,5 +196,12 @@ export class SourcesPage {
     return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(
       date.getDate(),
     ).padStart(2, '0')}`;
+  }
+
+  private cycleDate(date: Date): string {
+    return `${String(date.getDate()).padStart(2, '0')}-${String(date.getMonth() + 1).padStart(
+      2,
+      '0',
+    )}-${date.getFullYear()}`;
   }
 }

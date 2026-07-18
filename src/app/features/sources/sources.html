@@ -204,9 +204,20 @@
           @for (group of transactionGroups(); track group.key) {
             <details class="source-cycle" [open]="group.key === currentCycle().startIso">
               <summary>
-                <span>{{ group.label }}</span>
-                <strong>{{ money(group.spentMinor) }} used</strong>
-                <app-icon name="chevron_right" />
+                <span class="cycle-period">
+                  <span class="cycle-period-icon" aria-hidden="true"
+                    ><app-icon name="schedule"
+                  /></span>
+                  <span>
+                    <small>Budget cycle</small>
+                    <strong>{{ group.label }}</strong>
+                  </span>
+                </span>
+                <span class="cycle-total">
+                  <small>Spent</small>
+                  <strong>{{ money(group.spentMinor) }}</strong>
+                </span>
+                <app-icon class="cycle-chevron" name="chevron_right" />
               </summary>
               <div class="source-transactions">
                 @for (transaction of group.transactions; track transaction.id) {

@@ -1,4 +1,4 @@
-import { Component, inject, signal } from '@angular/core';
+import { Component, computed, inject, signal } from '@angular/core';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { ActivatedRoute } from '@angular/router';
 import { EmiInstallment, EmiPlan, LoanCommitment, RecurringRule } from '../../core/models/domain';
@@ -8,6 +8,8 @@ import { AppIcon } from '../../shared/app-icon';
 import { ConfirmationDialog } from '../../shared/confirmation-dialog';
 import { AppDatePipe } from '../../core/services/date-format.service';
 import { SnackbarService } from '../../core/services/snackbar.service';
+
+type CommitmentFilter = 'ACTIVE' | 'INACTIVE' | 'ALL';
 
 @Component({
   selector: 'app-loans-page',
@@ -20,6 +22,7 @@ export class LoansPage {
   private readonly route = inject(ActivatedRoute);
   private readonly snackbar = inject(SnackbarService);
   readonly showForm = signal(false);
+  readonly commitmentFilter = signal<CommitmentFilter>('ACTIVE');
   readonly selectedEmiId = signal<string | null>(this.route.snapshot.queryParamMap.get('emi'));
   readonly selectedRepeatId = signal<string | null>(
     this.route.snapshot.queryParamMap.get('repeat'),
@@ -30,6 +33,51 @@ export class LoansPage {
   readonly closeEmiCandidate = signal<EmiPlan | null>(null);
   readonly terminateRepeatCandidate = signal<RecurringRule | null>(null);
   readonly cancelLoanCandidate = signal<LoanCommitment | null>(null);
+  readonly visibleRepeats = computed(() =>
+    this.store.recurringRules().filter((rule) => this.matchesFilter(rule.status === 'ACTIVE')),
+  );
+  readonly visibleEmiPlans = computed(() =>
+    this.store.emiPlans().filter((plan) => this.matchesFilter(plan.status === 'ACTIVE')),
+  );
+  readonly visibleLoans = computed(() =>
+    this.store.loans().filter((loan) => this.matchesFilter(loan.status === 'ACTIVE')),
+  );
+  readonly currentMonthKey = new Date().toISOString().slice(0, 7);
+  readonly currentMonthLabel = new Date().toLocaleDateString('en-IN', {
+    month: 'long',
+    year: 'numeric',
+  });
+  readonly recurringDueThisMonth = computed(() =>
+    this.store
+      .recurringRules()
+      .filter((rule) => rule.status === 'ACTIVE')
+      .reduce((total, rule) => total + this.recurringDueForMonth(rule), 0),
+  );
+  readonly emiDueThisMonth = computed(() =>
+    this.store
+      .emiPlans()
+      .filter((plan) => plan.status === 'ACTIVE')
+      .reduce(
+        (total, plan) =>
+          total +
+          this.installments(plan.id)
+            .filter(
+              (installment) =>
+                !installment.paid && installment.statementDate.startsWith(this.currentMonthKey),
+            )
+            .reduce((sum, installment) => sum + installment.totalMinor, 0),
+        0,
+      ),
+  );
+  readonly loanDueThisMonth = computed(() =>
+    this.store
+      .loans()
+      .filter((loan) => loan.status === 'ACTIVE' && this.loanRunsInCurrentMonth(loan))
+      .reduce((total, loan) => total + loan.installmentMinor, 0),
+  );
+  readonly totalDueThisMonth = computed(
+    () => this.recurringDueThisMonth() + this.emiDueThisMonth() + this.loanDueThisMonth(),
+  );
   readonly days = Array.from({ length: 28 }, (_, index) => index + 1);
   readonly form = new FormGroup({
     name: new FormControl('', { nonNullable: true, validators: [Validators.required] }),
@@ -47,6 +95,9 @@ export class LoansPage {
   money(value: number): string {
     return formatMoney(value, 'INR');
   }
+  updateCommitmentFilter(event: Event): void {
+    this.commitmentFilter.set((event.target as HTMLSelectElement).value as CommitmentFilter);
+  }
   emiTitle(plan: EmiPlan): string {
     return plan.originalMerchant || 'Card purchase';
   }
@@ -61,6 +112,30 @@ export class LoansPage {
     return this.installments(planId).find(
       (item) => !item.paid && item.statementDate.slice(0, 7) >= month,
     );
+  }
+  repeatDebitDate(rule: RecurringRule): string | null {
+    return rule.status === 'ACTIVE' ? (rule.nextOccurrenceDate ?? null) : null;
+  }
+  emiDebitDate(planId: string): string | null {
+    return this.nextInstallment(planId)?.statementDate ?? null;
+  }
+  loanDebitDate(loan: LoanCommitment): string | null {
+    if (loan.status !== 'ACTIVE') return null;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    for (let offset = 0; offset < 24; offset += 1) {
+      const month = new Date(today.getFullYear(), today.getMonth() + offset, 1, 12);
+      const lastDay = new Date(month.getFullYear(), month.getMonth() + 1, 0).getDate();
+      const candidate = new Date(
+        month.getFullYear(),
+        month.getMonth(),
+        Math.min(loan.debitDay, lastDay),
+        12,
+      );
+      const iso = this.localIso(candidate);
+      if (candidate >= today && iso >= loan.startDate && iso <= loan.endDate) return iso;
+    }
+    return null;
   }
   toggleEmi(planId: string): void {
     this.selectedEmiId.set(this.selectedEmiId() === planId ? null : planId);
@@ -158,5 +233,38 @@ export class LoansPage {
       endDate: '',
       notes: '',
     });
+  }
+
+  private matchesFilter(active: boolean): boolean {
+    if (this.commitmentFilter() === 'ALL') return true;
+    return this.commitmentFilter() === 'ACTIVE' ? active : !active;
+  }
+
+  private recurringDueForMonth(rule: RecurringRule): number {
+    const generated = this.repeatTransactions(rule.id).filter((transaction) =>
+      transaction.transactionDate.startsWith(this.currentMonthKey),
+    );
+    const generatedTotal = generated.reduce(
+      (total, transaction) => total + transaction.amountMinor,
+      0,
+    );
+    const nextIsThisMonth = rule.nextOccurrenceDate?.startsWith(this.currentMonthKey) ?? false;
+    const nextAlreadyGenerated = generated.some(
+      (transaction) => transaction.generatedOccurrenceDate === rule.nextOccurrenceDate,
+    );
+    return generatedTotal + (nextIsThisMonth && !nextAlreadyGenerated ? rule.amountMinor : 0);
+  }
+
+  private loanRunsInCurrentMonth(loan: LoanCommitment): boolean {
+    const monthStart = `${this.currentMonthKey}-01`;
+    const [year, month] = this.currentMonthKey.split('-').map(Number);
+    const monthEnd = this.localIso(new Date(year, month, 0, 12));
+    return loan.startDate <= monthEnd && loan.endDate >= monthStart;
+  }
+
+  private localIso(date: Date): string {
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(
+      date.getDate(),
+    ).padStart(2, '0')}`;
   }
 }

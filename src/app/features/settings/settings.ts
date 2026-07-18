@@ -14,6 +14,7 @@ import { ExportService } from '../../core/services/export.service';
 import { ConfirmationDialog } from '../../shared/confirmation-dialog';
 import { AppDateFormat, DateFormatService } from '../../core/services/date-format.service';
 import { APP_VERSION } from '../../core/app-version';
+import { Capacitor } from '@capacitor/core';
 
 type PinAction = 'CHANGE' | 'DISABLE';
 type BackupAction = 'CREATE' | 'RESTORE';
@@ -28,6 +29,7 @@ type ProtectedDataAction = 'DELETE_ALL' | 'RETENTION';
 })
 export class SettingsPage {
   readonly appVersion = APP_VERSION;
+  readonly showAppVersion = Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android';
   readonly copyright =
     new Date().getFullYear() > 2026 ? `2026 – ${new Date().getFullYear()}` : '2026';
   readonly database = inject(SqliteDatabase);

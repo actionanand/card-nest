@@ -255,6 +255,11 @@ export class CardNestStore {
   readonly activeCards = computed(() =>
     this.cards().filter((card) => !card.archived && !card.deletedAt),
   );
+  readonly alphabeticalActiveCards = computed(() =>
+    [...this.activeCards()].sort((left, right) =>
+      left.nickname.localeCompare(right.nickname, undefined, { sensitivity: 'base' }),
+    ),
+  );
   readonly activePaymentSources = computed(() =>
     this.paymentSources().filter((source) => !source.archived),
   );

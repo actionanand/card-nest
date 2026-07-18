@@ -218,6 +218,15 @@
                   <app-icon name="transactions" /> View card transactions
                 </a>
               </div>
+              <div class="actions">
+                <button
+                  class="btn btn-primary"
+                  type="button"
+                  (click)="$event.stopPropagation(); requestPayment(reminder)"
+                >
+                  Record payment
+                </button>
+              </div>
             </div>
           </article>
         }
