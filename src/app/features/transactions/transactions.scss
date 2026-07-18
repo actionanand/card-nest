@@ -700,6 +700,46 @@ label small {
   padding: 1.25rem;
   overflow-y: auto;
 }
+.attachment__pick:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+.web-camera-backdrop {
+  z-index: 900;
+}
+.web-camera-dialog {
+  width: min(100%, 42rem);
+  margin: auto;
+  padding: 1rem;
+}
+.web-camera-dialog header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.web-camera-dialog header h2 {
+  margin: 0;
+}
+.web-camera-dialog header button {
+  display: grid;
+  width: 2.5rem;
+  height: 2.5rem;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  color: var(--muted);
+  background: var(--surface-2);
+}
+.web-camera-dialog video {
+  display: block;
+  width: 100%;
+  max-height: 65dvh;
+  margin: 1rem 0;
+  border-radius: 0.8rem;
+  background: #07100c;
+  object-fit: contain;
+}
 .subdialog {
   width: min(100%, 34rem);
 }
@@ -886,13 +926,7 @@ label small {
     padding-inline: 0.25rem;
   }
   .add-transaction {
-    display: grid;
-    width: 2.8rem;
-    height: 2.8rem;
-    min-height: 0;
-    padding: 0;
-    place-items: center;
-    border-radius: 0.75rem;
+    display: none;
   }
   .add-transaction span {
     position: absolute;

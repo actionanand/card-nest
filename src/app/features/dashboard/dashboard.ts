@@ -1,13 +1,19 @@
 import { Component, computed, inject } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import { CardNestStore } from '../../core/services/card-nest-store';
-import { daysBetween, paymentDueDate, statementDateFor } from '../../core/services/billing-cycle';
+import {
+  daysBetween,
+  paymentDueDate,
+  previousStatementDate,
+  statementDateFor,
+} from '../../core/services/billing-cycle';
 import { formatMoney } from '../../core/services/money';
 import { AppIcon } from '../../shared/app-icon';
+import { AppDatePipe } from '../../core/services/date-format.service';
 
 @Component({
   selector: 'app-dashboard-page',
-  imports: [RouterLink, AppIcon],
+  imports: [RouterLink, AppIcon, AppDatePipe],
   templateUrl: './dashboard.html',
   styleUrl: './dashboard.scss',
 })
@@ -21,6 +27,17 @@ export class DashboardPage {
     return `${salutation}${name ? `, ${name}` : ''}.`;
   });
   readonly recentTransactions = computed(() => this.store.transactions().slice(0, 4));
+  readonly upcomingPayments = computed(() =>
+    this.store
+      .activeCards()
+      .map((card) => ({
+        card,
+        amount: this.store.cardDueAmount(card.id),
+        days: this.daysUntilDue(card.id),
+      }))
+      .filter((payment) => payment.amount > 0)
+      .sort((left, right) => left.days - right.days),
+  );
   readonly budgetPercent = computed(() =>
     Math.min(
       100,
@@ -40,7 +57,11 @@ export class DashboardPage {
   daysUntilDue(cardId: string): number {
     const card = this.store.cards().find((item) => item.id === cardId);
     if (!card) return 0;
-    const statement = statementDateFor(new Date(), card.statementDay);
+    const nextStatement = statementDateFor(new Date(), card.statementDay);
+    const statement =
+      this.store.cardDueAmount(card.id) > 0
+        ? previousStatementDate(nextStatement, card.statementDay)
+        : nextStatement;
     return daysBetween(new Date(), paymentDueDate(statement, card));
   }
 }

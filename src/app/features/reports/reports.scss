@@ -19,6 +19,9 @@
   width: 1rem;
   height: 1rem;
 }
+.export-label-mobile {
+  display: none;
+}
 
 .stat-grid {
   display: grid;
@@ -40,7 +43,8 @@
 }
 
 .stat-grid strong {
-  font-family: var(--display);
+  font-family: inherit;
+  font-variant-numeric: lining-nums tabular-nums;
   font-size: 1.05rem;
 }
 
@@ -111,7 +115,8 @@
 
 .chart-heading > strong {
   color: var(--accent);
-  font-family: var(--display);
+  font-family: inherit;
+  font-variant-numeric: lining-nums tabular-nums;
   font-size: 1.05rem;
 }
 
@@ -225,9 +230,22 @@
   .report-actions {
     align-items: stretch;
     flex-direction: column;
+    width: 8.5rem;
+    min-width: 8.5rem;
+    flex: 0 0 8.5rem;
+  }
+  .export-label-wide {
+    display: none;
+  }
+  .export-label-mobile {
+    display: inline;
   }
   .period-select {
     width: 100%;
+  }
+  .period-select select {
+    padding-right: 2rem;
+    font-size: 0.72rem;
   }
 
   .stat-grid {

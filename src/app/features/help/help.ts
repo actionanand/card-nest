@@ -50,10 +50,26 @@ const HELP_TOPICS: readonly HelpTopic[] = [
     ],
     tips: [
       'Receipt images remain private to the device and appear in transaction details and while editing.',
+      'Images larger than 1 MB are compressed before they are stored. Use the With image activity filter to find receipt-backed entries.',
     ],
     keywords: ['receipt', 'image', 'gallery', 'camera', 'tax', 'charges', 'monthly', 'recurring'],
     link: '/transactions',
     linkLabel: 'Open Activity',
+  },
+  {
+    id: 'flash-transaction',
+    group: 'Transactions',
+    title: 'What is a Flash transaction?',
+    summary: 'Record a purchase from any mobile page with only an amount and payment source.',
+    steps: [
+      'In the mobile app, tap the floating lightning transaction button above the bottom navigation.',
+      'Confirm the preferred payment source, enter the amount, and optionally enter a merchant.',
+      'Choose Save purchase. Today, Purchase, and the Other category are filled automatically.',
+      'Set the preferred Flash payment source under Settings > General preferences.',
+    ],
+    keywords: ['flash', 'quick', 'fast', 'amount', 'preferred source'],
+    link: '/settings',
+    linkLabel: 'Choose preferred source',
   },
   {
     id: 'refund-adjustment',
@@ -207,6 +223,8 @@ const HELP_TOPICS: readonly HelpTopic[] = [
       'Open Reminders and enable Notifications, then grant Android notification permission when prompted.',
       'Filter the reminder list by payments, grace period, annual fee, expiry, or all cards.',
       'Record a payment or snooze a reminder; the list updates immediately.',
+      'A payment records only the latest statement amount due. CardNest asks for confirmation first.',
+      'Snooze becomes available five days before the due date. Snoozed items remain in history and can be restored; the snackbar also offers Undo for ten seconds.',
     ],
     tips: [
       'Notifications contain only a nickname and masked digits. They never reveal a full card number.',
@@ -214,6 +232,20 @@ const HELP_TOPICS: readonly HelpTopic[] = [
     keywords: ['notification', 'reminder', 'snooze', 'payment due', 'fee', 'expiry'],
     link: '/reminders',
     linkLabel: 'Open reminders',
+  },
+  {
+    id: 'dates-display',
+    group: 'Security & data',
+    title: 'How do I change the date display format?',
+    summary: 'Choose one display format for transactions, statements, reminders, and other dates.',
+    steps: [
+      'Open Settings and find Date format under General preferences.',
+      'Choose DD-MM-YYYY, DD/MM/YYYY, MM/DD/YYYY, ISO, or one of the month-name formats.',
+      'The change applies to displayed dates; SQLite continues storing sortable ISO dates internally.',
+    ],
+    keywords: ['date', 'format', 'dd-mm', 'iso', 'display'],
+    link: '/settings',
+    linkLabel: 'Change date format',
   },
   {
     id: 'security',
@@ -249,6 +281,7 @@ const HELP_TOPICS: readonly HelpTopic[] = [
     tips: [
       'The backup passphrase cannot be recovered.',
       'A .cnbak file is encrypted CardNest data, not a SQLite file that can be opened directly in a database viewer.',
+      'On Android, the system document picker can save to installed providers such as Google Drive, Dropbox, OneDrive, or ownCloud. CardNest does not receive or retain a provider password.',
     ],
     keywords: ['backup', 'restore', 'cnbak', 'passphrase', 'file', 'encrypted', 'data'],
     link: '/settings',

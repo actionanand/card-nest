@@ -63,7 +63,8 @@
   letter-spacing: 0.08em;
 }
 .snapshot-grid strong {
-  font-family: var(--display);
+  font-family: inherit;
+  font-variant-numeric: lining-nums tabular-nums;
   font-size: 1.25rem;
 }
 .overall-budget {

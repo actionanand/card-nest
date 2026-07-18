@@ -45,7 +45,8 @@
         </div>
         <a routerLink="/reminders">View all <app-icon name="chevron_right" /></a>
       </div>
-      @for (card of store.activeCards(); track card.id) {
+      @for (payment of upcomingPayments(); track payment.card.id) {
+        @let card = payment.card;
         <article class="due-item">
           <div class="card-mini" [class]="'card-mini ' + card.theme" aria-hidden="true">
             {{ card.nickname.slice(0, 1) }}
@@ -55,10 +56,20 @@
             ><small>{{ card.issuerName }} · •••• {{ card.lastDigits }}</small>
           </div>
           <div class="due-amount">
-            <strong>{{ money(store.cardOutstanding(card.id), card.currencyCode) }}</strong
-            ><span>{{ daysUntilDue(card.id) }} days left</span>
+            <strong>{{ money(payment.amount, card.currencyCode) }}</strong>
+            <span>
+              @if (payment.days < 0) {
+                {{ -payment.days }} days overdue
+              } @else if (payment.days === 0) {
+                Due today
+              } @else {
+                {{ payment.days }} days left
+              }
+            </span>
           </div>
         </article>
+      } @empty {
+        <p class="due-empty">No card payments are currently due.</p>
       }
     </section>
 
@@ -137,7 +148,7 @@
                   : '−'
               }}{{ money(transaction.amountMinor, transaction.currencyCode) }}</strong
             >
-            <small>{{ transaction.transactionDate }}</small>
+            <small>{{ transaction.transactionDate | appDate }}</small>
           </div>
         </article>
       }

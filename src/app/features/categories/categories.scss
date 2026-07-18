@@ -197,6 +197,36 @@ label small {
   color: var(--danger);
 }
 @media (max-width: 520px) {
+  .modal-backdrop {
+    place-items: end center;
+    padding: max(3.5rem, env(safe-area-inset-top)) 0 0;
+    overflow: hidden;
+  }
+  .category-modal {
+    display: flex;
+    width: 100%;
+    max-height: calc(100dvh - max(3.5rem, env(safe-area-inset-top)));
+    flex-direction: column;
+    padding: 1rem 1rem 0;
+    overflow: hidden;
+    border-radius: 1.25rem 1.25rem 0 0;
+  }
+  .category-modal .heading {
+    flex: 0 0 auto;
+  }
+  .category-modal form {
+    min-height: 0;
+    padding-bottom: max(1rem, env(safe-area-inset-bottom));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+  }
+  .category-modal .form-actions {
+    position: sticky;
+    bottom: 0;
+    padding-block: 0.75rem;
+    background: var(--surface);
+  }
   .categories-page {
     padding-inline: 0.65rem;
   }

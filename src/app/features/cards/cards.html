@@ -479,8 +479,8 @@
               }
             </span>
             <span class="card-balance"
-              ><small>Outstanding</small
-              ><strong>{{ money(store.cardOutstanding(card.id), card.currencyCode) }}</strong></span
+              ><small>Due amount</small
+              ><strong>{{ money(dueAmount(card), card.currencyCode) }}</strong></span
             >
             <app-icon class="chevron" name="chevron_down" />
           </button>

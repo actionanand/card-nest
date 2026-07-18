@@ -5,6 +5,7 @@ import { CardNestStore } from '../../core/services/card-nest-store';
 import { formatMoney, parseMoneyToMinor } from '../../core/services/money';
 import { SnackbarService } from '../../core/services/snackbar.service';
 import { AppIcon } from '../../shared/app-icon';
+import { AppDatePipe } from '../../core/services/date-format.service';
 
 interface SpendingPeriod {
   readonly offset: number;
@@ -16,7 +17,7 @@ interface SpendingPeriod {
 
 @Component({
   selector: 'app-category-spending-page',
-  imports: [ReactiveFormsModule, AppIcon],
+  imports: [ReactiveFormsModule, AppIcon, AppDatePipe],
   templateUrl: './category-spending.html',
   styleUrl: './category-spending.scss',
 })

@@ -6,10 +6,11 @@ import { CardNestStore } from '../../core/services/card-nest-store';
 import { formatMoney, parseMoneyToMinor } from '../../core/services/money';
 import { AppIcon } from '../../shared/app-icon';
 import { ConfirmationDialog } from '../../shared/confirmation-dialog';
+import { AppDatePipe } from '../../core/services/date-format.service';
 
 @Component({
   selector: 'app-loans-page',
-  imports: [ReactiveFormsModule, AppIcon, ConfirmationDialog],
+  imports: [ReactiveFormsModule, AppIcon, AppDatePipe, ConfirmationDialog],
   templateUrl: './loans.html',
   styleUrl: './loans.scss',
 })

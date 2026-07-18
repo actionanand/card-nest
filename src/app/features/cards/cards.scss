@@ -755,7 +755,7 @@ label small.validation-error {
     grid-template-columns: 1fr;
   }
   .transaction-fab {
-    display: grid;
+    display: none;
   }
 }
 @media (max-width: 430px) {

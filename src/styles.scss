@@ -80,6 +80,10 @@ body {
     'Segoe UI',
     sans-serif;
   font-size: 15px;
+  font-variant-numeric: lining-nums tabular-nums;
+  font-feature-settings:
+    'lnum' 1,
+    'tnum' 1;
 }
 jeep-sqlite {
   display: none;

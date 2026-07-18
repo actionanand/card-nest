@@ -1,8 +1,17 @@
-import { Component, computed, inject, signal } from '@angular/core';
+import {
+  Component,
+  computed,
+  DestroyRef,
+  ElementRef,
+  inject,
+  signal,
+  viewChild,
+} from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { FormArray, FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { ActivatedRoute, Router } from '@angular/router';
 import { Camera, CameraResultType, CameraSource } from '@capacitor/camera';
+import { Capacitor } from '@capacitor/core';
 import { CardTransaction, EmiPlan, TransactionType } from '../../core/models/domain';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { formatMoney, parseMoneyToMinor } from '../../core/services/money';
@@ -13,21 +22,38 @@ import { ExportDialog } from '../../shared/export-dialog';
 import { ConfirmationDialog } from '../../shared/confirmation-dialog';
 import { ExportFormat } from '../../core/models/export';
 import { createEmiSchedule } from '../../core/services/emi';
+import { AppDatePipe } from '../../core/services/date-format.service';
 
 type GroupingMode = 'MONTH' | 'CYCLE' | 'STATEMENT';
+type TransactionTypeFilter = TransactionType | 'ALL' | 'WITH_IMAGE';
 type RepeatChoice = 'NONE' | 'INFINITE' | `${number}`;
 type EmiKind = 'NO_COST' | 'STANDARD';
 type EmiStartMode = 'THIS_MONTH' | 'NEXT_MONTH' | 'CUSTOM';
 const TRANSACTION_PAGE_SIZE = 200;
+const MAX_RECEIPT_BYTES = 1_000_000;
+
+function sanitizedMoneyInput(value: string): string {
+  const numeric = value.replace(/[^0-9.]/g, '');
+  const [whole = '', ...fractions] = numeric.split('.');
+  return fractions.length ? `${whole}.${fractions.join('').slice(0, 2)}` : whole;
+}
 
 @Component({
   selector: 'app-transactions-page',
-  imports: [ReactiveFormsModule, AppIcon, CategoriesPage, ExportDialog, ConfirmationDialog],
+  imports: [
+    ReactiveFormsModule,
+    AppIcon,
+    AppDatePipe,
+    CategoriesPage,
+    ExportDialog,
+    ConfirmationDialog,
+  ],
   templateUrl: './transactions.html',
   styleUrl: './transactions.scss',
   host: {
     '(document:keydown.escape)': 'closeOverlays()',
     '(document:click)': 'closeMenusFromOutside($event)',
+    '(window:beforeunload)': 'protectBrowserUnload($event)',
   },
 })
 export class TransactionsPage {
@@ -35,6 +61,7 @@ export class TransactionsPage {
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
   private readonly snackbar = inject(SnackbarService);
+  private readonly destroyRef = inject(DestroyRef);
   private readonly requestedSourceId = this.route.snapshot.queryParamMap.get('source');
   private readonly requestedEditId = this.route.snapshot.queryParamMap.get('edit');
   readonly showForm = signal(
@@ -44,6 +71,14 @@ export class TransactionsPage {
   );
   readonly editingId = signal<string | null>(null);
   readonly receiptPreviews = signal<readonly string[]>([]);
+  readonly receiptDraftDirty = signal(false);
+  readonly discardConfirmationOpen = signal(false);
+  readonly cameraAvailable = signal(Capacitor.getPlatform() !== 'web');
+  readonly webCameraOpen = signal(false);
+  readonly webCameraVideo = viewChild<ElementRef<HTMLVideoElement>>('webCameraVideo');
+  private webCameraStream: MediaStream | null = null;
+  private deactivateResolver: ((allow: boolean) => void) | null = null;
+  private discardClosesEditor = false;
   readonly detailTransactionId = signal<string | null>(null);
   readonly detailTransaction = computed(
     () => this.store.transactions().find((item) => item.id === this.detailTransactionId()) ?? null,
@@ -64,7 +99,7 @@ export class TransactionsPage {
   readonly hideCredits = signal(false);
   readonly creditCardsOnly = signal(false);
   readonly search = signal('');
-  readonly typeFilter = signal<TransactionType | 'ALL'>('ALL');
+  readonly typeFilter = signal<TransactionTypeFilter>('ALL');
   readonly sourceFilter = signal(this.requestedSourceId ?? 'ALL');
   readonly categoryFilter = signal('ALL');
   readonly grouping = signal<GroupingMode>('MONTH');
@@ -139,7 +174,10 @@ export class TransactionsPage {
             item.transactionDate.slice(0, 7) <= currentMonth) &&
           (!this.hideCredits() || !this.isCredit(item.type)) &&
           (!this.creditCardsOnly() || this.store.cards().some((card) => card.id === item.cardId)) &&
-          (this.typeFilter() === 'ALL' || item.type === this.typeFilter()) &&
+          (this.typeFilter() === 'ALL' ||
+            (this.typeFilter() === 'WITH_IMAGE'
+              ? item.attachmentIds.length > 0
+              : item.type === this.typeFilter())) &&
           (this.sourceFilter() === 'ALL' || item.cardId === this.sourceFilter()) &&
           (this.categoryFilter() === 'ALL' || item.categoryId === this.categoryFilter()) &&
           (!term ||
@@ -188,6 +226,8 @@ export class TransactionsPage {
   });
 
   constructor() {
+    this.destroyRef.onDestroy(() => this.closeWebCamera());
+    if (Capacitor.getPlatform() === 'web') void this.detectWebCamera();
     // Handle edit requested via query param on first load.
     const transaction = this.store.transactions().find((item) => item.id === this.requestedEditId);
     if (transaction) this.edit(transaction);
@@ -219,7 +259,7 @@ export class TransactionsPage {
     this.resetVisibleTransactions();
   }
   updateType(event: Event): void {
-    this.typeFilter.set((event.target as HTMLSelectElement).value as TransactionType | 'ALL');
+    this.typeFilter.set((event.target as HTMLSelectElement).value as TransactionTypeFilter);
     this.resetVisibleTransactions();
   }
   selectSourceFilter(id: string): void {
@@ -281,30 +321,119 @@ export class TransactionsPage {
       const paths = selection.photos
         .map((photo) => photo.webPath)
         .filter((path): path is string => Boolean(path));
-      if (paths.length) this.receiptPreviews.update((current) => [...current, ...paths]);
+      const processed = await this.prepareReceiptImages(paths);
+      if (processed.length) {
+        this.receiptPreviews.update((current) => [...current, ...processed]);
+        this.receiptDraftDirty.set(true);
+      }
     } catch {
       // Picker was dismissed by the user — nothing to attach.
     }
   }
   async captureReceipt(): Promise<void> {
+    if (Capacitor.getPlatform() === 'web') {
+      await this.openWebCamera();
+      return;
+    }
     try {
       const photo = await Camera.getPhoto({
         source: CameraSource.Camera,
         resultType: CameraResultType.Uri,
         quality: 70,
       });
-      if (photo.webPath) this.receiptPreviews.update((current) => [...current, photo.webPath!]);
+      if (photo.webPath) {
+        const processed = await this.prepareReceiptImages([photo.webPath]);
+        if (processed.length) {
+          this.receiptPreviews.update((current) => [...current, ...processed]);
+          this.receiptDraftDirty.set(true);
+        }
+      }
     } catch {
       // Camera was dismissed by the user.
     }
   }
+  async captureWebReceipt(): Promise<void> {
+    const video = this.webCameraVideo()?.nativeElement;
+    if (!video || !video.videoWidth || !video.videoHeight) {
+      this.snackbar.show('The camera is not ready yet.', 'WARNING');
+      return;
+    }
+    const scale = Math.min(1, 1600 / Math.max(video.videoWidth, video.videoHeight));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+    canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+    canvas.getContext('2d')?.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const processed = await this.prepareReceiptImages([canvas.toDataURL('image/jpeg', 0.82)]);
+    if (processed.length) {
+      this.receiptPreviews.update((current) => [...current, ...processed]);
+      this.receiptDraftDirty.set(true);
+    }
+    this.closeWebCamera();
+  }
+  closeWebCamera(): void {
+    this.webCameraStream?.getTracks().forEach((track) => track.stop());
+    this.webCameraStream = null;
+    this.webCameraOpen.set(false);
+  }
   removeReceipt(index: number): void {
     this.receiptPreviews.update((current) => current.filter((_, position) => position !== index));
+    this.receiptDraftDirty.set(true);
   }
   closeForm(): void {
+    if (this.hasUnsavedDraft()) {
+      this.discardClosesEditor = true;
+      this.discardConfirmationOpen.set(true);
+      return;
+    }
+    this.closeFormImmediately();
+  }
+
+  canDeactivate(): boolean | Promise<boolean> {
+    if (!this.hasUnsavedDraft()) return true;
+    this.discardClosesEditor = false;
+    this.discardConfirmationOpen.set(true);
+    return new Promise<boolean>((resolve) => {
+      this.deactivateResolver = resolve;
+    });
+  }
+
+  confirmDiscard(): void {
+    this.discardConfirmationOpen.set(false);
+    const resolver = this.deactivateResolver;
+    this.deactivateResolver = null;
+    if (resolver) {
+      resolver(true);
+      return;
+    }
+    if (this.discardClosesEditor) this.closeFormImmediately();
+  }
+
+  cancelDiscard(): void {
+    this.discardConfirmationOpen.set(false);
+    this.discardClosesEditor = false;
+    this.deactivateResolver?.(false);
+    this.deactivateResolver = null;
+  }
+
+  protectBrowserUnload(event: BeforeUnloadEvent): void {
+    if (!this.hasUnsavedDraft()) return;
+    event.preventDefault();
+    event.returnValue = '';
+  }
+
+  sanitizeAmountInput(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    const sanitized = sanitizedMoneyInput(input.value);
+    input.value = sanitized;
+    this.form.controls.amount.setValue(sanitized);
+  }
+
+  private closeFormImmediately(): void {
+    this.closeWebCamera();
     this.showForm.set(false);
     this.editingId.set(null);
     this.receiptPreviews.set([]);
+    this.receiptDraftDirty.set(false);
     void this.router.navigate([], {
       relativeTo: this.route,
       queryParams: { add: null, payment: null, edit: null },
@@ -312,8 +441,46 @@ export class TransactionsPage {
       replaceUrl: true,
     });
   }
+
+  private async detectWebCamera(): Promise<void> {
+    const mediaDevices = globalThis.navigator?.mediaDevices;
+    if (!mediaDevices?.enumerateDevices || !mediaDevices.getUserMedia) {
+      this.cameraAvailable.set(false);
+      return;
+    }
+    try {
+      const devices = await mediaDevices.enumerateDevices();
+      this.cameraAvailable.set(devices.some((device) => device.kind === 'videoinput'));
+    } catch {
+      this.cameraAvailable.set(false);
+    }
+  }
+
+  private async openWebCamera(): Promise<void> {
+    if (!this.cameraAvailable()) return;
+    try {
+      this.webCameraStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' } },
+        audio: false,
+      });
+      this.webCameraOpen.set(true);
+      globalThis.setTimeout(() => {
+        const video = this.webCameraVideo()?.nativeElement;
+        if (!video || !this.webCameraStream) return;
+        video.srcObject = this.webCameraStream;
+        void video.play();
+      });
+    } catch (error: unknown) {
+      if (error instanceof DOMException && error.name === 'NotFoundError') {
+        this.cameraAvailable.set(false);
+      }
+      this.snackbar.show('The browser could not open the camera.', 'WARNING');
+      this.closeWebCamera();
+    }
+  }
   selectPayFrom(id: string): void {
     this.form.controls.cardId.setValue(id);
+    this.form.controls.cardId.markAsDirty();
     this.payFromOpen.set(false);
   }
   selectedSourceLabel(): string {
@@ -341,6 +508,7 @@ export class TransactionsPage {
       repeat: 'NONE',
     });
     this.receiptPreviews.set(transaction.attachmentIds);
+    this.receiptDraftDirty.set(false);
     this.showForm.set(true);
     this.closeMenus();
     globalThis.scrollTo?.({ top: 0, behavior: 'smooth' });
@@ -672,6 +840,71 @@ export class TransactionsPage {
     this.closeMenus();
   }
 
+  private async prepareReceiptImages(paths: readonly string[]): Promise<readonly string[]> {
+    const accepted: string[] = [];
+    let rejected = 0;
+    for (const path of paths) {
+      try {
+        const blob = await fetch(path).then((response) => response.blob());
+        if (blob.size <= MAX_RECEIPT_BYTES) {
+          accepted.push(path);
+          continue;
+        }
+        const compressed = await this.compressReceipt(blob);
+        if (!compressed || compressed.size > MAX_RECEIPT_BYTES) {
+          rejected += 1;
+          continue;
+        }
+        accepted.push(await this.blobToDataUrl(compressed));
+      } catch {
+        rejected += 1;
+      }
+    }
+    if (rejected) {
+      this.snackbar.show(
+        `${rejected} receipt image${rejected === 1 ? '' : 's'} could not be reduced below 1 MB.`,
+        'WARNING',
+      );
+    }
+    return accepted;
+  }
+
+  private async compressReceipt(source: Blob): Promise<Blob | null> {
+    const bitmap = await createImageBitmap(source);
+    try {
+      let width = Math.min(bitmap.width, 1800);
+      let height = Math.round((bitmap.height * width) / bitmap.width);
+      if (height > 1800) {
+        height = 1800;
+        width = Math.round((bitmap.width * height) / bitmap.height);
+      }
+      for (const quality of [0.82, 0.7, 0.58, 0.46, 0.36]) {
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        canvas.getContext('2d')?.drawImage(bitmap, 0, 0, width, height);
+        const result = await new Promise<Blob | null>((resolve) =>
+          canvas.toBlob(resolve, 'image/jpeg', quality),
+        );
+        if (result && result.size <= MAX_RECEIPT_BYTES) return result;
+        width = Math.max(640, Math.round(width * 0.82));
+        height = Math.max(640, Math.round(height * 0.82));
+      }
+      return null;
+    } finally {
+      bitmap.close();
+    }
+  }
+
+  private blobToDataUrl(value: Blob): Promise<string> {
+    return new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.addEventListener('load', () => resolve(String(reader.result)));
+      reader.addEventListener('error', () => reject(reader.error));
+      reader.readAsDataURL(value);
+    });
+  }
+
   private resetVisibleTransactions(): void {
     this.visibleLimit.set(TRANSACTION_PAGE_SIZE);
   }
@@ -794,6 +1027,7 @@ export class TransactionsPage {
 
   private resetForm(sourceId: string): void {
     this.receiptPreviews.set([]);
+    this.receiptDraftDirty.set(false);
     this.form.reset({
       cardId: sourceId,
       type: 'PURCHASE',
@@ -807,6 +1041,10 @@ export class TransactionsPage {
       taxAmount: '',
       repeat: 'NONE',
     });
+  }
+
+  private hasUnsavedDraft(): boolean {
+    return this.showForm() && (this.form.dirty || this.receiptDraftDirty());
   }
 
   private createSplitPart(sourceId = this.defaultSourceId(), amountMinor = 0) {

@@ -207,7 +207,7 @@
                 >
               </div>
               <time [attr.datetime]="transaction.transactionDate">{{
-                transaction.transactionDate
+                transaction.transactionDate | appDate
               }}</time>
               <strong class="transaction-amount" [class.credit]="isCredit(transaction.type)">
                 {{ isCredit(transaction.type) ? '+' : '−' }}{{ money(transaction.amountMinor) }}

@@ -6,6 +6,8 @@ export interface SnackbarMessage {
   readonly id: number;
   readonly text: string;
   readonly tone: SnackbarTone;
+  readonly actionLabel?: string;
+  readonly action?: () => void;
 }
 
 @Service()
@@ -15,11 +17,16 @@ export class SnackbarService {
   private watchdogId: ReturnType<typeof setInterval> | null = null;
   private dismissAt = 0;
 
-  show(text: string, tone: SnackbarTone = 'SUCCESS', durationMs = 3200): void {
+  show(
+    text: string,
+    tone: SnackbarTone = 'SUCCESS',
+    durationMs = 3200,
+    action?: { readonly label: string; readonly run: () => void },
+  ): void {
     this.clearTimers();
     const id = Date.now();
     this.dismissAt = Date.now() + durationMs;
-    this.message.set({ id, text, tone });
+    this.message.set({ id, text, tone, actionLabel: action?.label, action: action?.run });
     this.timeoutId = setTimeout(() => this.dismissIfCurrent(id), durationMs);
     this.watchdogId = setInterval(() => {
       if (Date.now() >= this.dismissAt) this.dismissIfCurrent(id);
@@ -29,6 +36,12 @@ export class SnackbarService {
   dismiss(): void {
     this.clearTimers();
     this.message.set(null);
+  }
+
+  runAction(): void {
+    const action = this.message()?.action;
+    this.dismiss();
+    action?.();
   }
 
   private dismissIfCurrent(id: number): void {

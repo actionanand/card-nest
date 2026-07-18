@@ -165,10 +165,42 @@
               <option>British Pound — GBP</option>
             </select></label
           ><label
-            >Date format<select>
-              <option>DD/MM/YYYY</option>
-              <option>MM/DD/YYYY</option>
-              <option>YYYY-MM-DD</option>
+            >Flash transaction source<select
+              [value]="store.flashTransactionSourceId()"
+              (change)="updateFlashSource($event)"
+            >
+              <option value="" [selected]="!store.flashTransactionSourceId()">
+                First available source
+              </option>
+              <optgroup label="Credit cards">
+                @for (card of store.activeCards(); track card.id) {
+                  <option
+                    [value]="card.id"
+                    [selected]="store.flashTransactionSourceId() === card.id"
+                  >
+                    {{ card.nickname }} · {{ card.lastDigits }}
+                  </option>
+                }
+              </optgroup>
+              <optgroup label="Other payment sources">
+                @for (source of store.activePaymentSources(); track source.id) {
+                  <option
+                    [value]="source.id"
+                    [selected]="store.flashTransactionSourceId() === source.id"
+                  >
+                    {{ source.nickname }}
+                  </option>
+                }
+              </optgroup></select
+            ><small>Used by the mobile flash-transaction button.</small></label
+          ><label
+            >Date format<select
+              [value]="dateFormats.formatPreference()"
+              (change)="updateDateFormat($event)"
+            >
+              @for (option of dateFormats.options; track option.value) {
+                <option [value]="option.value">{{ option.label }}</option>
+              }
             </select></label
           ><label
             >Monthly income (optional)<input
@@ -237,8 +269,8 @@
         <div class="setting-row">
           <label
             >Default timing<select>
-              <option>7 days before</option>
-              <option selected>3 days before</option>
+              <option selected>5 days before</option>
+              <option>3 days before</option>
               <option>1 day before</option>
               <option>On due date</option>
             </select></label

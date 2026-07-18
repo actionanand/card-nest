@@ -100,7 +100,7 @@
                       >EMI {{ installment.installmentNumber }} of {{ plan.tenureMonths
                       }}<small
                         >{{ installment.statementDate }} statement · due
-                        {{ installment.dueDate }}</small
+                        {{ installment.dueDate | appDate }}</small
                       ></span
                     >
                     <strong>{{ money(installment.totalMinor) }}</strong>

@@ -12,11 +12,37 @@ import {
   RecurringRule,
 } from '../models/domain';
 import { SqliteDatabase } from '../data/sqlite-database';
-import { calculateNetSpending, calculateOutstanding } from './money';
+import { previousStatementDate, statementDateFor, toIsoDate } from './billing-cycle';
+import { calculateNetSpending, calculateOutstanding, transactionEffect } from './money';
 
 const now = new Date();
 const today = now.toISOString().slice(0, 10);
 const monthStart = `${today.slice(0, 7)}-01`;
+const FLASH_SOURCE_STORAGE_KEY = 'cardnest_flash_transaction_source_id';
+
+function readFlashSourcePreference(): string | null {
+  try {
+    return globalThis.localStorage?.getItem(FLASH_SOURCE_STORAGE_KEY) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function writeFlashSourcePreference(id: string): void {
+  try {
+    globalThis.localStorage?.setItem(FLASH_SOURCE_STORAGE_KEY, id);
+  } catch {
+    // SQLite remains the secondary preference store when browser storage is unavailable.
+  }
+}
+
+function clearFlashSourcePreference(): void {
+  try {
+    globalThis.localStorage?.removeItem(FLASH_SOURCE_STORAGE_KEY);
+  } catch {
+    // The in-memory signal is still reset below.
+  }
+}
 
 const SAMPLE_CARDS: readonly CreditCard[] = [
   {
@@ -210,6 +236,8 @@ export class CardNestStore {
   readonly profileTitle = signal('');
   readonly profileName = signal('');
   readonly emiMinimumMinor = signal(250_000);
+  readonly flashTransactionSourceId = signal(readFlashSourcePreference() ?? '');
+  readonly snoozedReminderCardIds = signal<readonly string[]>([]);
   readonly profileDisplayName = computed(() => {
     const name = this.profileName().trim();
     return name ? [this.profileTitle(), name].filter(Boolean).join(' ') : '';
@@ -237,6 +265,7 @@ export class CardNestStore {
       (sum, card) => sum + Math.max(0, this.cardOutstanding(card.id)),
       0,
     );
+    const statementDueMinor = cards.reduce((sum, card) => sum + this.cardDueAmount(card.id), 0);
     const totalCredit = cards.reduce((sum, card) => sum + (card.creditLimitMinor ?? 0), 0);
     const month = today.slice(0, 7);
     const monthlySpendMinor = calculateNetSpending(
@@ -244,8 +273,8 @@ export class CardNestStore {
     );
     return {
       outstandingMinor,
-      statementDueMinor: Math.round(outstandingMinor * 0.62),
-      unbilledMinor: Math.round(outstandingMinor * 0.38),
+      statementDueMinor,
+      unbilledMinor: Math.max(0, outstandingMinor - statementDueMinor),
       availableCreditMinor: Math.max(0, totalCredit - outstandingMinor),
       monthlySpendMinor,
       remainingBudgetMinor: Math.max(0, this.monthlyBudgetMinor() - monthlySpendMinor),
@@ -262,7 +291,7 @@ export class CardNestStore {
     if (!this.database.ready()) return;
     const preferences = await this.database.query<{ key: string; encrypted_value: string }>(
       `SELECT key, encrypted_value FROM app_preferences
-       WHERE key IN ('budget_cycle_start_day', 'monthly_budget_minor', 'profile_title', 'profile_name', 'emi_minimum_minor', 'data_cleared')`,
+       WHERE key IN ('budget_cycle_start_day', 'monthly_budget_minor', 'profile_title', 'profile_name', 'emi_minimum_minor', 'flash_transaction_source_id', 'snoozed_reminder_card_ids', 'data_cleared')`,
     );
     const values = new Map(preferences.map((item) => [item.key, item.encrypted_value]));
     this.dataWasCleared = values.get('data_cleared') === '1';
@@ -277,6 +306,19 @@ export class CardNestStore {
     this.profileName.set(values.get('profile_name') ?? '');
     const emiMinimum = Number(values.get('emi_minimum_minor'));
     if (Number.isFinite(emiMinimum) && emiMinimum >= 0) this.emiMinimumMinor.set(emiMinimum);
+    const locallyStoredFlashSource = readFlashSourcePreference();
+    const preferredFlashSource =
+      locallyStoredFlashSource ?? values.get('flash_transaction_source_id') ?? '';
+    this.flashTransactionSourceId.set(preferredFlashSource);
+    writeFlashSourcePreference(preferredFlashSource);
+    try {
+      const snoozed = JSON.parse(values.get('snoozed_reminder_card_ids') ?? '[]') as unknown;
+      this.snoozedReminderCardIds.set(
+        Array.isArray(snoozed) ? snoozed.filter((id): id is string => typeof id === 'string') : [],
+      );
+    } catch {
+      this.snoozedReminderCardIds.set([]);
+    }
     await Promise.all([this.loadCurrentIncome(), this.loadCards()]);
     await this.loadCategories();
     await this.loadCategoryLimits();
@@ -338,6 +380,26 @@ export class CardNestStore {
     await this.upsertPreference('emi_minimum_minor', String(amountMinor));
   }
 
+  async setFlashTransactionSource(id: string): Promise<void> {
+    writeFlashSourcePreference(id);
+    this.flashTransactionSourceId.set(id);
+    if (!this.database.ready()) return;
+    try {
+      await this.upsertPreference('flash_transaction_source_id', id);
+    } catch {
+      // This small device preference remains durable in local storage even if SQLite is busy.
+    }
+  }
+
+  async setReminderSnoozed(cardId: string, snoozed: boolean): Promise<void> {
+    const current = this.snoozedReminderCardIds();
+    const updated = snoozed
+      ? [...new Set([...current, cardId])]
+      : current.filter((id) => id !== cardId);
+    this.snoozedReminderCardIds.set(updated);
+    await this.upsertPreference('snoozed_reminder_card_ids', JSON.stringify(updated));
+  }
+
   cardOutstanding(cardId: string): number {
     const card = this.cards().find((item) => item.id === cardId);
     const currentMonth = new Date().toISOString().slice(0, 7);
@@ -352,6 +414,33 @@ export class CardNestStore {
           ),
         )
       : 0;
+  }
+
+  cardDueAmount(cardId: string, reference = new Date()): number {
+    const card = this.cards().find((item) => item.id === cardId);
+    if (!card) return 0;
+    const nextStatement = statementDateFor(reference, card.statementDay);
+    const latestStatement =
+      nextStatement.getTime() > reference.getTime()
+        ? previousStatementDate(nextStatement, card.statementDay)
+        : nextStatement;
+    const statementIso = toIsoDate(latestStatement);
+    const dueAtStatement = this.transactions()
+      .filter(
+        (item) =>
+          item.cardId === cardId && !item.emiCancelled && item.transactionDate <= statementIso,
+      )
+      .reduce((total, item) => total + transactionEffect(item), card.openingBalanceMinor);
+    const creditsAfterStatement = this.transactions()
+      .filter(
+        (item) =>
+          item.cardId === cardId &&
+          !item.emiCancelled &&
+          item.transactionDate > statementIso &&
+          transactionEffect(item) < 0,
+      )
+      .reduce((total, item) => total + transactionEffect(item), 0);
+    return Math.max(0, dueAtStatement + creditsAfterStatement);
   }
 
   addCard(card: CreditCard): void {
@@ -604,6 +693,9 @@ export class CardNestStore {
     this.profileTitle.set('');
     this.profileName.set('');
     this.emiMinimumMinor.set(250_000);
+    this.flashTransactionSourceId.set('');
+    clearFlashSourcePreference();
+    this.snoozedReminderCardIds.set([]);
     writeCachedTransactions([]);
     for (const category of CATEGORIES) await this.persistCategory(category);
     this.dataWasCleared = true;

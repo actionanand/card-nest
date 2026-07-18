@@ -108,7 +108,8 @@
   font-size: 0.68rem;
 }
 .source-balance {
-  font-family: var(--display);
+  font-family: inherit;
+  font-variant-numeric: lining-nums tabular-nums;
   font-size: 1.5rem;
 }
 .toggle-row {
@@ -180,7 +181,8 @@
 }
 .source-summary strong {
   overflow-wrap: anywhere;
-  font-family: var(--display);
+  font-family: inherit;
+  font-variant-numeric: lining-nums tabular-nums;
   font-size: 1.15rem;
 }
 .source-summary .credit strong {
@@ -298,8 +300,7 @@
     display: none;
   }
   .source-add {
-    width: 2.8rem;
-    padding: 0;
+    display: none;
   }
   .source-tabs {
     display: grid;
