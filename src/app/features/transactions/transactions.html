@@ -280,10 +280,10 @@
     </button>
     <div id="transaction-filter-fields" class="toolbar" [class.mobile-open]="filtersOpen()">
       <label
-        ><span class="sr-only">Search transactions</span
+        ><span>Search</span
         ><input
           type="search"
-          placeholder="Search merchant, category or source"
+          placeholder="Merchant, category or source"
           [value]="search()"
           (input)="updateSearch($event)"
       /></label>
@@ -294,7 +294,7 @@
         (valueChange)="updateType($event)"
       />
       <div class="source-filter-field">
-        <span class="sr-only" id="source-filter-label">Payment source</span>
+        <span class="field-label" id="source-filter-label">Payment source</span>
         <button
           class="source-filter-trigger"
           type="button"
@@ -361,9 +361,9 @@
             <app-icon name="success" class="pay-from-option__check" />
           }
         </button>
-        @if (store.activeCards().length) {
+        @if (store.alphabeticalActiveCards().length) {
           <p class="pay-from-group">Credit cards</p>
-          @for (card of store.activeCards(); track card.id) {
+          @for (card of store.alphabeticalActiveCards(); track card.id) {
             <button
               type="button"
               class="pay-from-option"
@@ -382,9 +382,9 @@
             </button>
           }
         }
-        @if (store.activePaymentSources().length) {
-          <p class="pay-from-group">Cash, bank &amp; meal card</p>
-          @for (source of store.activePaymentSources(); track source.id) {
+        @if (alphabeticalPaymentSources().length) {
+          <p class="pay-from-group">Other payment sources</p>
+          @for (source of alphabeticalPaymentSources(); track source.id) {
             <button
               type="button"
               class="pay-from-option"
@@ -485,10 +485,16 @@
                 </span>
                 <span class="tx-main">
                   <strong>{{ transaction.merchant || transaction.type.replace('_', ' ') }}</strong>
-                  <small
+                  <small class="tx-source-desktop"
                     >{{ categoryName(transaction.categoryId) }} ·
                     {{ store.sourceDetail(transaction.cardId) }}</small
                   >
+                  <small class="tx-source-mobile">
+                    <span class="tx-date-pill">{{ transaction.transactionDate | appDate }}</span>
+                    <span class="tx-mobile-source">{{
+                      mobileSourceDetail(transaction.cardId)
+                    }}</span>
+                  </small>
                   @if (transaction.emiPlanId) {
                     <span class="repeat-badge"><app-icon name="schedule" /> EMI</span>
                   } @else if (transaction.recurringRuleId) {
