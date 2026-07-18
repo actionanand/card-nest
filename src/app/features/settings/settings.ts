@@ -15,6 +15,8 @@ import { ConfirmationDialog } from '../../shared/confirmation-dialog';
 import { AppDateFormat, DateFormatService } from '../../core/services/date-format.service';
 import { APP_VERSION } from '../../core/app-version';
 import { Capacitor } from '@capacitor/core';
+import { PaymentSourcePicker } from '../../shared/payment-source-picker';
+import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
 
 type PinAction = 'CHANGE' | 'DISABLE';
 type BackupAction = 'CREATE' | 'RESTORE';
@@ -22,7 +24,7 @@ type ProtectedDataAction = 'DELETE_ALL' | 'RETENTION';
 
 @Component({
   selector: 'app-settings-page',
-  imports: [ReactiveFormsModule, AppIcon, ConfirmationDialog],
+  imports: [ReactiveFormsModule, AppIcon, ConfirmationDialog, PaymentSourcePicker, AppSelectPicker],
   templateUrl: './settings.html',
   styleUrl: './settings.scss',
   host: { '(document:keydown.escape)': 'closeDialogs()' },
@@ -67,6 +69,42 @@ export class SettingsPage {
   readonly deleteAllConfirmationOpen = signal(false);
   readonly retentionConfirmationOpen = signal(false);
   readonly retentionYears = signal(5);
+  readonly autoLockDelay = signal('5');
+  readonly defaultCurrency = signal('INR');
+  readonly reminderTiming = signal('5');
+  readonly autoLockOptions: readonly AppSelectOption[] = [
+    { value: '1', label: '1 minute' },
+    { value: '5', label: '5 minutes' },
+    { value: '15', label: '15 minutes' },
+    { value: '30', label: '30 minutes' },
+  ];
+  readonly titleOptions: readonly AppSelectOption[] = [
+    { value: '', label: 'No title' },
+    { value: 'Mr', label: 'Mr' },
+    { value: 'Ms', label: 'Ms' },
+    { value: 'Mrs', label: 'Mrs' },
+    { value: 'Mx', label: 'Mx' },
+    { value: 'Dr', label: 'Dr' },
+  ];
+  readonly currencyOptions: readonly AppSelectOption[] = [
+    { value: 'INR', label: 'Indian Rupee — INR' },
+    { value: 'USD', label: 'US Dollar — USD' },
+    { value: 'EUR', label: 'Euro — EUR' },
+    { value: 'GBP', label: 'British Pound — GBP' },
+  ];
+  readonly dateFormatOptions: readonly AppSelectOption[] = this.dateFormats.options.map(
+    (option) => ({ value: option.value, label: option.label }),
+  );
+  readonly reminderTimingOptions: readonly AppSelectOption[] = [
+    { value: '5', label: '5 days before' },
+    { value: '3', label: '3 days before' },
+    { value: '1', label: '1 day before' },
+    { value: '0', label: 'On due date' },
+  ];
+  readonly retentionOptions: readonly AppSelectOption[] = [3, 5, 7, 10].map((years) => ({
+    value: String(years),
+    label: `${years} years`,
+  }));
   readonly protectedAction = signal<ProtectedDataAction | null>(null);
   readonly destructivePin = signal('');
   readonly destructiveAuthError = signal<string | null>(null);
@@ -246,8 +284,8 @@ export class SettingsPage {
     this.preferenceMessage.set('Minimum amount for EMI conversion updated.');
   }
 
-  async updateProfileTitle(event: Event): Promise<void> {
-    await this.store.setProfileTitle((event.target as HTMLSelectElement).value);
+  async updateProfileTitle(value: string): Promise<void> {
+    await this.store.setProfileTitle(value);
   }
 
   async updateProfileName(event: Event): Promise<void> {
@@ -257,13 +295,13 @@ export class SettingsPage {
     );
   }
 
-  async updateDateFormat(event: Event): Promise<void> {
-    await this.dateFormats.setFormat((event.target as HTMLSelectElement).value as AppDateFormat);
+  async updateDateFormat(value: string): Promise<void> {
+    await this.dateFormats.setFormat(value as AppDateFormat);
     this.preferenceMessage.set('Date format updated.');
   }
 
-  async updateFlashSource(event: Event): Promise<void> {
-    await this.store.setFlashTransactionSource((event.target as HTMLSelectElement).value);
+  async updateFlashSource(sourceId: string): Promise<void> {
+    await this.store.setFlashTransactionSource(sourceId);
     this.preferenceMessage.set('Flash transaction source updated.');
   }
 
@@ -376,8 +414,8 @@ export class SettingsPage {
     await this.requestProtectedAction('DELETE_ALL');
   }
 
-  updateRetentionYears(event: Event): void {
-    this.retentionYears.set(Number((event.target as HTMLSelectElement).value));
+  updateRetentionYears(value: string): void {
+    this.retentionYears.set(Number(value));
   }
 
   async confirmRetentionCleanup(): Promise<void> {

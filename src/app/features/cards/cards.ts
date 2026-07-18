@@ -18,6 +18,7 @@ import { CardNetworkLogo } from '../../shared/card-network-logo';
 import { AppIcon } from '../../shared/app-icon';
 import { ConfirmationDialog } from '../../shared/confirmation-dialog';
 import { DateFormatService } from '../../core/services/date-format.service';
+import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
 
 type CardFilter = 'ALL' | 'DUE' | 'GRACE' | 'FEE' | 'EXPIRING';
 type PaymentMode = 'DUE' | 'OUTSTANDING' | 'CUSTOM';
@@ -25,7 +26,14 @@ type ArchiveAction = 'ARCHIVE' | 'RESTORE';
 
 @Component({
   selector: 'app-cards-page',
-  imports: [ReactiveFormsModule, CardNetworkLogo, RouterLink, AppIcon, ConfirmationDialog],
+  imports: [
+    ReactiveFormsModule,
+    CardNetworkLogo,
+    RouterLink,
+    AppIcon,
+    ConfirmationDialog,
+    AppSelectPicker,
+  ],
   templateUrl: './cards.html',
   styleUrl: './cards.scss',
   host: {
@@ -108,6 +116,40 @@ export class CardsPage {
     (_, index) => new Date().getFullYear() + index,
   );
   readonly days = Array.from({ length: 31 }, (_, index) => index + 1);
+  readonly networkOptions: readonly AppSelectOption[] = this.networks;
+  readonly expiryMonthOptions: readonly AppSelectOption[] = [
+    { value: '', label: 'Month' },
+    ...this.months.map((month) => ({ value: String(month), label: this.twoDigit(month) })),
+  ];
+  readonly expiryYearOptions: readonly AppSelectOption[] = [
+    { value: '', label: 'Year' },
+    ...this.years.map((year) => ({ value: String(year), label: String(year) })),
+  ];
+  readonly statementDayOptions: readonly AppSelectOption[] = this.days.map((day) => ({
+    value: String(day),
+    label: `Day ${day}`,
+  }));
+  readonly cardFilterOptions: readonly AppSelectOption[] = [
+    { value: 'ALL', label: 'All cards' },
+    { value: 'DUE', label: 'Incoming payment due' },
+    { value: 'GRACE', label: 'Longest grace period' },
+    { value: 'FEE', label: 'Annual fee due' },
+    { value: 'EXPIRING', label: 'Expiring soon' },
+  ];
+  readonly renewalMonthOptions: readonly AppSelectOption[] = this.months.map((month) => ({
+    value: String(month),
+    label: String(month),
+  }));
+  readonly renewalDayOptions: readonly AppSelectOption[] = this.days.map((day) => ({
+    value: String(day),
+    label: String(day),
+  }));
+  readonly waiverPeriodOptions: readonly AppSelectOption[] = [
+    { value: 'ANNIVERSARY', label: 'Card anniversary' },
+    { value: 'CALENDAR', label: 'Calendar year' },
+    { value: 'FINANCIAL', label: 'Financial year' },
+    { value: 'CUSTOM', label: 'Custom issuer period' },
+  ];
   readonly form = new FormGroup({
     nickname: new FormControl('', {
       nonNullable: true,
@@ -184,6 +226,62 @@ export class CardsPage {
       validators: [Validators.maxLength(80)],
     }),
   });
+
+  setNetwork(value: string): void {
+    this.form.controls.network.setValue(value as CardNetwork);
+    this.form.controls.network.markAsDirty();
+    this.networkChanged();
+  }
+
+  setExpiryMonth(value: string): void {
+    this.form.controls.expiryMonth.setValue(value ? Number(value) : null);
+    this.form.controls.expiryMonth.markAsDirty();
+    this.form.controls.expiryMonth.markAsTouched();
+  }
+
+  setExpiryYear(value: string): void {
+    this.form.controls.expiryYear.setValue(value ? Number(value) : null);
+    this.form.controls.expiryYear.markAsDirty();
+    this.form.controls.expiryYear.markAsTouched();
+  }
+
+  setStatementDay(value: string): void {
+    this.form.controls.statementDay.setValue(Number(value));
+    this.form.controls.statementDay.markAsDirty();
+  }
+
+  setRenewalMonth(value: string): void {
+    this.form.controls.renewalMonth.setValue(Number(value));
+    this.form.controls.renewalMonth.markAsDirty();
+  }
+
+  setRenewalDay(value: string): void {
+    this.form.controls.renewalDay.setValue(Number(value));
+    this.form.controls.renewalDay.markAsDirty();
+  }
+
+  setWaiverPeriod(value: string): void {
+    this.form.controls.waiverPeriod.setValue(
+      value as 'ANNIVERSARY' | 'CALENDAR' | 'FINANCIAL' | 'CUSTOM',
+    );
+    this.form.controls.waiverPeriod.markAsDirty();
+  }
+
+  setRelationshipGroup(value: string): void {
+    this.form.controls.relationshipGroup.setValue(value);
+    this.form.controls.relationshipGroup.markAsDirty();
+  }
+
+  relationshipOptions(): readonly AppSelectOption[] {
+    return [
+      { value: '', label: 'Not linked' },
+      ...this.linkableCards().map((card) => ({
+        value: card.id,
+        label: card.nickname,
+        detail: `${card.lastDigits} · ${card.network.replace('_', ' ')}${card.archived ? ' · Archived' : ''}`,
+      })),
+    ];
+  }
 
   constructor() {
     effect(() => {
@@ -755,8 +853,8 @@ export class CardsPage {
     });
     this.snackbar.show('Card benefit removed.', 'INFO');
   }
-  updateCardFilter(event: Event): void {
-    this.cardFilter.set((event.target as HTMLSelectElement).value as CardFilter);
+  updateCardFilter(value: string): void {
+    this.cardFilter.set(value as CardFilter);
   }
   private matchesFilter(card: CreditCard): boolean {
     const filter = this.cardFilter();

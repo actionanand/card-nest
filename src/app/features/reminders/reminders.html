@@ -71,13 +71,14 @@
         (pointerdown)="startSwipe(reminder, $event)"
         (pointermove)="moveSwipe(reminder, $event)"
         (pointerup)="finishSwipe(reminder, $event)"
-        (pointercancel)="finishSwipe(reminder, $event)"
+        (pointercancel)="cancelSwipe()"
       >
         @if (filter() === 'DUE') {
           <button
             class="swipe-action swipe-action--payment"
             type="button"
             [disabled]="!canRecordPayment(reminder)"
+            (pointerdown)="$event.stopPropagation()"
             (click)="requestPayment(reminder)"
           >
             Record payment
@@ -86,7 +87,8 @@
             class="swipe-action swipe-action--snooze"
             type="button"
             [disabled]="!canSnooze(reminder)"
-            (click)="snooze(reminder)"
+            (pointerdown)="$event.stopPropagation()"
+            (click)="requestSnooze(reminder)"
           >
             Snooze
           </button>
@@ -148,7 +150,7 @@
                       ? 'No active reminder is available to snooze'
                       : 'Enable notifications before snoozing reminders'
                 "
-                (click)="$event.stopPropagation(); snooze(reminder)"
+                (click)="$event.stopPropagation(); requestSnooze(reminder)"
               >
                 Snooze
               </button>
@@ -173,12 +175,13 @@
             (pointerdown)="startSwipe(reminder, $event)"
             (pointermove)="moveSwipe(reminder, $event)"
             (pointerup)="finishSwipe(reminder, $event)"
-            (pointercancel)="finishSwipe(reminder, $event)"
+            (pointercancel)="cancelSwipe()"
           >
             <button
               class="swipe-action swipe-action--payment"
               type="button"
               [disabled]="!canRecordPayment(reminder)"
+              (pointerdown)="$event.stopPropagation()"
               (click)="requestPayment(reminder)"
             >
               Record payment
@@ -187,7 +190,8 @@
               class="swipe-action swipe-action--snooze"
               type="button"
               [disabled]="!canSnooze(reminder)"
-              (click)="snooze(reminder)"
+              (pointerdown)="$event.stopPropagation()"
+              (click)="requestSnooze(reminder)"
             >
               Snooze
             </button>
@@ -266,5 +270,19 @@
     confirmLabel="Record payment"
     (confirmed)="recordPayment()"
     (cancelled)="paymentCandidate.set(null)"
+  />
+}
+
+@if (snoozeCandidate(); as reminder) {
+  <app-confirmation-dialog
+    title="Snooze this reminder?"
+    [message]="
+      'Hide the payment reminder for ' +
+      reminder.card.nickname +
+      '? You can restore it from Snoozed reminders.'
+    "
+    confirmLabel="Snooze reminder"
+    (confirmed)="confirmSnooze()"
+    (cancelled)="snoozeCandidate.set(null)"
   />
 }

@@ -45,6 +45,7 @@ export class RemindersPage {
   private readonly dates = inject(DateFormatService);
   readonly filter = signal<ReminderFilter>('DUE');
   readonly paymentCandidate = signal<PaymentReminder | null>(null);
+  readonly snoozeCandidate = signal<PaymentReminder | null>(null);
   readonly revealedAction = signal<{
     readonly id: string;
     readonly action: 'PAYMENT' | 'SNOOZE';
@@ -260,11 +261,11 @@ export class RemindersPage {
     this.swipeStart = null;
     this.swipeDrag.set(null);
     if (offset >= 55 && this.canRecordPayment(item)) {
-      this.revealedAction.set({ id: item.id, action: 'PAYMENT' });
+      this.requestPayment(item);
       return;
     }
     if (offset <= -55 && this.canSnooze(item)) {
-      this.revealedAction.set({ id: item.id, action: 'SNOOZE' });
+      this.requestSnooze(item);
       return;
     }
     this.revealedAction.set(null);
@@ -283,9 +284,17 @@ export class RemindersPage {
     return revealed?.id === item.id && revealed.action === action;
   }
 
-  async snooze(item: PaymentReminder): Promise<void> {
+  requestSnooze(item: PaymentReminder): void {
     if (!this.canSnooze(item)) return;
+    this.snoozeCandidate.set(item);
+    this.revealedAction.set(null);
+  }
+
+  async confirmSnooze(): Promise<void> {
+    const item = this.snoozeCandidate();
+    if (!item || !this.canSnooze(item)) return;
     await this.store.setReminderSnoozed(item.id, true);
+    this.snoozeCandidate.set(null);
     this.revealedAction.set(null);
     this.snackbar.show('Reminder snoozed.', 'INFO', 10_000, {
       label: 'Undo',
@@ -369,7 +378,7 @@ export class RemindersPage {
     };
   }
 
-  private cancelSwipe(): void {
+  cancelSwipe(): void {
     this.swipeStart = null;
     this.swipeDrag.set(null);
   }

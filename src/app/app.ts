@@ -14,6 +14,7 @@ import { CardNestStore } from './core/services/card-nest-store';
 import { NotificationService } from './core/services/notification.service';
 import { SnackbarService } from './core/services/snackbar.service';
 import { AppIcon } from './shared/app-icon';
+import { PaymentSourcePicker } from './shared/payment-source-picker';
 import { CardTransaction } from './core/models/domain';
 import { parseMoneyToMinor } from './core/services/money';
 
@@ -33,7 +34,7 @@ function sanitizedMoneyInput(value: string): string {
 
 @Component({
   selector: 'app-root',
-  imports: [RouterOutlet, RouterLink, RouterLinkActive, AppIcon],
+  imports: [RouterOutlet, RouterLink, RouterLinkActive, AppIcon, PaymentSourcePicker],
   templateUrl: './app.html',
   styleUrl: './app.scss',
   host: {
@@ -158,8 +159,7 @@ export class App {
     this.flashAmount.set(sanitized);
   }
 
-  async updateFlashSource(event: Event): Promise<void> {
-    const sourceId = (event.target as HTMLSelectElement).value;
+  async updateFlashSource(sourceId: string): Promise<void> {
     this.flashSourceId.set(sourceId);
     try {
       await this.store.setFlashTransactionSource(sourceId);
