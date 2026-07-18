@@ -886,6 +886,7 @@ export class CardNestStore {
 
   materializeRecurringTransactions(asOf = today): void {
     const generated: CardTransaction[] = [];
+    const changedRules: RecurringRule[] = [];
     const nowStamp = new Date().toISOString();
     this.recurringRules.update((rules) =>
       rules.map((rule) => {
@@ -932,10 +933,13 @@ export class CardNestStore {
           }
           guard += 1;
         }
-        return { ...rule, nextOccurrenceDate: next, status };
+        if (next === rule.nextOccurrenceDate && status === rule.status) return rule;
+        const updated = { ...rule, nextOccurrenceDate: next, status };
+        changedRules.push(updated);
+        return updated;
       }),
     );
-    for (const rule of this.recurringRules()) void this.persistRecurringRule(rule);
+    for (const rule of changedRules) void this.persistRecurringRule(rule);
     if (generated.length) {
       this.transactions.update((items) => {
         const next = [...generated, ...items];

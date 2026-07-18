@@ -74,6 +74,7 @@ const DELETE_TABLES = [
 export class SqliteDatabase {
   private readonly databaseName = 'cardnest';
   private readonly isWeb = Capacitor.getPlatform() === 'web';
+  private writeQueue: Promise<void> = Promise.resolve();
   readonly ready = signal(false);
   readonly unavailableReason = signal<string | null>(null);
 
@@ -155,14 +156,23 @@ export class SqliteDatabase {
 
   async run(statement: string, values: readonly unknown[] = []): Promise<number> {
     if (!this.ready()) throw new Error('SQLite database is unavailable.');
-    const result = await CapacitorSQLite.run({
-      database: this.databaseName,
-      statement,
-      values: [...values],
-      transaction: true,
+    const operation = this.writeQueue.then(async () => {
+      const result = await CapacitorSQLite.run({
+        database: this.databaseName,
+        statement,
+        values: [...values],
+        // A single SQLite statement is already atomic. jeep-sqlite cannot begin several
+        // explicit transactions concurrently when signal effects persist in parallel.
+        transaction: false,
+      });
+      if (this.isWeb) await CapacitorSQLite.saveToStore({ database: this.databaseName });
+      return result.changes?.changes ?? 0;
     });
-    if (this.isWeb) await CapacitorSQLite.saveToStore({ database: this.databaseName });
-    return result.changes?.changes ?? 0;
+    this.writeQueue = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    return operation;
   }
 
   async exportBackupJson(): Promise<string> {
