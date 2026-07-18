@@ -7,6 +7,8 @@ export interface AppSelectOption {
   readonly detail?: string;
   readonly disabled?: boolean;
   readonly swatch?: string;
+  readonly icon?: string;
+  readonly iconColour?: string;
 }
 
 @Component({
@@ -22,6 +24,15 @@ export interface AppSelectOption {
       aria-haspopup="dialog"
       (click)="show()"
     >
+      @if (selectedOption()?.icon; as icon) {
+        <span
+          class="option-icon"
+          [style.color]="selectedOption()?.iconColour || 'var(--accent)'"
+          aria-hidden="true"
+        >
+          <app-icon [name]="icon" />
+        </span>
+      }
       @if (selectedOption()?.swatch; as swatch) {
         <span class="option-swatch" [style.background-color]="swatch"></span>
       }
@@ -65,6 +76,15 @@ export interface AppSelectOption {
               [attr.aria-selected]="option.value === value()"
               (click)="select(option.value)"
             >
+              @if (option.icon) {
+                <span
+                  class="option-icon"
+                  [style.color]="option.iconColour || 'var(--accent)'"
+                  aria-hidden="true"
+                >
+                  <app-icon [name]="option.icon" />
+                </span>
+              }
               @if (option.swatch) {
                 <span class="option-swatch" [style.background-color]="option.swatch"></span>
               }

@@ -128,7 +128,12 @@ export class TransactionsPage {
     { value: 'INTEREST', label: 'Interest' },
   ];
   readonly categoryOptions = computed<readonly AppSelectOption[]>(() =>
-    this.store.categories().map((category) => ({ value: category.id, label: category.name })),
+    this.store.categories().map((category) => ({
+      value: category.id,
+      label: category.name,
+      icon: category.icon,
+      iconColour: category.colour ?? '#28684e',
+    })),
   );
   readonly categoryFilterOptions = computed<readonly AppSelectOption[]>(() => [
     { value: 'ALL', label: 'All categories' },
