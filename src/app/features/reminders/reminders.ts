@@ -97,6 +97,13 @@ export class RemindersPage {
     return 'comfortable';
   }
 
+  timingLabel(item: PaymentReminder): string {
+    if (item.days < 0)
+      return `${Math.abs(item.days)} ${Math.abs(item.days) === 1 ? 'day' : 'days'} overdue`;
+    if (item.days === 0) return 'Due today';
+    return `${item.days} ${item.days === 1 ? 'day' : 'days'} left`;
+  }
+
   canSnooze(item: PaymentReminder): boolean {
     return item.card.remindToSettle && item.amount > 0 && item.days <= 5;
   }

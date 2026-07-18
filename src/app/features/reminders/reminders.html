@@ -96,15 +96,11 @@
             <span>{{ reminder.due.toLocaleDateString('en-IN', { month: 'short' }) }}</span>
           </div>
           <div class="reminder-copy">
-            <strong>Payment due · {{ reminder.card.nickname }}</strong>
-            <small
-              >•••• {{ reminder.card.lastDigits }} ·
-              {{
-                reminder.days < 0
-                  ? -reminder.days + ' days overdue'
-                  : reminder.days + ' days remaining'
-              }}</small
-            >
+            <div class="reminder-title">
+              <strong>Payment due · {{ reminder.card.nickname }}</strong>
+              <span [class]="'due-pill ' + urgency(reminder)">{{ timingLabel(reminder) }}</span>
+            </div>
+            <small>•••• {{ reminder.card.lastDigits }} · Due {{ date(reminder.due) }}</small>
             <p>{{ money(reminder.amount, reminder.card.currencyCode) }} statement amount due</p>
           </div>
           <div class="actions">
@@ -148,8 +144,11 @@
               ><span>{{ reminder.due.toLocaleDateString('en-IN', { month: 'short' }) }}</span>
             </div>
             <div class="reminder-copy">
-              <strong>{{ reminder.card.nickname }}</strong>
-              <small>Due {{ date(reminder.due) }} · {{ reminder.days }} days remaining</small>
+              <div class="reminder-title">
+                <strong>{{ reminder.card.nickname }}</strong>
+                <span [class]="'due-pill ' + urgency(reminder)">{{ timingLabel(reminder) }}</span>
+              </div>
+              <small>Due {{ date(reminder.due) }}</small>
               <p>{{ money(reminder.amount, reminder.card.currencyCode) }} statement amount due</p>
             </div>
           </article>

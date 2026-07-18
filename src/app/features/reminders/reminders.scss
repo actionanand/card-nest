@@ -145,6 +145,32 @@
   color: var(--muted);
   font-size: 0.7rem;
 }
+.reminder-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+.due-pill {
+  flex: 0 0 auto;
+  padding: 0.18rem 0.45rem;
+  border-radius: 999px;
+  color: var(--success);
+  background: var(--success-soft);
+  font-size: 0.62rem;
+  font-weight: 800;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.due-pill.soon {
+  color: var(--warning);
+  background: var(--warning-soft);
+}
+.due-pill.urgent,
+.due-pill.overdue {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
 .actions {
   display: flex;
   gap: 0.5rem;
@@ -265,6 +291,20 @@
   }
   .reminder-copy {
     min-width: 0;
+  }
+  .reminder-title {
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.35rem;
+  }
+  .reminder-title strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .due-pill {
+    padding: 0.15rem 0.35rem;
+    font-size: 0.56rem;
   }
   .swipe-action {
     position: absolute;
