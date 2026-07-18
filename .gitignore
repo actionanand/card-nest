@@ -10,7 +10,7 @@
 /out-tsc
 /bazel-out
 
-/reference
+# /reference
 
 # Node
 /node_modules
