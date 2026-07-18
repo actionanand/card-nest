@@ -6,6 +6,9 @@ export interface AppSelectOption {
   readonly label: string;
   readonly detail?: string;
   readonly disabled?: boolean;
+  readonly swatch?: string;
+  readonly icon?: string;
+  readonly iconColour?: string;
 }
 
 @Component({
@@ -21,6 +24,18 @@ export interface AppSelectOption {
       aria-haspopup="dialog"
       (click)="show()"
     >
+      @if (selectedOption()?.icon; as icon) {
+        <span
+          class="option-icon"
+          [style.color]="selectedOption()?.iconColour || 'var(--accent)'"
+          aria-hidden="true"
+        >
+          <app-icon [name]="icon" />
+        </span>
+      }
+      @if (selectedOption()?.swatch; as swatch) {
+        <span class="option-swatch" [style.background-color]="swatch"></span>
+      }
       <span>{{ selectedLabel() }}</span>
       <app-icon name="chevron_down" />
     </button>
@@ -61,6 +76,18 @@ export interface AppSelectOption {
               [attr.aria-selected]="option.value === value()"
               (click)="select(option.value)"
             >
+              @if (option.icon) {
+                <span
+                  class="option-icon"
+                  [style.color]="option.iconColour || 'var(--accent)'"
+                  aria-hidden="true"
+                >
+                  <app-icon [name]="option.icon" />
+                </span>
+              }
+              @if (option.swatch) {
+                <span class="option-swatch" [style.background-color]="option.swatch"></span>
+              }
               <span class="option-copy">
                 <strong>{{ option.label }}</strong>
                 @if (option.detail) {
@@ -90,10 +117,10 @@ export class AppSelectPicker {
   readonly opened = output<void>();
   readonly open = signal(false);
 
-  readonly selectedLabel = computed(
-    () =>
-      this.options().find((option) => option.value === this.value())?.label ?? this.placeholder(),
+  readonly selectedOption = computed(() =>
+    this.options().find((option) => option.value === this.value()),
   );
+  readonly selectedLabel = computed(() => this.selectedOption()?.label ?? this.placeholder());
 
   show(): void {
     if (this.disabled()) return;

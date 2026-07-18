@@ -71,6 +71,20 @@ export class CategoriesPage {
     { value: 'EXPENSE', label: 'Expenses only' },
     { value: 'CREDIT', label: 'Credits only' },
   ];
+  readonly colourPalette: readonly AppSelectOption[] = [
+    { value: '#28684e', label: 'Forest green', swatch: '#28684e' },
+    { value: '#4e9d73', label: 'Emerald green', swatch: '#4e9d73' },
+    { value: '#5a9d90', label: 'Teal', swatch: '#5a9d90' },
+    { value: '#4e87c7', label: 'Blue', swatch: '#4e87c7' },
+    { value: '#65758b', label: 'Slate blue', swatch: '#65758b' },
+    { value: '#9075b5', label: 'Purple', swatch: '#9075b5' },
+    { value: '#d56a7b', label: 'Rose', swatch: '#d56a7b' },
+    { value: '#de7d68', label: 'Coral', swatch: '#de7d68' },
+    { value: '#e0a860', label: 'Amber', swatch: '#e0a860' },
+    { value: '#c8a43b', label: 'Gold', swatch: '#c8a43b' },
+    { value: '#7a8797', label: 'Slate', swatch: '#7a8797' },
+    { value: '#3f7659', label: 'Deep green', swatch: '#3f7659' },
+  ] as const;
   readonly sortedCategories = computed(() =>
     [...this.store.categories()].sort((a, b) => a.name.localeCompare(b.name)),
   );
@@ -92,6 +106,23 @@ export class CategoriesPage {
   setAppliesTo(value: string): void {
     this.form.controls.appliesTo.setValue(value as Category['appliesTo']);
     this.form.controls.appliesTo.markAsDirty();
+  }
+
+  availableColours(): readonly AppSelectOption[] {
+    const selected = this.form.controls.colour.value.toLowerCase();
+    if (this.colourPalette.some((colour) => colour.value === selected)) {
+      return this.colourPalette;
+    }
+    return [
+      { value: selected, label: 'Current custom colour', swatch: selected },
+      ...this.colourPalette,
+    ];
+  }
+
+  chooseColour(colour: string): void {
+    this.form.controls.colour.setValue(colour);
+    this.form.controls.colour.markAsDirty();
+    this.form.controls.colour.markAsTouched();
   }
 
   usageCount(categoryId: string): number {

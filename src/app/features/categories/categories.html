@@ -113,14 +113,13 @@
           </div>
         </fieldset>
         <div class="form-grid">
-          <label
-            >Colour<input
-              formControlName="colour"
-              type="text"
-              inputmode="text"
-              maxlength="7"
-              placeholder="#28684e"
-          /></label>
+          <app-select-picker
+            label="Colour"
+            sheetTitle="Choose a predefined colour"
+            [options]="availableColours()"
+            [value]="form.controls.colour.value.toLowerCase()"
+            (valueChange)="chooseColour($event)"
+          />
           <app-select-picker
             label="Used for"
             [options]="appliesToOptions"
@@ -128,6 +127,17 @@
             (valueChange)="setAppliesTo($event)"
           />
         </div>
+        <label class="custom-colour-picker">
+          Custom colour
+          <span class="custom-colour-control">
+            <span>Choose any colour</span>
+            <input
+              formControlName="colour"
+              type="color"
+              aria-label="Choose a custom category colour"
+            />
+          </span>
+        </label>
         <div class="form-actions">
           <button class="btn" type="button" (click)="closeForm()">Cancel</button>
           <button class="btn btn-primary" type="submit">Save category</button>

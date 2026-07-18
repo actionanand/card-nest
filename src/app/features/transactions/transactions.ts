@@ -128,7 +128,12 @@ export class TransactionsPage {
     { value: 'INTEREST', label: 'Interest' },
   ];
   readonly categoryOptions = computed<readonly AppSelectOption[]>(() =>
-    this.store.categories().map((category) => ({ value: category.id, label: category.name })),
+    this.store.categories().map((category) => ({
+      value: category.id,
+      label: category.name,
+      icon: category.icon,
+      iconColour: category.colour ?? '#28684e',
+    })),
   );
   readonly categoryFilterOptions = computed<readonly AppSelectOption[]>(() => [
     { value: 'ALL', label: 'All categories' },
@@ -148,6 +153,11 @@ export class TransactionsPage {
       disabled: !this.isCreditCardSelected(),
     },
   ]);
+  readonly alphabeticalPaymentSources = computed(() =>
+    [...this.store.activePaymentSources()].sort((left, right) =>
+      left.nickname.localeCompare(right.nickname, undefined, { sensitivity: 'base' }),
+    ),
+  );
   readonly repeatChoiceOptions: readonly AppSelectOption[] = [
     { value: 'NONE', label: 'Do not repeat' },
     ...this.repeatOptions.map((count) => ({
@@ -181,7 +191,7 @@ export class TransactionsPage {
       label: card.nickname,
       detail: `${card.lastDigits} · ${card.issuerName}`,
     })),
-    ...this.store.activePaymentSources().map((source) => ({
+    ...this.alphabeticalPaymentSources().map((source) => ({
       value: source.id,
       label: source.nickname,
       detail: source.institution || source.kind,
@@ -360,6 +370,13 @@ export class TransactionsPage {
   }
   cardName(cardId: string): string {
     return this.store.sourceName(cardId);
+  }
+  mobileSourceDetail(sourceId: string): string {
+    const card = this.store.cards().find((item) => item.id === sourceId);
+    if (card) return `${card.nickname} · ${card.lastDigits}`;
+    return (
+      this.store.paymentSources().find((item) => item.id === sourceId)?.nickname ?? 'Unknown source'
+    );
   }
   categoryName(categoryId: string): string {
     return this.store.categories().find((item) => item.id === categoryId)?.name ?? 'Other';

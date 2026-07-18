@@ -352,9 +352,10 @@ label small {
 .toolbar {
   display: grid;
   min-width: 0;
-  grid-template-columns: minmax(12rem, 1fr) repeat(4, minmax(9rem, 0.7fr)) auto;
-  gap: 0.55rem;
-  padding: 0.7rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: end;
+  gap: 0.75rem;
+  padding: 0.85rem;
 }
 .filter-panel {
   margin-bottom: 0.75rem;
@@ -363,7 +364,14 @@ label small {
   display: none;
 }
 .source-filter-field {
+  display: grid;
   min-width: 0;
+  gap: 0.35rem;
+}
+.source-filter-field .field-label {
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 700;
 }
 .source-filter-trigger {
   display: flex;
@@ -395,6 +403,10 @@ label small {
 .toolbar select,
 .toolbar .btn {
   min-height: 2.65rem;
+}
+.toolbar .manage-categories {
+  align-self: end;
+  justify-content: center;
 }
 .ledger-summary {
   position: relative;
@@ -650,6 +662,9 @@ label small {
 .tx-date {
   color: var(--muted);
   font-size: 0.65rem;
+}
+.tx-source-mobile {
+  display: none;
 }
 .tx-amount {
   justify-self: end;
@@ -958,6 +973,32 @@ label small {
   }
   .tx-date {
     display: none;
+  }
+  .tx-source-desktop {
+    display: none;
+  }
+  .tx-source-mobile {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 0.35rem;
+  }
+  .tx-date-pill {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    padding: 0.13rem 0.35rem;
+    border-radius: 999px;
+    color: var(--muted);
+    background: var(--surface-2);
+    font-size: 0.58rem;
+    font-weight: 750;
+  }
+  .tx-mobile-source {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .tx-amount {
     grid-column: 3;

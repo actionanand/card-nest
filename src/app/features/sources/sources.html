@@ -231,13 +231,18 @@
                         {{ sourceName(transaction.cardId) }}</small
                       >
                     </div>
-                    <time [attr.datetime]="transaction.transactionDate">{{
-                      transaction.transactionDate | appDate
-                    }}</time>
-                    <strong class="transaction-amount" [class.credit]="isCredit(transaction.type)">
-                      {{ isCredit(transaction.type) ? '+' : '−'
-                      }}{{ money(transaction.amountMinor) }}
-                    </strong>
+                    <span class="transaction-value">
+                      <time [attr.datetime]="transaction.transactionDate">{{
+                        transaction.transactionDate | appDate
+                      }}</time>
+                      <strong
+                        class="transaction-amount"
+                        [class.credit]="isCredit(transaction.type)"
+                      >
+                        {{ isCredit(transaction.type) ? '+' : '−'
+                        }}{{ money(transaction.amountMinor) }}
+                      </strong>
+                    </span>
                     <a
                       class="edit-transaction"
                       routerLink="/transactions"

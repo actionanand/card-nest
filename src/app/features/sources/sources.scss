@@ -309,7 +309,7 @@
 .source-transactions article {
   display: grid;
   min-width: 0;
-  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 0.8rem;
   padding: 0.9rem 1.1rem;
@@ -355,6 +355,11 @@
 }
 .transaction-amount {
   white-space: nowrap;
+}
+.transaction-value {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
 }
 .transaction-amount.credit {
   color: var(--success);
@@ -441,12 +446,26 @@
     gap: 0.55rem;
     padding-inline: 0.8rem;
   }
-  .source-transactions time {
-    display: none;
-  }
-  .transaction-amount {
+  .transaction-value {
     grid-column: 2;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
     justify-self: start;
+  }
+  .transaction-value .transaction-amount {
+    order: -1;
+  }
+  .transaction-value time {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.13rem 0.38rem;
+    border-radius: 999px;
+    color: var(--muted);
+    background: var(--surface-2);
+    font-size: 0.58rem;
+    font-weight: 750;
+    white-space: nowrap;
   }
   .edit-transaction {
     grid-column: 3;
