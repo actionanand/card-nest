@@ -131,7 +131,7 @@ export class App {
 
   openFlashTransaction(): void {
     const availableIds = [
-      ...this.store.activeCards().map((card) => card.id),
+      ...this.store.alphabeticalActiveCards().map((card) => card.id),
       ...this.store.activePaymentSources().map((source) => source.id),
     ];
     const preferred = this.store.flashTransactionSourceId();

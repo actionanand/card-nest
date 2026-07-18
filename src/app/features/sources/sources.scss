@@ -144,6 +144,25 @@
   gap: 0.5rem;
   padding-top: 0.2rem;
 }
+.meal-cycle-summary {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+}
+.meal-cycle-summary span {
+  display: grid;
+  gap: 0.15rem;
+  padding: 0.65rem;
+  border-radius: 0.6rem;
+  background: var(--canvas);
+}
+.meal-cycle-summary small {
+  color: var(--muted);
+  font-size: 0.62rem;
+}
+.meal-cycle-summary strong {
+  font-size: 0.82rem;
+}
 .source-actions .btn {
   min-height: 2.4rem;
   padding: 0.45rem 0.65rem;
@@ -190,6 +209,85 @@
 }
 .source-ledger {
   overflow: visible;
+}
+.source-cycle {
+  border-bottom: 1px solid var(--line);
+}
+.source-cycle:last-child {
+  border-bottom: 0;
+}
+.source-cycle > summary {
+  display: grid;
+  min-height: 3.2rem;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.8rem 1.1rem;
+  cursor: pointer;
+  list-style: none;
+}
+.source-cycle > summary::-webkit-details-marker {
+  display: none;
+}
+.source-cycle > summary > app-icon {
+  width: 1rem;
+  height: 1rem;
+  transition: transform 0.18s ease;
+}
+.source-cycle[open] > summary > app-icon {
+  transform: rotate(90deg);
+}
+.source-cycle[open] > summary {
+  background: color-mix(in srgb, var(--accent-soft) 55%, var(--surface));
+}
+.cycle-period {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.65rem;
+}
+.cycle-period > span:last-child,
+.cycle-total {
+  display: grid;
+  gap: 0.12rem;
+}
+.cycle-period-icon {
+  display: grid;
+  width: 2.35rem;
+  height: 2.35rem;
+  place-items: center;
+  flex: 0 0 auto;
+  border-radius: 0.7rem;
+  color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: 0 0.35rem 0.9rem rgb(27 92 65 / 12%);
+}
+.cycle-period-icon app-icon {
+  width: 1.05rem;
+  height: 1.05rem;
+}
+.cycle-period small,
+.cycle-total small {
+  color: var(--muted);
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.cycle-period strong {
+  color: var(--ink);
+  font-size: 0.76rem;
+  font-variant-numeric: tabular-nums;
+}
+.cycle-total {
+  justify-items: end;
+  padding: 0.35rem 0.55rem;
+  border-radius: 0.6rem;
+  background: var(--canvas);
+}
+.cycle-total strong {
+  color: var(--accent);
+  font-size: 0.75rem;
 }
 .ledger-heading {
   display: flex;
@@ -321,6 +419,22 @@
   }
   .ledger-heading > small {
     text-align: left;
+  }
+  .source-cycle > summary {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.55rem;
+  }
+  .cycle-total {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    grid-template-columns: auto 1fr;
+    align-items: center;
+    justify-items: start;
+    gap: 0.5rem;
+  }
+  .cycle-chevron {
+    grid-column: 2;
+    grid-row: 1;
   }
   .source-transactions article {
     grid-template-columns: auto minmax(0, 1fr) auto;

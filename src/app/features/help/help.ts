@@ -1,6 +1,8 @@
 import { Component, computed, signal } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import { AppIcon } from '../../shared/app-icon';
+import { APP_VERSION } from '../../core/app-version';
+import { Capacitor } from '@capacitor/core';
 
 interface HelpTopic {
   readonly id: string;
@@ -255,6 +257,7 @@ const HELP_TOPICS: readonly HelpTopic[] = [
       'Use an application PIN as the recovery credential and Android biometrics for convenient unlocking.',
     steps: [
       'Open Settings and set a four-to-eight-digit application PIN.',
+      'An application PIN is required before biometric unlock can work. It remains the fallback credential.',
       'On an Android device with an enrolled fingerprint or biometric, enable Biometric unlock.',
       'Choose whether CardNest locks whenever it enters the background.',
       'To disable or change the PIN, confirm the existing PIN first.',
@@ -296,7 +299,9 @@ const HELP_TOPICS: readonly HelpTopic[] = [
       'CardNest is local-first: records stay in SQLite on this device unless you explicitly export a file.',
     steps: [
       'Android stores the database inside CardNest private application storage; web stores SQLite bytes inside browser IndexedDB.',
+      'Use Keep recent history only to retain 3, 5, 7, or 10 years. CardNest carries the removed history into each card opening balance so current totals remain continuous.',
       'Use Delete all data under Settings > Backup & data to remove CardNest records after confirmation.',
+      'If an application PIN exists, retention cleanup and Delete all data require that PIN or the enabled Android biometric.',
       'Create an encrypted backup first if you may need the data later.',
     ],
     keywords: ['privacy', 'sqlite', 'local', 'delete all', 'storage', 'indexeddb'],
@@ -312,6 +317,10 @@ const HELP_TOPICS: readonly HelpTopic[] = [
   styleUrl: './help.scss',
 })
 export class HelpPage {
+  readonly appVersion = APP_VERSION;
+  readonly showAppVersion = Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android';
+  readonly copyright =
+    new Date().getFullYear() > 2026 ? `2026 – ${new Date().getFullYear()}` : '2026';
   readonly search = signal('');
   readonly groups = [...new Set(HELP_TOPICS.map((topic) => topic.group))];
   readonly filteredTopics = computed(() => {

@@ -752,6 +752,26 @@ label small {
 .detail-heading h2 {
   margin: 0;
 }
+.recurring-detail {
+  border-top: 0.3rem solid var(--accent);
+  background:
+    radial-gradient(circle at 8% 0%, var(--accent-soft), transparent 13rem), var(--surface);
+}
+.recurring-detail-icon {
+  display: grid;
+  width: 3rem;
+  height: 3rem;
+  place-items: center;
+  flex: 0 0 auto;
+  border-radius: 0.9rem;
+  color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: 0 0.45rem 1rem rgb(28 88 63 / 14%);
+}
+.recurring-detail-icon app-icon {
+  width: 1.35rem;
+  height: 1.35rem;
+}
 .detail-heading > button {
   display: grid;
   width: 2.5rem;
@@ -808,6 +828,58 @@ label small {
 .detail-section h3 {
   margin: 0 0 0.65rem;
   font-size: 1rem;
+}
+.recurring-schedule-card {
+  padding: 1rem;
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, var(--line));
+  border-radius: 0.85rem;
+  background: color-mix(in srgb, var(--accent-soft) 45%, var(--surface));
+}
+.recurring-schedule-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.recurring-schedule-heading p,
+.recurring-schedule-heading h3 {
+  margin: 0;
+}
+.recurring-status {
+  padding: 0.3rem 0.55rem;
+  border-radius: 999px;
+  color: var(--accent);
+  background: var(--surface);
+  font-size: 0.62rem;
+  font-weight: 800;
+  text-transform: capitalize;
+}
+.recurring-stats {
+  display: grid;
+  grid-template-columns: 0.7fr 1.3fr;
+  gap: 0.55rem;
+  margin: 0.8rem 0;
+}
+.recurring-stats span {
+  display: grid;
+  gap: 0.15rem;
+  padding: 0.65rem;
+  border-radius: 0.65rem;
+  background: var(--surface);
+}
+.recurring-stats small {
+  color: var(--muted);
+  font-size: 0.62rem;
+}
+.recurring-schedule-card .schedule-row span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.recurring-schedule-card .schedule-row app-icon {
+  width: 0.9rem;
+  height: 0.9rem;
+  color: var(--accent);
 }
 .detail-receipts > div {
   display: grid;

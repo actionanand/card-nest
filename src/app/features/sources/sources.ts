@@ -10,6 +10,13 @@ import { AppDatePipe } from '../../core/services/date-format.service';
 
 type SourceTab = 'ACCOUNTS' | 'ACTIVITY';
 
+interface SourceCycleGroup {
+  readonly key: string;
+  readonly label: string;
+  readonly transactions: readonly CardTransaction[];
+  readonly spentMinor: number;
+}
+
 @Component({
   selector: 'app-sources-page',
   imports: [RouterLink, AppIcon, PaymentSourceLogo, AppDatePipe],
@@ -32,18 +39,53 @@ export class SourcesPage {
     return this.store.transactions().filter((transaction) => sourceIds.has(transaction.cardId));
   });
   readonly visibleTransactions = computed(() =>
-    this.sourceTransactions().filter(
-      (transaction) =>
-        this.selectedSourceId() === 'ALL' || transaction.cardId === this.selectedSourceId(),
-    ),
+    this.sourceTransactions()
+      .filter(
+        (transaction) =>
+          this.selectedSourceId() === 'ALL' || transaction.cardId === this.selectedSourceId(),
+      )
+      .sort(
+        (left, right) =>
+          right.transactionDate.localeCompare(left.transactionDate) ||
+          right.createdAt.localeCompare(left.createdAt),
+      ),
   );
+  readonly currentCycle = computed(() => this.cycleFor(new Date().toISOString().slice(0, 10)));
+  readonly currentCycleTransactions = computed(() => {
+    const period = this.currentCycle();
+    return this.visibleTransactions().filter(
+      (transaction) =>
+        transaction.transactionDate >= period.startIso &&
+        transaction.transactionDate <= period.endIso,
+    );
+  });
+  readonly transactionGroups = computed<readonly SourceCycleGroup[]>(() => {
+    const groups = new Map<string, CardTransaction[]>();
+    for (const transaction of this.visibleTransactions()) {
+      const cycle = this.cycleFor(transaction.transactionDate);
+      groups.set(cycle.startIso, [...(groups.get(cycle.startIso) ?? []), transaction]);
+    }
+    return [...groups.entries()]
+      .sort(([left], [right]) => right.localeCompare(left))
+      .map(([key, transactions]) => {
+        const cycle = this.cycleFor(key);
+        return {
+          key,
+          label: cycle.label,
+          transactions,
+          spentMinor: transactions
+            .filter((transaction) => !this.isCredit(transaction.type))
+            .reduce((sum, transaction) => sum + transaction.amountMinor, 0),
+        };
+      });
+  });
   readonly spentMinor = computed(() =>
-    this.visibleTransactions()
+    this.currentCycleTransactions()
       .filter((transaction) => !this.isCredit(transaction.type))
       .reduce((sum, transaction) => sum + transaction.amountMinor, 0),
   );
   readonly creditsMinor = computed(() =>
-    this.visibleTransactions()
+    this.currentCycleTransactions()
       .filter((transaction) => this.isCredit(transaction.type))
       .reduce((sum, transaction) => sum + transaction.amountMinor, 0),
   );
@@ -114,5 +156,52 @@ export class SourcesPage {
 
   transactionLabel(transaction: CardTransaction): string {
     return transaction.merchant || transaction.type.replace('_', ' ');
+  }
+
+  monthlyUsed(source: PaymentSource): number {
+    return this.store
+      .transactions()
+      .filter(
+        (transaction) =>
+          transaction.cardId === source.id &&
+          transaction.transactionDate >= this.currentCycle().startIso &&
+          transaction.transactionDate <= this.currentCycle().endIso &&
+          !this.isCredit(transaction.type),
+      )
+      .reduce((sum, transaction) => sum + transaction.amountMinor, 0);
+  }
+
+  monthlyRemaining(source: PaymentSource): number {
+    return Math.max(0, (source.loadAmountMinor ?? 0) - this.monthlyUsed(source));
+  }
+
+  private cycleFor(dateIso: string): { startIso: string; endIso: string; label: string } {
+    const date = new Date(`${dateIso}T12:00:00`);
+    const cycleDay = this.store.budgetCycleStartDay();
+    const start = new Date(date.getFullYear(), date.getMonth(), cycleDay, 12);
+    if (date.getDate() < cycleDay) start.setMonth(start.getMonth() - 1);
+    const end = new Date(start);
+    end.setMonth(end.getMonth() + 1);
+    end.setDate(end.getDate() - 1);
+    const startIso = this.localIso(start);
+    const endIso = this.localIso(end);
+    return {
+      startIso,
+      endIso,
+      label: `${this.cycleDate(start)} – ${this.cycleDate(end)}`,
+    };
+  }
+
+  private localIso(date: Date): string {
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(
+      date.getDate(),
+    ).padStart(2, '0')}`;
+  }
+
+  private cycleDate(date: Date): string {
+    return `${String(date.getDate()).padStart(2, '0')}-${String(date.getMonth() + 1).padStart(
+      2,
+      '0',
+    )}-${date.getFullYear()}`;
   }
 }

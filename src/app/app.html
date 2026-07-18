@@ -198,7 +198,7 @@
           <label
             >Pay from<select [value]="flashSourceId()" (change)="updateFlashSource($event)">
               <optgroup label="Credit cards">
-                @for (card of store.activeCards(); track card.id) {
+                @for (card of store.alphabeticalActiveCards(); track card.id) {
                   <option [value]="card.id" [selected]="flashSourceId() === card.id">
                     {{ card.nickname }} · {{ card.lastDigits }}
                   </option>

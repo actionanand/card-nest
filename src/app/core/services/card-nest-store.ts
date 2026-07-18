@@ -19,6 +19,7 @@ const now = new Date();
 const today = now.toISOString().slice(0, 10);
 const monthStart = `${today.slice(0, 7)}-01`;
 const FLASH_SOURCE_STORAGE_KEY = 'cardnest_flash_transaction_source_id';
+const PAYMENT_SOURCES_PREFERENCE_KEY = 'payment_sources';
 
 function readFlashSourcePreference(): string | null {
   try {
@@ -208,7 +209,7 @@ const PAYMENT_SOURCES: readonly PaymentSource[] = [
     noLimit: false,
     balanceMinor: 880000,
     loadAmountMinor: 880000,
-    loadDay: 1,
+    loadDay: 25,
     autoLoad: true,
     lastLoadedPeriod: today.slice(0, 7),
     archived: false,
@@ -254,6 +255,11 @@ export class CardNestStore {
   readonly activeCards = computed(() =>
     this.cards().filter((card) => !card.archived && !card.deletedAt),
   );
+  readonly alphabeticalActiveCards = computed(() =>
+    [...this.activeCards()].sort((left, right) =>
+      left.nickname.localeCompare(right.nickname, undefined, { sensitivity: 'base' }),
+    ),
+  );
   readonly activePaymentSources = computed(() =>
     this.paymentSources().filter((source) => !source.archived),
   );
@@ -291,7 +297,7 @@ export class CardNestStore {
     if (!this.database.ready()) return;
     const preferences = await this.database.query<{ key: string; encrypted_value: string }>(
       `SELECT key, encrypted_value FROM app_preferences
-       WHERE key IN ('budget_cycle_start_day', 'monthly_budget_minor', 'profile_title', 'profile_name', 'emi_minimum_minor', 'flash_transaction_source_id', 'snoozed_reminder_card_ids', 'data_cleared')`,
+       WHERE key IN ('budget_cycle_start_day', 'monthly_budget_minor', 'profile_title', 'profile_name', 'emi_minimum_minor', 'flash_transaction_source_id', 'snoozed_reminder_card_ids', 'payment_sources', 'data_cleared')`,
     );
     const values = new Map(preferences.map((item) => [item.key, item.encrypted_value]));
     this.dataWasCleared = values.get('data_cleared') === '1';
@@ -319,11 +325,23 @@ export class CardNestStore {
     } catch {
       this.snoozedReminderCardIds.set([]);
     }
+    try {
+      const sources = JSON.parse(values.get(PAYMENT_SOURCES_PREFERENCE_KEY) ?? '[]') as unknown;
+      if (Array.isArray(sources) && sources.length) {
+        this.paymentSources.set(sources as PaymentSource[]);
+      }
+    } catch {
+      this.paymentSources.set(PAYMENT_SOURCES);
+    }
+    this.materializeSourceLoads();
     await Promise.all([this.loadCurrentIncome(), this.loadCards()]);
     await this.loadCategories();
     await this.loadCategoryLimits();
     await this.loadTransactions();
+    await this.loadRecurringRules();
+    this.materializeRecurringTransactions();
     await this.loadEmiPlans();
+    await this.loadLoans();
   }
 
   async setMonthlyIncome(amountMinor: number): Promise<void> {
@@ -614,21 +632,46 @@ export class CardNestStore {
   }
   addRecurringRule(rule: RecurringRule): void {
     this.recurringRules.update((rules) => [...rules, rule]);
+    void this.persistRecurringRule(rule);
     this.materializeRecurringTransactions();
+  }
+  updateRecurringRule(ruleId: string, amountMinor: number): void {
+    if (amountMinor <= 0) return;
+    this.recurringRules.update((rules) =>
+      rules.map((rule) => (rule.id === ruleId ? { ...rule, amountMinor } : rule)),
+    );
+    const updated = this.recurringRules().find((rule) => rule.id === ruleId);
+    if (updated) void this.persistRecurringRule(updated);
+  }
+  terminateRecurringRule(ruleId: string): void {
+    this.recurringRules.update((rules) =>
+      rules.map((rule) =>
+        rule.id === ruleId ? { ...rule, status: 'COMPLETED', nextOccurrenceDate: undefined } : rule,
+      ),
+    );
+    const updated = this.recurringRules().find((rule) => rule.id === ruleId);
+    if (updated) void this.persistRecurringRule(updated);
   }
   updatePaymentSource(updated: PaymentSource): void {
     this.paymentSources.update((sources) =>
       sources.map((source) => (source.id === updated.id ? updated : source)),
     );
+    void this.upsertPreference(
+      PAYMENT_SOURCES_PREFERENCE_KEY,
+      JSON.stringify(this.paymentSources()),
+    );
     this.materializeSourceLoads();
   }
   addLoan(loan: LoanCommitment): void {
     this.loans.update((loans) => [loan, ...loans]);
+    void this.persistLoan(loan);
   }
   cancelLoan(loanId: string): void {
     this.loans.update((loans) =>
       loans.map((loan) => (loan.id === loanId ? { ...loan, status: 'CANCELLED' } : loan)),
     );
+    const loan = this.loans().find((item) => item.id === loanId);
+    if (loan) void this.persistLoan(loan);
   }
   deleteCard(cardId: string): void {
     const card = this.cards().find((item) => item.id === cardId);
@@ -700,6 +743,62 @@ export class CardNestStore {
     for (const category of CATEGORIES) await this.persistCategory(category);
     this.dataWasCleared = true;
     await this.upsertPreference('data_cleared', '1');
+  }
+
+  async retainRecentYears(years: number): Promise<number> {
+    if (![3, 5, 7, 10].includes(years)) throw new Error('Choose a supported retention period.');
+    const cutoff = new Date();
+    cutoff.setFullYear(cutoff.getFullYear() - years);
+    const cutoffIso = toIsoDate(cutoff);
+    const removedTransactions = this.transactions().filter(
+      (transaction) => transaction.transactionDate < cutoffIso,
+    );
+    const removedIds = new Set(removedTransactions.map((transaction) => transaction.id));
+    const balanceForwardByCard = new Map<string, number>();
+    for (const transaction of removedTransactions) {
+      if (!this.cards().some((card) => card.id === transaction.cardId)) continue;
+      balanceForwardByCard.set(
+        transaction.cardId,
+        (balanceForwardByCard.get(transaction.cardId) ?? 0) + transactionEffect(transaction),
+      );
+    }
+    const retainedTransactions = this.transactions().filter(
+      (transaction) => !removedIds.has(transaction.id),
+    );
+    const removedPlanIds = new Set(
+      this.emiPlans()
+        .filter((plan) => removedIds.has(plan.transactionId))
+        .map((plan) => plan.id),
+    );
+
+    await this.database.deleteDataOlderThan(cutoffIso);
+    const timestamp = new Date().toISOString();
+    const updatedCards = this.cards().map((card) => {
+      const balanceForward = balanceForwardByCard.get(card.id);
+      return balanceForward
+        ? {
+            ...card,
+            openingBalanceMinor: card.openingBalanceMinor + balanceForward,
+            updatedAt: timestamp,
+          }
+        : card;
+    });
+    this.cards.set(updatedCards);
+    this.transactions.set(retainedTransactions);
+    this.emiPlans.update((plans) => plans.filter((plan) => !removedPlanIds.has(plan.id)));
+    this.emiInstallments.update((installments) =>
+      installments.filter(
+        (installment) => !installment.emiPlanId || !removedPlanIds.has(installment.emiPlanId),
+      ),
+    );
+    this.incomeHistory.update((records) =>
+      records.filter((record) => record.cycleEndDate >= cutoffIso),
+    );
+    this.cacheTransactions(retainedTransactions);
+    for (const card of updatedCards.filter((card) => balanceForwardByCard.has(card.id))) {
+      await this.persistCard(card);
+    }
+    return removedTransactions.length;
   }
 
   addCategory(category: Category): void {
@@ -787,6 +886,7 @@ export class CardNestStore {
 
   materializeRecurringTransactions(asOf = today): void {
     const generated: CardTransaction[] = [];
+    const changedRules: RecurringRule[] = [];
     const nowStamp = new Date().toISOString();
     this.recurringRules.update((rules) =>
       rules.map((rule) => {
@@ -833,9 +933,13 @@ export class CardNestStore {
           }
           guard += 1;
         }
-        return { ...rule, nextOccurrenceDate: next, status };
+        if (next === rule.nextOccurrenceDate && status === rule.status) return rule;
+        const updated = { ...rule, nextOccurrenceDate: next, status };
+        changedRules.push(updated);
+        return updated;
       }),
     );
+    for (const rule of changedRules) void this.persistRecurringRule(rule);
     if (generated.length) {
       this.transactions.update((items) => {
         const next = [...generated, ...items];
@@ -868,6 +972,12 @@ export class CardNestStore {
           : source,
       ),
     );
+    if (this.database.ready()) {
+      void this.upsertPreference(
+        PAYMENT_SOURCES_PREFERENCE_KEY,
+        JSON.stringify(this.paymentSources()),
+      );
+    }
   }
 
   private adjustPaymentSourceBalance(transaction: CardTransaction, direction: 1 | -1): void {
@@ -1026,6 +1136,36 @@ export class CardNestStore {
     this.cacheTransactions(transactions);
   }
 
+  private async loadRecurringRules(): Promise<void> {
+    const rows = await this.database.query<{ payload: string }>(
+      'SELECT payload FROM recurring_rules ORDER BY rowid',
+    );
+    this.recurringRules.set(
+      rows.flatMap((row) => {
+        try {
+          return [JSON.parse(row.payload) as RecurringRule];
+        } catch {
+          return [];
+        }
+      }),
+    );
+  }
+
+  private async loadLoans(): Promise<void> {
+    const rows = await this.database.query<{ payload: string }>(
+      'SELECT payload FROM loan_commitments ORDER BY rowid DESC',
+    );
+    this.loans.set(
+      rows.flatMap((row) => {
+        try {
+          return [JSON.parse(row.payload) as LoanCommitment];
+        } catch {
+          return [];
+        }
+      }),
+    );
+  }
+
   private async loadEmiPlans(): Promise<void> {
     const planRows = await this.database.query<{ payload: string }>(
       'SELECT payload FROM emi_plans ORDER BY rowid DESC',
@@ -1119,6 +1259,34 @@ export class CardNestStore {
         [transaction.id, transaction.relatedTransactionId, transaction.type, transaction.createdAt],
       );
     }
+  }
+
+  private async persistRecurringRule(rule: RecurringRule): Promise<void> {
+    if (!this.database.ready()) return;
+    const creditCardId = this.cards().some((card) => card.id === rule.cardId) ? rule.cardId : null;
+    if (!creditCardId) return;
+    await this.database.run(
+      `INSERT INTO recurring_rules (id, card_id, next_occurrence_date, status, payload)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         next_occurrence_date = excluded.next_occurrence_date,
+         status = excluded.status,
+         payload = excluded.payload`,
+      [rule.id, creditCardId, rule.nextOccurrenceDate ?? null, rule.status, JSON.stringify(rule)],
+    );
+  }
+
+  private async persistLoan(loan: LoanCommitment): Promise<void> {
+    if (!this.database.ready()) return;
+    await this.database.run(
+      `INSERT INTO loan_commitments (id, status, payload, updated_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         status = excluded.status,
+         payload = excluded.payload,
+         updated_at = excluded.updated_at`,
+      [loan.id, loan.status, JSON.stringify(loan), new Date().toISOString()],
+    );
   }
 
   private async persistEmiPlan(

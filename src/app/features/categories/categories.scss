@@ -216,16 +216,15 @@ label small {
   }
   .category-modal form {
     min-height: 0;
-    padding-bottom: max(1rem, env(safe-area-inset-bottom));
-    overflow-y: auto;
-    overscroll-behavior: contain;
-    scrollbar-gutter: stable;
+    padding-bottom: max(1.25rem, env(safe-area-inset-bottom));
+    overflow-x: hidden;
+    overflow-y: scroll;
+    overscroll-behavior-y: auto;
+    touch-action: pan-y;
+    -webkit-overflow-scrolling: touch;
   }
   .category-modal .form-actions {
-    position: sticky;
-    bottom: 0;
     padding-block: 0.75rem;
-    background: var(--surface);
   }
   .categories-page {
     padding-inline: 0.65rem;

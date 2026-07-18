@@ -80,4 +80,10 @@
       <button class="btn" type="button" (click)="search.set('')">Show all help</button>
     </section>
   }
+  <footer class="help-footer">
+    <span>© {{ copyright }} CardNest. All rights reserved.</span>
+    @if (showAppVersion) {
+      <span>Version {{ appVersion }}</span>
+    }
+  </footer>
 </div>

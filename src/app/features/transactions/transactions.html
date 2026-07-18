@@ -95,7 +95,7 @@
                   </div>
                   @if (store.activeCards().length) {
                     <p class="pay-from-group">Credit cards</p>
-                    @for (card of store.activeCards(); track card.id) {
+                    @for (card of store.alphabeticalActiveCards(); track card.id) {
                       <button
                         type="button"
                         class="pay-from-option"
@@ -513,7 +513,10 @@
                   @if (transaction.emiPlanId) {
                     <span class="repeat-badge"><app-icon name="schedule" /> EMI</span>
                   } @else if (transaction.recurringRuleId) {
-                    <span class="repeat-badge"><app-icon name="repeat" /> Repeats</span>
+                    <span class="repeat-badge"
+                      ><app-icon name="repeat" /> Repeat
+                      {{ recurringProgressLabel(transaction) }}</span
+                    >
                   }
                 </span>
                 <span class="tx-date">
@@ -542,9 +545,11 @@
                     <button type="button" role="menuitem" (click)="edit(transaction)">
                       <app-icon name="edit" /> Edit transaction
                     </button>
-                    <button type="button" role="menuitem" (click)="duplicate(transaction)">
-                      <app-icon name="duplicate" /> Duplicate transaction
-                    </button>
+                    @if (canDuplicate(transaction)) {
+                      <button type="button" role="menuitem" (click)="duplicate(transaction)">
+                        <app-icon name="duplicate" /> Duplicate transaction
+                      </button>
+                    }
                     <button type="button" role="menuitem" (click)="goToSource(transaction)">
                       <app-icon name="go_to_source" /> Go to payment source
                     </button>
@@ -589,6 +594,7 @@
   >
     <section
       class="panel transaction-detail"
+      [class.recurring-detail]="transaction.recurringRuleId"
       role="dialog"
       aria-modal="true"
       aria-labelledby="transaction-detail-title"
@@ -597,9 +603,18 @@
       (keydown)="$event.stopPropagation()"
     >
       <header class="detail-heading">
+        @if (transaction.recurringRuleId) {
+          <span class="recurring-detail-icon" aria-hidden="true"><app-icon name="repeat" /></span>
+        }
         <div>
           <p class="eyebrow">
-            {{ transaction.emiPlanId ? 'EMI' : transaction.type.replace('_', ' ') }}
+            {{
+              transaction.emiPlanId
+                ? 'EMI installment'
+                : transaction.recurringRuleId
+                  ? 'Recurring transaction'
+                  : transaction.type.replace('_', ' ')
+            }}
           </p>
           <h2 id="transaction-detail-title">{{ transaction.merchant || 'Transaction details' }}</h2>
         </div>
@@ -698,13 +713,44 @@
           </button>
         </section>
       }
+      @if (recurringRule(transaction); as rule) {
+        <section class="detail-section recurring-schedule-card">
+          <div class="recurring-schedule-heading">
+            <div>
+              <p class="eyebrow">Monthly schedule</p>
+              <h3>Repeat {{ recurringProgressLabel(transaction) }}</h3>
+            </div>
+            <span class="recurring-status">{{ rule.status.toLowerCase() }}</span>
+          </div>
+          <div class="recurring-stats">
+            <span
+              ><small>Generated</small
+              ><strong>{{ recurringTransactions(transaction).length }}</strong></span
+            >
+            <span
+              ><small>Remaining</small><strong>{{ recurringRemaining(transaction) }}</strong></span
+            >
+          </div>
+          @if (rule.nextOccurrenceDate) {
+            <div class="schedule-row">
+              <span><app-icon name="schedule" /> Next transaction</span>
+              <strong>{{ rule.nextOccurrenceDate | appDate }}</strong>
+            </div>
+          }
+          <button class="btn view-emi" type="button" (click)="goToRecurring(rule.id)">
+            Manage in Loans &amp; EMIs <app-icon name="chevron_right" />
+          </button>
+        </section>
+      }
       <div class="detail-actions">
         <button class="btn" type="button" (click)="edit(transaction)">
           <app-icon name="edit" /> Edit
         </button>
-        <button class="btn" type="button" (click)="duplicate(transaction)">
-          <app-icon name="duplicate" /> Duplicate
-        </button>
+        @if (canDuplicate(transaction)) {
+          <button class="btn" type="button" (click)="duplicate(transaction)">
+            <app-icon name="duplicate" /> Duplicate
+          </button>
+        }
         <button class="btn" type="button" (click)="goToSource(transaction)">
           <app-icon name="go_to_source" /> Payment source
         </button>

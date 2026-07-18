@@ -31,6 +31,7 @@ BACKUP_TABLES = (
     "attachments",
     "emi_plans",
     "emi_installments",
+    "loan_commitments",
     "monthly_income",
     "category_limits",
 )
@@ -213,6 +214,15 @@ def cleaned_last_digits(value):
     return digits
 
 
+def add_months(value, months=1):
+    date = datetime.date.fromisoformat(value)
+    month_index = date.month - 1 + months
+    year = date.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(date.day, (datetime.date(year + (month == 12), month % 12 + 1, 1) - datetime.timedelta(days=1)).day)
+    return datetime.date(year, month, day).isoformat()
+
+
 def card_notes(row):
     details = []
     for label, key in (
@@ -249,7 +259,11 @@ def make_card(row, earliest_date):
         "id": card_id,
         "nickname": nickname,
         "issuerName": issuer_for(nickname),
-        "lastDigits": cleaned_last_digits(row["cardnumber"]),
+        "lastDigits": (
+            f"0{cleaned_last_digits(row['cardnumber'])}"
+            if network == "AMERICAN_EXPRESS" and len(cleaned_last_digits(row["cardnumber"])) == 4
+            else cleaned_last_digits(row["cardnumber"])
+        ),
         "network": network,
         "theme": "indigo" if int(row["_id"]) % 2 else "teal",
         "statementDay": min(31, max(1, statement_day)),
@@ -304,7 +318,7 @@ def make_category(category_id, name, index):
     }
 
 
-def make_transaction(row, category_names, category_ids):
+def make_transaction(row, category_names, category_ids, pluxee_card_ids):
     raw_amount = int(row["transactionamount"])
     date = iso_date(row["transactiondate"])
     note = str(row["transactionnotes"] or "").strip()
@@ -326,9 +340,10 @@ def make_transaction(row, category_names, category_ids):
         transaction_type = "PURCHASE"
     transaction_id = f"legacy-tx-{row['_id']}"
     timestamp = f"{date}T00:00:00.000Z"
+    source_id = "source-meal" if row["creditcardid"] in pluxee_card_ids else f"legacy-card-{row['creditcardid']}"
     payload = {
         "id": transaction_id,
-        "cardId": f"legacy-card-{row['creditcardid']}",
+        "cardId": source_id,
         "type": transaction_type,
         "amountMinor": abs(raw_amount),
         "currencyCode": "INR",
@@ -343,7 +358,7 @@ def make_transaction(row, category_names, category_ids):
         payload["notes"] = note
     return {
         "id": transaction_id,
-        "card_id": payload["cardId"],
+        "card_id": None if source_id == "source-meal" else payload["cardId"],
         "category_id": category_id,
         "type": transaction_type,
         "amount_minor": abs(raw_amount),
@@ -422,24 +437,109 @@ def convert(source, destination, passphrase):
             },
         )
     )
+    card_rows = list(connection.execute("SELECT * FROM credit_card ORDER BY _id"))
+    pluxee_card_ids = {
+        row["_id"]
+        for row in card_rows
+        if "pluxee" in str(row["cardname"] or "").casefold()
+    }
     cards = [
-        make_card(row, earliest_date)
-        for row in connection.execute("SELECT * FROM credit_card ORDER BY _id")
+        make_card(row, earliest_date) for row in card_rows if row["_id"] not in pluxee_card_ids
     ]
+    transaction_rows = list(
+        connection.execute("SELECT * FROM credit_card_transaction ORDER BY _id")
+    )
     transactions = [
-        make_transaction(row, category_names, category_ids)
-        for row in connection.execute("SELECT * FROM credit_card_transaction ORDER BY _id")
+        make_transaction(row, category_names, category_ids, pluxee_card_ids)
+        for row in transaction_rows
     ]
+
+    recurring_rules = []
+    transaction_by_legacy_id = {
+        int(transaction["id"].removeprefix("legacy-tx-")): transaction
+        for transaction in transactions
+    }
+    for row in transaction_rows:
+        repetition = as_int(row["repetition"], 0) or 0
+        if repetition <= 0 or row["creditcardid"] in pluxee_card_ids:
+            continue
+        transaction = transaction_by_legacy_id[int(row["_id"])]
+        payload = json.loads(transaction["payload"])
+        rule_id = f"legacy-recurring-{row['_id']}"
+        occurrence_date = transaction["transaction_date"]
+        start_date = occurrence_date
+
+        # The latest legacy backup stores this three-month Audible rule on its
+        # second occurrence. Reconstruct the user-confirmed first occurrence.
+        is_shifted_audible = (
+            row["creditcardid"] == 15
+            and int(row["transactionamount"]) == 10000
+            and "audible offer" in str(row["transactionnotes"] or "").casefold()
+        )
+        if is_shifted_audible:
+            start_date = "2026-06-03"
+            synthetic = dict(transaction)
+            synthetic["id"] = f"legacy-tx-{row['_id']}-first"
+            synthetic["transaction_date"] = start_date
+            synthetic["created_at"] = f"{start_date}T00:00:00.000Z"
+            synthetic["updated_at"] = synthetic["created_at"]
+            synthetic_payload = dict(payload)
+            synthetic_payload.update(
+                {
+                    "id": synthetic["id"],
+                    "transactionDate": start_date,
+                    "recurringRuleId": rule_id,
+                    "generatedOccurrenceDate": start_date,
+                    "createdAt": synthetic["created_at"],
+                    "updatedAt": synthetic["updated_at"],
+                }
+            )
+            synthetic["payload"] = json.dumps(
+                synthetic_payload, ensure_ascii=False, separators=(",", ":")
+            )
+            transactions.append(synthetic)
+
+        payload["recurringRuleId"] = rule_id
+        payload["generatedOccurrenceDate"] = occurrence_date
+        transaction["payload"] = json.dumps(
+            payload, ensure_ascii=False, separators=(",", ":")
+        )
+        limit = None if repetition >= 999999 else repetition
+        next_occurrence = add_months(occurrence_date)
+        rule = {
+            "id": rule_id,
+            "cardId": payload["cardId"],
+            "title": payload.get("merchant") or "Legacy recurring transaction",
+            "amountMinor": payload["amountMinor"],
+            "categoryId": payload["categoryId"],
+            "transactionType": payload["type"],
+            "frequency": "MONTHLY",
+            "startDate": start_date,
+            "nextOccurrenceDate": next_occurrence,
+            "status": "ACTIVE",
+        }
+        if limit is not None:
+            rule["occurrenceLimit"] = limit
+        recurring_rules.append(
+            {
+                "id": rule_id,
+                "card_id": payload["cardId"],
+                "next_occurrence_date": next_occurrence,
+                "status": "ACTIVE",
+                "payload": json.dumps(rule, ensure_ascii=False, separators=(",", ":")),
+            }
+        )
     connection.close()
 
     rows_by_table = {table: [] for table in BACKUP_TABLES}
     rows_by_table["categories"] = categories
     rows_by_table["credit_cards"] = cards
     rows_by_table["card_transactions"] = transactions
+    rows_by_table["recurring_rules"] = recurring_rules
     portable = {
         "format": "cardnest-portable-sqlite",
         "version": 1,
-        "databaseVersion": 5,
+        "databaseVersion": 6,
         "tables": [
             {"name": table, "rows": rows_by_table[table]} for table in BACKUP_TABLES
         ],
@@ -476,6 +576,12 @@ def convert(source, destination, passphrase):
                 "cards": len(cards),
                 "categories": len(categories),
                 "transactions": len(transactions),
+                "recurringRules": len(recurring_rules),
+                "pluxeeTransactions": sum(
+                    1
+                    for transaction in transactions
+                    if json.loads(transaction["payload"])["cardId"] == "source-meal"
+                ),
                 "earliestDate": min(row["transaction_date"] for row in transactions),
                 "latestDate": max(row["transaction_date"] for row in transactions),
             },

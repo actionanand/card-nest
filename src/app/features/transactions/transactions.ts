@@ -12,7 +12,7 @@ import { FormArray, FormControl, FormGroup, ReactiveFormsModule, Validators } fr
 import { ActivatedRoute, Router } from '@angular/router';
 import { Camera, CameraResultType, CameraSource } from '@capacitor/camera';
 import { Capacitor } from '@capacitor/core';
-import { CardTransaction, EmiPlan, TransactionType } from '../../core/models/domain';
+import { CardTransaction, EmiPlan, RecurringRule, TransactionType } from '../../core/models/domain';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { formatMoney, parseMoneyToMinor } from '../../core/services/money';
 import { SnackbarService } from '../../core/services/snackbar.service';
@@ -607,6 +607,38 @@ export class TransactionsPage {
     return this.store.emiPlans().find((plan) => plan.id === transaction.emiPlanId) ?? null;
   }
 
+  recurringRule(transaction: CardTransaction): RecurringRule | null {
+    if (!transaction.recurringRuleId) return null;
+    return (
+      this.store.recurringRules().find((rule) => rule.id === transaction.recurringRuleId) ?? null
+    );
+  }
+
+  recurringTransactions(transaction: CardTransaction): readonly CardTransaction[] {
+    if (!transaction.recurringRuleId) return [];
+    return this.store
+      .transactions()
+      .filter((item) => item.recurringRuleId === transaction.recurringRuleId)
+      .sort((a, b) =>
+        (a.generatedOccurrenceDate ?? a.transactionDate).localeCompare(
+          b.generatedOccurrenceDate ?? b.transactionDate,
+        ),
+      );
+  }
+
+  recurringProgressLabel(transaction: CardTransaction): string {
+    const transactions = this.recurringTransactions(transaction);
+    const position = Math.max(1, transactions.findIndex((item) => item.id === transaction.id) + 1);
+    return `(${position}/${this.recurringRule(transaction)?.occurrenceLimit ?? '∞'})`;
+  }
+
+  recurringRemaining(transaction: CardTransaction): string {
+    const rule = this.recurringRule(transaction);
+    if (!rule?.occurrenceLimit)
+      return rule?.status === 'ACTIVE' ? 'Continues until stopped' : 'Ended';
+    return `${Math.max(0, rule.occurrenceLimit - this.recurringTransactions(transaction).length)} remaining`;
+  }
+
   emiInstallments(transaction: CardTransaction) {
     return this.store
       .emiInstallments()
@@ -618,13 +650,18 @@ export class TransactionsPage {
     return (
       transaction.type === 'PURCHASE' &&
       !transaction.emiPlanId &&
+      !transaction.recurringRuleId &&
       transaction.amountMinor >= this.store.emiMinimumMinor() &&
       this.store.cards().some((card) => card.id === transaction.cardId)
     );
   }
 
   canSplit(transaction: CardTransaction): boolean {
-    return !transaction.emiPlanId && !transaction.splitGroupId;
+    return !transaction.emiPlanId && !transaction.recurringRuleId && !transaction.splitGroupId;
+  }
+
+  canDuplicate(transaction: CardTransaction): boolean {
+    return !transaction.emiPlanId && !transaction.recurringRuleId;
   }
 
   openEmi(transaction: CardTransaction): void {
@@ -812,6 +849,7 @@ export class TransactionsPage {
     this.snackbar.show('Transaction deleted.', 'WARNING');
   }
   duplicate(transaction: CardTransaction): void {
+    if (!this.canDuplicate(transaction)) return;
     this.store.duplicateTransaction(transaction.id);
     this.snackbar.show('Transaction duplicated.');
     this.closeMenus();
@@ -828,6 +866,11 @@ export class TransactionsPage {
   goToEmi(planId: string): void {
     this.closeDetails();
     void this.router.navigate(['/loans'], { queryParams: { emi: planId } });
+  }
+
+  goToRecurring(ruleId: string): void {
+    this.closeDetails();
+    void this.router.navigate(['/loans'], { queryParams: { repeat: ruleId } });
   }
   clearFilters(): void {
     this.search.set('');
@@ -930,6 +973,8 @@ export class TransactionsPage {
     const existing = this.store
       .transactions()
       .find((transaction) => transaction.id === this.editingId());
+    const recurringRuleId =
+      existing?.recurringRuleId ?? (value.repeat !== 'NONE' ? crypto.randomUUID() : undefined);
     const transaction: CardTransaction = {
       ...existing,
       id: existing?.id ?? crypto.randomUUID(),
@@ -944,6 +989,9 @@ export class TransactionsPage {
       relatedTransactionId: value.relatedTransactionId || undefined,
       taxIncluded: value.taxIncluded,
       taxMinor,
+      recurringRuleId,
+      generatedOccurrenceDate:
+        existing?.generatedOccurrenceDate ?? (recurringRuleId ? value.transactionDate : undefined),
       attachmentIds: this.receiptPreviews(),
       createdAt: existing?.createdAt ?? timestamp,
       updatedAt: timestamp,
@@ -954,7 +1002,7 @@ export class TransactionsPage {
     if (!existing && value.repeat !== 'NONE') {
       const occurrenceLimit = value.repeat === 'INFINITE' ? undefined : Number(value.repeat);
       this.store.addRecurringRule({
-        id: crypto.randomUUID(),
+        id: recurringRuleId!,
         cardId: value.cardId,
         title: value.merchant.trim() || value.type.replace('_', ' '),
         amountMinor,
