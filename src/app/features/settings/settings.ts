@@ -15,6 +15,7 @@ import { ConfirmationDialog } from '../../shared/confirmation-dialog';
 import { AppDateFormat, DateFormatService } from '../../core/services/date-format.service';
 import { APP_VERSION } from '../../core/app-version';
 import { Capacitor } from '@capacitor/core';
+import { PaymentSourcePicker } from '../../shared/payment-source-picker';
 
 type PinAction = 'CHANGE' | 'DISABLE';
 type BackupAction = 'CREATE' | 'RESTORE';
@@ -22,7 +23,7 @@ type ProtectedDataAction = 'DELETE_ALL' | 'RETENTION';
 
 @Component({
   selector: 'app-settings-page',
-  imports: [ReactiveFormsModule, AppIcon, ConfirmationDialog],
+  imports: [ReactiveFormsModule, AppIcon, ConfirmationDialog, PaymentSourcePicker],
   templateUrl: './settings.html',
   styleUrl: './settings.scss',
   host: { '(document:keydown.escape)': 'closeDialogs()' },
@@ -262,8 +263,8 @@ export class SettingsPage {
     this.preferenceMessage.set('Date format updated.');
   }
 
-  async updateFlashSource(event: Event): Promise<void> {
-    await this.store.setFlashTransactionSource((event.target as HTMLSelectElement).value);
+  async updateFlashSource(sourceId: string): Promise<void> {
+    await this.store.setFlashTransactionSource(sourceId);
     this.preferenceMessage.set('Flash transaction source updated.');
   }
 

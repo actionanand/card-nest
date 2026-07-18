@@ -122,6 +122,15 @@
 .setting-row small {
   color: var(--muted);
 }
+.flash-source-setting {
+  display: grid;
+  min-width: 0;
+  gap: 0.25rem;
+}
+.flash-source-setting small {
+  color: var(--muted);
+  font-size: 0.7rem;
+}
 .setting-row label {
   min-width: 14rem;
 }
