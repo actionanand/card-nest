@@ -16,14 +16,12 @@
     >
       <app-icon name="back" />
     </button>
-    <label>
-      <span class="sr-only">Budget period</span>
-      <select [value]="periodOffset()" (change)="selectPeriod($event)">
-        @for (item of periods(); track item.key) {
-          <option [value]="item.offset">{{ item.label }}</option>
-        }
-      </select>
-    </label>
+    <app-select-picker
+      label="Budget period"
+      [options]="periodOptions()"
+      [value]="periodOffset().toString()"
+      (valueChange)="selectPeriod($event)"
+    />
     <button
       type="button"
       (click)="movePeriod(-1)"

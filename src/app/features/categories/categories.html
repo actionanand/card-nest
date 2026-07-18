@@ -113,15 +113,20 @@
           </div>
         </fieldset>
         <div class="form-grid">
-          <label>Colour<input formControlName="colour" type="color" /></label>
-          <label>
-            Used for
-            <select formControlName="appliesTo">
-              <option value="BOTH">Expenses and credits</option>
-              <option value="EXPENSE">Expenses only</option>
-              <option value="CREDIT">Credits only</option>
-            </select>
-          </label>
+          <label
+            >Colour<input
+              formControlName="colour"
+              type="text"
+              inputmode="text"
+              maxlength="7"
+              placeholder="#28684e"
+          /></label>
+          <app-select-picker
+            label="Used for"
+            [options]="appliesToOptions"
+            [value]="form.controls.appliesTo.value"
+            (valueChange)="setAppliesTo($event)"
+          />
         </div>
         <div class="form-actions">
           <button class="btn" type="button" (click)="closeForm()">Cancel</button>

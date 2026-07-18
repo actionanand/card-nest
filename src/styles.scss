@@ -245,6 +245,17 @@ textarea {
   border-radius: 0.6rem;
   color: var(--ink);
   background: var(--canvas);
+  color-scheme: inherit;
+  caret-color: var(--accent);
+}
+input::placeholder,
+textarea::placeholder {
+  color: var(--muted);
+  opacity: 0.8;
+}
+input[type='checkbox'],
+input[type='radio'] {
+  accent-color: var(--accent);
 }
 select {
   padding-right: 2.4rem;

@@ -404,18 +404,13 @@
                 <small>Every link must be a valid HTTP or HTTPS address.</small>
               }
             </label>
-            <label class="full">
-              Link to another card (optional)
-              <select formControlName="relationshipGroup">
-                <option value="">Not linked</option>
-                @for (relatedCard of linkableCards(); track relatedCard.id) {
-                  <option [value]="relatedCard.id">
-                    {{ relatedCard.nickname }} · {{ relatedCard.lastDigits }} ·
-                    {{ relatedCard.network.replace('_', ' ')
-                    }}{{ relatedCard.archived ? ' · Archived' : '' }}
-                  </option>
-                }
-              </select>
+            <div class="full linked-card-picker">
+              <app-select-picker
+                label="Link to another card (optional)"
+                [options]="relationshipOptions()"
+                [value]="form.controls.relationshipGroup.value"
+                (valueChange)="setRelationshipGroup($event)"
+              />
               <small>
                 Only cards from the same bank or issuer are available. Linked cards count as used
                 together.
@@ -426,7 +421,7 @@
               @if (form.controls.relationshipGroup.hasError('issuerMismatch')) {
                 <small>Select a card issued by the same bank.</small>
               }
-            </label>
+            </div>
           </div>
           <div class="form-actions">
             <button class="btn" type="button" (click)="closeForm()">Cancel</button

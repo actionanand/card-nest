@@ -5,10 +5,11 @@ import { ReportChart } from '../../shared/report-chart';
 import { ExportPeriod } from '../../core/models/export';
 import { ExportService } from '../../core/services/export.service';
 import { AppIcon } from '../../shared/app-icon';
+import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
 
 @Component({
   selector: 'app-reports-page',
-  imports: [ReportChart, AppIcon],
+  imports: [ReportChart, AppIcon, AppSelectPicker],
   templateUrl: './reports.html',
   styleUrl: './reports.scss',
 })
@@ -16,6 +17,13 @@ export class ReportsPage {
   readonly store = inject(CardNestStore);
   private readonly exporter = inject(ExportService);
   readonly period = signal<ExportPeriod>('MONTH');
+  readonly periodOptions: readonly AppSelectOption[] = [
+    { value: 'MONTH', label: 'This month' },
+    { value: 'THREE', label: 'Last 3 months' },
+    { value: 'SIX', label: 'Last 6 months' },
+    { value: 'YEAR', label: 'Last 1 year' },
+    { value: 'ALL', label: 'Overall' },
+  ];
   readonly selectedCategoryId = signal<string | null>(null);
   readonly periodTransactions = computed(() => {
     const start = this.periodStart();
@@ -153,8 +161,8 @@ export class ReportsPage {
     return formatMoney(value, 'INR');
   }
 
-  updatePeriod(event: Event): void {
-    this.period.set((event.target as HTMLSelectElement).value as ExportPeriod);
+  updatePeriodValue(value: string): void {
+    this.period.set(value as ExportPeriod);
     this.selectedCategoryId.set(null);
   }
 
