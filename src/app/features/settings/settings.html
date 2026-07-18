@@ -84,14 +84,12 @@
             (change)="toggleLockOnBackground()"
         /></label>
         <div class="setting-row">
-          <label
-            >Auto-lock after<select>
-              <option>1 minute</option>
-              <option selected>5 minutes</option>
-              <option>15 minutes</option>
-              <option>30 minutes</option>
-            </select></label
-          >
+          <app-select-picker
+            label="Auto-lock after"
+            [options]="autoLockOptions"
+            [value]="autoLockDelay()"
+            (valueChange)="autoLockDelay.set($event)"
+          />
         </div>
       </section>
       <section id="appearance" class="panel">
@@ -135,20 +133,14 @@
           </div>
         </div>
         <div class="form-grid">
+          <app-select-picker
+            label="Title (optional)"
+            [options]="titleOptions"
+            [value]="store.profileTitle()"
+            [disabled]="!database.ready()"
+            (valueChange)="updateProfileTitle($event)"
+          />
           <label
-            >Title (optional)<select
-              [value]="store.profileTitle()"
-              [disabled]="!database.ready()"
-              (change)="updateProfileTitle($event)"
-            >
-              <option value="">No title</option>
-              <option value="Mr">Mr</option>
-              <option value="Ms">Ms</option>
-              <option value="Mrs">Mrs</option>
-              <option value="Mx">Mx</option>
-              <option value="Dr">Dr</option>
-            </select></label
-          ><label
             >Name (optional)<input
               [value]="store.profileName()"
               [disabled]="!database.ready()"
@@ -157,14 +149,12 @@
               placeholder="Used only for your greeting"
               (change)="updateProfileName($event)"
           /></label>
-          <label
-            >Default currency<select>
-              <option>Indian Rupee — INR</option>
-              <option>US Dollar — USD</option>
-              <option>Euro — EUR</option>
-              <option>British Pound — GBP</option>
-            </select></label
-          >
+          <app-select-picker
+            label="Default currency"
+            [options]="currencyOptions"
+            [value]="defaultCurrency()"
+            (valueChange)="defaultCurrency.set($event)"
+          />
           <div class="flash-source-setting">
             <app-payment-source-picker
               label="Flash transaction source"
@@ -175,16 +165,13 @@
             />
             <small>Used by the mobile flash-transaction button.</small>
           </div>
+          <app-select-picker
+            label="Date format"
+            [options]="dateFormatOptions"
+            [value]="dateFormats.formatPreference()"
+            (valueChange)="updateDateFormat($event)"
+          />
           <label
-            >Date format<select
-              [value]="dateFormats.formatPreference()"
-              (change)="updateDateFormat($event)"
-            >
-              @for (option of dateFormats.options; track option.value) {
-                <option [value]="option.value">{{ option.label }}</option>
-              }
-            </select></label
-          ><label
             >Monthly income (optional)<input
               [value]="store.monthlyIncomeMinor() / 100"
               [disabled]="!database.ready()"
@@ -249,14 +236,12 @@
           ><input type="checkbox" [checked]="reminders()" (change)="toggleReminders()"
         /></label>
         <div class="setting-row">
-          <label
-            >Default timing<select>
-              <option selected>5 days before</option>
-              <option>3 days before</option>
-              <option>1 day before</option>
-              <option>On due date</option>
-            </select></label
-          >
+          <app-select-picker
+            label="Default timing"
+            [options]="reminderTimingOptions"
+            [value]="reminderTiming()"
+            (valueChange)="reminderTiming.set($event)"
+          />
         </div>
       </section>
       <section id="data" class="panel">
@@ -299,15 +284,12 @@
             </small>
           </div>
           <div class="cleanup-controls">
-            <label>
-              <span class="sr-only">History retention period</span>
-              <select [value]="retentionYears()" (change)="updateRetentionYears($event)">
-                <option value="3">3 years</option>
-                <option value="5">5 years</option>
-                <option value="7">7 years</option>
-                <option value="10">10 years</option>
-              </select>
-            </label>
+            <app-select-picker
+              label="History retention period"
+              [options]="retentionOptions"
+              [value]="retentionYears().toString()"
+              (valueChange)="updateRetentionYears($event)"
+            />
             <button
               class="btn danger"
               type="button"

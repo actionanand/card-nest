@@ -152,7 +152,10 @@
                 <small>Enter a valid amount.</small>
               }
             </label>
-            <label>Date<input formControlName="transactionDate" type="date" /></label>
+            <app-date-picker
+              [value]="form.controls.transactionDate.value"
+              (valueChange)="setTransactionDate($event)"
+            />
             @if (
               form.controls.type.value === 'REFUND' || form.controls.type.value === 'ADJUSTMENT'
             ) {
@@ -178,14 +181,13 @@
                 }
               </label>
             }
-            <label>
-              Category
-              <select formControlName="categoryId">
-                @for (category of store.categories(); track category.id) {
-                  <option [value]="category.id">{{ category.name }}</option>
-                }
-              </select>
-            </label>
+            <app-select-picker
+              label="Category"
+              sheetTitle="Choose category"
+              [options]="categoryOptions()"
+              [value]="form.controls.categoryId.value"
+              (valueChange)="setCategory($event)"
+            />
             <label class="full"
               >Merchant or title<input
                 formControlName="merchant"

@@ -23,6 +23,8 @@ import { ConfirmationDialog } from '../../shared/confirmation-dialog';
 import { ExportFormat } from '../../core/models/export';
 import { createEmiSchedule } from '../../core/services/emi';
 import { AppDatePipe } from '../../core/services/date-format.service';
+import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
+import { AppDatePicker } from '../../shared/app-date-picker';
 
 type GroupingMode = 'MONTH' | 'CYCLE' | 'STATEMENT';
 type TransactionTypeFilter = TransactionType | 'ALL' | 'WITH_IMAGE';
@@ -47,6 +49,8 @@ function sanitizedMoneyInput(value: string): string {
     CategoriesPage,
     ExportDialog,
     ConfirmationDialog,
+    AppSelectPicker,
+    AppDatePicker,
   ],
   templateUrl: './transactions.html',
   styleUrl: './transactions.scss',
@@ -123,6 +127,9 @@ export class TransactionsPage {
     { value: 'FEE', label: 'Fee' },
     { value: 'INTEREST', label: 'Interest' },
   ];
+  readonly categoryOptions = computed<readonly AppSelectOption[]>(() =>
+    this.store.categories().map((category) => ({ value: category.id, label: category.name })),
+  );
   readonly form = new FormGroup({
     cardId: new FormControl(this.defaultSourceId(), {
       nonNullable: true,
@@ -161,6 +168,18 @@ export class TransactionsPage {
   readonly splitForm = new FormGroup({
     parts: new FormArray([this.createSplitPart(), this.createSplitPart()]),
   });
+
+  setTransactionDate(value: string): void {
+    this.form.controls.transactionDate.setValue(value);
+    this.form.controls.transactionDate.markAsDirty();
+    this.form.controls.transactionDate.markAsTouched();
+  }
+
+  setCategory(value: string): void {
+    this.form.controls.categoryId.setValue(value);
+    this.form.controls.categoryId.markAsDirty();
+    this.form.controls.categoryId.markAsTouched();
+  }
   readonly filtered = computed(() => {
     const term = this.search().trim().toLocaleLowerCase();
     const currentMonth = new Date().toISOString().slice(0, 7);

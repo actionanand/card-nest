@@ -35,16 +35,13 @@
         Archived
       </button>
     </div>
-    <label class="card-filter"
-      ><span class="sr-only">Sort and filter cards</span
-      ><select [value]="cardFilter()" (change)="updateCardFilter($event)">
-        <option value="ALL">All cards</option>
-        <option value="DUE">Incoming payment due</option>
-        <option value="GRACE">Longest grace period</option>
-        <option value="FEE">Annual fee due</option>
-        <option value="EXPIRING">Expiring soon</option>
-      </select></label
-    >
+    <app-select-picker
+      class="card-filter"
+      label="Card view"
+      [options]="cardFilterOptions"
+      [value]="cardFilter()"
+      (valueChange)="updateCardFilter($event)"
+    />
   </div>
 
   @if (showForm()) {
@@ -106,13 +103,13 @@
                 <small class="validation-error">Enter the bank or issuer name.</small>
               }
             </label>
-            <label
-              >Card network<select formControlName="network" (change)="networkChanged()">
-                @for (network of networks; track network.value) {
-                  <option [value]="network.value">{{ network.label }}</option>
-                }
-              </select></label
-            >
+            <app-select-picker
+              label="Card network"
+              sheetTitle="Choose card network"
+              [options]="networkOptions"
+              [value]="form.controls.network.value"
+              (valueChange)="setNetwork($event)"
+            />
             <label
               >Network tier / subtype<input
                 formControlName="subtype"
@@ -228,21 +225,18 @@
               }
             </label>
             <div class="paired-fields full">
-              <label
-                >Expiry month<select formControlName="expiryMonth">
-                  <option [ngValue]="null">Month</option>
-                  @for (month of months; track month) {
-                    <option [ngValue]="month">{{ twoDigit(month) }}</option>
-                  }
-                </select></label
-              ><label
-                >Expiry year<select formControlName="expiryYear">
-                  <option [ngValue]="null">Year</option>
-                  @for (year of years; track year) {
-                    <option [ngValue]="year">{{ year }}</option>
-                  }
-                </select></label
-              >
+              <app-select-picker
+                label="Expiry month"
+                [options]="expiryMonthOptions"
+                [value]="form.controls.expiryMonth.value?.toString() ?? ''"
+                (valueChange)="setExpiryMonth($event)"
+              />
+              <app-select-picker
+                label="Expiry year"
+                [options]="expiryYearOptions"
+                [value]="form.controls.expiryYear.value?.toString() ?? ''"
+                (valueChange)="setExpiryYear($event)"
+              />
             </div>
             @if (
               (form.controls.expiryMonth.touched && form.controls.expiryMonth.invalid) ||
@@ -253,13 +247,14 @@
               >
             }
             <div class="paired-fields full">
+              <app-select-picker
+                label="Statement date"
+                sheetTitle="Choose statement date"
+                [options]="statementDayOptions"
+                [value]="form.controls.statementDay.value.toString()"
+                (valueChange)="setStatementDay($event)"
+              />
               <label
-                >Statement date<select formControlName="statementDay">
-                  @for (day of days; track day) {
-                    <option [ngValue]="day">Day {{ day }}</option>
-                  }
-                </select></label
-              ><label
                 >Payment due<input
                   formControlName="daysAfterStatement"
                   type="number"
@@ -304,20 +299,18 @@
                     <small class="validation-error">Enter the annual fee amount.</small>
                   }
                 </label>
-                <label
-                  >Renewal month<select formControlName="renewalMonth">
-                    @for (month of months; track month) {
-                      <option [ngValue]="month">{{ month }}</option>
-                    }
-                  </select></label
-                >
-                <label
-                  >Renewal day<select formControlName="renewalDay">
-                    @for (day of days; track day) {
-                      <option [ngValue]="day">{{ day }}</option>
-                    }
-                  </select></label
-                >
+                <app-select-picker
+                  label="Renewal month"
+                  [options]="renewalMonthOptions"
+                  [value]="form.controls.renewalMonth.value.toString()"
+                  (valueChange)="setRenewalMonth($event)"
+                />
+                <app-select-picker
+                  label="Renewal day"
+                  [options]="renewalDayOptions"
+                  [value]="form.controls.renewalDay.value.toString()"
+                  (valueChange)="setRenewalDay($event)"
+                />
                 <label
                   >Waiver spend<input
                     formControlName="waiverThreshold"
@@ -328,14 +321,12 @@
                     <small class="validation-error">Enter a valid positive waiver target.</small>
                   }
                 </label>
-                <label
-                  >Waiver period<select formControlName="waiverPeriod">
-                    <option value="ANNIVERSARY">Card anniversary</option>
-                    <option value="CALENDAR">Calendar year</option>
-                    <option value="FINANCIAL">Financial year</option>
-                    <option value="CUSTOM">Custom issuer period</option>
-                  </select></label
-                >
+                <app-select-picker
+                  label="Waiver period"
+                  [options]="waiverPeriodOptions"
+                  [value]="form.controls.waiverPeriod.value"
+                  (valueChange)="setWaiverPeriod($event)"
+                />
               </div>
             }
             <label class="full"
