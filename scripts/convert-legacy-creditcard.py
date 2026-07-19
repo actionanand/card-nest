@@ -223,6 +223,34 @@ def add_months(value, months=1):
     return datetime.date(year, month, day).isoformat()
 
 
+def clamped_date(year, month, day):
+    """Build a date using a zero-based month offset and clamp short months."""
+    year += month // 12
+    month = month % 12
+    month_start = datetime.date(year, month + 1, 1)
+    next_month = (
+        datetime.date(year + 1, 1, 1)
+        if month == 11
+        else datetime.date(year, month + 2, 1)
+    )
+    final_day = (next_month - datetime.timedelta(days=1)).day
+    return month_start.replace(day=min(day, final_day))
+
+
+def fixed_due_window_days(statement_day, payment_due_day, reference):
+    """Translate the legacy calendar due day into a post-statement payment window."""
+    statement = clamped_date(reference.year, reference.month - 1, statement_day)
+    if reference > statement:
+        statement = clamped_date(reference.year, reference.month, statement_day)
+    due_month_offset = 0 if payment_due_day > statement.day else 1
+    due = clamped_date(
+        statement.year,
+        statement.month - 1 + due_month_offset,
+        payment_due_day,
+    )
+    return max(1, (due - statement).days)
+
+
 def card_notes(row):
     details = []
     for label, key in (
@@ -242,12 +270,17 @@ def card_notes(row):
     return "\n".join(details) or None
 
 
-def make_card(row, earliest_date):
+def make_card(row, earliest_date, conversion_reference):
     card_id = f"legacy-card-{row['_id']}"
     nickname = str(row["cardname"] or f"Legacy card {row['_id']}").strip()
     network = network_for(row["cardtype"])
     statement_day = as_int(row["statementdate"], 1) or 1
     payment_due_day = as_int(row["duedate"], 1) or 1
+    days_after_statement = fixed_due_window_days(
+        min(31, max(1, statement_day)),
+        min(31, max(1, payment_due_day)),
+        conversion_reference,
+    )
     expiry_month = as_int(row["expirymonth"])
     expiry_year = as_int(row["expiryyear"])
     if expiry_year is not None and expiry_year < 100:
@@ -267,8 +300,8 @@ def make_card(row, earliest_date):
         "network": network,
         "theme": "indigo" if int(row["_id"]) % 2 else "teal",
         "statementDay": min(31, max(1, statement_day)),
-        "dueDateMode": "FIXED_DAY",
-        "paymentDueDay": min(31, max(1, payment_due_day)),
+        "dueDateMode": "DAYS_AFTER_STATEMENT",
+        "daysAfterStatement": days_after_statement,
         "adjustDueDateOnWeekend": False,
         "currencyCode": "INR",
         "openingBalanceMinor": 0,
@@ -386,9 +419,11 @@ def convert(source, destination, passphrase):
         raise ValueError("This is not a supported legacy .creditcard database.")
 
     date_row = connection.execute(
-        "SELECT MIN(transactiondate) AS earliest FROM credit_card_transaction"
+        "SELECT MIN(transactiondate) AS earliest, MAX(transactiondate) AS latest FROM credit_card_transaction"
     ).fetchone()
     earliest_date = iso_date(date_row["earliest"]) if date_row["earliest"] else "2022-01-01"
+    latest_date = iso_date(date_row["latest"]) if date_row["latest"] else earliest_date
+    conversion_reference = datetime.date.fromisoformat(latest_date)
     categories_source = list(
         connection.execute("SELECT * FROM credit_card_category ORDER BY categoryorder, _id")
     )
@@ -444,7 +479,9 @@ def convert(source, destination, passphrase):
         if "pluxee" in str(row["cardname"] or "").casefold()
     }
     cards = [
-        make_card(row, earliest_date) for row in card_rows if row["_id"] not in pluxee_card_ids
+        make_card(row, earliest_date, conversion_reference)
+        for row in card_rows
+        if row["_id"] not in pluxee_card_ids
     ]
     transaction_rows = list(
         connection.execute("SELECT * FROM credit_card_transaction ORDER BY _id")

@@ -5,7 +5,9 @@ import { CardBenefit, CardImportantLink, CardNetwork, CreditCard } from '../../c
 import {
   daysBetween,
   estimatedGracePeriod,
+  gracePeriodBreakdown,
   paymentDueDate,
+  paymentWindowDays,
   previousStatementDate,
   statementDateFor,
   toIsoDate,
@@ -129,10 +131,6 @@ export class CardsPage {
     value: String(day),
     label: `Day ${day}`,
   }));
-  readonly dueDateModeOptions: readonly AppSelectOption[] = [
-    { value: 'DAYS_AFTER_STATEMENT', label: 'Days after statement' },
-    { value: 'FIXED_DAY', label: 'Fixed day of every month' },
-  ];
   readonly cardFilterOptions: readonly AppSelectOption[] = [
     { value: 'ALL', label: 'All cards' },
     { value: 'DUE', label: 'Incoming payment due' },
@@ -190,14 +188,6 @@ export class CardsPage {
     statementDay: new FormControl(15, {
       nonNullable: true,
       validators: [Validators.required, Validators.min(1), Validators.max(31)],
-    }),
-    dueDateMode: new FormControl<CreditCard['dueDateMode']>('DAYS_AFTER_STATEMENT', {
-      nonNullable: true,
-      validators: [Validators.required],
-    }),
-    paymentDueDay: new FormControl(20, {
-      nonNullable: true,
-      validators: [Validators.min(1), Validators.max(31)],
     }),
     daysAfterStatement: new FormControl(20, {
       nonNullable: true,
@@ -262,16 +252,6 @@ export class CardsPage {
     this.form.controls.statementDay.markAsDirty();
   }
 
-  setDueDateMode(value: string): void {
-    this.form.controls.dueDateMode.setValue(value as CreditCard['dueDateMode']);
-    this.form.controls.dueDateMode.markAsDirty();
-  }
-
-  setPaymentDueDay(value: string): void {
-    this.form.controls.paymentDueDay.setValue(Number(value));
-    this.form.controls.paymentDueDay.markAsDirty();
-  }
-
   setRelationshipGroup(value: string): void {
     this.form.controls.relationshipGroup.setValue(value);
     this.form.controls.relationshipGroup.markAsDirty();
@@ -323,6 +303,10 @@ export class CardsPage {
   }
   grace(card: CreditCard): number {
     return estimatedGracePeriod(card);
+  }
+  graceLabel(card: CreditCard): string {
+    const grace = gracePeriodBreakdown(card);
+    return `${grace.totalDays} days (${grace.statementDays} + ${grace.paymentDays})`;
   }
   utilisation(card: CreditCard): number {
     return card.creditLimitMinor
@@ -445,9 +429,7 @@ export class CardsPage {
       expiryMonth: card.expiryMonth ?? null,
       expiryYear: card.expiryYear ?? null,
       statementDay: card.statementDay,
-      dueDateMode: card.dueDateMode,
-      paymentDueDay: card.paymentDueDay ?? 20,
-      daysAfterStatement: card.daysAfterStatement ?? 20,
+      daysAfterStatement: paymentWindowDays(card),
       creditLimit: card.creditLimitMinor === undefined ? '' : String(card.creditLimitMinor / 100),
       annualFeeEnabled: card.annualFeeEnabled,
       annualFeeAmount: card.annualFee ? String(card.annualFee.amountMinor / 100) : '',
@@ -656,14 +638,10 @@ export class CardsPage {
       expiryMonth: value.expiryMonth ?? undefined,
       expiryYear: value.expiryYear ?? undefined,
       statementDay: value.statementDay,
-      dueDateMode: value.dueDateMode,
-      paymentDueDay: value.dueDateMode === 'FIXED_DAY' ? value.paymentDueDay : undefined,
-      daysAfterStatement:
-        value.dueDateMode === 'DAYS_AFTER_STATEMENT' ? value.daysAfterStatement : undefined,
-      adjustDueDateOnWeekend:
-        value.dueDateMode === 'DAYS_AFTER_STATEMENT'
-          ? (existing?.adjustDueDateOnWeekend ?? true)
-          : false,
+      dueDateMode: 'DAYS_AFTER_STATEMENT',
+      paymentDueDay: undefined,
+      daysAfterStatement: value.daysAfterStatement,
+      adjustDueDateOnWeekend: existing?.adjustDueDateOnWeekend ?? true,
       creditLimitMinor: parsedCreditLimit,
       currencyCode: existing?.currencyCode ?? 'INR',
       openingBalanceMinor: existing?.openingBalanceMinor ?? 0,
@@ -962,8 +940,6 @@ export class CardsPage {
       fullNumber: '',
       cvv: '',
       statementDay: 15,
-      dueDateMode: 'DAYS_AFTER_STATEMENT',
-      paymentDueDay: 20,
       daysAfterStatement: 20,
       nickname: '',
       issuerName: '',

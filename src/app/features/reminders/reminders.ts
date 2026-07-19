@@ -3,7 +3,8 @@ import { RouterLink } from '@angular/router';
 import { CreditCard } from '../../core/models/domain';
 import {
   daysBetween,
-  estimatedGracePeriod,
+  gracePeriodEndDate,
+  gracePeriodBreakdown,
   paymentDueDate,
   previousStatementDate,
   statementDateFor,
@@ -28,6 +29,9 @@ interface PaymentReminder {
   readonly amount: number;
   readonly outstanding: number;
   readonly grace: number;
+  readonly graceStatementDays: number;
+  readonly gracePaymentDays: number;
+  readonly graceEndDate: Date;
   readonly expiry: Date | null;
   readonly expiryDays: number | null;
   readonly feeDue: Date | null;
@@ -86,7 +90,7 @@ export class RemindersPage {
         return item.expiryDays !== null && item.expiryDays >= 0 && item.expiryDays <= 90;
       })
       .sort((a, b) => {
-        if (this.filter() === 'GRACE') return b.grace - a.grace;
+        if (this.filter() === 'GRACE') return b.graceEndDate.getTime() - a.graceEndDate.getTime();
         if (this.filter() === 'EXPIRING')
           return (a.expiryDays ?? Infinity) - (b.expiryDays ?? Infinity);
         if (this.filter() === 'FEE') return (a.feeDays ?? Infinity) - (b.feeDays ?? Infinity);
@@ -242,7 +246,9 @@ export class RemindersPage {
   reminderDetail(item: PaymentReminder): string {
     if (this.filter() === 'EXPIRING' && item.expiry) return `Expires ${this.date(item.expiry)}`;
     if (this.filter() === 'FEE' && item.feeDue) return `Renews ${this.date(item.feeDue)}`;
-    if (this.filter() === 'GRACE') return `Estimated ${item.grace}-day grace period`;
+    if (this.filter() === 'GRACE') {
+      return `Pay by ${this.date(item.graceEndDate)} · ${this.graceLabel(item)}`;
+    }
     return `•••• ${item.card.lastDigits} · Due ${this.date(item.due)}`;
   }
 
@@ -259,7 +265,9 @@ export class RemindersPage {
         ? `${this.money(item.card.annualFee.amountMinor, item.card.currencyCode)} annual fee`
         : 'Annual fee date tracked';
     }
-    if (this.filter() === 'GRACE') return `${item.grace} days between statement and payment due`;
+    if (this.filter() === 'GRACE') {
+      return `A purchase made today would be payable by ${this.date(item.graceEndDate)}`;
+    }
     if (item.outstanding < 0) {
       return `${this.money(Math.abs(item.outstanding), item.card.currencyCode)} extra credit at bank`;
     }
@@ -270,7 +278,7 @@ export class RemindersPage {
   pillLabel(item: PaymentReminder): string {
     if (this.filter() === 'EXPIRING') return this.dayCountLabel(item.expiryDays, 'to expiry');
     if (this.filter() === 'FEE') return this.dayCountLabel(item.feeDays, 'to renewal');
-    if (this.filter() === 'GRACE') return `${item.grace} days grace`;
+    if (this.filter() === 'GRACE') return this.graceLabel(item);
     if (this.filter() === 'CREDIT' || (this.filter() === 'ALL' && item.outstanding < 0)) {
       return `${this.money(Math.abs(item.outstanding), item.card.currencyCode)} extra`;
     }
@@ -455,6 +463,7 @@ export class RemindersPage {
     const expiry =
       card.expiryMonth && card.expiryYear ? new Date(card.expiryYear, card.expiryMonth, 0) : null;
     const feeDue = this.nextAnnualFeeDate(card, now);
+    const grace = gracePeriodBreakdown(card, now);
     return {
       id: card.id,
       card,
@@ -462,12 +471,19 @@ export class RemindersPage {
       days: daysBetween(now, due),
       amount: this.store.cardDueAmount(card.id, now),
       outstanding: this.store.cardOutstanding(card.id),
-      grace: estimatedGracePeriod(card),
+      grace: grace.totalDays,
+      graceStatementDays: grace.statementDays,
+      gracePaymentDays: grace.paymentDays,
+      graceEndDate: gracePeriodEndDate(card, now),
       expiry,
       expiryDays: expiry ? daysBetween(now, expiry) : null,
       feeDue,
       feeDays: feeDue ? daysBetween(now, feeDue) : null,
     };
+  }
+
+  private graceLabel(item: PaymentReminder): string {
+    return `${item.grace} days (${item.graceStatementDays} + ${item.gracePaymentDays})`;
   }
 
   cancelSwipe(): void {
