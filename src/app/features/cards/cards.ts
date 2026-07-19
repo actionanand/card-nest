@@ -793,6 +793,23 @@ export class CardsPage {
           candidate.relationshipGroupId === card.relationshipGroupId,
       );
   }
+  linkedAccountCards(card: CreditCard): readonly CreditCard[] {
+    return [card, ...this.linkedCardsFor(card)].sort((left, right) =>
+      left.nickname.localeCompare(right.nickname, undefined, { sensitivity: 'base' }),
+    );
+  }
+  linkedAccountDue(card: CreditCard): number {
+    return this.linkedAccountCards(card).reduce(
+      (total, linkedCard) => total + this.dueAmount(linkedCard),
+      0,
+    );
+  }
+  linkedAccountOutstanding(card: CreditCard): number {
+    return this.linkedAccountCards(card).reduce(
+      (total, linkedCard) => total + Math.max(0, this.store.cardOutstanding(linkedCard.id)),
+      0,
+    );
+  }
   requestArchive(card: CreditCard): void {
     this.archiveCandidate.set({ card, action: card.archived ? 'RESTORE' : 'ARCHIVE' });
     this.actionMenuId.set(null);

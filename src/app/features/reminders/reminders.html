@@ -115,14 +115,25 @@
                 <app-icon name="credit_card_edit" /> Update renewed card
               </a>
             } @else if (filter() === 'DUE' || filter() === 'CREDIT') {
-              <a
-                class="reminder-context-action"
-                [routerLink]="['/transactions']"
-                [queryParams]="{ source: reminder.card.id }"
-                (click)="$event.stopPropagation()"
-              >
-                <app-icon name="transactions" /> View card transactions
-              </a>
+              <div class="reminder-context-actions">
+                <a
+                  class="reminder-context-action"
+                  [routerLink]="['/transactions']"
+                  [queryParams]="{ source: reminder.card.id }"
+                  (click)="$event.stopPropagation()"
+                >
+                  <app-icon name="transactions" /> View card transactions
+                </a>
+                @if (hasLinkedAccount(reminder.card)) {
+                  <button
+                    class="reminder-context-action"
+                    type="button"
+                    (click)="$event.stopPropagation(); openLinkedBalance(reminder.card)"
+                  >
+                    <app-icon name="cards" /> Linked balance
+                  </button>
+                }
+              </div>
             }
           </div>
           @if (filter() === 'DUE') {
@@ -209,14 +220,25 @@
                 </div>
                 <small>{{ reminderDetail(reminder) }}</small>
                 <p>{{ reminderValue(reminder) }}</p>
-                <a
-                  class="reminder-context-action"
-                  [routerLink]="['/transactions']"
-                  [queryParams]="{ source: reminder.card.id }"
-                  (click)="$event.stopPropagation()"
-                >
-                  <app-icon name="transactions" /> View card transactions
-                </a>
+                <div class="reminder-context-actions">
+                  <a
+                    class="reminder-context-action"
+                    [routerLink]="['/transactions']"
+                    [queryParams]="{ source: reminder.card.id }"
+                    (click)="$event.stopPropagation()"
+                  >
+                    <app-icon name="transactions" /> View card transactions
+                  </a>
+                  @if (hasLinkedAccount(reminder.card)) {
+                    <button
+                      class="reminder-context-action"
+                      type="button"
+                      (click)="$event.stopPropagation(); openLinkedBalance(reminder.card)"
+                    >
+                      <app-icon name="cards" /> Linked balance
+                    </button>
+                  }
+                </div>
               </div>
               <div class="actions">
                 <button
@@ -253,6 +275,87 @@
   }
 </div>
 
+@if (linkedBalanceCard(); as accountCard) {
+  <div
+    class="linked-balance-backdrop"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="linked-balance-title"
+    tabindex="-1"
+    (click)="closeLinkedBalanceFromBackdrop($event)"
+    (keydown.escape)="linkedBalanceCard.set(null)"
+  >
+    <section class="panel linked-balance-dialog">
+      <header>
+        <div>
+          <p class="eyebrow">Linked credit account</p>
+          <h2 id="linked-balance-title">Linked balance</h2>
+        </div>
+        <button
+          type="button"
+          aria-label="Close linked balance"
+          (click)="linkedBalanceCard.set(null)"
+        >
+          <app-icon name="close" />
+        </button>
+      </header>
+
+      <div class="linked-balance-totals">
+        <div>
+          <small>Total statement due</small>
+          <strong>{{ money(linkedDueTotal(accountCard), accountCard.currencyCode) }}</strong>
+        </div>
+        <div>
+          <small>Total outstanding</small>
+          <strong>{{
+            money(linkedOutstandingTotal(accountCard), accountCard.currencyCode)
+          }}</strong>
+        </div>
+      </div>
+
+      <div class="linked-balance-breakdown" aria-label="Balance by linked card">
+        @for (linkedCard of linkedAccountCards(accountCard); track linkedCard.id) {
+          <article>
+            <span>
+              <strong>{{ linkedCard.nickname }} · {{ linkedCard.lastDigits }}</strong>
+              <small>{{ linkedCard.issuerName }}</small>
+            </span>
+            <dl>
+              <div>
+                <dt>Due</dt>
+                <dd>{{ money(linkedCardDue(linkedCard), linkedCard.currencyCode) }}</dd>
+              </div>
+              <div>
+                <dt>Outstanding</dt>
+                <dd>{{ money(linkedCardOutstanding(linkedCard), linkedCard.currencyCode) }}</dd>
+              </div>
+            </dl>
+          </article>
+        }
+      </div>
+
+      <footer>
+        <button
+          class="btn btn-primary"
+          type="button"
+          [disabled]="linkedDueTotal(accountCard) <= 0"
+          (click)="requestLinkedPayment(accountCard, 'DUE')"
+        >
+          Pay linked due
+        </button>
+        <button
+          class="btn"
+          type="button"
+          [disabled]="linkedOutstandingTotal(accountCard) <= 0"
+          (click)="requestLinkedPayment(accountCard, 'OUTSTANDING')"
+        >
+          Clear linked outstanding
+        </button>
+      </footer>
+    </section>
+  </div>
+}
+
 @if (paymentCandidate(); as reminder) {
   <app-confirmation-dialog
     title="Record statement payment?"
@@ -266,6 +369,27 @@
     confirmLabel="Record payment"
     (confirmed)="recordPayment()"
     (cancelled)="paymentCandidate.set(null)"
+  />
+}
+
+@if (linkedPaymentCandidate(); as candidate) {
+  <app-confirmation-dialog
+    [title]="candidate.mode === 'DUE' ? 'Pay linked statement due?' : 'Clear linked outstanding?'"
+    [message]="
+      'Record ' +
+      money(
+        candidate.mode === 'DUE'
+          ? linkedDueTotal(candidate.card)
+          : linkedOutstandingTotal(candidate.card),
+        candidate.card.currencyCode
+      ) +
+      ' across ' +
+      linkedAccountCards(candidate.card).length +
+      ' linked cards? A separate payment will be assigned to each card according to its own balance.'
+    "
+    [confirmLabel]="candidate.mode === 'DUE' ? 'Pay linked due' : 'Clear outstanding'"
+    (confirmed)="confirmLinkedPayment()"
+    (cancelled)="linkedPaymentCandidate.set(null)"
   />
 }
 

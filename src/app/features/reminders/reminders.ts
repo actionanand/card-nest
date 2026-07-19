@@ -18,6 +18,7 @@ import { ConfirmationDialog } from '../../shared/confirmation-dialog';
 import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
 
 type ReminderFilter = 'ALL' | 'DUE' | 'CREDIT' | 'GRACE' | 'FEE' | 'EXPIRING';
+type LinkedPaymentMode = 'DUE' | 'OUTSTANDING';
 
 interface PaymentReminder {
   readonly id: string;
@@ -54,6 +55,11 @@ export class RemindersPage {
     { value: 'ALL', label: 'All cards' },
   ];
   readonly paymentCandidate = signal<PaymentReminder | null>(null);
+  readonly linkedBalanceCard = signal<CreditCard | null>(null);
+  readonly linkedPaymentCandidate = signal<{
+    readonly card: CreditCard;
+    readonly mode: LinkedPaymentMode;
+  } | null>(null);
   readonly snoozeCandidate = signal<PaymentReminder | null>(null);
   readonly revealedAction = signal<{
     readonly id: string;
@@ -119,6 +125,83 @@ export class RemindersPage {
 
   date(value: Date): string {
     return this.dates.format(value);
+  }
+
+  linkedAccountCards(card: CreditCard): readonly CreditCard[] {
+    if (!card.relationshipGroupId) return [card];
+    return this.store
+      .cards()
+      .filter(
+        (candidate) =>
+          !candidate.deletedAt && candidate.relationshipGroupId === card.relationshipGroupId,
+      )
+      .sort((left, right) =>
+        left.nickname.localeCompare(right.nickname, undefined, { sensitivity: 'base' }),
+      );
+  }
+
+  hasLinkedAccount(card: CreditCard): boolean {
+    return this.linkedAccountCards(card).length > 1;
+  }
+
+  linkedCardDue(card: CreditCard): number {
+    return this.store.cardDueAmount(card.id);
+  }
+
+  linkedCardOutstanding(card: CreditCard): number {
+    return Math.max(0, this.store.cardOutstanding(card.id));
+  }
+
+  linkedDueTotal(card: CreditCard): number {
+    return this.linkedAccountCards(card).reduce(
+      (total, linkedCard) => total + this.linkedCardDue(linkedCard),
+      0,
+    );
+  }
+
+  linkedOutstandingTotal(card: CreditCard): number {
+    return this.linkedAccountCards(card).reduce(
+      (total, linkedCard) => total + this.linkedCardOutstanding(linkedCard),
+      0,
+    );
+  }
+
+  openLinkedBalance(card: CreditCard): void {
+    if (this.hasLinkedAccount(card)) this.linkedBalanceCard.set(card);
+  }
+
+  closeLinkedBalanceFromBackdrop(event: MouseEvent): void {
+    if (event.target === event.currentTarget) this.linkedBalanceCard.set(null);
+  }
+
+  requestLinkedPayment(card: CreditCard, mode: LinkedPaymentMode): void {
+    const amount = mode === 'DUE' ? this.linkedDueTotal(card) : this.linkedOutstandingTotal(card);
+    if (amount <= 0) return;
+    this.linkedPaymentCandidate.set({ card, mode });
+  }
+
+  confirmLinkedPayment(): void {
+    const candidate = this.linkedPaymentCandidate();
+    if (!candidate) return;
+    let recordedTotal = 0;
+    let paidCards = 0;
+    for (const card of this.linkedAccountCards(candidate.card)) {
+      const amount =
+        candidate.mode === 'DUE' ? this.linkedCardDue(card) : this.linkedCardOutstanding(card);
+      if (amount <= 0) continue;
+      this.store.recordPayment(
+        card.id,
+        amount,
+        candidate.mode === 'DUE' ? 'Linked account due payment' : 'Linked account outstanding paid',
+      );
+      recordedTotal += amount;
+      paidCards += 1;
+    }
+    this.linkedPaymentCandidate.set(null);
+    this.linkedBalanceCard.set(null);
+    this.snackbar.show(
+      `${this.money(recordedTotal, candidate.card.currencyCode)} recorded across ${paidCards} ${paidCards === 1 ? 'card' : 'cards'}.`,
+    );
   }
 
   urgency(item: PaymentReminder): 'overdue' | 'urgent' | 'soon' | 'comfortable' {

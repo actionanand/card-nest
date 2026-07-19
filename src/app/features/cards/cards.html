@@ -592,6 +592,17 @@
                     >
                   }
                 </div>
+                <section class="linked-account-summary" aria-label="Linked account balance">
+                  <div>
+                    <small>Linked account due</small>
+                    <strong>{{ money(linkedAccountDue(card), card.currencyCode) }}</strong>
+                  </div>
+                  <div>
+                    <small>Linked outstanding</small>
+                    <strong>{{ money(linkedAccountOutstanding(card), card.currencyCode) }}</strong>
+                  </div>
+                  <small>Across {{ linkedAccountCards(card).length }} linked cards</small>
+                </section>
               }
             </div>
             @if (card.annualFee?.waiverThresholdMinor && waiverDeadline(card); as deadline) {
