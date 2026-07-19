@@ -64,4 +64,10 @@ export class DashboardPage {
         : nextStatement;
     return daysBetween(new Date(), paymentDueDate(statement, card));
   }
+  dueTone(days: number): 'overdue' | 'urgent' | 'soon' | 'comfortable' {
+    if (days < 0) return 'overdue';
+    if (days <= 3) return 'urgent';
+    if (days <= 8) return 'soon';
+    return 'comfortable';
+  }
 }

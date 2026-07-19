@@ -143,10 +143,19 @@
 .due-amount span {
   padding: 0.18rem 0.4rem;
   border-radius: 999px;
-  color: var(--warning);
-  background: var(--warning-soft);
+  color: var(--success);
+  background: var(--success-soft);
   font-size: 0.62rem;
   font-weight: 700;
+}
+.due-amount span.soon {
+  color: var(--warning);
+  background: var(--warning-soft);
+}
+.due-amount span.urgent,
+.due-amount span.overdue {
+  color: var(--danger);
+  background: var(--danger-soft);
 }
 .due-empty {
   margin: 1rem 0 0;

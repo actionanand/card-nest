@@ -57,7 +57,7 @@
           </div>
           <div class="due-amount">
             <strong>{{ money(payment.amount, card.currencyCode) }}</strong>
-            <span>
+            <span [class]="dueTone(payment.days)">
               @if (payment.days < 0) {
                 {{ -payment.days }} days overdue
               } @else if (payment.days === 0) {
