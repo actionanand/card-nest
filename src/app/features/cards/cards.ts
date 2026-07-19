@@ -129,6 +129,10 @@ export class CardsPage {
     value: String(day),
     label: `Day ${day}`,
   }));
+  readonly dueDateModeOptions: readonly AppSelectOption[] = [
+    { value: 'DAYS_AFTER_STATEMENT', label: 'Days after statement' },
+    { value: 'FIXED_DAY', label: 'Fixed day of every month' },
+  ];
   readonly cardFilterOptions: readonly AppSelectOption[] = [
     { value: 'ALL', label: 'All cards' },
     { value: 'DUE', label: 'Incoming payment due' },
@@ -186,6 +190,14 @@ export class CardsPage {
     statementDay: new FormControl(15, {
       nonNullable: true,
       validators: [Validators.required, Validators.min(1), Validators.max(31)],
+    }),
+    dueDateMode: new FormControl<CreditCard['dueDateMode']>('DAYS_AFTER_STATEMENT', {
+      nonNullable: true,
+      validators: [Validators.required],
+    }),
+    paymentDueDay: new FormControl(20, {
+      nonNullable: true,
+      validators: [Validators.min(1), Validators.max(31)],
     }),
     daysAfterStatement: new FormControl(20, {
       nonNullable: true,
@@ -248,6 +260,16 @@ export class CardsPage {
   setStatementDay(value: string): void {
     this.form.controls.statementDay.setValue(Number(value));
     this.form.controls.statementDay.markAsDirty();
+  }
+
+  setDueDateMode(value: string): void {
+    this.form.controls.dueDateMode.setValue(value as CreditCard['dueDateMode']);
+    this.form.controls.dueDateMode.markAsDirty();
+  }
+
+  setPaymentDueDay(value: string): void {
+    this.form.controls.paymentDueDay.setValue(Number(value));
+    this.form.controls.paymentDueDay.markAsDirty();
   }
 
   setRelationshipGroup(value: string): void {
@@ -315,15 +337,20 @@ export class CardsPage {
   nextStatement(card: CreditCard): Date {
     return statementDateFor(new Date(), card.statementDay);
   }
-  dueDate(card: CreditCard): Date {
+  currentStatement(card: CreditCard): Date {
     const nextStatement = this.nextStatement(card);
-    const statement =
-      this.dueAmount(card) > 0
-        ? previousStatementDate(nextStatement, card.statementDay)
-        : nextStatement;
-    return paymentDueDate(statement, card);
+    return this.billIsDue(card)
+      ? previousStatementDate(nextStatement, card.statementDay)
+      : nextStatement;
+  }
+  billIsDue(card: CreditCard): boolean {
+    return this.dueAmount(card) > 0;
+  }
+  dueDate(card: CreditCard): Date {
+    return paymentDueDate(this.currentStatement(card), card);
   }
   statementCountdown(card: CreditCard): string {
+    if (this.billIsDue(card)) return `Bill generated on ${this.date(this.currentStatement(card))}`;
     const days = Math.max(0, daysBetween(new Date(), this.nextStatement(card)));
     return days === 0
       ? 'Bill generates today'
@@ -418,6 +445,8 @@ export class CardsPage {
       expiryMonth: card.expiryMonth ?? null,
       expiryYear: card.expiryYear ?? null,
       statementDay: card.statementDay,
+      dueDateMode: card.dueDateMode,
+      paymentDueDay: card.paymentDueDay ?? 20,
       daysAfterStatement: card.daysAfterStatement ?? 20,
       creditLimit: card.creditLimitMinor === undefined ? '' : String(card.creditLimitMinor / 100),
       annualFeeEnabled: card.annualFeeEnabled,
@@ -627,10 +656,14 @@ export class CardsPage {
       expiryMonth: value.expiryMonth ?? undefined,
       expiryYear: value.expiryYear ?? undefined,
       statementDay: value.statementDay,
-      dueDateMode: 'DAYS_AFTER_STATEMENT',
-      paymentDueDay: undefined,
-      daysAfterStatement: value.daysAfterStatement,
-      adjustDueDateOnWeekend: existing?.adjustDueDateOnWeekend ?? true,
+      dueDateMode: value.dueDateMode,
+      paymentDueDay: value.dueDateMode === 'FIXED_DAY' ? value.paymentDueDay : undefined,
+      daysAfterStatement:
+        value.dueDateMode === 'DAYS_AFTER_STATEMENT' ? value.daysAfterStatement : undefined,
+      adjustDueDateOnWeekend:
+        value.dueDateMode === 'DAYS_AFTER_STATEMENT'
+          ? (existing?.adjustDueDateOnWeekend ?? true)
+          : false,
       creditLimitMinor: parsedCreditLimit,
       currencyCode: existing?.currencyCode ?? 'INR',
       openingBalanceMinor: existing?.openingBalanceMinor ?? 0,
@@ -912,6 +945,8 @@ export class CardsPage {
       fullNumber: '',
       cvv: '',
       statementDay: 15,
+      dueDateMode: 'DAYS_AFTER_STATEMENT',
+      paymentDueDay: 20,
       daysAfterStatement: 20,
       nickname: '',
       issuerName: '',

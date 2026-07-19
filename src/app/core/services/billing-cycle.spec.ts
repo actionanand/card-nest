@@ -16,6 +16,33 @@ describe('billing cycle calculations', () => {
     expect(toIsoDate(due)).toBe('2026-02-28');
   });
 
+  it('uses a later fixed due day in the statement month', () => {
+    const due = paymentDueDate(new Date(2026, 6, 1), {
+      dueDateMode: 'FIXED_DAY',
+      paymentDueDay: 20,
+      adjustDueDateOnWeekend: false,
+    });
+    expect(toIsoDate(due)).toBe('2026-07-20');
+  });
+
+  it('uses the next month when the fixed due day precedes the statement day', () => {
+    const due = paymentDueDate(new Date(2026, 6, 25), {
+      dueDateMode: 'FIXED_DAY',
+      paymentDueDay: 3,
+      adjustDueDateOnWeekend: false,
+    });
+    expect(toIsoDate(due)).toBe('2026-08-03');
+  });
+
+  it('does not move a fixed calendar due day that falls on a weekend', () => {
+    const due = paymentDueDate(new Date(2026, 7, 1), {
+      dueDateMode: 'FIXED_DAY',
+      paymentDueDay: 2,
+      adjustDueDateOnWeekend: true,
+    });
+    expect(toIsoDate(due)).toBe('2026-08-02');
+  });
+
   it('moves weekend due dates to Monday when configured', () => {
     const due = paymentDueDate(new Date(2026, 6, 10), {
       dueDateMode: 'DAYS_AFTER_STATEMENT',

@@ -42,14 +42,18 @@ export function paymentDueDate(
     due = new Date(statementDate);
     due.setDate(due.getDate() + (card.daysAfterStatement ?? 20));
   } else {
+    const paymentDueDay = card.paymentDueDay ?? 1;
+    const dueMonthOffset = paymentDueDay > statementDate.getDate() ? 0 : 1;
     due = localDate(
       statementDate.getFullYear(),
-      statementDate.getMonth() + 1,
-      card.paymentDueDay ?? 1,
+      statementDate.getMonth() + dueMonthOffset,
+      paymentDueDay,
     );
   }
-  if (card.adjustDueDateOnWeekend && due.getDay() === 6) due.setDate(due.getDate() + 2);
-  if (card.adjustDueDateOnWeekend && due.getDay() === 0) due.setDate(due.getDate() + 1);
+  if (card.dueDateMode === 'DAYS_AFTER_STATEMENT' && card.adjustDueDateOnWeekend) {
+    if (due.getDay() === 6) due.setDate(due.getDate() + 2);
+    if (due.getDay() === 0) due.setDate(due.getDate() + 1);
+  }
   return due;
 }
 

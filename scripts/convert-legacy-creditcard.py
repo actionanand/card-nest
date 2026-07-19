@@ -269,7 +269,7 @@ def make_card(row, earliest_date):
         "statementDay": min(31, max(1, statement_day)),
         "dueDateMode": "FIXED_DAY",
         "paymentDueDay": min(31, max(1, payment_due_day)),
-        "adjustDueDateOnWeekend": True,
+        "adjustDueDateOnWeekend": False,
         "currencyCode": "INR",
         "openingBalanceMinor": 0,
         "remindToSettle": not bool(row["ignoreduedate"]),

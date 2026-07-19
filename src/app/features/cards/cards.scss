@@ -359,6 +359,15 @@ label small.validation-error {
   white-space: nowrap;
 }
 .card-balance {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 1rem;
+  justify-items: end;
+}
+.card-balance > span {
+  display: grid;
+  gap: 0.12rem;
   justify-items: end;
 }
 .card-balance strong {
@@ -496,6 +505,25 @@ label small.validation-error {
   background: var(--surface-2);
   font-size: 0.56rem;
   font-style: normal;
+}
+.bill-due-badge {
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.14rem 0.4rem;
+  border-radius: 999px;
+  color: var(--muted);
+  background: var(--surface-2);
+  font-size: 0.56rem;
+  font-style: normal;
+  font-weight: 750;
+  white-space: nowrap;
+}
+.bill-due-badge app-icon {
+  width: 0.7rem;
+  height: 0.7rem;
 }
 .waiver-progress {
   display: grid;
@@ -711,6 +739,11 @@ label small.validation-error {
   }
   .card-balance {
     grid-column: 2;
+    justify-content: flex-start;
+    gap: 1.25rem;
+    justify-items: start;
+  }
+  .card-balance > span {
     justify-items: start;
   }
   .chevron {

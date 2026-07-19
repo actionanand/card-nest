@@ -246,6 +246,14 @@
                 >Choose a complete expiry date that has not passed.</small
               >
             }
+            <app-select-picker
+              class="full"
+              label="Payment due rule"
+              sheetTitle="Choose payment due rule"
+              [options]="dueDateModeOptions"
+              [value]="form.controls.dueDateMode.value"
+              (valueChange)="setDueDateMode($event)"
+            />
             <div class="paired-fields full">
               <app-select-picker
                 label="Statement date"
@@ -254,18 +262,30 @@
                 [value]="form.controls.statementDay.value.toString()"
                 (valueChange)="setStatementDay($event)"
               />
-              <label
-                >Payment due<input
-                  formControlName="daysAfterStatement"
-                  type="number"
-                  inputmode="numeric"
-                  min="1"
-                  max="60"
-                /><small>Days after statement</small></label
-              >
+              @if (form.controls.dueDateMode.value === 'FIXED_DAY') {
+                <app-select-picker
+                  label="Fixed payment due date"
+                  sheetTitle="Choose fixed payment due date"
+                  [options]="statementDayOptions"
+                  [value]="form.controls.paymentDueDay.value.toString()"
+                  (valueChange)="setPaymentDueDay($event)"
+                />
+              } @else {
+                <label
+                  >Payment due<input
+                    formControlName="daysAfterStatement"
+                    type="number"
+                    inputmode="numeric"
+                    min="1"
+                    max="60"
+                  /><small>Days after statement</small></label
+                >
+              }
             </div>
             @if (
-              form.controls.daysAfterStatement.touched && form.controls.daysAfterStatement.invalid
+              form.controls.dueDateMode.value === 'DAYS_AFTER_STATEMENT' &&
+              form.controls.daysAfterStatement.touched &&
+              form.controls.daysAfterStatement.invalid
             ) {
               <small class="validation-error full"
                 >Payment due must be between 1 and 60 days after the statement.</small
@@ -454,9 +474,16 @@
                   {{ card.lastDigits }}</b
                 ></strong
               ><small
-                >{{ card.issuerName }} · Exp {{ expiry(card) }} ·
-                {{ statementCountdown(card) }}</small
-              >
+                >{{ card.issuerName }} · Exp {{ expiry(card) }}
+                @if (!billIsDue(card)) {
+                  · {{ statementCountdown(card) }}
+                }
+              </small>
+              @if (billIsDue(card)) {
+                <em class="bill-due-badge"
+                  ><app-icon name="schedule" /> Bill is due · {{ date(dueDate(card)) }}</em
+                >
+              }
               @if (card.subtype) {
                 <em class="compact-subtype">{{ card.subtype }}</em>
               }
@@ -464,10 +491,16 @@
                 <em class="archived-badge">Archived {{ archivedDate(card) }}</em>
               }
             </span>
-            <span class="card-balance"
-              ><small>Due amount</small
-              ><strong>{{ money(dueAmount(card), card.currencyCode) }}</strong></span
-            >
+            <span class="card-balance">
+              <span>
+                <small>Due amount</small>
+                <strong>{{ money(dueAmount(card), card.currencyCode) }}</strong>
+              </span>
+              <span>
+                <small>Outstanding</small>
+                <strong>{{ money(store.cardOutstanding(card.id), card.currencyCode) }}</strong>
+              </span>
+            </span>
             <app-icon class="chevron" name="chevron_down" />
           </button>
           <div class="menu-anchor" data-action-menu>
@@ -520,10 +553,14 @@
                 ><strong>{{ money(dueAmount(card), card.currencyCode) }}</strong>
               </div>
               <div>
+                <span>Current outstanding</span
+                ><strong>{{ money(store.cardOutstanding(card.id), card.currencyCode) }}</strong>
+              </div>
+              <div>
                 <span>Payment status</span><strong>{{ paymentStatus(card) }}</strong>
               </div>
               <div>
-                <span>Statement</span><strong>{{ date(nextStatement(card)) }}</strong>
+                <span>Statement</span><strong>{{ date(currentStatement(card)) }}</strong>
               </div>
               <div>
                 <span>Bill generation</span><strong>{{ statementCountdown(card) }}</strong>
