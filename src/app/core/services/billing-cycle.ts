@@ -42,14 +42,18 @@ export function paymentDueDate(
     due = new Date(statementDate);
     due.setDate(due.getDate() + (card.daysAfterStatement ?? 20));
   } else {
+    const paymentDueDay = card.paymentDueDay ?? 1;
+    const dueMonthOffset = paymentDueDay > statementDate.getDate() ? 0 : 1;
     due = localDate(
       statementDate.getFullYear(),
-      statementDate.getMonth() + 1,
-      card.paymentDueDay ?? 1,
+      statementDate.getMonth() + dueMonthOffset,
+      paymentDueDay,
     );
   }
-  if (card.adjustDueDateOnWeekend && due.getDay() === 6) due.setDate(due.getDate() + 2);
-  if (card.adjustDueDateOnWeekend && due.getDay() === 0) due.setDate(due.getDate() + 1);
+  if (card.dueDateMode === 'DAYS_AFTER_STATEMENT' && card.adjustDueDateOnWeekend) {
+    if (due.getDay() === 6) due.setDate(due.getDate() + 2);
+    if (due.getDay() === 0) due.setDate(due.getDate() + 1);
+  }
   return due;
 }
 
@@ -57,6 +61,82 @@ export function daysBetween(from: Date, to: Date): number {
   const start = Date.UTC(from.getFullYear(), from.getMonth(), from.getDate());
   const end = Date.UTC(to.getFullYear(), to.getMonth(), to.getDate());
   return Math.ceil((end - start) / 86_400_000);
+}
+
+export interface GracePeriodBreakdown {
+  readonly statementDays: number;
+  readonly paymentDays: number;
+  readonly totalDays: number;
+}
+
+/**
+ * Returns the issuer's payment window for one statement. Fixed calendar due dates
+ * are retained only as a compatibility path for cards restored from older backups.
+ */
+export function paymentWindowDays(
+  card: Pick<
+    CreditCard,
+    | 'statementDay'
+    | 'dueDateMode'
+    | 'paymentDueDay'
+    | 'daysAfterStatement'
+    | 'adjustDueDateOnWeekend'
+  >,
+  reference = new Date(),
+): number {
+  if (card.dueDateMode === 'DAYS_AFTER_STATEMENT') {
+    return Math.max(1, card.daysAfterStatement ?? 20);
+  }
+  const statement = statementDateFor(reference, card.statementDay);
+  return Math.max(1, daysBetween(statement, paymentDueDate(statement, card)));
+}
+
+export function gracePeriodBreakdown(
+  card: Pick<
+    CreditCard,
+    | 'statementDay'
+    | 'dueDateMode'
+    | 'paymentDueDay'
+    | 'daysAfterStatement'
+    | 'adjustDueDateOnWeekend'
+  >,
+  reference = new Date(),
+): GracePeriodBreakdown {
+  const statement = statementDateFor(reference, card.statementDay);
+  const finalPaymentDate = paymentDueDate(statement, card);
+  const statementDays = Math.max(0, daysBetween(reference, statement));
+  const paymentDays = Math.max(1, daysBetween(statement, finalPaymentDate));
+  return {
+    statementDays,
+    paymentDays,
+    totalDays: Math.max(1, daysBetween(reference, finalPaymentDate)),
+  };
+}
+
+/** Final date on which a purchase made today would ordinarily need to be paid. */
+export function gracePeriodEndDate(
+  card: Pick<
+    CreditCard,
+    | 'statementDay'
+    | 'dueDateMode'
+    | 'paymentDueDay'
+    | 'daysAfterStatement'
+    | 'adjustDueDateOnWeekend'
+  >,
+  reference = new Date(),
+): Date {
+  return paymentDueDate(statementDateFor(reference, card.statementDay), card);
+}
+
+/** Converts the legacy fixed calendar due-date rule to the current issuer window model. */
+export function normalizeCardDueDateRule(card: CreditCard, reference = new Date()): CreditCard {
+  if (card.dueDateMode === 'DAYS_AFTER_STATEMENT') return card;
+  return {
+    ...card,
+    dueDateMode: 'DAYS_AFTER_STATEMENT',
+    paymentDueDay: undefined,
+    daysAfterStatement: paymentWindowDays(card, reference),
+  };
 }
 
 export function estimatedGracePeriod(
@@ -70,6 +150,5 @@ export function estimatedGracePeriod(
   >,
   reference = new Date(),
 ): number {
-  const statement = statementDateFor(reference, card.statementDay);
-  return daysBetween(statement, paymentDueDate(statement, card));
+  return gracePeriodBreakdown(card, reference).totalDays;
 }

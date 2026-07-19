@@ -261,7 +261,7 @@
                   inputmode="numeric"
                   min="1"
                   max="60"
-                /><small>Days after statement</small></label
+                /><small>Days after statement generation</small></label
               >
             </div>
             @if (
@@ -454,9 +454,16 @@
                   {{ card.lastDigits }}</b
                 ></strong
               ><small
-                >{{ card.issuerName }} · Exp {{ expiry(card) }} ·
-                {{ statementCountdown(card) }}</small
-              >
+                >{{ card.issuerName }} · Exp {{ expiry(card) }}
+                @if (!billIsDue(card)) {
+                  · {{ statementCountdown(card) }}
+                }
+              </small>
+              @if (billIsDue(card)) {
+                <em class="bill-due-badge"
+                  ><app-icon name="schedule" /> Bill is due · {{ date(dueDate(card)) }}</em
+                >
+              }
               @if (card.subtype) {
                 <em class="compact-subtype">{{ card.subtype }}</em>
               }
@@ -464,10 +471,16 @@
                 <em class="archived-badge">Archived {{ archivedDate(card) }}</em>
               }
             </span>
-            <span class="card-balance"
-              ><small>Due amount</small
-              ><strong>{{ money(dueAmount(card), card.currencyCode) }}</strong></span
-            >
+            <span class="card-balance">
+              <span>
+                <small>Due amount</small>
+                <strong>{{ money(dueAmount(card), card.currencyCode) }}</strong>
+              </span>
+              <span>
+                <small>Outstanding</small>
+                <strong>{{ money(store.cardOutstanding(card.id), card.currencyCode) }}</strong>
+              </span>
+            </span>
             <app-icon class="chevron" name="chevron_down" />
           </button>
           <div class="menu-anchor" data-action-menu>
@@ -520,10 +533,14 @@
                 ><strong>{{ money(dueAmount(card), card.currencyCode) }}</strong>
               </div>
               <div>
+                <span>Current outstanding</span
+                ><strong>{{ money(store.cardOutstanding(card.id), card.currencyCode) }}</strong>
+              </div>
+              <div>
                 <span>Payment status</span><strong>{{ paymentStatus(card) }}</strong>
               </div>
               <div>
-                <span>Statement</span><strong>{{ date(nextStatement(card)) }}</strong>
+                <span>Statement</span><strong>{{ date(currentStatement(card)) }}</strong>
               </div>
               <div>
                 <span>Bill generation</span><strong>{{ statementCountdown(card) }}</strong>
@@ -532,7 +549,7 @@
                 <span>Due date</span><strong>{{ date(dueDate(card)) }}</strong>
               </div>
               <div>
-                <span>Grace period</span><strong>{{ grace(card) }} days</strong>
+                <span>Grace period</span><strong>{{ graceLabel(card) }}</strong>
               </div>
               <div>
                 <span>Credit limit</span
@@ -555,6 +572,17 @@
                     >
                   }
                 </div>
+                <section class="linked-account-summary" aria-label="Linked account balance">
+                  <div>
+                    <small>Linked account due</small>
+                    <strong>{{ money(linkedAccountDue(card), card.currencyCode) }}</strong>
+                  </div>
+                  <div>
+                    <small>Linked outstanding</small>
+                    <strong>{{ money(linkedAccountOutstanding(card), card.currencyCode) }}</strong>
+                  </div>
+                  <small>Across {{ linkedAccountCards(card).length }} linked cards</small>
+                </section>
               }
             </div>
             @if (card.annualFee?.waiverThresholdMinor && waiverDeadline(card); as deadline) {

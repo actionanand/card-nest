@@ -21,7 +21,7 @@ interface ReminderTarget {
 export class NotificationService {
   private readonly database = inject(SqliteDatabase);
   private readonly channelId = 'card-nest-reminders';
-  private readonly paymentOffsets = [5] as const;
+  private readonly paymentOffsets = [5, 4, 3, 2, 1, 0] as const;
   readonly permission = signal<'unavailable' | 'prompt' | 'denied' | 'granted'>('unavailable');
   readonly enabled = signal(false);
   readonly lastError = signal<string | null>(null);
@@ -109,7 +109,7 @@ export class NotificationService {
             smallIcon: 'ic_stat_card_nest',
             largeIcon: 'ic_launcher',
             autoCancel: true,
-            schedule: { at: target.at, allowWhileIdle: false },
+            schedule: { at: target.at, allowWhileIdle: true },
             extra: { source: 'card-nest', cardId: target.cardId, kind: target.kind },
           })),
         });
@@ -152,6 +152,10 @@ export class NotificationService {
     const amount = formatMoney(Math.max(0, outstandingMinor), card.currencyCode);
     const dueDisplay = due.toLocaleDateString('en-IN', { day: 'numeric', month: 'long' });
     const baseId = this.baseId(card.id);
+    const dueIsToday =
+      due.getFullYear() === now.getFullYear() &&
+      due.getMonth() === now.getMonth() &&
+      due.getDate() === now.getDate();
 
     const paymentTargets =
       card.remindToSettle && outstandingMinor > 0
@@ -159,6 +163,9 @@ export class NotificationService {
             const at = new Date(due);
             at.setDate(at.getDate() - daysBefore);
             at.setHours(9, 0, 0, 0);
+            if (daysBefore === 0 && dueIsToday && at <= now) {
+              at.setTime(now.getTime() + 60_000);
+            }
             return {
               id: baseId + index,
               title: 'Statement payment reminder',

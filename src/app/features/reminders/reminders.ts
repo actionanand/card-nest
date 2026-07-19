@@ -3,7 +3,8 @@ import { RouterLink } from '@angular/router';
 import { CreditCard } from '../../core/models/domain';
 import {
   daysBetween,
-  estimatedGracePeriod,
+  gracePeriodEndDate,
+  gracePeriodBreakdown,
   paymentDueDate,
   previousStatementDate,
   statementDateFor,
@@ -18,6 +19,7 @@ import { ConfirmationDialog } from '../../shared/confirmation-dialog';
 import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
 
 type ReminderFilter = 'ALL' | 'DUE' | 'CREDIT' | 'GRACE' | 'FEE' | 'EXPIRING';
+type LinkedPaymentMode = 'DUE' | 'OUTSTANDING';
 
 interface PaymentReminder {
   readonly id: string;
@@ -27,6 +29,9 @@ interface PaymentReminder {
   readonly amount: number;
   readonly outstanding: number;
   readonly grace: number;
+  readonly graceStatementDays: number;
+  readonly gracePaymentDays: number;
+  readonly graceEndDate: Date;
   readonly expiry: Date | null;
   readonly expiryDays: number | null;
   readonly feeDue: Date | null;
@@ -54,6 +59,11 @@ export class RemindersPage {
     { value: 'ALL', label: 'All cards' },
   ];
   readonly paymentCandidate = signal<PaymentReminder | null>(null);
+  readonly linkedBalanceCard = signal<CreditCard | null>(null);
+  readonly linkedPaymentCandidate = signal<{
+    readonly card: CreditCard;
+    readonly mode: LinkedPaymentMode;
+  } | null>(null);
   readonly snoozeCandidate = signal<PaymentReminder | null>(null);
   readonly revealedAction = signal<{
     readonly id: string;
@@ -80,7 +90,7 @@ export class RemindersPage {
         return item.expiryDays !== null && item.expiryDays >= 0 && item.expiryDays <= 90;
       })
       .sort((a, b) => {
-        if (this.filter() === 'GRACE') return b.grace - a.grace;
+        if (this.filter() === 'GRACE') return b.graceEndDate.getTime() - a.graceEndDate.getTime();
         if (this.filter() === 'EXPIRING')
           return (a.expiryDays ?? Infinity) - (b.expiryDays ?? Infinity);
         if (this.filter() === 'FEE') return (a.feeDays ?? Infinity) - (b.feeDays ?? Infinity);
@@ -121,6 +131,83 @@ export class RemindersPage {
     return this.dates.format(value);
   }
 
+  linkedAccountCards(card: CreditCard): readonly CreditCard[] {
+    if (!card.relationshipGroupId) return [card];
+    return this.store
+      .cards()
+      .filter(
+        (candidate) =>
+          !candidate.deletedAt && candidate.relationshipGroupId === card.relationshipGroupId,
+      )
+      .sort((left, right) =>
+        left.nickname.localeCompare(right.nickname, undefined, { sensitivity: 'base' }),
+      );
+  }
+
+  hasLinkedAccount(card: CreditCard): boolean {
+    return this.linkedAccountCards(card).length > 1;
+  }
+
+  linkedCardDue(card: CreditCard): number {
+    return this.store.cardDueAmount(card.id);
+  }
+
+  linkedCardOutstanding(card: CreditCard): number {
+    return Math.max(0, this.store.cardOutstanding(card.id));
+  }
+
+  linkedDueTotal(card: CreditCard): number {
+    return this.linkedAccountCards(card).reduce(
+      (total, linkedCard) => total + this.linkedCardDue(linkedCard),
+      0,
+    );
+  }
+
+  linkedOutstandingTotal(card: CreditCard): number {
+    return this.linkedAccountCards(card).reduce(
+      (total, linkedCard) => total + this.linkedCardOutstanding(linkedCard),
+      0,
+    );
+  }
+
+  openLinkedBalance(card: CreditCard): void {
+    if (this.hasLinkedAccount(card)) this.linkedBalanceCard.set(card);
+  }
+
+  closeLinkedBalanceFromBackdrop(event: MouseEvent): void {
+    if (event.target === event.currentTarget) this.linkedBalanceCard.set(null);
+  }
+
+  requestLinkedPayment(card: CreditCard, mode: LinkedPaymentMode): void {
+    const amount = mode === 'DUE' ? this.linkedDueTotal(card) : this.linkedOutstandingTotal(card);
+    if (amount <= 0) return;
+    this.linkedPaymentCandidate.set({ card, mode });
+  }
+
+  confirmLinkedPayment(): void {
+    const candidate = this.linkedPaymentCandidate();
+    if (!candidate) return;
+    let recordedTotal = 0;
+    let paidCards = 0;
+    for (const card of this.linkedAccountCards(candidate.card)) {
+      const amount =
+        candidate.mode === 'DUE' ? this.linkedCardDue(card) : this.linkedCardOutstanding(card);
+      if (amount <= 0) continue;
+      this.store.recordPayment(
+        card.id,
+        amount,
+        candidate.mode === 'DUE' ? 'Linked account due payment' : 'Linked account outstanding paid',
+      );
+      recordedTotal += amount;
+      paidCards += 1;
+    }
+    this.linkedPaymentCandidate.set(null);
+    this.linkedBalanceCard.set(null);
+    this.snackbar.show(
+      `${this.money(recordedTotal, candidate.card.currencyCode)} recorded across ${paidCards} ${paidCards === 1 ? 'card' : 'cards'}.`,
+    );
+  }
+
   urgency(item: PaymentReminder): 'overdue' | 'urgent' | 'soon' | 'comfortable' {
     if (item.days < 0) return 'overdue';
     if (item.days <= 2) return 'urgent';
@@ -159,7 +246,9 @@ export class RemindersPage {
   reminderDetail(item: PaymentReminder): string {
     if (this.filter() === 'EXPIRING' && item.expiry) return `Expires ${this.date(item.expiry)}`;
     if (this.filter() === 'FEE' && item.feeDue) return `Renews ${this.date(item.feeDue)}`;
-    if (this.filter() === 'GRACE') return `Estimated ${item.grace}-day grace period`;
+    if (this.filter() === 'GRACE') {
+      return `Pay by ${this.date(item.graceEndDate)} · ${this.graceLabel(item)}`;
+    }
     return `•••• ${item.card.lastDigits} · Due ${this.date(item.due)}`;
   }
 
@@ -176,7 +265,9 @@ export class RemindersPage {
         ? `${this.money(item.card.annualFee.amountMinor, item.card.currencyCode)} annual fee`
         : 'Annual fee date tracked';
     }
-    if (this.filter() === 'GRACE') return `${item.grace} days between statement and payment due`;
+    if (this.filter() === 'GRACE') {
+      return `A purchase made today would be payable by ${this.date(item.graceEndDate)}`;
+    }
     if (item.outstanding < 0) {
       return `${this.money(Math.abs(item.outstanding), item.card.currencyCode)} extra credit at bank`;
     }
@@ -187,7 +278,7 @@ export class RemindersPage {
   pillLabel(item: PaymentReminder): string {
     if (this.filter() === 'EXPIRING') return this.dayCountLabel(item.expiryDays, 'to expiry');
     if (this.filter() === 'FEE') return this.dayCountLabel(item.feeDays, 'to renewal');
-    if (this.filter() === 'GRACE') return `${item.grace} days grace`;
+    if (this.filter() === 'GRACE') return this.graceLabel(item);
     if (this.filter() === 'CREDIT' || (this.filter() === 'ALL' && item.outstanding < 0)) {
       return `${this.money(Math.abs(item.outstanding), item.card.currencyCode)} extra`;
     }
@@ -372,6 +463,7 @@ export class RemindersPage {
     const expiry =
       card.expiryMonth && card.expiryYear ? new Date(card.expiryYear, card.expiryMonth, 0) : null;
     const feeDue = this.nextAnnualFeeDate(card, now);
+    const grace = gracePeriodBreakdown(card, now);
     return {
       id: card.id,
       card,
@@ -379,12 +471,19 @@ export class RemindersPage {
       days: daysBetween(now, due),
       amount: this.store.cardDueAmount(card.id, now),
       outstanding: this.store.cardOutstanding(card.id),
-      grace: estimatedGracePeriod(card),
+      grace: grace.totalDays,
+      graceStatementDays: grace.statementDays,
+      gracePaymentDays: grace.paymentDays,
+      graceEndDate: gracePeriodEndDate(card, now),
       expiry,
       expiryDays: expiry ? daysBetween(now, expiry) : null,
       feeDue,
       feeDays: feeDue ? daysBetween(now, feeDue) : null,
     };
+  }
+
+  private graceLabel(item: PaymentReminder): string {
+    return `${item.grace} days (${item.graceStatementDays} + ${item.gracePaymentDays})`;
   }
 
   cancelSwipe(): void {

@@ -12,7 +12,12 @@ import {
   RecurringRule,
 } from '../models/domain';
 import { SqliteDatabase } from '../data/sqlite-database';
-import { previousStatementDate, statementDateFor, toIsoDate } from './billing-cycle';
+import {
+  normalizeCardDueDateRule,
+  previousStatementDate,
+  statementDateFor,
+  toIsoDate,
+} from './billing-cycle';
 import { calculateNetSpending, calculateOutstanding, transactionEffect } from './money';
 
 const now = new Date();
@@ -86,8 +91,8 @@ const SAMPLE_CARDS: readonly CreditCard[] = [
     subtype: 'World',
     theme: 'teal',
     statementDay: 4,
-    dueDateMode: 'FIXED_DAY',
-    paymentDueDay: 24,
+    dueDateMode: 'DAYS_AFTER_STATEMENT',
+    daysAfterStatement: 20,
     adjustDueDateOnWeekend: true,
     creditLimitMinor: 40000000,
     currencyCode: 'INR',
@@ -1040,14 +1045,21 @@ export class CardNestStore {
       'SELECT payload FROM credit_cards ORDER BY created_at',
     );
     if (rows.length) {
+      const legacyCards: CreditCard[] = [];
       const cards = rows.flatMap((row) => {
         try {
-          return [JSON.parse(row.payload) as CreditCard];
+          const restored = JSON.parse(row.payload) as CreditCard;
+          const normalized = normalizeCardDueDateRule(restored);
+          if (normalized !== restored) legacyCards.push(normalized);
+          return [normalized];
         } catch {
           return [];
         }
       });
       if (cards.length) this.cards.set(cards);
+      // Old backups stored a fixed day-of-month. Persist the equivalent number of
+      // days after statement once so future backups use the current billing model.
+      for (const card of legacyCards) await this.persistCard(card);
       return;
     }
     if (this.dataWasCleared) {
