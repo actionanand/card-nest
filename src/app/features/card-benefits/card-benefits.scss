@@ -27,6 +27,14 @@
   gap: 0.7rem;
   padding: 1rem;
   border-bottom: 1px solid var(--line);
+  width: 100%;
+  border-top: 0;
+  border-right: 0;
+  border-left: 0;
+  color: var(--ink);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
 }
 .benefit-heading > span {
   display: grid;
@@ -47,6 +55,18 @@
 }
 .benefit-heading small {
   color: var(--muted);
+}
+.benefit-heading > div {
+  min-width: 0;
+  flex: 1;
+}
+.benefit-heading > app-icon {
+  width: 1rem;
+  height: 1rem;
+  transition: transform 160ms ease;
+}
+.benefit-heading[aria-expanded='true'] > app-icon {
+  transform: rotate(180deg);
 }
 .benefit-cards a {
   display: grid;
@@ -90,6 +110,12 @@
   font-size: 0.66rem;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.benefit-cards-expanded .benefit-detail {
+  overflow: visible;
+  line-height: 1.45;
+  text-overflow: clip;
+  white-space: normal;
 }
 .benefit-cards a > app-icon {
   width: 1rem;

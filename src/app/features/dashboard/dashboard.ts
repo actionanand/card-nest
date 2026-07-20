@@ -10,10 +10,11 @@ import {
 import { formatMoney } from '../../core/services/money';
 import { AppIcon } from '../../shared/app-icon';
 import { AppDatePipe } from '../../core/services/date-format.service';
+import { CardNetworkLogo } from '../../shared/card-network-logo';
 
 @Component({
   selector: 'app-dashboard-page',
-  imports: [RouterLink, AppIcon, AppDatePipe],
+  imports: [RouterLink, AppIcon, AppDatePipe, CardNetworkLogo],
   templateUrl: './dashboard.html',
   styleUrl: './dashboard.scss',
 })
@@ -54,6 +55,12 @@ export class DashboardPage {
   categoryName(categoryId: string): string {
     return this.store.categories().find((item) => item.id === categoryId)?.name ?? 'Other';
   }
+  category(categoryId: string) {
+    return this.store.categories().find((item) => item.id === categoryId);
+  }
+  isCredit(type: string): boolean {
+    return ['PAYMENT', 'REFUND', 'CASHBACK', 'CREDIT'].includes(type);
+  }
   daysUntilDue(cardId: string): number {
     const card = this.store.cards().find((item) => item.id === cardId);
     if (!card) return 0;
@@ -63,5 +70,11 @@ export class DashboardPage {
         ? previousStatementDate(nextStatement, card.statementDay)
         : nextStatement;
     return daysBetween(new Date(), paymentDueDate(statement, card));
+  }
+  dueTone(days: number): 'overdue' | 'urgent' | 'soon' | 'comfortable' {
+    if (days < 0) return 'overdue';
+    if (days <= 3) return 'urgent';
+    if (days <= 8) return 'soon';
+    return 'comfortable';
   }
 }

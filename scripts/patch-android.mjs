@@ -93,9 +93,11 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowInsetsController;
+import android.view.WindowManager;
 import android.webkit.JavascriptInterface;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
+import android.widget.Toast;
 
 import androidx.biometric.BiometricManager;
 import androidx.biometric.BiometricPrompt;
@@ -117,6 +119,7 @@ public class MainActivity extends BridgeActivity {
   private byte[] pendingBackup;
   private View launchOverlay;
   private BiometricPrompt biometricPrompt;
+  private boolean waitingForExitBackPress;
 
   @Override
   public void onCreate(Bundle savedInstanceState) {
@@ -137,6 +140,28 @@ public class MainActivity extends BridgeActivity {
   }
 
   @Override
+  public void onBackPressed() {
+    if (waitingForExitBackPress) {
+      finishAffinity();
+      return;
+    }
+
+    waitingForExitBackPress = true;
+    new android.os.Handler(getMainLooper()).postDelayed(
+      () -> waitingForExitBackPress = false,
+      2500
+    );
+
+    if (getBridge() == null || getBridge().getWebView() == null) return;
+    getBridge().getWebView().evaluateJavascript(
+      "window.history.replaceState({}, '', '/');" +
+        "window.dispatchEvent(new PopStateEvent('popstate'));",
+      null
+    );
+    Toast.makeText(this, "Press back again to exit CardNest", Toast.LENGTH_SHORT).show();
+  }
+
+  @Override
   public void onWindowFocusChanged(boolean hasFocus) {
     super.onWindowFocusChanged(hasFocus);
     if (hasFocus && launchOverlay == null) applySystemBarStyle(darkMode);
@@ -151,6 +176,17 @@ public class MainActivity extends BridgeActivity {
   }
 
   public class CardNestNativeBridge {
+    @JavascriptInterface
+    public void setScreenSecure(boolean enabled) {
+      runOnUiThread(() -> {
+        if (enabled) {
+          getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
+        } else {
+          getWindow().clearFlags(WindowManager.LayoutParams.FLAG_SECURE);
+        }
+      });
+    }
+
     @JavascriptInterface
     public void hideSplash() {
       runOnUiThread(() -> hideLaunchOverlay());

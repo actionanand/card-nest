@@ -210,8 +210,8 @@ export class RemindersPage {
 
   urgency(item: PaymentReminder): 'overdue' | 'urgent' | 'soon' | 'comfortable' {
     if (item.days < 0) return 'overdue';
-    if (item.days <= 2) return 'urgent';
-    if (item.days <= 5) return 'soon';
+    if (item.days <= 3) return 'urgent';
+    if (item.days <= 8) return 'soon';
     return 'comfortable';
   }
 

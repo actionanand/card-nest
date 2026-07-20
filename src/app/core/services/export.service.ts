@@ -73,6 +73,45 @@ export class ExportService {
     void this.deliverPdf(document, `${filename}.pdf`);
   }
 
+  exportTransactionSelection(
+    format: ExportFormat,
+    candidates: readonly CardTransaction[],
+    label: string,
+    filePeriod: string,
+  ): void {
+    const transactions = [...candidates].sort((left, right) =>
+      right.transactionDate.localeCompare(left.transactionDate),
+    );
+    const filename = `cardnest-transactions-${filePeriod}`;
+    if (format === 'CSV') {
+      void this.deliverCsv(
+        this.transactionsCsv(transactions),
+        `${filename}.csv`,
+        `CardNest transactions - ${label}`,
+      );
+      return;
+    }
+    const debits = transactions
+      .filter((item) => !this.isCredit(item.type))
+      .reduce((sum, item) => sum + item.amountMinor, 0);
+    const credits = transactions
+      .filter((item) => this.isCredit(item.type))
+      .reduce((sum, item) => sum + item.amountMinor, 0);
+    const document: ExportDocument = {
+      title: 'CardNest transaction statement',
+      subtitle: label,
+      generatedOn: this.generatedOn(),
+      summary: [
+        { label: 'Transactions', value: String(transactions.length) },
+        { label: 'Spent / charged', value: this.money(debits) },
+        { label: 'Payments / credits', value: this.money(credits) },
+        { label: 'Net outflow', value: this.money(debits - credits) },
+      ],
+      sections: this.transactionSections(transactions),
+    };
+    void this.deliverPdf(document, `${filename}.pdf`);
+  }
+
   exportStatistics(period: ExportPeriod): void {
     const transactions = this.inPeriod(this.store.transactions(), period);
     const expenses = transactions.filter((item) => EXPENSE_TYPES.includes(item.type));
