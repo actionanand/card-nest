@@ -97,6 +97,7 @@ import android.view.WindowManager;
 import android.webkit.JavascriptInterface;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
+import android.widget.Toast;
 
 import androidx.biometric.BiometricManager;
 import androidx.biometric.BiometricPrompt;
@@ -118,6 +119,7 @@ public class MainActivity extends BridgeActivity {
   private byte[] pendingBackup;
   private View launchOverlay;
   private BiometricPrompt biometricPrompt;
+  private boolean waitingForExitBackPress;
 
   @Override
   public void onCreate(Bundle savedInstanceState) {
@@ -135,6 +137,28 @@ public class MainActivity extends BridgeActivity {
     super.onResume();
     // Re-apply after Capacitor WebView reinitialises the window on config change.
     if (launchOverlay == null) applySystemBarStyle(darkMode);
+  }
+
+  @Override
+  public void onBackPressed() {
+    if (waitingForExitBackPress) {
+      finishAffinity();
+      return;
+    }
+
+    waitingForExitBackPress = true;
+    new android.os.Handler(getMainLooper()).postDelayed(
+      () -> waitingForExitBackPress = false,
+      2500
+    );
+
+    if (getBridge() == null || getBridge().getWebView() == null) return;
+    getBridge().getWebView().evaluateJavascript(
+      "window.history.replaceState({}, '', '/');" +
+        "window.dispatchEvent(new PopStateEvent('popstate'));",
+      null
+    );
+    Toast.makeText(this, "Press back again to exit CardNest", Toast.LENGTH_SHORT).show();
   }
 
   @Override
