@@ -149,8 +149,8 @@
       routerLink="/transactions"
       [queryParams]="{ add: true }"
       aria-label="Add transaction"
-      ><app-icon name="shopping_cart_plus"
-    /></a>
+      ><span class="material-symbols-outlined" aria-hidden="true">add_shopping_cart</span></a
+    >
     <a routerLink="/transactions" routerLinkActive="active"
       ><app-icon name="transactions" /><small>Activity</small></a
     >
@@ -159,14 +159,16 @@
     >
   </nav>
 
-  <button
-    class="flash-transaction-fab"
-    type="button"
-    (click)="openFlashTransaction()"
-    aria-label="Add flash transaction"
-  >
-    <app-icon name="flash_transaction" />
-  </button>
+  @if (uiPreferences.showFlashTransaction()) {
+    <button
+      class="flash-transaction-fab"
+      type="button"
+      (click)="openFlashTransaction()"
+      aria-label="Add flash transaction"
+    >
+      <app-icon name="flash_transaction" />
+    </button>
+  }
 
   @if (flashTransactionOpen()) {
     <div

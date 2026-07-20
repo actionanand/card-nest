@@ -17,6 +17,7 @@ import { APP_VERSION } from '../../core/app-version';
 import { Capacitor } from '@capacitor/core';
 import { PaymentSourcePicker } from '../../shared/payment-source-picker';
 import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
+import { UiPreferencesService } from '../../core/services/ui-preferences.service';
 
 type PinAction = 'CHANGE' | 'DISABLE';
 type BackupAction = 'CREATE' | 'RESTORE';
@@ -39,6 +40,7 @@ export class SettingsPage {
   readonly notifications = inject(NotificationService);
   readonly pin = inject(ApplicationPinService);
   readonly appLock = inject(AppLockService);
+  readonly uiPreferences = inject(UiPreferencesService);
   private readonly themes = inject(ThemeService);
   private readonly snackbar = inject(SnackbarService);
   private readonly backups = inject(BackupService);
@@ -242,6 +244,20 @@ export class SettingsPage {
 
   toggleLockOnBackground(): void {
     void this.appLock.setLockOnBackground(!this.lockOnBackground());
+  }
+
+  toggleFlashTransactionVisibility(): void {
+    this.uiPreferences.setShowFlashTransaction(!this.uiPreferences.showFlashTransaction());
+  }
+
+  toggleScreenshotPrevention(): void {
+    this.uiPreferences.setPreventScreenshots(!this.uiPreferences.preventScreenshots());
+    this.snackbar.show(
+      this.uiPreferences.preventScreenshots()
+        ? 'Screenshot protection enabled.'
+        : 'Screenshot protection disabled.',
+      'INFO',
+    );
   }
 
   money(value: number): string {

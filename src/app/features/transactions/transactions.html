@@ -316,7 +316,7 @@
       <app-select-picker
         label="Grouping cycle"
         [options]="groupingOptions()"
-        [value]="grouping()"
+        [value]="effectiveGrouping()"
         (valueChange)="updateGrouping($event)"
       />
       <button class="btn manage-categories" type="button" (click)="manageCategoriesOpen.set(true)">
@@ -469,6 +469,7 @@
         </summary>
         <div class="month-entries">
           @for (transaction of group.transactions; track transaction.id) {
+            @let transactionCategory = category(transaction.categoryId);
             <article [class.menu-open]="actionMenuId() === transaction.id">
               <button
                 class="transaction-open-button"
@@ -478,10 +479,17 @@
               >
                 <span
                   class="tx-icon"
-                  [class.credit]="isCredit(transaction.type)"
+                  [class.credit]="transaction.type === 'PAYMENT'"
+                  [style.--category-colour]="transactionCategory?.colour || '#28684e'"
                   aria-hidden="true"
                 >
-                  <app-icon [name]="isCredit(transaction.type) ? 'incoming' : 'outgoing'" />
+                  <app-icon
+                    [name]="
+                      transaction.type === 'PAYMENT'
+                        ? 'incoming'
+                        : transactionCategory?.icon || 'category'
+                    "
+                  />
                 </span>
                 <span class="tx-main">
                   <strong>{{ transaction.merchant || transaction.type.replace('_', ' ') }}</strong>
@@ -930,6 +938,8 @@
   <app-export-dialog
     [transactions]="filtered()"
     [initialFormat]="exportFormat()"
+    [statementChoices]="exportStatementChoices()"
+    [monthChoices]="exportMonthChoices()"
     (closed)="exportOpen.set(false)"
   />
 }

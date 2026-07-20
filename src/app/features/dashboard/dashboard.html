@@ -48,8 +48,8 @@
       @for (payment of upcomingPayments(); track payment.card.id) {
         @let card = payment.card;
         <article class="due-item">
-          <div class="card-mini" [class]="'card-mini ' + card.theme" aria-hidden="true">
-            {{ card.nickname.slice(0, 1) }}
+          <div class="card-mini" aria-hidden="true">
+            <app-card-network-logo [network]="card.network" />
           </div>
           <div>
             <strong>{{ card.nickname }}</strong
@@ -109,16 +109,17 @@
     </div>
     <div class="transaction-list">
       @for (transaction of recentTransactions(); track transaction.id) {
+        @let transactionCategory = category(transaction.categoryId);
         <article>
-          <div class="transaction-icon" aria-hidden="true">
+          <div
+            class="transaction-icon"
+            [class.credit]="isCredit(transaction.type)"
+            [style.--category-colour]="transactionCategory?.colour || '#28684e'"
+            aria-hidden="true"
+          >
             <app-icon
               [name]="
-                transaction.type === 'PAYMENT' ||
-                transaction.type === 'REFUND' ||
-                transaction.type === 'CASHBACK' ||
-                transaction.type === 'CREDIT'
-                  ? 'incoming'
-                  : 'outgoing'
+                isCredit(transaction.type) ? 'incoming' : transactionCategory?.icon || 'category'
               "
             />
           </div>
@@ -129,15 +130,7 @@
               {{ cardName(transaction.cardId) }}</small
             >
           </div>
-          <div
-            class="transaction-amount"
-            [class.credit]="
-              transaction.type === 'PAYMENT' ||
-              transaction.type === 'REFUND' ||
-              transaction.type === 'CASHBACK' ||
-              transaction.type === 'CREDIT'
-            "
-          >
+          <div class="transaction-amount" [class.credit]="isCredit(transaction.type)">
             <strong
               >{{
                 transaction.type === 'PAYMENT' ||

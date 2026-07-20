@@ -1,5 +1,7 @@
+import { DOCUMENT } from '@angular/common';
 import { Component, computed, effect, inject, signal } from '@angular/core';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
+import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { CardBenefit, CardImportantLink, CardNetwork, CreditCard } from '../../core/models/domain';
 import {
@@ -49,6 +51,8 @@ export class CardsPage {
   private readonly router = inject(Router);
   private readonly secrets = inject(SensitiveCardDataService);
   private readonly snackbar = inject(SnackbarService);
+  private readonly document = inject(DOCUMENT);
+  private readonly sanitizer = inject(DomSanitizer);
   private readonly dates = inject(DateFormatService);
   private readonly requestedEditId = this.route.snapshot.queryParamMap.get('edit');
   private requestedEditHandled = false;
@@ -68,10 +72,39 @@ export class CardsPage {
   readonly search = signal('');
   readonly formError = signal<string | null>(null);
   readonly draftBenefits = signal<readonly CardBenefit[]>([]);
+  readonly descriptionEditorHtml = signal<SafeHtml>(this.richHtml(''));
+  readonly benefitEditorHtml = signal<SafeHtml>(this.richHtml(''));
+  readonly richTextColour = signal('#28684e');
+  readonly richHighlightColour = signal('#fff0a8');
+  readonly colourPalette = signal<{
+    control: 'notes' | 'benefitNote';
+    command: 'foreColor' | 'hiliteColor';
+  } | null>(null);
+  readonly paletteDraft = signal('#28684e');
+  readonly customPaletteOpen = signal(false);
+  readonly paletteHue = signal(150);
+  readonly paletteSaturation = signal(62);
+  readonly paletteBrightness = signal(41);
+  readonly paletteColours = [
+    '#14261e',
+    '#28684e',
+    '#4fa27d',
+    '#4f86c6',
+    '#6d7f99',
+    '#8c6bb1',
+    '#cf6075',
+    '#df7865',
+    '#e3a64f',
+    '#c9a52f',
+    '#fff0a8',
+    '#ffffff',
+  ];
+  readonly expandedBenefitId = signal<string | null>(null);
   readonly revealedCardId = signal<string | null>(null);
   readonly revealedNumber = signal('');
   readonly revealedCvv = signal('');
   readonly cardFilter = signal<CardFilter>('ALL');
+  private readonly richTextRanges = new Map<'notes' | 'benefitNote', Range>();
   readonly visibleCards = computed(() =>
     this.store
       .cards()
@@ -89,11 +122,7 @@ export class CardsPage {
           card.lastDigits.includes(term)
         );
       })
-      .sort((a, b) =>
-        this.cardFilter() === 'GRACE'
-          ? this.grace(b) - this.grace(a)
-          : this.dueDate(a).getTime() - this.dueDate(b).getTime(),
-      ),
+      .sort((a, b) => a.nickname.localeCompare(b.nickname, undefined, { sensitivity: 'base' })),
   );
   readonly selectedCard = computed(
     () => this.store.cards().find((card) => card.id === this.selectedCardId()) ?? null,
@@ -205,7 +234,7 @@ export class CardsPage {
         nonNullable: true,
       },
     ),
-    notes: new FormControl('', { nonNullable: true, validators: [Validators.maxLength(500)] }),
+    notes: new FormControl('', { nonNullable: true, validators: [Validators.maxLength(5000)] }),
     emergencyPhones: new FormControl('', {
       nonNullable: true,
       validators: [Validators.maxLength(300), Validators.pattern(/^[+\d\s(),-]*$/)],
@@ -221,7 +250,7 @@ export class CardsPage {
     benefitName: new FormControl('', { nonNullable: true, validators: [Validators.maxLength(40)] }),
     benefitNote: new FormControl('', {
       nonNullable: true,
-      validators: [Validators.maxLength(240)],
+      validators: [Validators.maxLength(1500)],
     }),
     relationshipGroup: new FormControl('', {
       nonNullable: true,
@@ -406,15 +435,26 @@ export class CardsPage {
 
   selectCard(card: CreditCard): void {
     this.actionMenuId.set(null);
+    this.hideRevealedSecrets();
+    this.expandedBenefitId.set(null);
     this.selectedCardId.set(this.selectedCardId() === card.id ? null : card.id);
+  }
+  showCardArchive(archived: boolean): void {
+    this.showArchived.set(archived);
+    this.selectedCardId.set(null);
+    this.hideRevealedSecrets();
+    this.expandedBenefitId.set(null);
   }
   openAdd(): void {
     this.editingId.set(null);
     this.resetForm();
     this.draftBenefits.set([]);
+    this.descriptionEditorHtml.set(this.richHtml(''));
+    this.benefitEditorHtml.set(this.richHtml(''));
     this.showForm.set(true);
   }
   edit(card: CreditCard): void {
+    if (card.archived) return;
     const linkedCard = this.relatedCardFor(card);
     this.editingId.set(card.id);
     this.form.reset({
@@ -450,6 +490,8 @@ export class CardsPage {
       relationshipGroup: linkedCard?.id ?? '',
     });
     this.draftBenefits.set(card.benefits ?? []);
+    this.descriptionEditorHtml.set(this.richHtml(card.notes ?? ''));
+    this.benefitEditorHtml.set(this.richHtml(''));
     this.showForm.set(true);
     globalThis.scrollTo?.({ top: 0, behavior: 'smooth' });
   }
@@ -520,7 +562,7 @@ export class CardsPage {
 
   addBenefit(): void {
     const name = this.form.controls.benefitName.value.trim();
-    const note = this.form.controls.benefitNote.value.trim();
+    const note = this.sanitizedRichText(this.form.controls.benefitNote.value);
     if (!name) return;
     const existing = this.draftBenefits().find(
       (benefit) => benefit.name.toLocaleLowerCase() === name.toLocaleLowerCase(),
@@ -531,10 +573,11 @@ export class CardsPage {
     }
     this.draftBenefits.update((benefits) => [
       ...benefits,
-      { id: crypto.randomUUID(), name, note: note || undefined },
+      { id: crypto.randomUUID(), name, note: this.hasRichText(note) ? note : undefined },
     ]);
     this.form.controls.benefitName.reset('');
     this.form.controls.benefitNote.reset('');
+    this.benefitEditorHtml.set(this.richHtml(''));
   }
 
   removeBenefit(benefitId: string): void {
@@ -631,7 +674,13 @@ export class CardsPage {
       network: value.network,
       subtype: value.subtype.trim() || undefined,
       cardholderName: value.cardholderName.trim() || undefined,
-      benefits: this.draftBenefits(),
+      benefits: this.draftBenefits().map((benefit) => ({
+        ...benefit,
+        note:
+          benefit.note && this.hasRichText(benefit.note)
+            ? this.sanitizedRichText(benefit.note)
+            : undefined,
+      })),
       importantLinks: importantLinks ?? [],
       relationshipGroupId,
       theme: existing?.theme ?? (this.store.cards().length % 2 ? 'teal' : 'indigo'),
@@ -660,7 +709,7 @@ export class CardsPage {
           : undefined,
       emergencyPhones: this.splitValues(value.emergencyPhones),
       supportEmails: this.splitValues(value.supportEmails),
-      notes: value.notes.trim() || undefined,
+      notes: this.hasRichText(value.notes) ? this.sanitizedRichText(value.notes) : undefined,
       archived: existing?.archived ?? false,
       createdAt: existing?.createdAt ?? timestamp,
       updatedAt: timestamp,
@@ -710,6 +759,7 @@ export class CardsPage {
     void this.router.navigate(['/transactions'], { queryParams: { source: cardId } });
   }
   openPayment(card: CreditCard, mode: PaymentMode): void {
+    if (card.archived) return;
     const outstanding = Math.max(0, this.store.cardOutstanding(card.id));
     const amount = mode === 'DUE' ? this.dueAmount(card) : outstanding;
     if (amount <= 0) return;
@@ -856,9 +906,7 @@ export class CardsPage {
   }
   async revealSecrets(card: CreditCard): Promise<void> {
     if (this.revealedCardId() === card.id) {
-      this.revealedCardId.set(null);
-      this.revealedNumber.set('');
-      this.revealedCvv.set('');
+      this.hideRevealedSecrets();
       return;
     }
     try {
@@ -873,13 +921,184 @@ export class CardsPage {
       this.snackbar.show('The protected card details could not be revealed.', 'WARNING');
     }
   }
-  removeCardBenefit(card: CreditCard, benefitId: string): void {
-    this.store.updateCard({
-      ...card,
-      benefits: (card.benefits ?? []).filter((benefit) => benefit.id !== benefitId),
-      updatedAt: new Date().toISOString(),
-    });
-    this.snackbar.show('Card benefit removed.', 'INFO');
+  toggleBenefitDetails(benefitId: string): void {
+    this.expandedBenefitId.set(this.expandedBenefitId() === benefitId ? null : benefitId);
+  }
+  updateRichText(event: Event, control: 'notes' | 'benefitNote'): void {
+    const value = (event.currentTarget as HTMLElement).innerHTML;
+    this.form.controls[control].setValue(value);
+    this.form.controls[control].markAsDirty();
+  }
+  markRichTextDirty(control: 'notes' | 'benefitNote'): void {
+    this.form.controls[control].markAsDirty();
+  }
+  formatRichText(control: 'notes' | 'benefitNote', command: string, value?: string): void {
+    this.document.execCommand(command, false, value);
+    const selection = this.document.defaultView?.getSelection();
+    const selectedNode = selection?.anchorNode;
+    const selectedElement =
+      selectedNode instanceof Element ? selectedNode : selectedNode?.parentElement;
+    const editor = selectedElement?.closest<HTMLElement>('[contenteditable="true"]');
+    if (editor) this.form.controls[control].setValue(editor.innerHTML);
+    this.form.controls[control].markAsDirty();
+  }
+  applyRichTextColour(
+    event: Event,
+    control: 'notes' | 'benefitNote',
+    command: 'foreColor' | 'hiliteColor',
+  ): void {
+    const selection = this.document.defaultView?.getSelection();
+    const range = this.richTextRanges.get(control);
+    if (selection && range) {
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+    this.formatRichText(control, command, (event.target as HTMLInputElement).value);
+  }
+  applySavedRichTextColour(
+    control: 'notes' | 'benefitNote',
+    command: 'foreColor' | 'hiliteColor',
+    value: string,
+  ): void {
+    const selection = this.document.defaultView?.getSelection();
+    const range = this.richTextRanges.get(control);
+    if (selection && range) {
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+    this.formatRichText(control, command, value);
+  }
+  openColourPalette(control: 'notes' | 'benefitNote', command: 'foreColor' | 'hiliteColor'): void {
+    this.paletteDraft.set(
+      command === 'foreColor' ? this.richTextColour() : this.richHighlightColour(),
+    );
+    this.customPaletteOpen.set(false);
+    this.colourPalette.set({ control, command });
+  }
+  confirmColourPalette(): void {
+    const palette = this.colourPalette();
+    if (!palette) return;
+    if (palette.command === 'foreColor') this.richTextColour.set(this.paletteDraft());
+    else this.richHighlightColour.set(this.paletteDraft());
+    this.applySavedRichTextColour(palette.control, palette.command, this.paletteDraft());
+    this.colourPalette.set(null);
+    this.customPaletteOpen.set(false);
+  }
+  isPaletteColourValid(): boolean {
+    return /^#[0-9a-f]{6}$/i.test(this.paletteDraft());
+  }
+  paletteChannel(index: 0 | 1 | 2): number {
+    if (!this.isPaletteColourValid()) return 0;
+    return Number.parseInt(this.paletteDraft().slice(1 + index * 2, 3 + index * 2), 16);
+  }
+  updatePaletteChannel(index: 0 | 1 | 2, event: Event): void {
+    const channels: [number, number, number] = [
+      this.paletteChannel(0),
+      this.paletteChannel(1),
+      this.paletteChannel(2),
+    ];
+    channels[index] = Number((event.target as HTMLInputElement).value);
+    this.paletteDraft.set(
+      `#${channels.map((channel) => channel.toString(16).padStart(2, '0')).join('')}`,
+    );
+    this.syncPickerFromHex();
+  }
+  openCustomPalette(): void {
+    this.syncPickerFromHex();
+    this.customPaletteOpen.set(true);
+  }
+  updatePaletteHue(event: Event): void {
+    this.paletteHue.set(Number((event.target as HTMLInputElement).value));
+    this.syncHexFromPicker();
+  }
+  updateSpectrum(event: PointerEvent): void {
+    if (event.type === 'pointermove' && event.buttons !== 1) return;
+    const target = event.currentTarget as HTMLElement;
+    if (event.type === 'pointerdown') target.setPointerCapture(event.pointerId);
+    const bounds = target.getBoundingClientRect();
+    const saturation = Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width));
+    const brightness = Math.max(0, Math.min(1, 1 - (event.clientY - bounds.top) / bounds.height));
+    this.paletteSaturation.set(Math.round(saturation * 100));
+    this.paletteBrightness.set(Math.round(brightness * 100));
+    this.syncHexFromPicker();
+  }
+  closeColourPaletteFromBackdrop(event: Event): void {
+    if (event.target === event.currentTarget) this.colourPalette.set(null);
+  }
+  closeCustomPaletteFromBackdrop(event: Event): void {
+    if (event.target === event.currentTarget) this.customPaletteOpen.set(false);
+  }
+  adjustSpectrumWithKeyboard(event: KeyboardEvent): void {
+    const step = event.shiftKey ? 10 : 2;
+    if (event.key === 'ArrowLeft') {
+      this.paletteSaturation.update((value) => Math.max(0, value - step));
+    } else if (event.key === 'ArrowRight') {
+      this.paletteSaturation.update((value) => Math.min(100, value + step));
+    } else if (event.key === 'ArrowDown') {
+      this.paletteBrightness.update((value) => Math.max(0, value - step));
+    } else if (event.key === 'ArrowUp') {
+      this.paletteBrightness.update((value) => Math.min(100, value + step));
+    } else {
+      return;
+    }
+    event.preventDefault();
+    this.syncHexFromPicker();
+  }
+  private syncPickerFromHex(): void {
+    if (!this.isPaletteColourValid()) return;
+    const red = this.paletteChannel(0) / 255;
+    const green = this.paletteChannel(1) / 255;
+    const blue = this.paletteChannel(2) / 255;
+    const max = Math.max(red, green, blue);
+    const min = Math.min(red, green, blue);
+    const delta = max - min;
+    let hue = 0;
+    if (delta) {
+      if (max === red) hue = 60 * (((green - blue) / delta) % 6);
+      else if (max === green) hue = 60 * ((blue - red) / delta + 2);
+      else hue = 60 * ((red - green) / delta + 4);
+    }
+    this.paletteHue.set(Math.round((hue + 360) % 360));
+    this.paletteSaturation.set(Math.round((max ? delta / max : 0) * 100));
+    this.paletteBrightness.set(Math.round(max * 100));
+  }
+  private syncHexFromPicker(): void {
+    const hue = this.paletteHue();
+    const saturation = this.paletteSaturation() / 100;
+    const brightness = this.paletteBrightness() / 100;
+    const chroma = brightness * saturation;
+    const section = hue / 60;
+    const secondary = chroma * (1 - Math.abs((section % 2) - 1));
+    const offset = brightness - chroma;
+    const [red, green, blue] =
+      section < 1
+        ? [chroma, secondary, 0]
+        : section < 2
+          ? [secondary, chroma, 0]
+          : section < 3
+            ? [0, chroma, secondary]
+            : section < 4
+              ? [0, secondary, chroma]
+              : section < 5
+                ? [secondary, 0, chroma]
+                : [chroma, 0, secondary];
+    this.paletteDraft.set(
+      `#${[red, green, blue]
+        .map((channel) =>
+          Math.round((channel + offset) * 255)
+            .toString(16)
+            .padStart(2, '0'),
+        )
+        .join('')}`,
+    );
+  }
+  rememberRichTextSelection(control: 'notes' | 'benefitNote'): void {
+    const selection = this.document.defaultView?.getSelection();
+    if (selection?.rangeCount)
+      this.richTextRanges.set(control, selection.getRangeAt(0).cloneRange());
+  }
+  richHtml(value: string): SafeHtml {
+    return this.sanitizer.bypassSecurityTrustHtml(this.sanitizedRichText(value));
   }
   updateCardFilter(value: string): void {
     this.cardFilter.set(value as CardFilter);
@@ -898,6 +1117,62 @@ export class CardsPage {
       .split(/[,\n]/)
       .map((item) => item.trim())
       .filter(Boolean);
+  }
+  private hideRevealedSecrets(): void {
+    this.revealedCardId.set(null);
+    this.revealedNumber.set('');
+    this.revealedCvv.set('');
+  }
+  private sanitizedRichText(value: string): string {
+    const container = this.document.createElement('div');
+    container.innerHTML = value;
+    const allowedTags = new Set([
+      'B',
+      'STRONG',
+      'I',
+      'EM',
+      'S',
+      'STRIKE',
+      'UL',
+      'OL',
+      'LI',
+      'P',
+      'DIV',
+      'BR',
+      'SPAN',
+      'MARK',
+      'FONT',
+    ]);
+    for (const element of Array.from(container.querySelectorAll('*'))) {
+      if (!allowedTags.has(element.tagName)) {
+        element.replaceWith(...Array.from(element.childNodes));
+        continue;
+      }
+      const colour = this.safeRichColour((element as HTMLElement).style.color);
+      const background = this.safeRichColour((element as HTMLElement).style.backgroundColor);
+      const fontColour = this.safeRichColour(element.getAttribute('color') ?? '');
+      for (const attribute of Array.from(element.attributes))
+        element.removeAttribute(attribute.name);
+      if (element instanceof HTMLElement) {
+        if (colour) element.style.color = colour;
+        if (background) element.style.backgroundColor = background;
+      }
+      if (element.tagName === 'FONT' && fontColour) element.setAttribute('color', fontColour);
+    }
+    return container.innerHTML.trim();
+  }
+  private hasRichText(value: string): boolean {
+    const sanitized = this.sanitizedRichText(value);
+    const text = sanitized
+      .replace(/<br\s*\/?\s*>/gi, '')
+      .replace(/<[^>]+>/g, '')
+      .replace(/&nbsp;/gi, '')
+      .trim();
+    return Boolean(text);
+  }
+  private safeRichColour(value: string): string {
+    const colour = value.trim();
+    return /^(#[\da-f]{3,8}|rgba?\([\d\s.,%/]+\))$/i.test(colour) ? colour : '';
   }
   private relatedCardFor(card: CreditCard): CreditCard | undefined {
     if (!card.relationshipGroupId) return undefined;
@@ -933,6 +1208,7 @@ export class CardsPage {
     return sum % 10 === 0;
   }
   private resetForm(): void {
+    this.colourPalette.set(null);
     this.form.reset({
       network: 'VISA',
       subtype: '',
@@ -961,6 +1237,8 @@ export class CardsPage {
       benefitNote: '',
       relationshipGroup: '',
     });
+    this.descriptionEditorHtml.set(this.richHtml(''));
+    this.benefitEditorHtml.set(this.richHtml(''));
   }
 
   private parseImportantLinks(value: string): readonly CardImportantLink[] | null {

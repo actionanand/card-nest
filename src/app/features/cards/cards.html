@@ -28,10 +28,10 @@
       />
     </label>
     <div class="view-switch" role="group" aria-label="Card status">
-      <button type="button" [class.active]="!showArchived()" (click)="showArchived.set(false)">
+      <button type="button" [class.active]="!showArchived()" (click)="showCardArchive(false)">
         Active
       </button>
-      <button type="button" [class.active]="showArchived()" (click)="showArchived.set(true)">
+      <button type="button" [class.active]="showArchived()" (click)="showCardArchive(true)">
         Archived
       </button>
     </div>
@@ -329,12 +329,111 @@
                 />
               </div>
             }
-            <label class="full"
-              >Description (optional)<textarea
-                formControlName="notes"
-                placeholder="Rewards, usage notes or benefits"
-              ></textarea>
-            </label>
+            <section class="rich-editor-field full" aria-labelledby="description-editor-label">
+              <strong id="description-editor-label">Description (optional)</strong>
+              <div class="rich-editor">
+                <div class="rich-editor-toolbar" role="toolbar" aria-label="Description formatting">
+                  <button
+                    type="button"
+                    aria-label="Bold"
+                    (mousedown)="$event.preventDefault()"
+                    (click)="formatRichText('notes', 'bold')"
+                  >
+                    <b>B</b>
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Italic"
+                    (mousedown)="$event.preventDefault()"
+                    (click)="formatRichText('notes', 'italic')"
+                  >
+                    <i>I</i>
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Strikethrough"
+                    (mousedown)="$event.preventDefault()"
+                    (click)="formatRichText('notes', 'strikeThrough')"
+                  >
+                    <s>S</s>
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Bulleted list"
+                    title="Bulleted list"
+                    (mousedown)="$event.preventDefault()"
+                    (click)="formatRichText('notes', 'insertUnorderedList')"
+                  >
+                    <span class="material-symbols-outlined" aria-hidden="true"
+                      >format_list_bulleted</span
+                    >
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Numbered list"
+                    title="Numbered list"
+                    (mousedown)="$event.preventDefault()"
+                    (click)="formatRichText('notes', 'insertOrderedList')"
+                  >
+                    <span class="material-symbols-outlined" aria-hidden="true"
+                      >format_list_numbered</span
+                    >
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Increase indent"
+                    title="Increase indent"
+                    (mousedown)="$event.preventDefault()"
+                    (click)="formatRichText('notes', 'indent')"
+                  >
+                    <span class="material-symbols-outlined" aria-hidden="true"
+                      >format_indent_increase</span
+                    >
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Decrease indent"
+                    title="Decrease indent"
+                    (mousedown)="$event.preventDefault()"
+                    (click)="formatRichText('notes', 'outdent')"
+                  >
+                    <span class="material-symbols-outlined" aria-hidden="true"
+                      >format_indent_decrease</span
+                    >
+                  </button>
+                  <button
+                    type="button"
+                    class="rich-colour-tool"
+                    aria-label="Text colour"
+                    title="Text colour"
+                    (mousedown)="rememberRichTextSelection('notes'); $event.preventDefault()"
+                    (click)="openColourPalette('notes', 'foreColor')"
+                  >
+                    <span [style.background]="richTextColour()"></span><b>A</b>
+                  </button>
+                  <button
+                    type="button"
+                    class="rich-colour-tool"
+                    aria-label="Highlight colour"
+                    title="Highlight colour"
+                    (mousedown)="rememberRichTextSelection('notes'); $event.preventDefault()"
+                    (click)="openColourPalette('notes', 'hiliteColor')"
+                  >
+                    <span [style.background]="richHighlightColour()"></span><b>H</b>
+                  </button>
+                </div>
+                <div
+                  class="rich-editor-surface"
+                  contenteditable="true"
+                  role="textbox"
+                  aria-multiline="true"
+                  data-placeholder="Rewards, usage notes or important information"
+                  [innerHTML]="descriptionEditorHtml()"
+                  (input)="markRichTextDirty('notes')"
+                  (blur)="updateRichText($event, 'notes')"
+                ></div>
+              </div>
+            </section>
             <label class="full"
               >Emergency hotlines<input
                 formControlName="emergencyPhones"
@@ -367,11 +466,213 @@
                     formControlName="benefitName"
                     placeholder="Fuel, lounge, cashback, movies…"
                 /></label>
-                <label
-                  >Conditions / note<input
-                    formControlName="benefitNote"
-                    placeholder="Minimum spend, merchant cap, BOGO terms…"
-                /></label>
+                <section class="benefit-note-editor" aria-labelledby="benefit-note-label">
+                  <strong id="benefit-note-label">Conditions / note</strong>
+                  <div class="rich-editor compact">
+                    <div
+                      class="rich-editor-toolbar"
+                      role="toolbar"
+                      aria-label="Benefit condition formatting"
+                    >
+                      <button
+                        type="button"
+                        aria-label="Bold"
+                        (mousedown)="$event.preventDefault()"
+                        (click)="formatRichText('benefitNote', 'bold')"
+                      >
+                        <b>B</b>
+                      </button>
+                      <button
+                        type="button"
+                        aria-label="Italic"
+                        (mousedown)="$event.preventDefault()"
+                        (click)="formatRichText('benefitNote', 'italic')"
+                      >
+                        <i>I</i>
+                      </button>
+                      <button
+                        type="button"
+                        class="rich-colour-tool"
+                        aria-label="Highlight colour"
+                        title="Highlight colour"
+                        (mousedown)="
+                          rememberRichTextSelection('benefitNote'); $event.preventDefault()
+                        "
+                        (click)="openColourPalette('benefitNote', 'hiliteColor')"
+                      >
+                        <span [style.background]="richHighlightColour()"></span><b>H</b>
+                      </button>
+                    </div>
+                    <div
+                      class="rich-editor-surface"
+                      contenteditable="true"
+                      role="textbox"
+                      aria-multiline="true"
+                      data-placeholder="Minimum spend, merchant cap, BOGO terms…"
+                      [innerHTML]="benefitEditorHtml()"
+                      (input)="markRichTextDirty('benefitNote')"
+                      (blur)="updateRichText($event, 'benefitNote')"
+                    ></div>
+                  </div>
+                </section>
+                @if (colourPalette(); as palette) {
+                  <div
+                    class="colour-palette-backdrop"
+                    tabindex="0"
+                    (click)="closeColourPaletteFromBackdrop($event)"
+                    (keydown.escape)="colourPalette.set(null)"
+                  >
+                    <section
+                      class="colour-palette"
+                      role="dialog"
+                      aria-modal="true"
+                      aria-label="Choose formatting colour"
+                    >
+                      <header>
+                        <strong>{{
+                          palette.command === 'foreColor' ? 'Text colour' : 'Highlight colour'
+                        }}</strong
+                        ><button
+                          type="button"
+                          aria-label="Close colour palette"
+                          (click)="colourPalette.set(null)"
+                        >
+                          <app-icon name="close" />
+                        </button>
+                      </header>
+                      <div class="palette-swatches">
+                        @for (colour of paletteColours; track colour) {
+                          <button
+                            type="button"
+                            [class.selected]="paletteDraft() === colour"
+                            [style.background]="colour"
+                            [attr.aria-label]="'Choose ' + colour"
+                            (click)="paletteDraft.set(colour)"
+                          ></button>
+                        }
+                      </div>
+                      <label class="custom-colour-field">
+                        <span>Custom colour</span>
+                        <button
+                          type="button"
+                          class="custom-colour-preview"
+                          [style.background]="isPaletteColourValid() ? paletteDraft() : '#28684e'"
+                          aria-label="Open custom colour picker"
+                          (click)="openCustomPalette()"
+                        ></button>
+                        <input
+                          type="text"
+                          maxlength="7"
+                          aria-label="Custom colour hex code"
+                          [value]="paletteDraft()"
+                          (input)="paletteDraft.set($any($event.target).value)"
+                        />
+                      </label>
+                      <button
+                        class="btn btn-primary"
+                        type="button"
+                        [disabled]="!isPaletteColourValid()"
+                        (click)="confirmColourPalette()"
+                      >
+                        Use this colour
+                      </button>
+                    </section>
+                    @if (customPaletteOpen()) {
+                      <div
+                        class="custom-spectrum-backdrop"
+                        tabindex="0"
+                        (click)="closeCustomPaletteFromBackdrop($event)"
+                        (keydown.escape)="customPaletteOpen.set(false)"
+                      >
+                        <section
+                          class="custom-spectrum"
+                          role="dialog"
+                          aria-modal="true"
+                          aria-label="Custom colour palette"
+                        >
+                          <header>
+                            <strong>Choose custom colour</strong
+                            ><button
+                              type="button"
+                              aria-label="Close custom colour palette"
+                              (click)="customPaletteOpen.set(false)"
+                            >
+                              <app-icon name="close" />
+                            </button>
+                          </header>
+                          <div
+                            class="colour-spectrum"
+                            [style.--picker-hue]="paletteHue()"
+                            (pointerdown)="updateSpectrum($event)"
+                            (pointermove)="updateSpectrum($event)"
+                            role="slider"
+                            tabindex="0"
+                            aria-label="Saturation and brightness"
+                            aria-valuemin="0"
+                            aria-valuemax="100"
+                            [attr.aria-valuenow]="paletteBrightness()"
+                            [attr.aria-valuetext]="paletteDraft()"
+                            (keydown)="adjustSpectrumWithKeyboard($event)"
+                          >
+                            <span
+                              class="spectrum-cursor"
+                              [style.left.%]="paletteSaturation()"
+                              [style.top.%]="100 - paletteBrightness()"
+                            ></span>
+                          </div>
+                          <label class="hue-control"
+                            ><span>Hue</span
+                            ><input
+                              type="range"
+                              min="0"
+                              max="359"
+                              [value]="paletteHue()"
+                              (input)="updatePaletteHue($event)"
+                          /></label>
+                          <div class="rgb-controls" aria-label="Custom RGB colour controls">
+                            <label
+                              ><span>R</span
+                              ><input
+                                type="range"
+                                min="0"
+                                max="255"
+                                [value]="paletteChannel(0)"
+                                (input)="updatePaletteChannel(0, $event)"
+                              /><output>{{ paletteChannel(0) }}</output></label
+                            >
+                            <label
+                              ><span>G</span
+                              ><input
+                                type="range"
+                                min="0"
+                                max="255"
+                                [value]="paletteChannel(1)"
+                                (input)="updatePaletteChannel(1, $event)"
+                              /><output>{{ paletteChannel(1) }}</output></label
+                            >
+                            <label
+                              ><span>B</span
+                              ><input
+                                type="range"
+                                min="0"
+                                max="255"
+                                [value]="paletteChannel(2)"
+                                (input)="updatePaletteChannel(2, $event)"
+                              /><output>{{ paletteChannel(2) }}</output></label
+                            >
+                          </div>
+                          <button
+                            class="btn btn-primary"
+                            type="button"
+                            (click)="customPaletteOpen.set(false)"
+                          >
+                            Done
+                          </button>
+                        </section>
+                      </div>
+                    }
+                  </div>
+                }
                 <button class="btn" type="button" (click)="addBenefit()">
                   <app-icon name="plus" /> Add benefit
                 </button>
@@ -453,13 +754,17 @@
                   >{{ card.network === 'AMERICAN_EXPRESS' ? '•••••' : '••••' }}
                   {{ card.lastDigits }}</b
                 ></strong
-              ><small
-                >{{ card.issuerName }} · Exp {{ expiry(card) }}
-                @if (!billIsDue(card)) {
-                  · {{ statementCountdown(card) }}
+              ><small>
+                @if (card.archived) {
+                  {{ card.issuerName }} · Inactive
+                } @else {
+                  {{ card.issuerName }} · Exp {{ expiry(card) }}
+                  @if (!billIsDue(card)) {
+                    · {{ statementCountdown(card) }}
+                  }
                 }
               </small>
-              @if (billIsDue(card)) {
+              @if (!card.archived && billIsDue(card)) {
                 <em class="bill-due-badge"
                   ><app-icon name="schedule" /> Bill is due · {{ date(dueDate(card)) }}</em
                 >
@@ -501,7 +806,7 @@
                 <button
                   type="button"
                   role="menuitem"
-                  [disabled]="dueAmount(card) <= 0"
+                  [disabled]="card.archived || dueAmount(card) <= 0"
                   (click)="openPayment(card, 'DUE')"
                 >
                   Pay due amount
@@ -509,12 +814,19 @@
                 <button
                   type="button"
                   role="menuitem"
-                  [disabled]="store.cardOutstanding(card.id) <= 0"
+                  [disabled]="card.archived || store.cardOutstanding(card.id) <= 0"
                   (click)="openPayment(card, 'OUTSTANDING')"
                 >
                   Pay outstanding
                 </button>
-                <button type="button" role="menuitem" (click)="edit(card)">Edit</button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  [disabled]="card.archived"
+                  (click)="edit(card)"
+                >
+                  Edit
+                </button>
                 <button type="button" role="menuitem" (click)="requestArchive(card)">
                   {{ card.archived ? 'Restore' : 'Archive' }}
                 </button>
@@ -527,85 +839,103 @@
         </div>
         @if (selectedCardId() === card.id) {
           <div class="card-details" [id]="'details-' + card.id">
-            <div class="metric-grid">
-              <div>
-                <span>Due amount</span
-                ><strong>{{ money(dueAmount(card), card.currencyCode) }}</strong>
-              </div>
-              <div>
-                <span>Current outstanding</span
-                ><strong>{{ money(store.cardOutstanding(card.id), card.currencyCode) }}</strong>
-              </div>
-              <div>
-                <span>Payment status</span><strong>{{ paymentStatus(card) }}</strong>
-              </div>
-              <div>
-                <span>Statement</span><strong>{{ date(currentStatement(card)) }}</strong>
-              </div>
-              <div>
-                <span>Bill generation</span><strong>{{ statementCountdown(card) }}</strong>
-              </div>
-              <div>
-                <span>Due date</span><strong>{{ date(dueDate(card)) }}</strong>
-              </div>
-              <div>
-                <span>Grace period</span><strong>{{ graceLabel(card) }}</strong>
-              </div>
-              <div>
-                <span>Credit limit</span
-                ><strong>{{ money(card.creditLimitMinor ?? 0, card.currencyCode) }}</strong>
-              </div>
-            </div>
-            <div class="utilisation">
-              <div>
-                <span>Credit used</span><strong>{{ utilisation(card) }}%</strong>
-              </div>
-              <progress [value]="utilisation(card)" max="100">{{ utilisation(card) }}%</progress
-              ><small>{{ money(availableCredit(card), card.currencyCode) }} available</small>
-              @if (linkedCardsFor(card).length) {
-                <div class="linked-cards" aria-label="Linked cards">
-                  <small>Linked cards</small>
-                  @for (linked of linkedCardsFor(card); track linked.id) {
-                    <span
-                      ><app-icon name="cards" /> {{ linked.nickname }} ·
-                      {{ linked.lastDigits }}</span
-                    >
-                  }
+            @if (card.archived) {
+              <section class="inactive-card-note">
+                <app-icon name="archive" />
+                <div>
+                  <strong>Inactive card</strong>
+                  <span
+                    >Archived {{ archivedDate(card) }}. Transactions and saved information remain
+                    available for history.</span
+                  >
                 </div>
-                <section class="linked-account-summary" aria-label="Linked account balance">
-                  <div>
-                    <small>Linked account due</small>
-                    <strong>{{ money(linkedAccountDue(card), card.currencyCode) }}</strong>
+              </section>
+            } @else {
+              <div class="metric-grid">
+                <div>
+                  <span>Due amount</span
+                  ><strong>{{ money(dueAmount(card), card.currencyCode) }}</strong>
+                </div>
+                <div>
+                  <span>Current outstanding</span
+                  ><strong>{{ money(store.cardOutstanding(card.id), card.currencyCode) }}</strong>
+                </div>
+                <div>
+                  <span>Payment status</span><strong>{{ paymentStatus(card) }}</strong>
+                </div>
+                <div>
+                  <span>Statement</span><strong>{{ date(currentStatement(card)) }}</strong>
+                </div>
+                <div>
+                  <span>Bill generation</span><strong>{{ statementCountdown(card) }}</strong>
+                </div>
+                <div>
+                  <span>Due date</span><strong>{{ date(dueDate(card)) }}</strong>
+                </div>
+                <div>
+                  <span>Grace period</span><strong>{{ graceLabel(card) }}</strong>
+                </div>
+                <div>
+                  <span>Credit limit</span
+                  ><strong>{{ money(card.creditLimitMinor ?? 0, card.currencyCode) }}</strong>
+                </div>
+              </div>
+              <div class="utilisation">
+                <div>
+                  <span>Credit used</span><strong>{{ utilisation(card) }}%</strong>
+                </div>
+                <progress [value]="utilisation(card)" max="100">{{ utilisation(card) }}%</progress
+                ><small>{{ money(availableCredit(card), card.currencyCode) }} available</small>
+                @if (linkedCardsFor(card).length) {
+                  <div class="linked-cards" aria-label="Linked cards">
+                    <small>Linked cards</small>
+                    @for (linked of linkedCardsFor(card); track linked.id) {
+                      <span
+                        ><app-icon name="cards" /> {{ linked.nickname }} ·
+                        {{ linked.lastDigits }}</span
+                      >
+                    }
                   </div>
+                  <section class="linked-account-summary" aria-label="Linked account balance">
+                    <div>
+                      <small>Linked account due</small>
+                      <strong>{{ money(linkedAccountDue(card), card.currencyCode) }}</strong>
+                    </div>
+                    <div>
+                      <small>Linked outstanding</small>
+                      <strong>{{
+                        money(linkedAccountOutstanding(card), card.currencyCode)
+                      }}</strong>
+                    </div>
+                    <small>Across {{ linkedAccountCards(card).length }} linked cards</small>
+                  </section>
+                }
+              </div>
+              @if (card.annualFee?.waiverThresholdMinor && waiverDeadline(card); as deadline) {
+                <section class="waiver-progress" aria-label="Annual fee waiver progress">
                   <div>
-                    <small>Linked outstanding</small>
-                    <strong>{{ money(linkedAccountOutstanding(card), card.currencyCode) }}</strong>
+                    <strong>Annual fee waiver</strong>
+                    <span>{{ waiverProgress(card) }}%</span>
                   </div>
-                  <small>Across {{ linkedAccountCards(card).length }} linked cards</small>
+                  <progress [value]="waiverProgress(card)" max="100">
+                    {{ waiverProgress(card) }}%
+                  </progress>
+                  <small>
+                    @if (waiverRemaining(card) > 0) {
+                      Spend {{ money(waiverRemaining(card), card.currencyCode) }} more by
+                      {{ date(deadline) }} to reach the waiver target.
+                    } @else {
+                      Waiver spend target reached for the period ending {{ date(deadline) }}.
+                    }
+                  </small>
                 </section>
               }
-            </div>
-            @if (card.annualFee?.waiverThresholdMinor && waiverDeadline(card); as deadline) {
-              <section class="waiver-progress" aria-label="Annual fee waiver progress">
-                <div>
-                  <strong>Annual fee waiver</strong>
-                  <span>{{ waiverProgress(card) }}%</span>
-                </div>
-                <progress [value]="waiverProgress(card)" max="100">
-                  {{ waiverProgress(card) }}%
-                </progress>
-                <small>
-                  @if (waiverRemaining(card) > 0) {
-                    Spend {{ money(waiverRemaining(card), card.currencyCode) }} more by
-                    {{ date(deadline) }} to reach the waiver target.
-                  } @else {
-                    Waiver spend target reached for the period ending {{ date(deadline) }}.
-                  }
-                </small>
-              </section>
             }
             @if (card.notes) {
-              <p class="card-notes">{{ card.notes }}</p>
+              <section class="card-description" aria-label="Description">
+                <strong>Description</strong>
+                <div class="card-notes rich-content" [innerHTML]="richHtml(card.notes)"></div>
+              </section>
             }
             @if (card.subtype) {
               <span class="network-subtype">{{ card.subtype }}</span>
@@ -613,16 +943,25 @@
             @if (card.benefits?.length) {
               <div class="card-benefits" aria-label="Card benefits">
                 @for (benefit of card.benefits ?? []; track benefit.id) {
-                  <span [title]="benefit.note || benefit.name"
-                    >{{ benefit.name }}
+                  <div class="benefit-view">
                     <button
+                      class="benefit-view-trigger"
                       type="button"
-                      (click)="removeCardBenefit(card, benefit.id)"
-                      aria-label="Remove {{ benefit.name }} from {{ card.nickname }}"
+                      [attr.aria-expanded]="expandedBenefitId() === benefit.id"
+                      (click)="toggleBenefitDetails(benefit.id)"
                     >
-                      <app-icon name="close" />
+                      {{ benefit.name }} <app-icon name="chevron_down" />
                     </button>
-                  </span>
+                    @if (expandedBenefitId() === benefit.id) {
+                      <div class="benefit-condition rich-content">
+                        @if (benefit.note) {
+                          <div [innerHTML]="richHtml(benefit.note)"></div>
+                        } @else {
+                          <span>No condition or note was added.</span>
+                        }
+                      </div>
+                    }
+                  </div>
                 }
               </div>
             }
@@ -662,6 +1001,7 @@
             }
             @if (card.importantLinks?.length) {
               <div class="important-links">
+                <strong>Important links</strong>
                 @for (link of card.importantLinks ?? []; track link.id) {
                   <a [href]="link.url" target="_blank" rel="noopener noreferrer">
                     <app-icon name="go_to_source" /> {{ link.label }}
@@ -669,16 +1009,43 @@
                 }
               </div>
             }
+            @if (card.emergencyPhones.length || card.supportEmails.length) {
+              <section class="card-contact-details" aria-label="Card support contacts">
+                @if (card.emergencyPhones.length) {
+                  <div>
+                    <strong>Emergency hotline</strong>
+                    @for (phone of card.emergencyPhones; track phone) {
+                      <a [href]="'tel:' + phone"><app-icon name="phone" /> {{ phone }}</a>
+                    }
+                  </div>
+                }
+                @if (card.supportEmails.length) {
+                  <div>
+                    <strong>Support email IDs</strong>
+                    @for (email of card.supportEmails; track email) {
+                      <a [href]="'mailto:' + email"><app-icon name="mail" /> {{ email }}</a>
+                    }
+                  </div>
+                }
+              </section>
+            }
             <div class="card-actions">
-              <a
-                class="btn btn-primary"
-                routerLink="/transactions"
-                [queryParams]="{ add: true, source: card.id }"
-                ><app-icon name="plus" /> Add transaction</a
-              ><button
+              @if (card.archived) {
+                <button class="btn btn-primary" type="button" disabled>
+                  <app-icon name="plus" /> Add transaction
+                </button>
+              } @else {
+                <a
+                  class="btn btn-primary"
+                  routerLink="/transactions"
+                  [queryParams]="{ add: true, source: card.id }"
+                  ><app-icon name="plus" /> Add transaction</a
+                >
+              }
+              <button
                 class="btn"
                 type="button"
-                [disabled]="store.cardOutstanding(card.id) <= 0"
+                [disabled]="card.archived || store.cardOutstanding(card.id) <= 0"
                 (click)="openPayment(card, 'CUSTOM')"
               >
                 Record custom payment

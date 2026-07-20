@@ -93,6 +93,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowInsetsController;
+import android.view.WindowManager;
 import android.webkit.JavascriptInterface;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
@@ -151,6 +152,17 @@ public class MainActivity extends BridgeActivity {
   }
 
   public class CardNestNativeBridge {
+    @JavascriptInterface
+    public void setScreenSecure(boolean enabled) {
+      runOnUiThread(() -> {
+        if (enabled) {
+          getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
+        } else {
+          getWindow().clearFlags(WindowManager.LayoutParams.FLAG_SECURE);
+        }
+      });
+    }
+
     @JavascriptInterface
     public void hideSplash() {
       runOnUiThread(() -> hideLaunchOverlay());

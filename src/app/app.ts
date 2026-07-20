@@ -17,6 +17,7 @@ import { AppIcon } from './shared/app-icon';
 import { PaymentSourcePicker } from './shared/payment-source-picker';
 import { CardTransaction } from './core/models/domain';
 import { parseMoneyToMinor } from './core/services/money';
+import { UiPreferencesService } from './core/services/ui-preferences.service';
 
 interface NativeLaunchBridge {
   hideSplash(): void;
@@ -47,6 +48,7 @@ export class App {
   readonly database = inject(SqliteDatabase);
   readonly appLock = inject(AppLockService);
   readonly snackbar = inject(SnackbarService);
+  readonly uiPreferences = inject(UiPreferencesService);
 
   readonly showNotificationPermissionConfirmation = signal(false);
   readonly mobileMenuOpen = signal(false);

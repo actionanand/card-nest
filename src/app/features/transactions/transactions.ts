@@ -18,11 +18,11 @@ import { formatMoney, parseMoneyToMinor } from '../../core/services/money';
 import { SnackbarService } from '../../core/services/snackbar.service';
 import { AppIcon } from '../../shared/app-icon';
 import { CategoriesPage } from '../categories/categories';
-import { ExportDialog } from '../../shared/export-dialog';
+import { ExportDialog, TransactionExportChoice } from '../../shared/export-dialog';
 import { ConfirmationDialog } from '../../shared/confirmation-dialog';
 import { ExportFormat } from '../../core/models/export';
 import { createEmiSchedule } from '../../core/services/emi';
-import { AppDatePipe } from '../../core/services/date-format.service';
+import { AppDatePipe, DateFormatService } from '../../core/services/date-format.service';
 import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
 import { AppDatePicker } from '../../shared/app-date-picker';
 
@@ -65,6 +65,7 @@ export class TransactionsPage {
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
   private readonly snackbar = inject(SnackbarService);
+  private readonly dates = inject(DateFormatService);
   private readonly destroyRef = inject(DestroyRef);
   private readonly requestedSourceId = this.route.snapshot.queryParamMap.get('source');
   private readonly requestedEditId = this.route.snapshot.queryParamMap.get('edit');
@@ -107,6 +108,16 @@ export class TransactionsPage {
   readonly sourceFilter = signal(this.requestedSourceId ?? 'ALL');
   readonly categoryFilter = signal('ALL');
   readonly grouping = signal<GroupingMode>('MONTH');
+  readonly effectiveGrouping = computed<GroupingMode>(() => {
+    if (this.isCreditCardSelected()) return 'STATEMENT';
+    if (
+      this.sourceFilter() !== 'ALL' &&
+      this.store.paymentSources().some((source) => source.id === this.sourceFilter())
+    ) {
+      return 'CYCLE';
+    }
+    return this.grouping();
+  });
   readonly visibleLimit = signal(TRANSACTION_PAGE_SIZE);
   readonly activeFilterCount = computed(
     () =>
@@ -145,8 +156,16 @@ export class TransactionsPage {
     { value: 'WITH_IMAGE', label: 'With image' },
   ];
   readonly groupingOptions = computed<readonly AppSelectOption[]>(() => [
-    { value: 'MONTH', label: 'Calendar month' },
-    { value: 'CYCLE', label: `Budget cycle (day ${this.store.budgetCycleStartDay()})` },
+    {
+      value: 'MONTH',
+      label: 'Calendar month',
+      disabled: this.sourceFilter() !== 'ALL',
+    },
+    {
+      value: 'CYCLE',
+      label: `Budget cycle (day ${this.store.budgetCycleStartDay()})`,
+      disabled: this.isCreditCardSelected(),
+    },
     {
       value: 'STATEMENT',
       label: 'Selected card statement cycle',
@@ -309,6 +328,48 @@ export class TransactionsPage {
             this.categoryName(item.categoryId).toLocaleLowerCase().includes(term)),
       );
   });
+  readonly exportMonthChoices = computed<readonly TransactionExportChoice[]>(() => {
+    const grouped = new Map<string, CardTransaction[]>();
+    for (const transaction of this.filtered()) {
+      const key = transaction.transactionDate.slice(0, 7);
+      grouped.set(key, [...(grouped.get(key) ?? []), transaction]);
+    }
+    return [...grouped.entries()]
+      .sort(([left], [right]) => right.localeCompare(left))
+      .map(([value, transactions]) => {
+        const [year, month] = value.split('-').map(Number);
+        return {
+          value,
+          label: new Intl.DateTimeFormat('en-IN', { month: 'long', year: 'numeric' }).format(
+            new Date(year, month - 1, 1),
+          ),
+          transactions,
+        };
+      });
+  });
+  readonly exportStatementChoices = computed<readonly TransactionExportChoice[]>(() => {
+    const selectedSource = this.sourceFilter();
+    if (selectedSource === 'ALL') return [];
+    const selectedCard = this.store.cards().find((card) => card.id === selectedSource);
+    const transactions = this.filtered();
+    return Array.from({ length: 60 }, (_, offset) => {
+      const statementMonth = new Date();
+      statementMonth.setDate(1);
+      statementMonth.setMonth(statementMonth.getMonth() - offset);
+      const value = `${statementMonth.getFullYear()}-${String(statementMonth.getMonth() + 1).padStart(2, '0')}`;
+      return {
+        value,
+        label: new Intl.DateTimeFormat('en-IN', { month: 'long', year: 'numeric' }).format(
+          statementMonth,
+        ),
+        transactions: transactions.filter((transaction) =>
+          selectedCard
+            ? this.statementMonthFor(transaction) === value
+            : transaction.transactionDate.slice(0, 7) === value,
+        ),
+      };
+    });
+  });
   readonly visibleTotal = computed(() =>
     this.filtered().reduce(
       (sum, item) => sum + (this.isCredit(item.type) ? item.amountMinor : -item.amountMinor),
@@ -381,6 +442,9 @@ export class TransactionsPage {
   categoryName(categoryId: string): string {
     return this.store.categories().find((item) => item.id === categoryId)?.name ?? 'Other';
   }
+  category(categoryId: string) {
+    return this.store.categories().find((item) => item.id === categoryId);
+  }
   isCredit(type: TransactionType): boolean {
     return ['PAYMENT', 'REFUND', 'CASHBACK', 'CREDIT'].includes(type);
   }
@@ -394,6 +458,10 @@ export class TransactionsPage {
   }
   selectSourceFilter(id: string): void {
     this.sourceFilter.set(id);
+    if (this.store.cards().some((card) => card.id === id)) this.grouping.set('STATEMENT');
+    else if (this.store.paymentSources().some((source) => source.id === id)) {
+      this.grouping.set('CYCLE');
+    }
     this.sourceFilterOpen.set(false);
     this.resetVisibleTransactions();
   }
@@ -411,6 +479,7 @@ export class TransactionsPage {
     this.resetVisibleTransactions();
   }
   updateGrouping(value: string): void {
+    if (this.sourceFilter() !== 'ALL') return;
     this.grouping.set(value as GroupingMode);
     this.resetVisibleTransactions();
   }
@@ -1151,15 +1220,36 @@ export class TransactionsPage {
   }
 
   private periodFor(transaction: CardTransaction): { key: string; label: string } {
+    return this.periodForMode(transaction, this.effectiveGrouping());
+  }
+
+  private statementMonthFor(transaction: CardTransaction): string | null {
+    const card = this.store.cards().find((item) => item.id === transaction.cardId);
+    if (!card) return null;
     const date = new Date(`${transaction.transactionDate}T12:00:00`);
-    if (this.grouping() === 'MONTH') {
+    const statementFor = (year: number, month: number) =>
+      new Date(year, month, Math.min(card.statementDay, new Date(year, month + 1, 0).getDate()));
+    const currentStatement = statementFor(date.getFullYear(), date.getMonth());
+    const statementEnd =
+      date <= currentStatement
+        ? currentStatement
+        : statementFor(date.getFullYear(), date.getMonth() + 1);
+    return `${statementEnd.getFullYear()}-${String(statementEnd.getMonth() + 1).padStart(2, '0')}`;
+  }
+
+  private periodForMode(
+    transaction: CardTransaction,
+    grouping: GroupingMode,
+  ): { key: string; label: string } {
+    const date = new Date(`${transaction.transactionDate}T12:00:00`);
+    if (grouping === 'MONTH') {
       return {
         key: transaction.transactionDate.slice(0, 7),
         label: date.toLocaleDateString('en-IN', { month: 'short', year: 'numeric' }),
       };
     }
     const selectedCard = this.store.cards().find((card) => card.id === this.sourceFilter());
-    if (this.grouping() === 'STATEMENT' && selectedCard) {
+    if (grouping === 'STATEMENT' && selectedCard) {
       const statementFor = (year: number, month: number) =>
         new Date(
           year,
@@ -1181,7 +1271,7 @@ export class TransactionsPage {
       }
       return {
         key: start.toISOString().slice(0, 10),
-        label: `${start.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} – ${end.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}`,
+        label: this.dates.format(end),
       };
     }
     const startDay = this.store.budgetCycleStartDay();

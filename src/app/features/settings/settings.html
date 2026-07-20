@@ -91,6 +91,15 @@
             (valueChange)="autoLockDelay.set($event)"
           />
         </div>
+        <label class="setting-row toggle"
+          ><span
+            ><strong>Prevent screenshots</strong
+            ><small>Hide CardNest from screenshots and recent-app previews on Android</small></span
+          ><input
+            type="checkbox"
+            [checked]="uiPreferences.preventScreenshots()"
+            (change)="toggleScreenshotPrevention()"
+        /></label>
       </section>
       <section id="appearance" class="panel">
         <div class="setting-heading">
@@ -165,6 +174,15 @@
             />
             <small>Used by the mobile flash-transaction button.</small>
           </div>
+          <label class="setting-row toggle flash-visibility-setting"
+            ><span
+              ><strong>Show Flash transaction button</strong
+              ><small>Display the rocket shortcut above the mobile navigation</small></span
+            ><input
+              type="checkbox"
+              [checked]="uiPreferences.showFlashTransaction()"
+              (change)="toggleFlashTransactionVisibility()"
+          /></label>
           <app-select-picker
             label="Date format"
             [options]="dateFormatOptions"

@@ -62,6 +62,7 @@
   min-height: 2.65rem;
 }
 .card-form {
+  box-sizing: border-box;
   width: min(100%, 48rem);
   margin: auto;
   padding: clamp(1rem, 3vw, 1.5rem);
@@ -72,6 +73,7 @@
   overflow-y: auto;
 }
 .card-modal-backdrop {
+  box-sizing: border-box;
   position: fixed;
   z-index: 700;
   inset: 0;
@@ -80,6 +82,7 @@
   padding: calc(env(safe-area-inset-top) + 4.75rem) max(1rem, env(safe-area-inset-right))
     max(1rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
   overflow-y: auto;
+  overflow-x: hidden;
   background: rgb(10 25 18 / 68%);
   backdrop-filter: blur(4px);
 }
@@ -90,6 +93,13 @@
 }
 .section-heading h2 {
   margin-bottom: 0.4rem;
+}
+.card-form .section-heading > div {
+  order: 1;
+}
+.card-form .section-heading .form-back {
+  order: 2;
+  margin-left: auto;
 }
 .icon-button {
   display: grid;
@@ -230,7 +240,6 @@ label small.validation-error {
   gap: 0.65rem;
 }
 .benefit-pills,
-.card-benefits,
 .important-links {
   display: flex;
   flex-wrap: wrap;
@@ -238,7 +247,6 @@ label small.validation-error {
   margin-top: 0.7rem;
 }
 .benefit-pills > span,
-.card-benefits > span,
 .network-subtype {
   display: inline-flex;
   align-items: center;
@@ -250,8 +258,7 @@ label small.validation-error {
   font-size: 0.65rem;
   font-weight: 750;
 }
-.benefit-pills button,
-.card-benefits button {
+.benefit-pills button {
   display: grid;
   width: 1.15rem;
   height: 1.15rem;
@@ -262,10 +269,271 @@ label small.validation-error {
   color: currentColor;
   background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
-.benefit-pills button app-icon,
-.card-benefits button app-icon {
+.benefit-pills button app-icon {
   width: 0.7rem;
   height: 0.7rem;
+}
+.rich-editor-field,
+.benefit-note-editor {
+  display: grid;
+  min-width: 0;
+  gap: 0.35rem;
+}
+.rich-editor-field > strong,
+.benefit-note-editor > strong {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+.rich-editor {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 0.7rem;
+  background: var(--canvas);
+}
+.rich-editor:focus-within {
+  border-color: var(--accent);
+  outline: 2px solid color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.rich-editor-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  padding: 0.35rem;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-2);
+  overflow-x: hidden;
+}
+.rich-editor-toolbar button,
+.rich-colour-tool {
+  display: inline-flex;
+  width: 2.65rem;
+  height: 2.65rem;
+  flex: 0 0 2.65rem;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 0.42rem;
+  color: var(--ink);
+  background: var(--surface);
+  font-size: 1rem;
+  font-weight: 700;
+}
+.rich-colour-tool {
+  position: relative;
+  gap: 0.2rem;
+}
+.rich-colour-tool > span {
+  position: absolute;
+  right: 0.35rem;
+  bottom: 0.3rem;
+  width: 1.2rem;
+  height: 0.28rem;
+  border: 1px solid var(--line);
+}
+.colour-palette-backdrop {
+  position: fixed;
+  z-index: 940;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  padding: max(1rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right))
+    max(1rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
+  background: rgb(10 25 18 / 55%);
+}
+.colour-palette {
+  display: grid;
+  width: min(100%, 22rem);
+  max-height: calc(100dvh - 2rem);
+  gap: 0.85rem;
+  box-sizing: border-box;
+  padding: 1rem;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 1rem;
+  background: var(--surface);
+  box-shadow: 0 1rem 3rem rgb(8 26 18 / 28%);
+}
+.colour-palette header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.colour-palette header button {
+  display: grid;
+  width: 2.3rem;
+  height: 2.3rem;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  color: var(--muted);
+  background: var(--surface-2);
+}
+.colour-palette header app-icon {
+  width: 1rem;
+  height: 1rem;
+}
+.palette-swatches {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(2rem, 1fr));
+  gap: 0.45rem;
+}
+.palette-swatches button {
+  min-height: 2.4rem;
+  border: 2px solid var(--surface);
+  border-radius: 0.55rem;
+  box-shadow: 0 0 0 1px var(--line);
+}
+.palette-swatches button.selected {
+  outline: 3px solid var(--accent);
+  outline-offset: 1px;
+}
+.colour-palette label {
+  display: grid;
+  gap: 0.35rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+.custom-colour-field {
+  grid-template-columns: 3rem minmax(0, 1fr);
+}
+.custom-colour-field > span {
+  grid-column: 1 / -1;
+}
+.custom-colour-preview {
+  display: block;
+  width: 3rem;
+  height: 2.8rem;
+  border: 1px solid var(--line);
+  border-radius: 0.45rem;
+  padding: 0;
+  cursor: pointer;
+}
+.custom-colour-field > input {
+  grid-column: 2;
+  grid-row: 2;
+  width: 100%;
+  min-width: 0;
+}
+.custom-spectrum-backdrop {
+  position: fixed;
+  z-index: 950;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  padding: max(1rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right))
+    max(1rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
+  background: rgb(10 25 18 / 62%);
+}
+.custom-spectrum {
+  display: grid;
+  width: min(100%, 28rem);
+  max-height: calc(100dvh - 2rem);
+  gap: 0.9rem;
+  box-sizing: border-box;
+  padding: 1rem;
+  overflow-y: auto;
+  border-radius: 1rem;
+  background: var(--surface);
+}
+.custom-spectrum header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.custom-spectrum header button {
+  display: grid;
+  width: 2.3rem;
+  height: 2.3rem;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: var(--surface-2);
+}
+.custom-spectrum header app-icon {
+  width: 1rem;
+  height: 1rem;
+}
+.colour-spectrum {
+  position: relative;
+  height: clamp(11rem, 38dvh, 17rem);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 0.65rem;
+  touch-action: none;
+  cursor: crosshair;
+  background:
+    linear-gradient(to top, #000, transparent), linear-gradient(to right, #fff, transparent),
+    hsl(var(--picker-hue) 100% 50%);
+}
+.spectrum-cursor {
+  position: absolute;
+  width: 1rem;
+  height: 1rem;
+  border: 2px solid white;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 75%);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+.hue-control {
+  display: grid;
+  grid-template-columns: 2.5rem minmax(0, 1fr);
+  align-items: center;
+  gap: 0.6rem;
+}
+.hue-control input {
+  min-height: 1.8rem;
+  padding: 0;
+  accent-color: hsl(var(--picker-hue) 100% 50%);
+  background: linear-gradient(to right, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00);
+}
+.rgb-controls {
+  display: grid;
+  gap: 0.45rem;
+}
+.rgb-controls label {
+  display: grid;
+  grid-template-columns: 1rem minmax(0, 1fr) 2.3rem;
+  align-items: center;
+  gap: 0.5rem;
+}
+.rgb-controls input {
+  min-height: 1.8rem;
+  padding: 0;
+}
+.rgb-controls output {
+  color: var(--ink);
+  text-align: right;
+}
+.material-symbols-outlined {
+  width: 1.3rem;
+  overflow: hidden;
+  font-size: 1.25rem;
+  line-height: 1;
+  white-space: nowrap;
+}
+.rich-editor-surface {
+  min-height: 7rem;
+  padding: 0.75rem;
+  color: var(--ink);
+  background: var(--canvas);
+  font-size: 0.82rem;
+  line-height: 1.55;
+  outline: 0;
+  white-space: pre-wrap;
+}
+.rich-editor.compact .rich-editor-surface {
+  min-height: 3.2rem;
+}
+.rich-editor-surface:empty::before {
+  color: var(--muted);
+  content: attr(data-placeholder);
+  pointer-events: none;
 }
 .card-list {
   display: grid;
@@ -635,6 +903,87 @@ label small.validation-error {
   margin: 0.7rem 0 0;
   color: var(--muted);
   font-size: 0.72rem;
+  white-space: pre-wrap;
+}
+.card-description {
+  display: grid;
+  gap: 0.25rem;
+  margin-top: 0.8rem;
+  padding: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 0.65rem;
+  background: var(--canvas);
+}
+.inactive-card-note {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 0.65rem;
+  color: var(--muted);
+  background: var(--surface-2);
+}
+.inactive-card-note > div {
+  display: grid;
+  gap: 0.15rem;
+}
+.inactive-card-note strong {
+  color: var(--ink);
+  font-size: 0.75rem;
+}
+.inactive-card-note span {
+  font-size: 0.7rem;
+}
+.card-description > strong,
+.important-links > strong,
+.card-contact-details strong {
+  color: var(--ink);
+  font-size: 0.72rem;
+}
+.rich-content :is(p, ul, ol) {
+  margin: 0.25rem 0;
+}
+.rich-content :is(ul, ol) {
+  padding-left: 1.35rem;
+}
+.card-benefits {
+  display: grid;
+  gap: 0.4rem;
+  margin-top: 0.75rem;
+}
+.benefit-view {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 0.6rem;
+  background: var(--canvas);
+}
+.benefit-view-trigger {
+  display: flex;
+  width: 100%;
+  min-height: 2.5rem;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.55rem 0.7rem;
+  border: 0;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  font-size: 0.72rem;
+  font-weight: 750;
+  text-align: left;
+}
+.benefit-view-trigger app-icon {
+  width: 0.9rem;
+  height: 0.9rem;
+}
+.benefit-view-trigger[aria-expanded='true'] app-icon {
+  transform: rotate(180deg);
+}
+.benefit-condition {
+  padding: 0.7rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.5;
 }
 .network-subtype {
   margin-top: 0.7rem;
@@ -679,6 +1028,37 @@ label small.validation-error {
   color: var(--accent);
   font-size: 0.7rem;
   font-weight: 700;
+}
+.important-links > strong {
+  width: 100%;
+}
+.card-contact-details {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.65rem;
+  margin-top: 0.75rem;
+}
+.card-contact-details > div {
+  display: grid;
+  align-content: start;
+  gap: 0.35rem;
+  padding: 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 0.65rem;
+  background: var(--canvas);
+}
+.card-contact-details a {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+  color: var(--accent);
+  font-size: 0.7rem;
+  overflow-wrap: anywhere;
+}
+.card-contact-details app-icon {
+  width: 0.85rem;
+  height: 0.85rem;
 }
 .important-links app-icon {
   width: 0.8rem;
@@ -789,6 +1169,8 @@ label small.validation-error {
     padding: 0;
   }
   .card-form {
+    width: 100%;
+    max-width: 100%;
     height: 100%;
     min-height: 0;
     max-height: none;
@@ -810,6 +1192,40 @@ label small.validation-error {
   }
   .benefit-entry {
     grid-template-columns: 1fr;
+  }
+  .card-contact-details {
+    grid-template-columns: 1fr;
+  }
+  .rich-editor-toolbar {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(2.5rem, 1fr));
+    overflow: hidden;
+  }
+  .rich-editor-toolbar button,
+  .rich-colour-tool {
+    width: 100%;
+    min-width: 0;
+    flex-basis: auto;
+  }
+  .colour-palette-backdrop {
+    align-items: end;
+    padding: 0;
+  }
+  .colour-palette {
+    width: 100%;
+    max-height: min(70dvh, 30rem);
+    border-radius: 1.2rem 1.2rem 0 0;
+    padding-bottom: max(1rem, env(safe-area-inset-bottom));
+  }
+  .custom-spectrum-backdrop {
+    align-items: end;
+    padding: 0;
+  }
+  .custom-spectrum {
+    width: 100%;
+    max-height: min(82dvh, 38rem);
+    padding-bottom: max(1rem, env(safe-area-inset-bottom));
+    border-radius: 1.2rem 1.2rem 0 0;
   }
   .transaction-fab {
     display: none;

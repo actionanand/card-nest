@@ -14,6 +14,7 @@ import { CardNetworkLogo } from '../../shared/card-network-logo';
 export class CardBenefitsPage {
   readonly store = inject(CardNestStore);
   readonly search = signal('');
+  readonly expandedBenefit = signal<string | null>(null);
   readonly benefitGroups = computed(() => {
     const term = this.search().trim().toLocaleLowerCase();
     const groups = new Map<
@@ -52,5 +53,8 @@ export class CardBenefitsPage {
 
   updateSearch(event: Event): void {
     this.search.set((event.target as HTMLInputElement).value);
+  }
+  toggleBenefit(name: string): void {
+    this.expandedBenefit.set(this.expandedBenefit() === name ? null : name);
   }
 }

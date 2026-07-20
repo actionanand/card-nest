@@ -5,6 +5,7 @@ import {
   LucideArrowLeft,
   LucideArrowUp,
   LucideApple,
+  LucideArchive,
   LucideBaby,
   LucideBadgeCheck,
   LucideBanknoteArrowDown,
@@ -50,12 +51,14 @@ import {
   LucideLayersPlus,
   LucideLaptop,
   LucideMars,
+  LucideMail,
   LucideMenu,
   LucideMilk,
   LucideMonitor,
   LucideMoon,
   LucidePalette,
   LucidePenLine,
+  LucidePhone,
   LucidePlane,
   LucidePopcorn,
   LucidePlugZap,
@@ -63,6 +66,7 @@ import {
   LucideReceiptText,
   LucideReceiptIndianRupee,
   LucideRepeat2,
+  LucideRocket,
   LucideSettings,
   LucideShirt,
   LucideSmartphone,
@@ -88,12 +92,7 @@ import {
   LucideZap,
   type LucideIconInput,
 } from '@lucide/angular';
-import {
-  CREDIT_CARD_EDIT,
-  CREDIT_CARD_PLUS,
-  FLASH_TRANSACTION,
-  SHOPPING_CART_PLUS,
-} from '../../imgData/svgIcon';
+import { CREDIT_CARD_EDIT, CREDIT_CARD_PLUS, SHOPPING_CART_PLUS } from '../../imgData/svgIcon';
 
 const ICONS: Readonly<Record<string, LucideIconInput>> = {
   category: LucideShapes,
@@ -190,13 +189,16 @@ const ICONS: Readonly<Record<string, LucideIconInput>> = {
   download: LucideDownload,
   file_pdf: LucideFileText,
   file_csv: LucideFileSpreadsheet,
+  archive: LucideArchive,
+  mail: LucideMail,
+  phone: LucidePhone,
+  flash_transaction: LucideRocket,
 };
 
 const CUSTOM_ICONS: Readonly<Record<string, string>> = {
   shopping_cart_plus: SHOPPING_CART_PLUS,
   credit_card_plus: CREDIT_CARD_PLUS,
   credit_card_edit: CREDIT_CARD_EDIT,
-  flash_transaction: FLASH_TRANSACTION,
 };
 
 @Component({
