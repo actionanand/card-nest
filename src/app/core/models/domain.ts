@@ -47,6 +47,10 @@ export interface CreditCard {
   encryptedCvv?: string;
   cardholderName?: string;
   network: CardNetwork;
+  /** Optional international acceptance network printed on the card, when different. */
+  globalNetwork?: CardNetwork;
+  /** True when the issuer provides this as a non-physical/e-credit card. */
+  isVirtual?: boolean;
   customNetwork?: string;
   subtype?: string;
   benefits?: readonly CardBenefit[];

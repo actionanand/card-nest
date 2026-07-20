@@ -258,6 +258,86 @@ label small.validation-error {
   font-size: 0.65rem;
   font-weight: 750;
 }
+.ecard-option {
+  display: flex;
+  min-height: 3.5rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  padding: 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 0.7rem;
+  background: var(--canvas);
+}
+.ecard-option > span {
+  display: grid;
+  gap: 0.12rem;
+}
+.ecard-option small {
+  color: var(--muted);
+  font-size: 0.64rem;
+}
+.ecard-option input {
+  width: 1.35rem;
+  min-height: 1.35rem;
+  flex: 0 0 1.35rem;
+}
+.global-network-detail {
+  display: flex;
+  width: fit-content;
+  max-width: 100%;
+  align-items: center;
+  gap: 0.65rem;
+  margin-top: 0.7rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 0.7rem;
+  background: var(--surface);
+}
+.global-network-logo {
+  display: grid;
+  width: 3.2rem;
+  height: 2rem;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 0.4rem;
+  background: white;
+}
+.global-network-logo app-card-network-logo {
+  width: 100%;
+  height: 100%;
+}
+.global-network-detail > div {
+  display: grid;
+  gap: 0.08rem;
+}
+.global-network-detail small,
+.global-network-detail span {
+  color: var(--muted);
+  font-size: 0.62rem;
+}
+.global-network-detail strong {
+  font-size: 0.76rem;
+  text-transform: capitalize;
+}
+.ecard-detail {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  gap: 0.3rem;
+  margin-top: 0.55rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 999px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  font-size: 0.65rem;
+  font-weight: 700;
+}
+.ecard-detail app-icon {
+  width: 0.8rem;
+  height: 0.8rem;
+}
 .benefit-pills button {
   display: grid;
   width: 1.15rem;

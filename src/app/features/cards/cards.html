@@ -110,10 +110,23 @@
               [value]="form.controls.network.value"
               (valueChange)="setNetwork($event)"
             />
+            <app-select-picker
+              label="Global network (optional)"
+              sheetTitle="Choose international network"
+              [options]="globalNetworkOptions"
+              [value]="form.controls.globalNetwork.value"
+              (valueChange)="setGlobalNetwork($event)"
+            />
             <label
               >Network tier / subtype<input
                 formControlName="subtype"
                 placeholder="Visa Signature, RuPay Select…"
+            /></label>
+            <label class="ecard-option"
+              ><span
+                ><strong>E-credit card</strong
+                ><small>Non-physical or virtual card issued for digital use</small></span
+              ><input type="checkbox" formControlName="isVirtual"
             /></label>
             <label
               >Name on card (optional)<input
@@ -939,6 +952,23 @@
             }
             @if (card.subtype) {
               <span class="network-subtype">{{ card.subtype }}</span>
+            }
+            @if (card.globalNetwork && card.globalNetwork !== card.network) {
+              <section class="global-network-detail" aria-label="Global card network">
+                <span class="global-network-logo"
+                  ><app-card-network-logo [network]="card.globalNetwork"
+                /></span>
+                <div>
+                  <small>Global network</small>
+                  <strong>{{ card.globalNetwork.replaceAll('_', ' ') }}</strong>
+                  <span>International acceptance network</span>
+                </div>
+              </section>
+            }
+            @if (card.isVirtual) {
+              <span class="ecard-detail"
+                ><app-icon name="cards" /> E-credit card · Non-physical</span
+              >
             }
             @if (card.benefits?.length) {
               <div class="card-benefits" aria-label="Card benefits">

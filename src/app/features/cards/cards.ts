@@ -148,6 +148,10 @@ export class CardsPage {
   );
   readonly days = Array.from({ length: 31 }, (_, index) => index + 1);
   readonly networkOptions: readonly AppSelectOption[] = this.networks;
+  readonly globalNetworkOptions: readonly AppSelectOption[] = [
+    { value: 'SAME', label: 'Same as card network' },
+    ...this.networks,
+  ];
   readonly expiryMonthOptions: readonly AppSelectOption[] = [
     { value: '', label: 'Month' },
     ...this.months.map((month) => ({ value: String(month), label: this.twoDigit(month) })),
@@ -197,6 +201,8 @@ export class CardsPage {
       nonNullable: true,
       validators: [Validators.required],
     }),
+    globalNetwork: new FormControl<'SAME' | CardNetwork>('SAME', { nonNullable: true }),
+    isVirtual: new FormControl(false, { nonNullable: true }),
     subtype: new FormControl('', { nonNullable: true, validators: [Validators.maxLength(60)] }),
     cardholderName: new FormControl('', {
       nonNullable: true,
@@ -262,6 +268,11 @@ export class CardsPage {
     this.form.controls.network.setValue(value as CardNetwork);
     this.form.controls.network.markAsDirty();
     this.networkChanged();
+  }
+
+  setGlobalNetwork(value: string): void {
+    this.form.controls.globalNetwork.setValue(value as 'SAME' | CardNetwork);
+    this.form.controls.globalNetwork.markAsDirty();
   }
 
   setExpiryMonth(value: string): void {
@@ -462,6 +473,8 @@ export class CardsPage {
       issuerName: card.issuerName,
       lastDigits: card.lastDigits,
       network: card.network,
+      globalNetwork: card.globalNetwork ?? 'SAME',
+      isVirtual: card.isVirtual ?? false,
       subtype: card.subtype ?? '',
       cardholderName: card.cardholderName ?? '',
       fullNumber: '',
@@ -672,6 +685,11 @@ export class CardsPage {
         : existing?.encryptedFullNumber,
       encryptedCvv: cvv ? await this.secrets.encrypt(cvv) : existing?.encryptedCvv,
       network: value.network,
+      globalNetwork:
+        value.globalNetwork === 'SAME' || value.globalNetwork === value.network
+          ? undefined
+          : value.globalNetwork,
+      isVirtual: value.isVirtual,
       subtype: value.subtype.trim() || undefined,
       cardholderName: value.cardholderName.trim() || undefined,
       benefits: this.draftBenefits().map((benefit) => ({
@@ -1211,6 +1229,8 @@ export class CardsPage {
     this.colourPalette.set(null);
     this.form.reset({
       network: 'VISA',
+      globalNetwork: 'SAME',
+      isVirtual: false,
       subtype: '',
       cardholderName: '',
       fullNumber: '',
