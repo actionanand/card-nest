@@ -2,7 +2,7 @@
 
 This document describes the current CardNest SQLite schema, its relationships, deletion behavior, storage locations, and safe ways to inspect tables during development. The executable source of truth is [`src/app/core/data/migrations.ts`](../src/app/core/data/migrations.ts); update this document whenever a new migration changes the schema.
 
-For platform initialization, WebAssembly setup, and migration architecture, also see [`SQLITE.md`](./SQLITE.md).
+For platform initialization, WebAssembly setup, and migration architecture, also see [`SQLITE.md`](./SQLITE.md). For controlled development-only data fixes from DevTools, see [`BACKEND_DATA_MAINTENANCE.md`](./BACKEND_DATA_MAINTENANCE.md).
 
 ## Overview
 
