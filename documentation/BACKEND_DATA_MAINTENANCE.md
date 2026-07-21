@@ -15,6 +15,15 @@ For read-only inspection, start with [`WEB_SQLITE_INDEXEDDB_INSPECTION.md`](./WE
 
 CardNest stores many complete domain objects in JSON `payload` columns. For example, expiry month/year, annual fee details, notes, links, benefits, and most card settings live inside `credit_cards.payload`. Some fields, such as `nickname`, `issuer_name`, `last_digits`, `network`, `archived`, and timestamps, are also stored as ordinary columns for fast filtering.
 
+## Placeholder glossary
+
+- `credit_cards.id` is the internal card identifier. Use this value wherever an example says `CARD_ID_HERE`.
+- `cardId` inside a transaction payload means the same internal card identifier.
+- `last_digits` is the visible final four digits, or final five digits for American Express, shown in the UI.
+- `4001` in these examples is only a sample `last_digits` search value. Replace it with the last digits of the card you want to find.
+- `%axis%` is a case-insensitive nickname search pattern. Replace `axis` with part of the nickname or issuer you remember.
+- `CATEGORY_ID_HERE` is the internal category identifier from the `categories.id` column.
+
 ## Connect to the live web database
 
 Open CardNest in the browser, open DevTools Console, then paste:
@@ -60,6 +69,8 @@ globalThis.cardNestRun = async function (statement, values = []) {
 
 List active and archived cards:
 
+This query shows every non-deleted card row with its internal `id`; copy that `id` when another example asks for `CARD_ID_HERE`.
+
 ```js
 console.table(
   await cardNestQuery(`
@@ -78,6 +89,8 @@ console.table(
 ```
 
 Find one card and inspect its editable payload:
+
+This query finds cards where the nickname contains `axis` or the visible last digits are `4001`; replace both values with your own search text and card digits.
 
 ```js
 var cardRows = await cardNestQuery(
@@ -113,6 +126,8 @@ console.table(
 This is useful for old cards that cannot be edited through the UI because their expiry year is in the past.
 
 Replace `CARD_ID_HERE`, month, and year:
+
+This reads one card by internal `id`, changes only its expiry month/year inside the card payload, and saves the updated payload back to SQLite.
 
 ```js
 var rows = await cardNestQuery('SELECT payload FROM credit_cards WHERE id = ?', ['CARD_ID_HERE']);
@@ -154,6 +169,8 @@ For fields mirrored into table columns, change both the payload and the columns.
 
 Example: change an archived card nickname:
 
+This changes the card nickname in both places CardNest stores it: the `nickname` column and the JSON `payload.nickname`.
+
 ```js
 var rows = await cardNestQuery('SELECT payload FROM credit_cards WHERE id = ?', ['CARD_ID_HERE']);
 
@@ -176,6 +193,8 @@ await cardNestRun(
 ```
 
 Example: mark an old card archived:
+
+This marks one card archived in both the `archived` column and the JSON payload, and keeps the archived timestamp inside the payload.
 
 ```js
 var rows = await cardNestQuery('SELECT payload FROM credit_cards WHERE id = ?', ['CARD_ID_HERE']);
@@ -204,6 +223,8 @@ await cardNestRun(
 
 The `categories` table is normalized and does not have a JSON payload. This makes a simple insert easier.
 
+This creates one new category row. `BOTH` means the category can be used for expenses and credits.
+
 ```js
 var now = new Date().toISOString();
 var categoryId = crypto.randomUUID();
@@ -228,6 +249,8 @@ console.table(
 
 If a monthly category limit is also needed:
 
+This adds or updates the monthly limit for the category created above.
+
 ```js
 await cardNestRun(
   `
@@ -249,6 +272,8 @@ await cardNestRun(
 ## Add a backend-only card for history
 
 Use this only when the UI cannot create the historical archived card. It intentionally creates the card as archived.
+
+This inserts one archived card with a past expiry date. Save the generated `card.id` if you want to attach old transactions to it.
 
 ```js
 var now = new Date().toISOString();
@@ -314,6 +339,8 @@ Reload the app, then verify the card appears under `/cards` -> Archived.
 
 First find a valid category:
 
+This lists available categories and their internal `id` values; copy one category `id` for `CATEGORY_ID_HERE`.
+
 ```js
 console.table(
   await cardNestQuery(`
@@ -326,6 +353,8 @@ console.table(
 ```
 
 Then insert the transaction:
+
+This creates one historical purchase for the chosen `CARD_ID_HERE` and `CATEGORY_ID_HERE`. Amounts are stored in minor units, so `99900` means `999.00`.
 
 ```js
 var now = new Date().toISOString();
