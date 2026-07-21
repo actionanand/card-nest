@@ -29,10 +29,12 @@
     </label>
     <div class="view-switch" role="group" aria-label="Card status">
       <button type="button" [class.active]="!showArchived()" (click)="showCardArchive(false)">
-        Active
+        <span>Active</span>
+        <small>{{ filteredActiveCardCount() }}/{{ activeCardTotal() }}</small>
       </button>
       <button type="button" [class.active]="showArchived()" (click)="showCardArchive(true)">
-        Archived
+        <span>Archived</span>
+        <small>{{ filteredArchivedCardCount() }}/{{ archivedCardTotal() }}</small>
       </button>
     </div>
     <app-select-picker
@@ -40,6 +42,7 @@
       label="Card view"
       [options]="cardFilterOptions"
       [value]="cardFilter()"
+      [disabled]="showArchived()"
       (valueChange)="updateCardFilter($event)"
     />
   </div>
@@ -861,6 +864,16 @@
                     >Archived {{ archivedDate(card) }}. Transactions and saved information remain
                     available for history.</span
                   >
+                </div>
+              </section>
+              <section class="archived-card-info" aria-label="Archived card billing information">
+                <div>
+                  <span>Billing setup</span>
+                  <strong>{{ archivedBillingInfo(card) }}</strong>
+                </div>
+                <div>
+                  <span>Annual fee</span>
+                  <strong>{{ annualFeeInfo(card) }}</strong>
                 </div>
               </section>
             } @else {

@@ -111,18 +111,30 @@ export class CardsPage {
       .filter((card) => !card.deletedAt)
       .filter((card) => (this.showArchived() ? card.archived : !card.archived))
       .filter((card) => this.matchesFilter(card))
-      .filter((card) => {
-        const term = this.search().trim().toLocaleLowerCase();
-        return (
-          !term ||
-          card.nickname.toLocaleLowerCase().includes(term) ||
-          card.issuerName.toLocaleLowerCase().includes(term) ||
-          card.network.replaceAll('_', ' ').toLocaleLowerCase().includes(term) ||
-          card.subtype?.toLocaleLowerCase().includes(term) ||
-          card.lastDigits.includes(term)
-        );
-      })
+      .filter((card) => this.matchesSearch(card))
       .sort((a, b) => a.nickname.localeCompare(b.nickname, undefined, { sensitivity: 'base' })),
+  );
+  readonly activeCardTotal = computed(
+    () => this.store.cards().filter((card) => !card.deletedAt && !card.archived).length,
+  );
+  readonly archivedCardTotal = computed(
+    () => this.store.cards().filter((card) => !card.deletedAt && card.archived).length,
+  );
+  readonly filteredActiveCardCount = computed(
+    () =>
+      this.store
+        .cards()
+        .filter((card) => !card.deletedAt && !card.archived)
+        .filter((card) => this.matchesFilter(card))
+        .filter((card) => this.matchesSearch(card)).length,
+  );
+  readonly filteredArchivedCardCount = computed(
+    () =>
+      this.store
+        .cards()
+        .filter((card) => !card.deletedAt && card.archived)
+        .filter((card) => this.matchesFilter(card))
+        .filter((card) => this.matchesSearch(card)).length,
   );
   readonly selectedCard = computed(
     () => this.store.cards().find((card) => card.id === this.selectedCardId()) ?? null,
@@ -452,6 +464,7 @@ export class CardsPage {
   }
   showCardArchive(archived: boolean): void {
     this.showArchived.set(archived);
+    if (archived) this.cardFilter.set('ALL');
     this.selectedCardId.set(null);
     this.hideRevealedSecrets();
     this.expandedBenefitId.set(null);
@@ -875,6 +888,27 @@ export class CardsPage {
   archivedDate(card: CreditCard): string {
     return card.archivedAt ? this.date(new Date(card.archivedAt)) : 'Date unavailable';
   }
+  archivedBillingInfo(card: CreditCard): string {
+    const dueWindow = paymentWindowDays(card);
+    return `Bill generation day ${card.statementDay} · payment due ${dueWindow} ${
+      dueWindow === 1 ? 'day' : 'days'
+    } after statement`;
+  }
+  annualFeeInfo(card: CreditCard): string {
+    if (!card.annualFeeEnabled || !card.annualFee) return 'No annual fee recorded';
+    const fee = card.annualFee;
+    const renewalDate = new Date(2000, fee.renewalMonth - 1, fee.renewalDay).toLocaleDateString(
+      'en-IN',
+      {
+        day: 'numeric',
+        month: 'short',
+      },
+    );
+    const waiver = fee.waiverThresholdMinor
+      ? ` · waiver target ${this.money(fee.waiverThresholdMinor, card.currencyCode)}`
+      : '';
+    return `${this.money(fee.amountMinor, card.currencyCode)} · renews ${renewalDate}${waiver}`;
+  }
   waiverDeadline(card: CreditCard): Date | null {
     const fee = card.annualFee;
     if (!fee?.waiverThresholdMinor) return null;
@@ -1129,6 +1163,17 @@ export class CardsPage {
     if (!card.expiryMonth || !card.expiryYear) return false;
     const expiry = new Date(card.expiryYear, card.expiryMonth, 0);
     return expiry.getTime() - Date.now() <= 1000 * 60 * 60 * 24 * 120;
+  }
+  private matchesSearch(card: CreditCard): boolean {
+    const term = this.search().trim().toLocaleLowerCase();
+    return (
+      !term ||
+      card.nickname.toLocaleLowerCase().includes(term) ||
+      card.issuerName.toLocaleLowerCase().includes(term) ||
+      card.network.replaceAll('_', ' ').toLocaleLowerCase().includes(term) ||
+      card.subtype?.toLocaleLowerCase().includes(term) ||
+      card.lastDigits.includes(term)
+    );
   }
   private splitValues(value: string): readonly string[] {
     return value
