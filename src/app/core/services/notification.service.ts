@@ -148,7 +148,7 @@ export class NotificationService {
         ? previousStatementDate(nextStatement, card.statementDay)
         : nextStatement;
     const due = paymentDueDate(statement, card);
-    const maskedCard = `${card.nickname} ${card.network === 'AMERICAN_EXPRESS' ? '•••••' : '••••'} ${card.lastDigits}`;
+    const cardLabel = `${card.nickname} ${card.lastDigits}`;
     const amount = formatMoney(Math.max(0, outstandingMinor), card.currencyCode);
     const dueDisplay = due.toLocaleDateString('en-IN', { day: 'numeric', month: 'long' });
     const baseId = this.baseId(card.id);
@@ -168,8 +168,8 @@ export class NotificationService {
             }
             return {
               id: baseId + index,
-              title: 'Statement payment reminder',
-              body: `${amount} is due for ${maskedCard} on ${dueDisplay}.`,
+              title: this.countdownTitle('Payment due', daysBefore),
+              body: `${amount} is due for ${cardLabel} on ${dueDisplay}.`,
               at,
               cardId: card.id,
               kind: 'PAYMENT',
@@ -185,10 +185,11 @@ export class NotificationService {
       at.setDate(at.getDate() - 30);
       at.setHours(9, 0, 0, 0);
       if (at <= now) at.setTime(now.getTime() + 60_000);
+      const daysUntilFee = this.calendarDaysBetween(at, annualFeeDate);
       targets.push({
         id: baseId + 6,
-        title: 'Annual fee reminder',
-        body: `${formatMoney(card.annualFee.amountMinor, card.currencyCode)} annual fee is expected for ${maskedCard} on ${annualFeeDate.toLocaleDateString('en-IN', { day: 'numeric', month: 'long' })}.`,
+        title: this.countdownTitle('Annual fee due', daysUntilFee),
+        body: `${formatMoney(card.annualFee.amountMinor, card.currencyCode)} annual fee is due for ${cardLabel} on ${annualFeeDate.toLocaleDateString('en-IN', { day: 'numeric', month: 'long' })}.`,
         at,
         cardId: card.id,
         kind: 'ANNUAL_FEE',
@@ -196,17 +197,31 @@ export class NotificationService {
     }
 
     const expiryDate = this.expiryReminderDate(card, now);
-    if (expiryDate) {
+    if (expiryDate && card.expiryMonth && card.expiryYear) {
+      const expires = new Date(card.expiryYear, card.expiryMonth, 0, 23, 59, 59);
+      const daysUntilExpiry = this.calendarDaysBetween(expiryDate, expires);
       targets.push({
         id: baseId + 7,
-        title: 'Card expiry reminder',
-        body: `${maskedCard} expires in ${String(card.expiryMonth).padStart(2, '0')}/${card.expiryYear}.`,
+        title: this.countdownTitle('Card expires', daysUntilExpiry),
+        body: `${cardLabel} expires in ${String(card.expiryMonth).padStart(2, '0')}/${card.expiryYear}.`,
         at: expiryDate,
         cardId: card.id,
         kind: 'EXPIRY',
       });
     }
     return targets;
+  }
+
+  private countdownTitle(subject: string, days: number): string {
+    if (days <= 0) return `${subject} today`;
+    if (days === 1) return `${subject} tomorrow`;
+    return `${subject} in ${days} days`;
+  }
+
+  private calendarDaysBetween(from: Date, to: Date): number {
+    const fromDay = Date.UTC(from.getFullYear(), from.getMonth(), from.getDate());
+    const toDay = Date.UTC(to.getFullYear(), to.getMonth(), to.getDate());
+    return Math.max(0, Math.round((toDay - fromDay) / 86_400_000));
   }
 
   private notificationIds(cardId: string): readonly number[] {
