@@ -11,7 +11,7 @@ permissions:
 
 env:
   MIN_SDK_VERSION: 24
-  TARGET_SDK_VERSION: 35
+  TARGET_SDK_VERSION: 36
   RELEASE_BASENAME: card-nest-release
 
 jobs:
