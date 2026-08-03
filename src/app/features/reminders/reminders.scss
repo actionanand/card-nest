@@ -220,6 +220,53 @@
 .section-heading h2 {
   margin: 0;
 }
+.due-amount-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin: 0.8rem 0 0.35rem;
+}
+.due-amount-summary > div {
+  display: inline-flex;
+  width: fit-content;
+  min-width: 0;
+  min-height: 2.35rem;
+  align-items: center;
+  gap: 0.38rem;
+  padding: 0.38rem 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--canvas);
+}
+.due-amount-summary > div::before {
+  width: 0.45rem;
+  height: 0.45rem;
+  flex: 0 0 0.45rem;
+  border-radius: 50%;
+  background: var(--accent);
+  content: '';
+}
+.due-amount-summary .due-segment.immediate::before {
+  background: var(--danger);
+}
+.due-amount-summary .due-segment.soon::before {
+  background: var(--warning);
+}
+.due-amount-summary .due-segment.later::before {
+  background: var(--success);
+}
+.due-amount-summary small,
+.due-amount-summary span {
+  color: var(--muted);
+  font-size: 0.61rem;
+  white-space: nowrap;
+}
+.due-amount-summary strong {
+  font-family: var(--display);
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
 .reminder-list > article {
   position: relative;
   overflow: hidden;

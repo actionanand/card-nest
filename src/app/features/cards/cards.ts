@@ -28,6 +28,13 @@ type CardFilter = 'ALL' | 'DUE' | 'GRACE' | 'FEE' | 'EXPIRING';
 type PaymentMode = 'DUE' | 'OUTSTANDING' | 'CUSTOM';
 type ArchiveAction = 'ARCHIVE' | 'RESTORE';
 
+interface CardFilterTotal {
+  readonly label: string;
+  readonly amount: number;
+  readonly currencyCode: string;
+  readonly count: number;
+}
+
 @Component({
   selector: 'app-cards-page',
   imports: [
@@ -136,6 +143,29 @@ export class CardsPage {
         .filter((card) => this.matchesFilter(card))
         .filter((card) => this.matchesSearch(card)).length,
   );
+  readonly cardFilterTotal = computed<CardFilterTotal | null>(() => {
+    const filter = this.cardFilter();
+    if (this.showArchived() || (filter !== 'DUE' && filter !== 'FEE')) return null;
+
+    const cards = this.visibleCards();
+    if (filter === 'DUE') {
+      const payableCards = cards.filter((card) => this.dueAmount(card) > 0);
+      return {
+        label: 'Total statement due',
+        amount: payableCards.reduce((total, card) => total + this.dueAmount(card), 0),
+        currencyCode: payableCards[0]?.currencyCode ?? cards[0]?.currencyCode ?? 'INR',
+        count: payableCards.length,
+      };
+    }
+
+    const feeCards = cards.filter((card) => card.annualFeeEnabled && card.annualFee);
+    return {
+      label: 'Total annual fees',
+      amount: feeCards.reduce((total, card) => total + (card.annualFee?.amountMinor ?? 0), 0),
+      currencyCode: feeCards[0]?.currencyCode ?? cards[0]?.currencyCode ?? 'INR',
+      count: feeCards.length,
+    };
+  });
   readonly selectedCard = computed(
     () => this.store.cards().find((card) => card.id === this.selectedCardId()) ?? null,
   );

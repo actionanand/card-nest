@@ -38,6 +38,18 @@ interface PaymentReminder {
   readonly feeDays: number | null;
 }
 
+interface DueAmountSummary {
+  readonly currencyCode: string;
+  readonly total: number;
+  readonly totalCount: number;
+  readonly immediate: number;
+  readonly immediateCount: number;
+  readonly withinTenDays: number;
+  readonly withinTenDaysCount: number;
+  readonly later: number;
+  readonly laterCount: number;
+}
+
 @Component({
   selector: 'app-reminders-page',
   imports: [AppIcon, ConfirmationDialog, RouterLink, AppSelectPicker],
@@ -122,6 +134,26 @@ export class RemindersPage {
   readonly annualFeeCount = computed(
     () => this.store.activeCards().filter((card) => card.annualFeeEnabled).length,
   );
+  readonly dueAmountSummary = computed<DueAmountSummary>(() => {
+    const dueItems = this.allReminders().filter((item) => item.amount > 0);
+    const immediateItems = dueItems.filter((item) => item.days <= 3);
+    const withinTenDaysItems = dueItems.filter((item) => item.days > 3 && item.days <= 10);
+    const laterItems = dueItems.filter((item) => item.days > 10);
+    const sum = (items: readonly PaymentReminder[]) =>
+      items.reduce((total, item) => total + item.amount, 0);
+
+    return {
+      currencyCode: dueItems[0]?.card.currencyCode ?? 'INR',
+      total: sum(dueItems),
+      totalCount: dueItems.length,
+      immediate: sum(immediateItems),
+      immediateCount: immediateItems.length,
+      withinTenDays: sum(withinTenDaysItems),
+      withinTenDaysCount: withinTenDaysItems.length,
+      later: sum(laterItems),
+      laterCount: laterItems.length,
+    };
+  });
 
   money(value: number, currency: string): string {
     return formatMoney(value, currency);
