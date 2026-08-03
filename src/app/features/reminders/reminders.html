@@ -61,6 +61,47 @@
       >
     </div>
 
+    @if (filter() === 'DUE') {
+      <section class="due-amount-summary" aria-label="Statement due amount summary">
+        <div class="due-total">
+          <small>Total due</small>
+          <strong>{{ money(dueAmountSummary().total, dueAmountSummary().currencyCode) }}</strong>
+          <span
+            >{{ dueAmountSummary().totalCount }}
+            {{ dueAmountSummary().totalCount === 1 ? 'card' : 'cards' }}</span
+          >
+        </div>
+        <div class="due-segment immediate">
+          <small>Immediate (0-3 days)</small>
+          <strong>{{
+            money(dueAmountSummary().immediate, dueAmountSummary().currencyCode)
+          }}</strong>
+          <span
+            >{{ dueAmountSummary().immediateCount }}
+            {{ dueAmountSummary().immediateCount === 1 ? 'card' : 'cards' }}</span
+          >
+        </div>
+        <div class="due-segment soon">
+          <small>Within 10 days</small>
+          <strong>{{
+            money(dueAmountSummary().withinTenDays, dueAmountSummary().currencyCode)
+          }}</strong>
+          <span
+            >{{ dueAmountSummary().withinTenDaysCount }}
+            {{ dueAmountSummary().withinTenDaysCount === 1 ? 'card' : 'cards' }}</span
+          >
+        </div>
+        <div class="due-segment later">
+          <small>Later</small>
+          <strong>{{ money(dueAmountSummary().later, dueAmountSummary().currencyCode) }}</strong>
+          <span
+            >{{ dueAmountSummary().laterCount }}
+            {{ dueAmountSummary().laterCount === 1 ? 'card' : 'cards' }}</span
+          >
+        </div>
+      </section>
+    }
+
     @for (reminder of reminders(); track reminder.id) {
       <article
         [class]="'reminder-card ' + pillTone(reminder)"

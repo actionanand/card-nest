@@ -47,6 +47,15 @@
     />
   </div>
 
+  @if (cardFilterTotal(); as total) {
+    <section class="card-filter-total" aria-live="polite">
+      <i aria-hidden="true"></i>
+      <small>{{ total.label }}</small>
+      <strong>{{ money(total.amount, total.currencyCode) }}</strong>
+      <span>{{ total.count }} {{ total.count === 1 ? 'card' : 'cards' }}</span>
+    </section>
+  }
+
   @if (showForm()) {
     <div class="card-modal-backdrop">
       <section
