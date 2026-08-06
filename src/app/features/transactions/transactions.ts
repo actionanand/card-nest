@@ -35,6 +35,12 @@ type TransactionTypeFilter = TransactionType | 'ALL' | 'WITH_IMAGE';
 type RepeatChoice = 'NONE' | 'INFINITE' | `${number}`;
 type EmiKind = 'NO_COST' | 'STANDARD';
 type EmiStartMode = 'THIS_MONTH' | 'NEXT_MONTH' | 'CUSTOM';
+
+interface SelectedFilterSource {
+  readonly id: string;
+  readonly label: string;
+  readonly kind: 'CARD' | 'PAYMENT_SOURCE';
+}
 const TRANSACTION_PAGE_SIZE = 200;
 const MAX_RECEIPT_BYTES = 1_000_000;
 
@@ -121,6 +127,14 @@ export class TransactionsPage {
       return 'CYCLE';
     }
     return this.grouping();
+  });
+  readonly selectedFilterSource = computed<SelectedFilterSource | null>(() => {
+    const id = this.sourceFilter();
+    if (id === 'ALL') return null;
+    const card = this.store.cards().find((item) => item.id === id);
+    if (card) return { id, label: card.nickname, kind: 'CARD' };
+    const source = this.store.paymentSources().find((item) => item.id === id);
+    return source ? { id, label: source.nickname, kind: 'PAYMENT_SOURCE' } : null;
   });
   readonly visibleLimit = signal(TRANSACTION_PAGE_SIZE);
   readonly activeFilterCount = computed(
@@ -510,6 +524,15 @@ export class TransactionsPage {
     this.exportFormat.set(format);
     this.exportOpen.set(true);
     this.closeMenus();
+  }
+  goToSelectedSource(): void {
+    const selected = this.selectedFilterSource();
+    if (!selected) return;
+    if (selected.kind === 'CARD') {
+      void this.router.navigate(['/cards'], { queryParams: { open: selected.id } });
+      return;
+    }
+    void this.router.navigate(['/sources'], { fragment: selected.id });
   }
   openAdd(): void {
     this.editingId.set(null);

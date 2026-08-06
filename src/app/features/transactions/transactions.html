@@ -414,6 +414,16 @@
         {{ filtered().length === 1 ? 'transaction' : 'transactions' }}</small
       >
       <strong [class.credit]="visibleTotal() >= 0">{{ signedMoney(visibleTotal()) }}</strong>
+      @if (selectedFilterSource(); as selected) {
+        <button
+          class="selected-source-link"
+          type="button"
+          (click)="goToSelectedSource()"
+          [attr.aria-label]="'View ' + selected.label"
+        >
+          <app-icon name="go_to_source" /> View {{ selected.label }}
+        </button>
+      }
       @if (hideCredits()) {
         <span class="filter-chip">Payments and credits hidden</span>
       }

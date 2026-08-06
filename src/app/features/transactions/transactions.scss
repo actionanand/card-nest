@@ -432,6 +432,7 @@ label small {
   display: flex;
   min-width: 0;
   align-items: center;
+  flex-wrap: wrap;
   gap: 0.75rem;
 }
 .ledger-summary small {
@@ -439,6 +440,31 @@ label small {
 }
 .ledger-summary strong.credit {
   color: var(--success);
+}
+.selected-source-link {
+  display: inline-flex;
+  min-width: 0;
+  min-height: 1.8rem;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.25rem 0.55rem;
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  font-size: 0.64rem;
+  font-weight: 750;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.selected-source-link:hover {
+  background: color-mix(in srgb, var(--accent) 18%, var(--surface));
+}
+.selected-source-link app-icon {
+  width: 0.9rem;
+  height: 0.9rem;
+  flex: 0 0 auto;
 }
 .filter-chip {
   padding: 0.22rem 0.45rem;
