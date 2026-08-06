@@ -22,6 +22,25 @@ export function previousStatementDate(statementDate: Date, statementDay: number)
   return localDate(statementDate.getFullYear(), statementDate.getMonth() - 1, statementDay);
 }
 
+/** Whether transactions dated on the statement generation day start the next billing cycle. */
+export function excludesStatementDayTransactions(
+  card: Pick<CreditCard, 'excludeStatementDayTransactions'>,
+): boolean {
+  return card.excludeStatementDayTransactions !== false;
+}
+
+/** Whether an ISO transaction date belongs to the statement ending on the supplied date. */
+export function isTransactionIncludedInStatement(
+  transactionDate: string,
+  statementDate: Date,
+  card: Pick<CreditCard, 'excludeStatementDayTransactions'>,
+): boolean {
+  const statementIso = toIsoDate(statementDate);
+  return excludesStatementDayTransactions(card)
+    ? transactionDate < statementIso
+    : transactionDate <= statementIso;
+}
+
 export function statementPeriod(reference: Date, statementDay: number): { start: Date; end: Date } {
   const end = statementDateFor(reference, statementDay);
   const previous = previousStatementDate(end, statementDay);
@@ -130,12 +149,18 @@ export function gracePeriodEndDate(
 
 /** Converts the legacy fixed calendar due-date rule to the current issuer window model. */
 export function normalizeCardDueDateRule(card: CreditCard, reference = new Date()): CreditCard {
-  if (card.dueDateMode === 'DAYS_AFTER_STATEMENT') return card;
+  const needsStatementBoundaryDefault = card.excludeStatementDayTransactions === undefined;
+  if (card.dueDateMode === 'DAYS_AFTER_STATEMENT' && !needsStatementBoundaryDefault) return card;
   return {
     ...card,
-    dueDateMode: 'DAYS_AFTER_STATEMENT',
-    paymentDueDay: undefined,
-    daysAfterStatement: paymentWindowDays(card, reference),
+    excludeStatementDayTransactions: card.excludeStatementDayTransactions ?? true,
+    ...(card.dueDateMode === 'DAYS_AFTER_STATEMENT'
+      ? {}
+      : {
+          dueDateMode: 'DAYS_AFTER_STATEMENT' as const,
+          paymentDueDay: undefined,
+          daysAfterStatement: paymentWindowDays(card, reference),
+        }),
   };
 }
 

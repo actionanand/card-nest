@@ -60,6 +60,8 @@ export interface CreditCard {
   expiryMonth?: number;
   expiryYear?: number;
   statementDay: number;
+  /** Undefined is treated as true for cards restored from older backups. */
+  excludeStatementDayTransactions?: boolean;
   dueDateMode: 'FIXED_DAY' | 'DAYS_AFTER_STATEMENT';
   paymentDueDay?: number;
   daysAfterStatement?: number;

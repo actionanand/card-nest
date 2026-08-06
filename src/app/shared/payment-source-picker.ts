@@ -93,7 +93,12 @@ import { AppIcon } from './app-icon';
                 (click)="select(source.id)"
               >
                 <span class="option-name">{{ source.nickname }}</span>
-                <span class="option-detail">{{ source.institution || source.kind }}</span>
+                <span class="option-detail">
+                  @if (source.lastDigits) {
+                    {{ source.lastDigits }} ·
+                  }
+                  {{ source.institution || source.kind }}
+                </span>
                 @if (value() === source.id) {
                   <app-icon class="option-check" name="success" />
                 }
@@ -259,7 +264,7 @@ export class PaymentSourcePicker {
     if (card) return `${card.nickname} · ${card.lastDigits} · ${card.issuerName}`;
     const source = this.store.activePaymentSources().find((item) => item.id === this.value());
     return source
-      ? `${source.nickname}${source.institution ? ` · ${source.institution}` : ''}`
+      ? `${source.nickname}${source.lastDigits ? ` · ${source.lastDigits}` : ''}${source.institution ? ` · ${source.institution}` : ''}`
       : 'Choose a source';
   });
 

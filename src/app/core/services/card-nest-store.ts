@@ -13,6 +13,8 @@ import {
 } from '../models/domain';
 import { SqliteDatabase } from '../data/sqlite-database';
 import {
+  excludesStatementDayTransactions,
+  isTransactionIncludedInStatement,
   normalizeCardDueDateRule,
   previousStatementDate,
   statementDateFor,
@@ -448,10 +450,13 @@ export class CardNestStore {
         ? previousStatementDate(nextStatement, card.statementDay)
         : nextStatement;
     const statementIso = toIsoDate(latestStatement);
+    const excludesStatementDay = excludesStatementDayTransactions(card);
     const dueAtStatement = this.transactions()
       .filter(
         (item) =>
-          item.cardId === cardId && !item.emiCancelled && item.transactionDate <= statementIso,
+          item.cardId === cardId &&
+          !item.emiCancelled &&
+          isTransactionIncludedInStatement(item.transactionDate, latestStatement, card),
       )
       .reduce((total, item) => total + transactionEffect(item), card.openingBalanceMinor);
     const creditsAfterStatement = this.transactions()
@@ -459,7 +464,9 @@ export class CardNestStore {
         (item) =>
           item.cardId === cardId &&
           !item.emiCancelled &&
-          item.transactionDate > statementIso &&
+          (excludesStatementDay
+            ? item.transactionDate >= statementIso
+            : item.transactionDate > statementIso) &&
           transactionEffect(item) < 0,
       )
       .reduce((total, item) => total + transactionEffect(item), 0);
@@ -872,9 +879,12 @@ export class CardNestStore {
 
   sourceName(sourceId: string): string {
     const card = this.cards().find((item) => item.id === sourceId);
+    const source = this.paymentSources().find((item) => item.id === sourceId);
     return (
       (card ? `${card.nickname}${card.deletedAt ? ' (deleted card)' : ''}` : undefined) ??
-      this.paymentSources().find((source) => source.id === sourceId)?.nickname ??
+      (source
+        ? `${source.nickname}${source.lastDigits ? ` ${source.lastDigits}` : ''}`
+        : undefined) ??
       'Unknown source'
     );
   }
@@ -885,7 +895,7 @@ export class CardNestStore {
       return `${card.nickname} •••• ${card.lastDigits} · ${card.issuerName}${card.deletedAt ? ' · Deleted card' : ''}`;
     const source = this.paymentSources().find((item) => item.id === sourceId);
     return source
-      ? `${source.nickname}${source.institution ? ` · ${source.institution}` : ''}`
+      ? `${source.nickname}${source.lastDigits ? ` · ${source.lastDigits}` : ''}${source.institution ? ` · ${source.institution}` : ''}`
       : 'Unknown source';
   }
 

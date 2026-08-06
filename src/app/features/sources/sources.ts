@@ -41,7 +41,7 @@ export class SourcesPage {
     ...this.store.activePaymentSources().map((source) => ({
       value: source.id,
       label: source.nickname,
-      detail: source.institution,
+      detail: [source.lastDigits, source.institution].filter(Boolean).join(' · '),
     })),
   ]);
   readonly selectedSource = computed(() =>
@@ -116,9 +116,10 @@ export class SourcesPage {
   }
 
   sourceName(sourceId: string): string {
-    return (
-      this.store.paymentSources().find((source) => source.id === sourceId)?.nickname ?? 'Source'
-    );
+    const source = this.store.paymentSources().find((item) => item.id === sourceId);
+    return source
+      ? `${source.nickname}${source.lastDigits ? ` ${source.lastDigits}` : ''}`
+      : 'Source';
   }
 
   categoryName(categoryId: string): string {
@@ -160,6 +161,28 @@ export class SourcesPage {
       loadDay: Number(value),
     });
     this.snackbar.show(`${source.nickname} load date updated.`);
+  }
+
+  sanitizeLastDigits(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    input.value = input.value.replace(/\D/g, '').slice(0, 4);
+    input.setCustomValidity(
+      input.value.length === 0 || input.value.length === 4 ? '' : 'Enter exactly 4 digits.',
+    );
+  }
+
+  updateLastDigits(source: PaymentSource, event: Event): void {
+    const input = event.target as HTMLInputElement;
+    this.sanitizeLastDigits(event);
+    if (!input.checkValidity()) {
+      input.reportValidity();
+      return;
+    }
+    this.store.updatePaymentSource({
+      ...source,
+      lastDigits: input.value || undefined,
+    });
+    this.snackbar.show(`${source.nickname} last four digits updated.`);
   }
 
   toggle(source: PaymentSource, field: 'noLimit' | 'autoLoad'): void {

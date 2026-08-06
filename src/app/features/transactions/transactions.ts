@@ -22,6 +22,10 @@ import { ExportDialog, TransactionExportChoice } from '../../shared/export-dialo
 import { ConfirmationDialog } from '../../shared/confirmation-dialog';
 import { ExportFormat } from '../../core/models/export';
 import { createEmiSchedule } from '../../core/services/emi';
+import {
+  excludesStatementDayTransactions,
+  isTransactionIncludedInStatement,
+} from '../../core/services/billing-cycle';
 import { AppDatePipe, DateFormatService } from '../../core/services/date-format.service';
 import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
 import { AppDatePicker } from '../../shared/app-date-picker';
@@ -31,6 +35,12 @@ type TransactionTypeFilter = TransactionType | 'ALL' | 'WITH_IMAGE';
 type RepeatChoice = 'NONE' | 'INFINITE' | `${number}`;
 type EmiKind = 'NO_COST' | 'STANDARD';
 type EmiStartMode = 'THIS_MONTH' | 'NEXT_MONTH' | 'CUSTOM';
+
+interface SelectedFilterSource {
+  readonly id: string;
+  readonly label: string;
+  readonly kind: 'CARD' | 'PAYMENT_SOURCE';
+}
 const TRANSACTION_PAGE_SIZE = 200;
 const MAX_RECEIPT_BYTES = 1_000_000;
 
@@ -117,6 +127,20 @@ export class TransactionsPage {
       return 'CYCLE';
     }
     return this.grouping();
+  });
+  readonly selectedFilterSource = computed<SelectedFilterSource | null>(() => {
+    const id = this.sourceFilter();
+    if (id === 'ALL') return null;
+    const card = this.store.cards().find((item) => item.id === id);
+    if (card) return { id, label: card.nickname, kind: 'CARD' };
+    const source = this.store.paymentSources().find((item) => item.id === id);
+    return source
+      ? {
+          id,
+          label: `${source.nickname}${source.lastDigits ? ` ${source.lastDigits}` : ''}`,
+          kind: 'PAYMENT_SOURCE',
+        }
+      : null;
   });
   readonly visibleLimit = signal(TRANSACTION_PAGE_SIZE);
   readonly activeFilterCount = computed(
@@ -213,7 +237,7 @@ export class TransactionsPage {
     ...this.alphabeticalPaymentSources().map((source) => ({
       value: source.id,
       label: source.nickname,
-      detail: source.institution || source.kind,
+      detail: [source.lastDigits, source.institution || source.kind].filter(Boolean).join(' · '),
     })),
   ]);
   readonly form = new FormGroup({
@@ -435,9 +459,7 @@ export class TransactionsPage {
   mobileSourceDetail(sourceId: string): string {
     const card = this.store.cards().find((item) => item.id === sourceId);
     if (card) return `${card.nickname} · ${card.lastDigits}`;
-    return (
-      this.store.paymentSources().find((item) => item.id === sourceId)?.nickname ?? 'Unknown source'
-    );
+    return this.store.sourceName(sourceId);
   }
   categoryName(categoryId: string): string {
     return this.store.categories().find((item) => item.id === categoryId)?.name ?? 'Other';
@@ -469,10 +491,12 @@ export class TransactionsPage {
     if (this.sourceFilter() === 'ALL') return 'All cards and sources';
     const card = this.store.activeCards().find((item) => item.id === this.sourceFilter());
     if (card) return `${card.nickname} · ${card.lastDigits}`;
-    return (
-      this.store.activePaymentSources().find((item) => item.id === this.sourceFilter())?.nickname ??
-      'All cards and sources'
-    );
+    const source = this.store
+      .activePaymentSources()
+      .find((item) => item.id === this.sourceFilter());
+    return source
+      ? `${source.nickname}${source.lastDigits ? ` · ${source.lastDigits}` : ''}`
+      : 'All cards and sources';
   }
   updateCategory(value: string): void {
     this.categoryFilter.set(value);
@@ -506,6 +530,15 @@ export class TransactionsPage {
     this.exportFormat.set(format);
     this.exportOpen.set(true);
     this.closeMenus();
+  }
+  goToSelectedSource(): void {
+    const selected = this.selectedFilterSource();
+    if (!selected) return;
+    if (selected.kind === 'CARD') {
+      void this.router.navigate(['/cards'], { queryParams: { open: selected.id } });
+      return;
+    }
+    void this.router.navigate(['/sources'], { fragment: selected.id });
   }
   openAdd(): void {
     this.editingId.set(null);
@@ -687,7 +720,7 @@ export class TransactionsPage {
     const card = this.store.activeCards().find((c) => c.id === id);
     if (card) return `${card.nickname} · ${card.lastDigits}`;
     const source = this.store.activePaymentSources().find((s) => s.id === id);
-    if (source) return source.nickname;
+    if (source) return `${source.nickname}${source.lastDigits ? ` · ${source.lastDigits}` : ''}`;
     return 'Select source';
   }
   edit(transaction: CardTransaction): void {
@@ -1230,10 +1263,14 @@ export class TransactionsPage {
     const statementFor = (year: number, month: number) =>
       new Date(year, month, Math.min(card.statementDay, new Date(year, month + 1, 0).getDate()));
     const currentStatement = statementFor(date.getFullYear(), date.getMonth());
-    const statementEnd =
-      date <= currentStatement
-        ? currentStatement
-        : statementFor(date.getFullYear(), date.getMonth() + 1);
+    const belongsToCurrentStatement = isTransactionIncludedInStatement(
+      transaction.transactionDate,
+      currentStatement,
+      card,
+    );
+    const statementEnd = belongsToCurrentStatement
+      ? currentStatement
+      : statementFor(date.getFullYear(), date.getMonth() + 1);
     return `${statementEnd.getFullYear()}-${String(statementEnd.getMonth() + 1).padStart(2, '0')}`;
   }
 
@@ -1257,16 +1294,22 @@ export class TransactionsPage {
           Math.min(selectedCard.statementDay, new Date(year, month + 1, 0).getDate()),
         );
       const currentStatement = statementFor(date.getFullYear(), date.getMonth());
+      const closesBeforeStatementDay = excludesStatementDayTransactions(selectedCard);
+      const belongsToCurrentStatement = isTransactionIncludedInStatement(
+        transaction.transactionDate,
+        currentStatement,
+        selectedCard,
+      );
       let start: Date;
       let end: Date;
-      if (date <= currentStatement) {
+      if (belongsToCurrentStatement) {
         const previousStatement = statementFor(date.getFullYear(), date.getMonth() - 1);
         start = new Date(previousStatement);
-        start.setDate(start.getDate() + 1);
+        if (!closesBeforeStatementDay) start.setDate(start.getDate() + 1);
         end = currentStatement;
       } else {
         start = new Date(currentStatement);
-        start.setDate(start.getDate() + 1);
+        if (!closesBeforeStatementDay) start.setDate(start.getDate() + 1);
         end = statementFor(date.getFullYear(), date.getMonth() + 1);
       }
       return {

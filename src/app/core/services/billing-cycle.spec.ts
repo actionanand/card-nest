@@ -1,7 +1,9 @@
 import {
   daysBetween,
+  excludesStatementDayTransactions,
   gracePeriodEndDate,
   gracePeriodBreakdown,
+  isTransactionIncludedInStatement,
   normalizeCardDueDateRule,
   paymentDueDate,
   statementPeriod,
@@ -102,5 +104,29 @@ describe('billing cycle calculations', () => {
     expect(normalized.dueDateMode).toBe('DAYS_AFTER_STATEMENT');
     expect(normalized.daysAfterStatement).toBe(19);
     expect(normalized.paymentDueDay).toBeUndefined();
+    expect(normalized.excludeStatementDayTransactions).toBe(true);
+  });
+
+  it('excludes statement-day transactions by default for older cards', () => {
+    expect(excludesStatementDayTransactions({})).toBe(true);
+  });
+
+  it('allows a card to include statement-day transactions explicitly', () => {
+    expect(excludesStatementDayTransactions({ excludeStatementDayTransactions: false })).toBe(
+      false,
+    );
+  });
+
+  it('moves a statement-day transaction to the next cycle by default', () => {
+    expect(isTransactionIncludedInStatement('2026-07-20', new Date(2026, 6, 20), {})).toBe(false);
+    expect(isTransactionIncludedInStatement('2026-07-19', new Date(2026, 6, 20), {})).toBe(true);
+  });
+
+  it('includes a statement-day transaction when the card opts in', () => {
+    expect(
+      isTransactionIncludedInStatement('2026-07-20', new Date(2026, 6, 20), {
+        excludeStatementDayTransactions: false,
+      }),
+    ).toBe(true);
   });
 });

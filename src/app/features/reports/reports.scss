@@ -8,7 +8,11 @@
 }
 
 .period-select {
-  width: 10rem;
+  width: 14rem;
+}
+
+.period-select ::ng-deep .picker-trigger > span:not(.option-icon, .option-swatch) {
+  font-size: 0.86rem;
 }
 .report-actions {
   display: flex;
@@ -23,9 +27,39 @@
   display: none;
 }
 
+.selected-cycle {
+  display: flex;
+  width: fit-content;
+  align-items: center;
+  gap: 0.4rem;
+  margin: -0.25rem 0 1rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  background: var(--accent-soft);
+  font-size: 0.72rem;
+}
+
+.selected-cycle app-icon {
+  width: 1rem;
+  height: 1rem;
+  color: var(--accent);
+}
+
+.selected-cycle strong {
+  color: var(--ink);
+  font-variant-numeric: lining-nums tabular-nums;
+}
+
+.selected-cycle small {
+  padding-left: 0.4rem;
+  border-left: 1px solid var(--line);
+}
+
 .stat-grid {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 0.7rem;
   margin-bottom: 1rem;
 }
@@ -205,6 +239,116 @@
   background: var(--canvas);
 }
 
+.past-cycle-backdrop {
+  position: fixed;
+  z-index: 1200;
+  inset: 0;
+  display: grid;
+  padding: 1rem;
+  background: rgb(10 25 18 / 58%);
+  backdrop-filter: blur(3px);
+  place-items: center;
+}
+
+.past-cycle-picker {
+  width: min(34rem, 100%);
+  max-height: min(42rem, calc(100dvh - 2rem));
+  padding: 1.25rem;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 1.25rem;
+  color: var(--ink);
+  background: var(--surface);
+  box-shadow: 0 1rem 3rem rgb(8 26 18 / 28%);
+}
+
+.past-cycle-picker > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.past-cycle-picker > header h2 {
+  margin: 0;
+}
+
+.past-cycle-picker > header small {
+  color: var(--muted);
+}
+
+.past-cycle-picker > header button,
+.past-year-nav button {
+  display: grid;
+  width: 2.5rem;
+  height: 2.5rem;
+  flex: 0 0 2.5rem;
+  border: 0;
+  border-radius: 50%;
+  color: var(--muted);
+  background: var(--canvas);
+  place-items: center;
+}
+
+.past-cycle-picker app-icon {
+  width: 1.15rem;
+  height: 1.15rem;
+}
+
+.past-year-nav {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 1.25rem 0 1rem;
+  text-align: center;
+}
+
+.past-year-nav button:disabled {
+  opacity: 0.35;
+}
+
+.past-year-nav .previous {
+  transform: rotate(180deg);
+}
+
+.past-month-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.65rem;
+}
+
+.past-month-grid button {
+  display: grid;
+  min-width: 0;
+  min-height: 5rem;
+  align-content: center;
+  gap: 0.25rem;
+  padding: 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+  color: var(--ink);
+  background: var(--canvas);
+  text-align: left;
+}
+
+.past-month-grid button:not(:disabled):hover,
+.past-month-grid button.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.past-month-grid button:disabled {
+  opacity: 0.38;
+}
+
+.past-month-grid small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.62rem;
+  text-overflow: ellipsis;
+}
+
 @media (max-width: 950px) {
   .stat-grid {
     grid-template-columns: repeat(2, 1fr);
@@ -224,15 +368,28 @@
     padding-inline: 0.7rem;
   }
 
+  .reports-page .page-header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.85rem;
+  }
+
   .period-select {
-    width: 8.5rem;
+    width: auto;
   }
   .report-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 5.75rem;
     align-items: stretch;
-    flex-direction: column;
-    width: 8.5rem;
-    min-width: 8.5rem;
-    flex: 0 0 8.5rem;
+    width: 100%;
+    min-width: 0;
+    gap: 0.55rem;
+  }
+
+  .export-report {
+    align-self: end;
+    min-width: 0;
+    padding-inline: 0.65rem;
   }
   .export-label-wide {
     display: none;
@@ -242,6 +399,26 @@
   }
   .period-select {
     width: 100%;
+  }
+
+  .period-select ::ng-deep .field-label {
+    font-size: 0.66rem;
+  }
+
+  .period-select ::ng-deep .picker-trigger {
+    gap: 0.25rem;
+    padding-inline: 0.6rem;
+  }
+
+  .period-select ::ng-deep .picker-trigger > span:not(.option-icon, .option-swatch) {
+    font-size: 0.74rem;
+  }
+
+  .selected-cycle {
+    width: 100%;
+    flex-wrap: wrap;
+    justify-content: center;
+    text-align: center;
   }
   .period-select select {
     padding-right: 2rem;
@@ -258,5 +435,26 @@
 
   .commitments > div {
     grid-template-columns: repeat(2, 1fr);
+  }
+
+  .past-cycle-backdrop {
+    align-items: end;
+    padding: 0;
+  }
+
+  .past-cycle-picker {
+    width: 100%;
+    max-height: 82dvh;
+    padding: 1rem 1rem max(1.25rem, env(safe-area-inset-bottom));
+    border-radius: 1.25rem 1.25rem 0 0;
+  }
+
+  .past-month-grid {
+    gap: 0.5rem;
+  }
+
+  .past-month-grid button {
+    min-height: 4.5rem;
+    padding: 0.5rem;
   }
 }
