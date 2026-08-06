@@ -879,9 +879,12 @@ export class CardNestStore {
 
   sourceName(sourceId: string): string {
     const card = this.cards().find((item) => item.id === sourceId);
+    const source = this.paymentSources().find((item) => item.id === sourceId);
     return (
       (card ? `${card.nickname}${card.deletedAt ? ' (deleted card)' : ''}` : undefined) ??
-      this.paymentSources().find((source) => source.id === sourceId)?.nickname ??
+      (source
+        ? `${source.nickname}${source.lastDigits ? ` ${source.lastDigits}` : ''}`
+        : undefined) ??
       'Unknown source'
     );
   }
@@ -892,7 +895,7 @@ export class CardNestStore {
       return `${card.nickname} •••• ${card.lastDigits} · ${card.issuerName}${card.deletedAt ? ' · Deleted card' : ''}`;
     const source = this.paymentSources().find((item) => item.id === sourceId);
     return source
-      ? `${source.nickname}${source.institution ? ` · ${source.institution}` : ''}`
+      ? `${source.nickname}${source.lastDigits ? ` · ${source.lastDigits}` : ''}${source.institution ? ` · ${source.institution}` : ''}`
       : 'Unknown source';
   }
 

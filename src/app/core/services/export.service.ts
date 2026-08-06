@@ -25,6 +25,14 @@ interface CardNestExportPlugin {
   }): Promise<{ path: string }>;
 }
 
+interface StatisticsCycleRange {
+  readonly key: string;
+  readonly label: string;
+  readonly startDate: string;
+  readonly endDate: string;
+  readonly offset: number;
+}
+
 const NativeExport = registerPlugin<CardNestExportPlugin>('CardNestExport');
 const EXPENSE_TYPES: readonly TransactionType[] = ['PURCHASE', 'FEE', 'INTEREST'];
 const CREDIT_TYPES: readonly TransactionType[] = ['PAYMENT', 'REFUND', 'CASHBACK', 'CREDIT'];
@@ -112,15 +120,25 @@ export class ExportService {
     void this.deliverPdf(document, `${filename}.pdf`);
   }
 
-  exportStatistics(period: ExportPeriod): void {
-    const transactions = this.inPeriod(this.store.transactions(), period);
+  exportStatistics(period: ExportPeriod, selectedCycle?: StatisticsCycleRange): void {
+    const transactions = selectedCycle
+      ? this.store
+          .transactions()
+          .filter(
+            (item) =>
+              item.transactionDate >= selectedCycle.startDate &&
+              item.transactionDate <= selectedCycle.endDate,
+          )
+      : this.inPeriod(this.store.transactions(), period);
     const expenses = transactions.filter((item) => EXPENSE_TYPES.includes(item.type));
     const totalSpent = expenses.reduce((sum, item) => sum + item.amountMinor, 0);
-    const cycles = this.cycles(period);
+    const cycles = selectedCycle ? [selectedCycle] : this.cycles(period);
     const cycleRows: ExportRow[] = cycles.map((cycle) => {
       const income =
-        this.store.incomeHistory().find((item) => item.periodKey === cycle.key)?.amountMinor ??
-        (cycle.offset === 0 ? this.store.monthlyIncomeMinor() : 0);
+        this.store
+          .incomeHistory()
+          .find((item) => item.periodKey === cycle.key || item.cycleStartDate === cycle.startDate)
+          ?.amountMinor ?? (cycle.offset === 0 ? this.store.monthlyIncomeMinor() : 0);
       const expense = expenses
         .filter(
           (item) =>
@@ -189,7 +207,7 @@ export class ExportService {
     ];
     const document: ExportDocument = {
       title: 'CardNest spending and budget report',
-      subtitle: this.periodLabel(period),
+      subtitle: selectedCycle?.label ?? this.periodLabel(period),
       generatedOn: this.generatedOn(),
       summary: [
         { label: 'Tracked income', value: this.money(totalIncome) },
@@ -202,7 +220,14 @@ export class ExportService {
       ],
       sections,
     };
-    void this.deliverPdf(document, `cardnest-stats-${this.filePeriod(period)}.pdf`);
+    void this.deliverPdf(
+      document,
+      `cardnest-stats-${selectedCycle?.startDate ?? this.filePeriod(period)}.pdf`,
+    );
+  }
+
+  exportStatisticsForCycle(cycle: StatisticsCycleRange): void {
+    this.exportStatistics('MONTH', cycle);
   }
 
   private transactionSections(transactions: readonly CardTransaction[]): ExportSection[] {
@@ -400,10 +425,7 @@ export class ExportService {
   }
 
   private cycles(period: ExportPeriod) {
-    const count =
-      period === 'ALL'
-        ? Math.max(1, Math.min(120, this.store.incomeHistory().length || 12))
-        : this.periodCount(period);
+    const count = period === 'ALL' ? this.allRecordedCycleCount() : this.periodCount(period);
     return Array.from({ length: count }, (_, index) => this.cycle(count - index - 1));
   }
 
@@ -425,13 +447,41 @@ export class ExportService {
 
   private cycleIncome(cycle: ReturnType<ExportService['cycle']>): number {
     return (
-      this.store.incomeHistory().find((item) => item.periodKey === cycle.key)?.amountMinor ??
-      (cycle.offset === 0 ? this.store.monthlyIncomeMinor() : 0)
+      this.store
+        .incomeHistory()
+        .find((item) => item.periodKey === cycle.key || item.cycleStartDate === cycle.startDate)
+        ?.amountMinor ?? (cycle.offset === 0 ? this.store.monthlyIncomeMinor() : 0)
     );
   }
 
   private periodCount(period: Exclude<ExportPeriod, 'ALL'>): number {
     return { MONTH: 1, THREE: 3, SIX: 6, YEAR: 12 }[period];
+  }
+
+  private allRecordedCycleCount(): number {
+    const current = this.cycle(0);
+    const dates = [
+      ...this.store.transactions().map((item) => item.transactionDate),
+      ...this.store.incomeHistory().map((item) => item.cycleStartDate),
+    ].sort();
+    const earliest = dates[0];
+    if (!earliest) return 1;
+    const earliestDate = new Date(`${earliest}T12:00:00`);
+    const startDay = this.store.budgetCycleStartDay();
+    const earliestCycleStart = new Date(
+      earliestDate.getFullYear(),
+      earliestDate.getMonth(),
+      startDay,
+      12,
+    );
+    if (earliestDate.getDate() < startDay)
+      earliestCycleStart.setMonth(earliestCycleStart.getMonth() - 1);
+    const currentDate = new Date(`${current.startDate}T12:00:00`);
+    const months =
+      (currentDate.getFullYear() - earliestCycleStart.getFullYear()) * 12 +
+      currentDate.getMonth() -
+      earliestCycleStart.getMonth();
+    return Math.min(240, Math.max(1, months + 1));
   }
 
   private periodLabel(period: ExportPeriod): string {

@@ -134,7 +134,13 @@ export class TransactionsPage {
     const card = this.store.cards().find((item) => item.id === id);
     if (card) return { id, label: card.nickname, kind: 'CARD' };
     const source = this.store.paymentSources().find((item) => item.id === id);
-    return source ? { id, label: source.nickname, kind: 'PAYMENT_SOURCE' } : null;
+    return source
+      ? {
+          id,
+          label: `${source.nickname}${source.lastDigits ? ` ${source.lastDigits}` : ''}`,
+          kind: 'PAYMENT_SOURCE',
+        }
+      : null;
   });
   readonly visibleLimit = signal(TRANSACTION_PAGE_SIZE);
   readonly activeFilterCount = computed(
@@ -231,7 +237,7 @@ export class TransactionsPage {
     ...this.alphabeticalPaymentSources().map((source) => ({
       value: source.id,
       label: source.nickname,
-      detail: source.institution || source.kind,
+      detail: [source.lastDigits, source.institution || source.kind].filter(Boolean).join(' · '),
     })),
   ]);
   readonly form = new FormGroup({
@@ -453,9 +459,7 @@ export class TransactionsPage {
   mobileSourceDetail(sourceId: string): string {
     const card = this.store.cards().find((item) => item.id === sourceId);
     if (card) return `${card.nickname} · ${card.lastDigits}`;
-    return (
-      this.store.paymentSources().find((item) => item.id === sourceId)?.nickname ?? 'Unknown source'
-    );
+    return this.store.sourceName(sourceId);
   }
   categoryName(categoryId: string): string {
     return this.store.categories().find((item) => item.id === categoryId)?.name ?? 'Other';
@@ -487,10 +491,12 @@ export class TransactionsPage {
     if (this.sourceFilter() === 'ALL') return 'All cards and sources';
     const card = this.store.activeCards().find((item) => item.id === this.sourceFilter());
     if (card) return `${card.nickname} · ${card.lastDigits}`;
-    return (
-      this.store.activePaymentSources().find((item) => item.id === this.sourceFilter())?.nickname ??
-      'All cards and sources'
-    );
+    const source = this.store
+      .activePaymentSources()
+      .find((item) => item.id === this.sourceFilter());
+    return source
+      ? `${source.nickname}${source.lastDigits ? ` · ${source.lastDigits}` : ''}`
+      : 'All cards and sources';
   }
   updateCategory(value: string): void {
     this.categoryFilter.set(value);
@@ -714,7 +720,7 @@ export class TransactionsPage {
     const card = this.store.activeCards().find((c) => c.id === id);
     if (card) return `${card.nickname} · ${card.lastDigits}`;
     const source = this.store.activePaymentSources().find((s) => s.id === id);
-    if (source) return source.nickname;
+    if (source) return `${source.nickname}${source.lastDigits ? ` · ${source.lastDigits}` : ''}`;
     return 'Select source';
   }
   edit(transaction: CardTransaction): void {

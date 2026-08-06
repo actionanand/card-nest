@@ -126,8 +126,16 @@
                         (click)="selectPayFrom(source.id)"
                       >
                         <span class="pay-from-option__name">{{ source.nickname }}</span>
-                        @if (source.institution) {
-                          <span class="pay-from-option__detail">{{ source.institution }}</span>
+                        @if (source.lastDigits || source.institution) {
+                          <span class="pay-from-option__detail">
+                            @if (source.lastDigits) {
+                              {{ source.lastDigits }}
+                            }
+                            @if (source.lastDigits && source.institution) {
+                              ·
+                            }
+                            {{ source.institution }}
+                          </span>
                         }
                         @if (form.controls.cardId.value === source.id) {
                           <app-icon name="success" class="pay-from-option__check" />
@@ -394,8 +402,16 @@
               (click)="selectSourceFilter(source.id)"
             >
               <span class="pay-from-option__name">{{ source.nickname }}</span>
-              @if (source.institution) {
-                <span class="pay-from-option__detail">{{ source.institution }}</span>
+              @if (source.lastDigits || source.institution) {
+                <span class="pay-from-option__detail">
+                  @if (source.lastDigits) {
+                    {{ source.lastDigits }}
+                  }
+                  @if (source.lastDigits && source.institution) {
+                    ·
+                  }
+                  {{ source.institution }}
+                </span>
               }
               @if (sourceFilter() === source.id) {
                 <app-icon name="success" class="pay-from-option__check" />

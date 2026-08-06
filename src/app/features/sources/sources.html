@@ -52,6 +52,9 @@
                   source.institution ||
                     (source.kind === 'CASH' ? 'Physical cash' : 'Payment source')
                 }}
+                @if (source.lastDigits) {
+                  · {{ source.lastDigits }}
+                }
               </p>
             </div>
           </div>
@@ -92,6 +95,18 @@
                 ><strong>{{ money(monthlyRemaining(source)) }}</strong></span
               >
             </div>
+            <label
+              >Last four digits (optional)<input
+                inputmode="numeric"
+                autocomplete="off"
+                maxlength="4"
+                pattern="[0-9]{4}"
+                placeholder="For example, 4821"
+                [value]="source.lastDigits ?? ''"
+                (input)="sanitizeLastDigits($event)"
+                (change)="updateLastDigits(source, $event)"
+              /><small>Used only to distinguish this Pluxee card.</small></label
+            >
             <label
               >Current Pluxee balance<input
                 inputmode="decimal"

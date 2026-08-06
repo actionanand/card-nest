@@ -8,9 +8,10 @@
     <div class="report-actions">
       <app-select-picker
         class="period-select"
-        label="Report period"
-        [options]="periodOptions"
-        [value]="period()"
+        [label]="'Budget cycle · day ' + store.budgetCycleStartDay()"
+        sheetTitle="Choose a budget cycle"
+        [options]="periodOptions()"
+        [value]="periodPickerValue()"
         (valueChange)="updatePeriodValue($event)"
       />
       <button class="btn btn-primary export-report" type="button" (click)="exportPdf()">
@@ -20,6 +21,13 @@
       </button>
     </div>
   </header>
+
+  <p class="selected-cycle" aria-live="polite">
+    <app-icon name="calendar" />
+    <span>Showing only</span>
+    <strong>{{ selectedPeriodLabel() }}</strong>
+    <small>Cycle starts on day {{ store.budgetCycleStartDay() }}</small>
+  </p>
 
   <section class="stat-grid" aria-label="Budget summary">
     <article class="panel">
@@ -31,11 +39,15 @@
       <strong>{{ money(totalSpent()) }}</strong>
     </article>
     <article class="panel">
-      <small>Credit cards to pay</small>
+      <small>Card payments in period</small>
       <strong>{{ money(incomingPayments()) }}</strong>
     </article>
     <article class="panel">
-      <small>Loans / EMIs this month</small>
+      <small>Cash / UPI / meal-card spending</small>
+      <strong>{{ money(nonCardSpent()) }}</strong>
+    </article>
+    <article class="panel">
+      <small>Loan / recurring / EMI in period</small>
       <strong>{{ money(monthlyLoans()) }}</strong>
     </article>
     <article class="panel available">
@@ -48,7 +60,7 @@
     </article>
   </section>
 
-  @if (period() !== 'MONTH') {
+  @if (selectedReportCycles().length > 1) {
     <section class="panel trend-panel">
       <div class="chart-heading">
         <div>
@@ -183,7 +195,7 @@
       <div class="chart-heading">
         <div>
           <p class="eyebrow">Category detail</p>
-          <h2>{{ category.name }} by month</h2>
+          <h2>{{ category.name }} in selected cycle</h2>
         </div>
         <strong>{{ category.percent }}% of selected spending</strong>
       </div>
@@ -192,16 +204,19 @@
         [labels]="trendLabels()"
         [values]="selectedCategoryValues()"
         [colours]="[category.colour || '#28684e']"
-        accessibleLabel="Monthly spending bar chart for the selected category"
+        accessibleLabel="Spending chart for the selected category and budget cycle"
       />
     </section>
   }
 
   <section class="panel commitments">
-    <h2>What this month needs</h2>
+    <h2>Selected cycle summary</h2>
     <div>
       <article>
         <span>Card payments</span><strong>{{ money(incomingPayments()) }}</strong>
+      </article>
+      <article>
+        <span>Non-card spending</span><strong>{{ money(nonCardSpent()) }}</strong>
       </article>
       <article>
         <span>Pluxee load</span><strong>{{ money(pluxeeLoad()) }}</strong>
@@ -215,3 +230,72 @@
     </div>
   </section>
 </div>
+
+@if (pastCyclePickerOpen()) {
+  <div
+    class="past-cycle-backdrop"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="past-cycle-title"
+    tabindex="-1"
+    (click)="closePastCyclePicker()"
+    (keydown.escape)="closePastCyclePicker()"
+  >
+    <section
+      class="past-cycle-picker"
+      tabindex="-1"
+      (click)="$event.stopPropagation()"
+      (keydown)="$event.stopPropagation()"
+    >
+      <header>
+        <div>
+          <p class="eyebrow">Report history</p>
+          <h2 id="past-cycle-title">Choose a past cycle</h2>
+          <small>Each month starts on day {{ store.budgetCycleStartDay() }}</small>
+        </div>
+        <button type="button" aria-label="Close past cycle calendar" (click)="closePastCyclePicker()">
+          <app-icon name="close" />
+        </button>
+      </header>
+
+      <div class="past-year-nav" aria-label="Choose year">
+        <button
+          type="button"
+          aria-label="Show previous available year"
+          [disabled]="!canChangePastCycleYear(-1)"
+          (click)="changePastCycleYear(-1)"
+        >
+          <app-icon class="previous" name="chevron_right" />
+        </button>
+        <strong>{{ pastCycleYear() }}</strong>
+        <button
+          type="button"
+          aria-label="Show next available year"
+          [disabled]="!canChangePastCycleYear(1)"
+          (click)="changePastCycleYear(1)"
+        >
+          <app-icon name="chevron_right" />
+        </button>
+      </div>
+
+      <div class="past-month-grid" aria-label="Available report cycles">
+        @for (month of pastCycleMonths(); track month.month) {
+          <button
+            type="button"
+            [disabled]="!month.cycle"
+            [class.selected]="month.cycle?.key === selectedCycle().key"
+            [attr.aria-label]="month.cycle ? month.name + ': ' + month.cycle.label : month.name + ': no data'"
+            (click)="month.cycle && choosePastCycle(month.cycle)"
+          >
+            <strong>{{ month.name }}</strong>
+            @if (month.cycle; as cycle) {
+              <small>{{ cycle.label }}</small>
+            } @else {
+              <small>No data</small>
+            }
+          </button>
+        }
+      </div>
+    </section>
+  </div>
+}
