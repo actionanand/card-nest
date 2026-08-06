@@ -13,6 +13,8 @@ import {
 } from '../models/domain';
 import { SqliteDatabase } from '../data/sqlite-database';
 import {
+  excludesStatementDayTransactions,
+  isTransactionIncludedInStatement,
   normalizeCardDueDateRule,
   previousStatementDate,
   statementDateFor,
@@ -448,10 +450,13 @@ export class CardNestStore {
         ? previousStatementDate(nextStatement, card.statementDay)
         : nextStatement;
     const statementIso = toIsoDate(latestStatement);
+    const excludesStatementDay = excludesStatementDayTransactions(card);
     const dueAtStatement = this.transactions()
       .filter(
         (item) =>
-          item.cardId === cardId && !item.emiCancelled && item.transactionDate <= statementIso,
+          item.cardId === cardId &&
+          !item.emiCancelled &&
+          isTransactionIncludedInStatement(item.transactionDate, latestStatement, card),
       )
       .reduce((total, item) => total + transactionEffect(item), card.openingBalanceMinor);
     const creditsAfterStatement = this.transactions()
@@ -459,7 +464,9 @@ export class CardNestStore {
         (item) =>
           item.cardId === cardId &&
           !item.emiCancelled &&
-          item.transactionDate > statementIso &&
+          (excludesStatementDay
+            ? item.transactionDate >= statementIso
+            : item.transactionDate > statementIso) &&
           transactionEffect(item) < 0,
       )
       .reduce((total, item) => total + transactionEffect(item), 0);

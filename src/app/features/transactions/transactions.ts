@@ -22,6 +22,10 @@ import { ExportDialog, TransactionExportChoice } from '../../shared/export-dialo
 import { ConfirmationDialog } from '../../shared/confirmation-dialog';
 import { ExportFormat } from '../../core/models/export';
 import { createEmiSchedule } from '../../core/services/emi';
+import {
+  excludesStatementDayTransactions,
+  isTransactionIncludedInStatement,
+} from '../../core/services/billing-cycle';
 import { AppDatePipe, DateFormatService } from '../../core/services/date-format.service';
 import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
 import { AppDatePicker } from '../../shared/app-date-picker';
@@ -1230,10 +1234,14 @@ export class TransactionsPage {
     const statementFor = (year: number, month: number) =>
       new Date(year, month, Math.min(card.statementDay, new Date(year, month + 1, 0).getDate()));
     const currentStatement = statementFor(date.getFullYear(), date.getMonth());
-    const statementEnd =
-      date <= currentStatement
-        ? currentStatement
-        : statementFor(date.getFullYear(), date.getMonth() + 1);
+    const belongsToCurrentStatement = isTransactionIncludedInStatement(
+      transaction.transactionDate,
+      currentStatement,
+      card,
+    );
+    const statementEnd = belongsToCurrentStatement
+      ? currentStatement
+      : statementFor(date.getFullYear(), date.getMonth() + 1);
     return `${statementEnd.getFullYear()}-${String(statementEnd.getMonth() + 1).padStart(2, '0')}`;
   }
 
@@ -1257,16 +1265,22 @@ export class TransactionsPage {
           Math.min(selectedCard.statementDay, new Date(year, month + 1, 0).getDate()),
         );
       const currentStatement = statementFor(date.getFullYear(), date.getMonth());
+      const closesBeforeStatementDay = excludesStatementDayTransactions(selectedCard);
+      const belongsToCurrentStatement = isTransactionIncludedInStatement(
+        transaction.transactionDate,
+        currentStatement,
+        selectedCard,
+      );
       let start: Date;
       let end: Date;
-      if (date <= currentStatement) {
+      if (belongsToCurrentStatement) {
         const previousStatement = statementFor(date.getFullYear(), date.getMonth() - 1);
         start = new Date(previousStatement);
-        start.setDate(start.getDate() + 1);
+        if (!closesBeforeStatementDay) start.setDate(start.getDate() + 1);
         end = currentStatement;
       } else {
         start = new Date(currentStatement);
-        start.setDate(start.getDate() + 1);
+        if (!closesBeforeStatementDay) start.setDate(start.getDate() + 1);
         end = statementFor(date.getFullYear(), date.getMonth() + 1);
       }
       return {

@@ -289,6 +289,15 @@
                 /><small>Days after statement generation</small></label
               >
             </div>
+            <label class="full checkbox-row"
+              ><input type="checkbox" formControlName="excludeStatementDayTransactions" /><span
+                ><strong>Exclude transactions on statement date</strong
+                ><small
+                  >Checked by default. Transactions made on the bill generation date start the next
+                  statement cycle.</small
+                ></span
+              ></label
+            >
             @if (
               form.controls.daysAfterStatement.touched && form.controls.daysAfterStatement.invalid
             ) {
@@ -903,6 +912,14 @@
                 </div>
                 <div>
                   <span>Bill generation</span><strong>{{ statementCountdown(card) }}</strong>
+                </div>
+                <div>
+                  <span>Statement-date transactions</span
+                  ><strong>{{
+                    card.excludeStatementDayTransactions === false
+                      ? 'Included in current statement'
+                      : 'Moved to next statement'
+                  }}</strong>
                 </div>
                 <div>
                   <span>Due date</span><strong>{{ date(dueDate(card)) }}</strong>
