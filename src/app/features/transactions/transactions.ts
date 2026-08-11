@@ -383,6 +383,7 @@ export class TransactionsPage {
   }
   readonly filtered = computed(() => {
     const term = this.search().trim().toLocaleLowerCase();
+    const numericTerm = term.replace(/[^0-9.]/g, '');
     const currentMonth = new Date().toISOString().slice(0, 7);
     return this.store
       .transactions()
@@ -403,7 +404,8 @@ export class TransactionsPage {
           (!term ||
             item.merchant?.toLocaleLowerCase().includes(term) ||
             this.cardName(item.cardId).toLocaleLowerCase().includes(term) ||
-            this.categoryName(item.categoryId).toLocaleLowerCase().includes(term)),
+            this.categoryName(item.categoryId).toLocaleLowerCase().includes(term) ||
+            (numericTerm.length > 0 && (item.amountMinor / 100).toFixed(2).includes(numericTerm))),
       );
   });
   readonly exportMonthChoices = computed<readonly TransactionExportChoice[]>(() => {

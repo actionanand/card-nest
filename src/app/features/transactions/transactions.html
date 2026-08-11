@@ -672,9 +672,10 @@
         }
         @if (transaction.taxIncluded && transaction.taxMinor) {
           <div>
-            <dt>Tax and charges</dt>
+            <dt>Amount breakdown</dt>
             <dd>
-              {{ money(transaction.taxMinor, transaction.currencyCode) }} ({{
+              {{ money(transaction.amountMinor - transaction.taxMinor, transaction.currencyCode) }}
+              + {{ money(transaction.taxMinor, transaction.currencyCode) }} tax ({{
                 taxPercentage(transaction)
               }}%)
             </dd>
