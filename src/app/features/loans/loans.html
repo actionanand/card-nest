@@ -219,6 +219,12 @@
                   <dt>Original purchase</dt>
                   <dd>{{ money(plan.convertedAmountMinor) }}</dd>
                 </div>
+                @if (emiExtra(plan.id, plan.convertedAmountMinor); as extra) {
+                  <div>
+                    <dt>Extra over purchase</dt>
+                    <dd>{{ money(extra) }}</dd>
+                  </div>
+                }
                 <div>
                   <dt>Started</dt>
                   <dd>{{ plan.startDate }}</dd>
@@ -233,6 +239,12 @@
                     }}
                   </dd>
                 </div>
+                @if (plan.notes) {
+                  <div class="emi-note">
+                    <dt>Note</dt>
+                    <dd>{{ plan.notes }}</dd>
+                  </div>
+                }
               </dl>
               <div class="emi-schedule">
                 @for (installment of installments(plan.id); track installment.installmentNumber) {

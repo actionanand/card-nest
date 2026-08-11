@@ -7,7 +7,7 @@ import {
   signal,
   viewChild,
 } from '@angular/core';
-import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
 import { FormArray, FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { ActivatedRoute, Router } from '@angular/router';
 import { Camera, CameraResultType, CameraSource } from '@capacitor/camera';
@@ -274,9 +274,63 @@ export class TransactionsPage {
     annualRate: new FormControl('15', { nonNullable: true }),
     startMode: new FormControl<EmiStartMode>('THIS_MONTH', { nonNullable: true }),
     customStart: new FormControl('', { nonNullable: true }),
+    notes: new FormControl('', { nonNullable: true, validators: [Validators.maxLength(200)] }),
   });
   readonly splitForm = new FormGroup({
     parts: new FormArray([this.createSplitPart(), this.createSplitPart()]),
+  });
+  private readonly emiFormChanges = toSignal(this.emiForm.valueChanges);
+  readonly emiPreview = computed(() => {
+    this.emiFormChanges();
+    const transaction = this.detailTransaction();
+    if (!transaction) return null;
+    const value = this.emiForm.getRawValue();
+    const months = Number(value.months);
+    if (!Number.isInteger(months) || months < 2 || months > 36) return null;
+    const rate = value.kind === 'NO_COST' ? 0 : Number(value.annualRate);
+    if (!Number.isFinite(rate) || rate < 0 || rate > 100) return null;
+    const card = this.store.cards().find((item) => item.id === transaction.cardId);
+    const startDate = this.emiStartDate(
+      transaction.transactionDate,
+      value.startMode,
+      value.customStart,
+    );
+    if (!card || !startDate) return null;
+    const schedule = createEmiSchedule(
+      {
+        id: 'preview',
+        transactionId: transaction.id,
+        cardId: transaction.cardId,
+        convertedAmountMinor: transaction.amountMinor,
+        remainingPurchaseMinor: 0,
+        tenureMonths: months,
+        annualRateBasisPoints: Math.round(rate * 100),
+        interestType: value.kind,
+        processingFeeMinor: 0,
+        taxMinor: 0,
+        startDate,
+        status: 'ACTIVE',
+      },
+      card,
+    );
+    if (!schedule.length) return null;
+    const totalMinor = schedule.reduce((sum, item) => sum + item.totalMinor, 0);
+    return {
+      monthlyMinor: schedule[0].totalMinor,
+      totalMinor,
+      extraMinor: totalMinor - transaction.amountMinor,
+      currencyCode: transaction.currencyCode,
+    };
+  });
+  private readonly formChanges = toSignal(this.form.valueChanges);
+  readonly taxBreakdown = computed(() => {
+    this.formChanges();
+    if (!this.form.controls.taxIncluded.value) return null;
+    const amountMinor = parseMoneyToMinor(this.form.controls.amount.value);
+    const taxMinor = parseMoneyToMinor(this.form.controls.taxAmount.value);
+    if (amountMinor === null || amountMinor <= 0) return null;
+    if (taxMinor === null || taxMinor <= 0 || taxMinor >= amountMinor) return null;
+    return { baseMinor: amountMinor - taxMinor, taxMinor };
   });
 
   setTransactionDate(value: string): void {
@@ -904,6 +958,7 @@ export class TransactionsPage {
       annualRate: '15',
       startMode: 'THIS_MONTH',
       customStart: transaction.transactionDate.slice(0, 7),
+      notes: '',
     });
     this.showEmiForm.set(true);
   }
@@ -943,6 +998,7 @@ export class TransactionsPage {
       status: 'ACTIVE',
       originalTransactionDate: transaction.transactionDate,
       originalMerchant: transaction.merchant,
+      notes: value.notes.trim() || undefined,
     };
     this.store.saveEmiPlan(plan, createEmiSchedule(plan, card));
     this.showEmiForm.set(false);

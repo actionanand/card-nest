@@ -293,6 +293,35 @@ legend {
   display: grid;
   gap: 0.1rem;
 }
+.tax-breakdown {
+  margin: -0.25rem 0 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+.emi-preview {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0.85rem;
+  border-radius: 0.6rem;
+  background: var(--canvas);
+  border: 1px solid var(--line);
+}
+.emi-preview div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.emi-preview dt {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+.emi-preview dd {
+  margin: 0;
+  font-weight: 700;
+}
 .attachment__pick {
   display: inline-flex;
   align-items: center;
