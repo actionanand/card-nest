@@ -490,8 +490,8 @@
   </section>
 
   <section class="month-ledger" aria-label="Transactions grouped by period">
-    @for (group of groups(); track group.key; let first = $first) {
-      <details class="panel month-group" [open]="first">
+    @for (group of groups(); track group.key) {
+      <details class="panel month-group" [open]="group.key === defaultOpenGroupKey()">
         <summary>
           <span>{{ group.label }}</span>
           <strong [class.credit]="group.totalMinor >= 0">{{

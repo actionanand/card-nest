@@ -14,7 +14,7 @@ import { Camera, CameraResultType, CameraSource } from '@capacitor/camera';
 import { Capacitor } from '@capacitor/core';
 import { CardTransaction, EmiPlan, RecurringRule, TransactionType } from '../../core/models/domain';
 import { CardNestStore } from '../../core/services/card-nest-store';
-import { formatMoney, parseMoneyToMinor } from '../../core/services/money';
+import { formatMoney, parseMoneyToMinor, transactionEffect } from '../../core/services/money';
 import { SnackbarService } from '../../core/services/snackbar.service';
 import { AppIcon } from '../../shared/app-icon';
 import { CategoriesPage } from '../categories/categories';
@@ -489,6 +489,21 @@ export class TransactionsPage {
       }));
   });
 
+  /** Opens the current period by default, or the latest past period — never a future one. */
+  readonly defaultOpenGroupKey = computed(() => {
+    const groups = this.groups();
+    if (!groups.length) return null;
+    const todayKey = this.periodForMode(
+      {
+        transactionDate: new Date().toISOString().slice(0, 10),
+        cardId: this.sourceFilter(),
+      } as CardTransaction,
+      this.effectiveGrouping(),
+    ).key;
+    const currentOrPast = groups.find((group) => group.key <= todayKey);
+    return (currentOrPast ?? groups[groups.length - 1]).key;
+  });
+
   constructor() {
     this.destroyRef.onDestroy(() => this.closeWebCamera());
     if (Capacitor.getPlatform() === 'web') void this.detectWebCamera();
@@ -940,8 +955,37 @@ export class TransactionsPage {
       !transaction.emiPlanId &&
       !transaction.recurringRuleId &&
       transaction.amountMinor >= this.store.emiMinimumMinor() &&
-      this.store.cards().some((card) => card.id === transaction.cardId)
+      this.store.cards().some((card) => card.id === transaction.cardId) &&
+      !this.isChargeCleared(transaction)
     );
+  }
+
+  /** True when payments/refunds have already settled this charge (FIFO, oldest first). */
+  private isChargeCleared(transaction: CardTransaction): boolean {
+    const chargeEffect = transactionEffect(transaction);
+    if (chargeEffect <= 0) return false;
+    const card = this.store.cards().find((item) => item.id === transaction.cardId);
+    const cardTransactions = this.store
+      .transactions()
+      .filter((item) => item.cardId === transaction.cardId && !item.emiCancelled)
+      .sort(
+        (left, right) =>
+          left.transactionDate.localeCompare(right.transactionDate) ||
+          left.createdAt.localeCompare(right.createdAt),
+      );
+    let creditPool = cardTransactions.reduce((pool, item) => {
+      const effect = transactionEffect(item);
+      return effect < 0 ? pool - effect : pool;
+    }, 0);
+    creditPool = Math.max(0, creditPool - Math.max(0, card?.openingBalanceMinor ?? 0));
+    for (const item of cardTransactions) {
+      const effect = transactionEffect(item);
+      if (effect <= 0) continue;
+      const covered = Math.min(creditPool, effect);
+      creditPool -= covered;
+      if (item.id === transaction.id) return covered >= effect;
+    }
+    return false;
   }
 
   canSplit(transaction: CardTransaction): boolean {
