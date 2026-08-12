@@ -134,6 +134,10 @@ export class LoansPage {
       .filter((item) => item.emiPlanId === planId)
       .sort((a, b) => a.installmentNumber - b.installmentNumber);
   }
+  emiExtra(planId: string, originalMinor: number): number {
+    const total = this.installments(planId).reduce((sum, item) => sum + item.totalMinor, 0);
+    return Math.max(0, total - originalMinor);
+  }
   nextInstallment(planId: string): EmiInstallment | undefined {
     const month = new Date().toISOString().slice(0, 7);
     return this.installments(planId).find(

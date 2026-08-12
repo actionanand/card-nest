@@ -308,6 +308,12 @@
   margin: 0;
   font-weight: 700;
 }
+.emi-details dl div.emi-note {
+  grid-column: 1 / -1;
+}
+.emi-details dl div.emi-note dd {
+  font-weight: 500;
+}
 .emi-schedule > div {
   display: flex;
   align-items: center;

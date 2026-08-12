@@ -300,6 +300,16 @@ export class SettingsPage {
     this.preferenceMessage.set('Minimum amount for EMI conversion updated.');
   }
 
+  async updateSpendHighlightThreshold(event: Event): Promise<void> {
+    const amount = parseMoneyToMinor((event.target as HTMLInputElement).value);
+    if (amount === null || amount <= 0) {
+      this.preferenceMessage.set('Enter a valid minimum amount to highlight transactions.');
+      return;
+    }
+    await this.store.setSpendHighlightThreshold(amount);
+    this.preferenceMessage.set('Minimum amount to highlight transactions updated.');
+  }
+
   async updateProfileTitle(value: string): Promise<void> {
     await this.store.setProfileTitle(value);
   }

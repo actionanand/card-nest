@@ -223,6 +223,12 @@
                   <small>Enter a charge smaller than the transaction total.</small>
                 }
               </label>
+              @if (taxBreakdown(); as breakdown) {
+                <p class="tax-breakdown full">
+                  {{ money(breakdown.baseMinor, 'INR') }} purchase +
+                  {{ money(breakdown.taxMinor, 'INR') }} tax &amp; charges
+                </p>
+              }
             }
             <div class="attachment full">
               <span class="attachment__label">Receipt images</span>
@@ -484,8 +490,8 @@
   </section>
 
   <section class="month-ledger" aria-label="Transactions grouped by period">
-    @for (group of groups(); track group.key; let first = $first) {
-      <details class="panel month-group" [open]="first">
+    @for (group of groups(); track group.key) {
+      <details class="panel month-group" [open]="group.key === defaultOpenGroupKey()">
         <summary>
           <span>{{ group.label }}</span>
           <strong [class.credit]="group.totalMinor >= 0">{{
@@ -666,9 +672,10 @@
         }
         @if (transaction.taxIncluded && transaction.taxMinor) {
           <div>
-            <dt>Tax and charges</dt>
+            <dt>Amount breakdown</dt>
             <dd>
-              {{ money(transaction.taxMinor, transaction.currencyCode) }} ({{
+              {{ money(transaction.amountMinor - transaction.taxMinor, transaction.currencyCode) }}
+              + {{ money(transaction.taxMinor, transaction.currencyCode) }} tax ({{
                 taxPercentage(transaction)
               }}%)
             </dd>
@@ -845,6 +852,30 @@
               [value]="emiForm.controls.customStart.value"
               (valueChange)="setCustomStart($event)"
             />
+          }
+          <label
+            >Note (optional)<textarea
+              formControlName="notes"
+              placeholder="e.g. Amazon no-cost, extra cashback applied to purchase"
+            ></textarea>
+          </label>
+          @if (emiPreview(); as preview) {
+            <dl class="emi-preview">
+              <div>
+                <dt>Monthly installment</dt>
+                <dd>{{ money(preview.monthlyMinor, preview.currencyCode) }}</dd>
+              </div>
+              <div>
+                <dt>Total payable</dt>
+                <dd>{{ money(preview.totalMinor, preview.currencyCode) }}</dd>
+              </div>
+              @if (preview.extraMinor > 0) {
+                <div>
+                  <dt>Extra over purchase</dt>
+                  <dd>{{ money(preview.extraMinor, preview.currencyCode) }}</dd>
+                </div>
+              }
+            </dl>
           }
           <div class="form-actions">
             <button class="btn" type="button" (click)="showEmiForm.set(false)">Cancel</button>

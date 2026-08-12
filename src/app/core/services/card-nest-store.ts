@@ -244,6 +244,8 @@ export class CardNestStore {
   readonly profileTitle = signal('');
   readonly profileName = signal('');
   readonly emiMinimumMinor = signal(250_000);
+  readonly spendHighlightThresholdMinor = signal(400_000);
+  readonly highlightDashboardSpending = signal(true);
   readonly flashTransactionSourceId = signal(readFlashSourcePreference() ?? '');
   readonly snoozedReminderCardIds = signal<readonly string[]>([]);
   readonly profileDisplayName = computed(() => {
@@ -304,7 +306,7 @@ export class CardNestStore {
     if (!this.database.ready()) return;
     const preferences = await this.database.query<{ key: string; encrypted_value: string }>(
       `SELECT key, encrypted_value FROM app_preferences
-       WHERE key IN ('budget_cycle_start_day', 'monthly_budget_minor', 'profile_title', 'profile_name', 'emi_minimum_minor', 'flash_transaction_source_id', 'snoozed_reminder_card_ids', 'payment_sources', 'data_cleared')`,
+       WHERE key IN ('budget_cycle_start_day', 'monthly_budget_minor', 'profile_title', 'profile_name', 'emi_minimum_minor', 'spend_highlight_threshold_minor', 'highlight_dashboard_spending', 'flash_transaction_source_id', 'snoozed_reminder_card_ids', 'payment_sources', 'data_cleared')`,
     );
     const values = new Map(preferences.map((item) => [item.key, item.encrypted_value]));
     this.dataWasCleared = values.get('data_cleared') === '1';
@@ -319,6 +321,12 @@ export class CardNestStore {
     this.profileName.set(values.get('profile_name') ?? '');
     const emiMinimum = Number(values.get('emi_minimum_minor'));
     if (Number.isFinite(emiMinimum) && emiMinimum >= 0) this.emiMinimumMinor.set(emiMinimum);
+    const spendThreshold = Number(values.get('spend_highlight_threshold_minor'));
+    if (Number.isFinite(spendThreshold) && spendThreshold >= 0)
+      this.spendHighlightThresholdMinor.set(spendThreshold);
+    const highlightSpending = values.get('highlight_dashboard_spending');
+    if (highlightSpending !== undefined)
+      this.highlightDashboardSpending.set(highlightSpending !== '0');
     const locallyStoredFlashSource = readFlashSourcePreference();
     const preferredFlashSource =
       locallyStoredFlashSource ?? values.get('flash_transaction_source_id') ?? '';
@@ -405,6 +413,16 @@ export class CardNestStore {
     await this.upsertPreference('emi_minimum_minor', String(amountMinor));
   }
 
+  async setSpendHighlightThreshold(amountMinor: number): Promise<void> {
+    this.spendHighlightThresholdMinor.set(amountMinor);
+    await this.upsertPreference('spend_highlight_threshold_minor', String(amountMinor));
+  }
+
+  async setHighlightDashboardSpending(enabled: boolean): Promise<void> {
+    this.highlightDashboardSpending.set(enabled);
+    await this.upsertPreference('highlight_dashboard_spending', enabled ? '1' : '0');
+  }
+
   async setFlashTransactionSource(id: string): Promise<void> {
     writeFlashSourcePreference(id);
     this.flashTransactionSourceId.set(id);
@@ -471,6 +489,91 @@ export class CardNestStore {
       )
       .reduce((total, item) => total + transactionEffect(item), 0);
     return Math.max(0, dueAtStatement + creditsAfterStatement);
+  }
+
+  private latestStatementFor(card: CreditCard, reference: Date): Date {
+    const nextStatement = statementDateFor(reference, card.statementDay);
+    return nextStatement.getTime() > reference.getTime()
+      ? previousStatementDate(nextStatement, card.statementDay)
+      : nextStatement;
+  }
+
+  /** The balance carried into the latest statement, i.e. everything billed before this cycle. */
+  cardCarriedForwardMinor(cardId: string, reference = new Date()): number {
+    const card = this.cards().find((item) => item.id === cardId);
+    if (!card) return 0;
+    const previousStatement = previousStatementDate(
+      this.latestStatementFor(card, reference),
+      card.statementDay,
+    );
+    return this.transactions()
+      .filter(
+        (item) =>
+          item.cardId === cardId &&
+          !item.emiCancelled &&
+          isTransactionIncludedInStatement(item.transactionDate, previousStatement, card),
+      )
+      .reduce((total, item) => total + transactionEffect(item), card.openingBalanceMinor);
+  }
+
+  cardOutstandingTransactions(cardId: string, reference = new Date()): readonly CardTransaction[] {
+    const card = this.cards().find((item) => item.id === cardId);
+    if (!card) return [];
+    const previousStatement = previousStatementDate(
+      this.latestStatementFor(card, reference),
+      card.statementDay,
+    );
+    const currentMonth = new Date().toISOString().slice(0, 7);
+    return this.transactions().filter(
+      (item) =>
+        item.cardId === cardId &&
+        !item.emiCancelled &&
+        item.transactionDate.slice(0, 7) <= currentMonth &&
+        !isTransactionIncludedInStatement(item.transactionDate, previousStatement, card),
+    );
+  }
+
+  cardStatementTransactions(cardId: string, reference = new Date()): readonly CardTransaction[] {
+    const card = this.cards().find((item) => item.id === cardId);
+    if (!card) return [];
+    const latestStatement = this.latestStatementFor(card, reference);
+    const previousStatement = previousStatementDate(latestStatement, card.statementDay);
+    const statementIso = toIsoDate(latestStatement);
+    const excludesStatementDay = excludesStatementDayTransactions(card);
+    return this.transactions().filter(
+      (item) =>
+        item.cardId === cardId &&
+        !item.emiCancelled &&
+        // Transactions billed in the latest statement cycle only.
+        ((isTransactionIncludedInStatement(item.transactionDate, latestStatement, card) &&
+          !isTransactionIncludedInStatement(item.transactionDate, previousStatement, card)) ||
+          // Payments and refunds made after the statement that reduce this due.
+          ((excludesStatementDay
+            ? item.transactionDate >= statementIso
+            : item.transactionDate > statementIso) &&
+            transactionEffect(item) < 0)),
+    );
+  }
+
+  cardUnbilledTransactions(cardId: string, reference = new Date()): readonly CardTransaction[] {
+    const card = this.cards().find((item) => item.id === cardId);
+    if (!card) return [];
+    const latestStatement = this.latestStatementFor(card, reference);
+    const statementIso = toIsoDate(latestStatement);
+    const excludesStatementDay = excludesStatementDayTransactions(card);
+    const currentMonth = new Date().toISOString().slice(0, 7);
+    return this.transactions().filter(
+      (item) =>
+        item.cardId === cardId &&
+        !item.emiCancelled &&
+        item.transactionDate.slice(0, 7) <= currentMonth &&
+        !isTransactionIncludedInStatement(item.transactionDate, latestStatement, card) &&
+        !(
+          (excludesStatementDay
+            ? item.transactionDate >= statementIso
+            : item.transactionDate > statementIso) && transactionEffect(item) < 0
+        ),
+    );
   }
 
   addCard(card: CreditCard): void {
@@ -748,6 +851,8 @@ export class CardNestStore {
     this.profileTitle.set('');
     this.profileName.set('');
     this.emiMinimumMinor.set(250_000);
+    this.spendHighlightThresholdMinor.set(400_000);
+    this.highlightDashboardSpending.set(true);
     this.flashTransactionSourceId.set('');
     clearFlashSourcePreference();
     this.snoozedReminderCardIds.set([]);
