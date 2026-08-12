@@ -15,21 +15,21 @@
   </header>
 
   <section class="hero panel" aria-labelledby="total-heading">
-    <div class="hero-total">
-      <p id="total-heading">Total outstanding</p>
+    <button type="button" class="hero-total" (click)="openBreakdown('OUTSTANDING')">
+      <p id="total-heading">Total outstanding <app-icon name="chevron_right" /></p>
       <strong>{{ money(snapshot().outstandingMinor) }}</strong>
       <span><i class="dot"></i> Across {{ store.activeCards().length }} active cards</span>
-    </div>
+    </button>
     <div class="hero-metrics">
-      <div>
+      <button type="button" class="hero-metric" (click)="openBreakdown('STATEMENT')">
         <small>Statement dues</small><b>{{ money(snapshot().statementDueMinor) }}</b
-        ><span>Current cycle</span>
-      </div>
-      <div>
+        ><span>Current cycle <app-icon name="chevron_right" /></span>
+      </button>
+      <button type="button" class="hero-metric" (click)="openBreakdown('UNBILLED')">
         <small>Unbilled</small><b>{{ money(snapshot().unbilledMinor) }}</b
-        ><span>Next statement</span>
-      </div>
-      <div>
+        ><span>Next statement <app-icon name="chevron_right" /></span>
+      </button>
+      <div class="hero-metric static">
         <small>Available credit</small><b>{{ money(snapshot().availableCreditMinor) }}</b
         ><span>{{ snapshot().utilisationPercent }}% utilised</span>
       </div>
@@ -170,3 +170,127 @@
     </div>
   </section>
 </div>
+
+@if (breakdownView(); as view) {
+  <div
+    class="breakdown-backdrop"
+    tabindex="-1"
+    (click)="closeBreakdown()"
+    (keydown.escape)="closeBreakdown()"
+  >
+    <section
+      class="panel breakdown-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="breakdown-title"
+      tabindex="-1"
+      (click)="$event.stopPropagation()"
+      (keydown)="$event.stopPropagation()"
+    >
+      <header class="breakdown-header">
+        <div>
+          <p class="eyebrow">Breakdown</p>
+          <h2 id="breakdown-title">{{ breakdownTitle() }}</h2>
+          <p class="breakdown-desc">{{ breakdownDescription() }}</p>
+        </div>
+        <button type="button" (click)="closeBreakdown()" aria-label="Close breakdown">
+          <app-icon name="close" />
+        </button>
+      </header>
+
+      <div class="breakdown-total">
+        <span>Total</span>
+        <strong>{{ money(breakdownTotal()) }}</strong>
+      </div>
+
+      <label class="breakdown-toggle">
+        <input
+          type="checkbox"
+          [checked]="ignorePaidDues()"
+          (change)="ignorePaidDues.set($any($event.target).checked)"
+        />
+        <span>Ignore paid dues</span>
+      </label>
+
+      <div class="breakdown-body">
+        @for (group of breakdownGroups(); track group.card.id) {
+          <article class="breakdown-group">
+            <div class="breakdown-group__head">
+              <div class="card-mini" aria-hidden="true">
+                <app-card-network-logo [network]="group.card.network" />
+              </div>
+              <div class="breakdown-group__name">
+                <strong>{{ group.card.nickname }}</strong>
+                <small>{{ group.card.issuerName }} · •••• {{ group.card.lastDigits }}</small>
+              </div>
+              <strong class="breakdown-group__total">{{
+                money(group.subtotal, group.card.currencyCode)
+              }}</strong>
+            </div>
+            @if (group.carriedForwardMinor || group.transactions.length) {
+              <ul class="breakdown-list">
+                @if (group.carriedForwardMinor) {
+                  <li>
+                    <div class="transaction-icon" aria-hidden="true">
+                      <app-icon name="schedule" />
+                    </div>
+                    <div class="breakdown-list__meta">
+                      <strong>Previous balance</strong>
+                      <small>Carried into this statement</small>
+                    </div>
+                    <strong
+                      class="breakdown-list__amount"
+                      [class.credit]="group.carriedForwardMinor < 0"
+                      >{{ carriedForwardLabel(group.carriedForwardMinor) }}</strong
+                    >
+                  </li>
+                }
+                @for (transaction of group.transactions; track transaction.id) {
+                  @let transactionCategory = category(transaction.categoryId);
+                  <li>
+                    <div
+                      class="transaction-icon"
+                      [class.credit]="rowReducesBalance(transaction)"
+                      [style.--category-colour]="transactionCategory?.colour || '#28684e'"
+                      aria-hidden="true"
+                    >
+                      <app-icon
+                        [name]="
+                          rowReducesBalance(transaction)
+                            ? 'incoming'
+                            : transactionCategory?.icon || 'category'
+                        "
+                      />
+                    </div>
+                    <div class="breakdown-list__meta">
+                      <strong>{{ transaction.merchant || transaction.type }}</strong>
+                      <small
+                        >{{ categoryName(transaction.categoryId) }} ·
+                        {{ transaction.transactionDate | appDate }}</small
+                      >
+                    </div>
+                    <strong
+                      class="breakdown-list__amount"
+                      [class.credit]="rowReducesBalance(transaction)"
+                      >{{ rowAmount(transaction) }}</strong
+                    >
+                  </li>
+                }
+              </ul>
+            } @else {
+              <p class="breakdown-empty">Nothing due on this card.</p>
+            }
+          </article>
+        } @empty {
+          <p class="breakdown-empty">Nothing to show here right now.</p>
+        }
+      </div>
+
+      <div class="breakdown-actions">
+        <a class="btn" routerLink="/transactions" (click)="closeBreakdown()">
+          Open transactions <app-icon name="chevron_right" />
+        </a>
+      </div>
+    </section>
+  </div>
+}

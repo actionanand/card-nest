@@ -1,4 +1,4 @@
-import { Component, computed, inject } from '@angular/core';
+import { Component, computed, inject, signal } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import {
@@ -7,10 +7,13 @@ import {
   previousStatementDate,
   statementDateFor,
 } from '../../core/services/billing-cycle';
-import { formatMoney } from '../../core/services/money';
+import { formatMoney, transactionEffect } from '../../core/services/money';
 import { AppIcon } from '../../shared/app-icon';
 import { AppDatePipe } from '../../core/services/date-format.service';
 import { CardNetworkLogo } from '../../shared/card-network-logo';
+import { CardTransaction } from '../../core/models/domain';
+
+type BreakdownView = 'OUTSTANDING' | 'STATEMENT' | 'UNBILLED';
 
 @Component({
   selector: 'app-dashboard-page',
@@ -45,6 +48,95 @@ export class DashboardPage {
       Math.round((this.snapshot().monthlySpendMinor / this.store.monthlyBudgetMinor()) * 100),
     ),
   );
+
+  readonly breakdownView = signal<BreakdownView | null>(null);
+  readonly ignorePaidDues = signal(true);
+  readonly breakdownTitle = computed(() => {
+    switch (this.breakdownView()) {
+      case 'STATEMENT':
+        return 'Statement dues';
+      case 'UNBILLED':
+        return 'Unbilled';
+      case 'OUTSTANDING':
+        return 'Total outstanding';
+      default:
+        return '';
+    }
+  });
+  readonly breakdownDescription = computed(() => {
+    switch (this.breakdownView()) {
+      case 'STATEMENT':
+        return 'The latest generated statement of each card — this cycle’s transactions plus any balance carried forward.';
+      case 'UNBILLED':
+        return 'Purchases made after the latest statement that will appear on the next bill.';
+      case 'OUTSTANDING':
+        return 'Everything you currently owe across active cards, billed and unbilled.';
+      default:
+        return '';
+    }
+  });
+  readonly breakdownTotal = computed(() => {
+    switch (this.breakdownView()) {
+      case 'STATEMENT':
+        return this.snapshot().statementDueMinor;
+      case 'UNBILLED':
+        return this.snapshot().unbilledMinor;
+      case 'OUTSTANDING':
+        return this.snapshot().outstandingMinor;
+      default:
+        return 0;
+    }
+  });
+  readonly breakdownGroups = computed(() => {
+    const view = this.breakdownView();
+    if (!view) return [];
+    return this.store
+      .activeCards()
+      .map((card) => {
+        const transactions =
+          view === 'STATEMENT'
+            ? this.store.cardStatementTransactions(card.id)
+            : view === 'UNBILLED'
+              ? this.store.cardUnbilledTransactions(card.id)
+              : this.store.cardOutstandingTransactions(card.id);
+        const carriedForwardMinor =
+          view === 'UNBILLED' ? 0 : this.store.cardCarriedForwardMinor(card.id);
+        const activity = transactions.reduce((sum, item) => sum + transactionEffect(item), 0);
+        const subtotal = Math.max(0, carriedForwardMinor + activity);
+        return {
+          card,
+          subtotal,
+          carriedForwardMinor,
+          transactions: [...transactions].sort((left, right) =>
+            right.transactionDate.localeCompare(left.transactionDate),
+          ),
+        };
+      })
+      .filter((group) =>
+        this.ignorePaidDues()
+          ? group.subtotal > 0
+          : group.subtotal > 0 || group.transactions.length > 0,
+      );
+  });
+
+  /** Whether a row lowers what is owed (payments, refunds, cashbacks). */
+  rowReducesBalance(transaction: CardTransaction): boolean {
+    return transactionEffect(transaction) < 0;
+  }
+  rowAmount(transaction: CardTransaction): string {
+    const effect = transactionEffect(transaction);
+    return `${effect < 0 ? '+' : '−'}${formatMoney(Math.abs(effect), transaction.currencyCode)}`;
+  }
+  carriedForwardLabel(minor: number): string {
+    return `${minor < 0 ? '+' : '−'}${formatMoney(Math.abs(minor), 'INR')}`;
+  }
+
+  openBreakdown(view: BreakdownView): void {
+    this.breakdownView.set(view);
+  }
+  closeBreakdown(): void {
+    this.breakdownView.set(null);
+  }
 
   money(value: number, currency = 'INR'): string {
     return formatMoney(value, currency);
