@@ -193,6 +193,9 @@
             >Monthly income (optional)<input
               [value]="store.monthlyIncomeMinor() / 100"
               [disabled]="!database.ready()"
+              type="number"
+              min="0"
+              step="0.01"
               inputmode="decimal"
               (change)="updateMoney($event, 'income')"
             /><small
@@ -203,6 +206,9 @@
             >Monthly budget<input
               [value]="store.monthlyBudgetMinor() / 100"
               [disabled]="!database.ready()"
+              type="number"
+              min="0"
+              step="0.01"
               inputmode="decimal"
               (change)="updateMoney($event, 'budget')" /></label
           ><label
@@ -217,9 +223,34 @@
             >Minimum amount for Convert to EMI<input
               [value]="store.emiMinimumMinor() / 100"
               [disabled]="!database.ready()"
+              type="number"
+              min="0"
+              step="0.01"
               inputmode="decimal"
               (change)="updateEmiMinimum($event)"
             /><small>Purchases below this amount will not show the EMI action.</small></label
+          ><label class="setting-row toggle spend-toggle"
+            ><span
+              ><strong>Highlight big spends</strong
+              ><small>Colour-highlight high-value spends in the dashboard breakdown</small></span
+            ><input
+              type="checkbox"
+              [checked]="store.highlightDashboardSpending()"
+              [disabled]="!database.ready()"
+              (change)="store.setHighlightDashboardSpending($any($event.target).checked)" /></label
+          ><label
+            >Minimum amount to highlight transactions<input
+              [value]="store.spendHighlightThresholdMinor() / 100"
+              [disabled]="!database.ready() || !store.highlightDashboardSpending()"
+              type="number"
+              min="0"
+              step="0.01"
+              inputmode="decimal"
+              (change)="updateSpendHighlightThreshold($event)"
+            /><small
+              >Spends at or above this amount are colour-highlighted in the dashboard
+              breakdown.</small
+            ></label
           >
         </div>
         @if (preferenceMessage(); as message) {

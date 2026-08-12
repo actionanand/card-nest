@@ -244,6 +244,8 @@ export class CardNestStore {
   readonly profileTitle = signal('');
   readonly profileName = signal('');
   readonly emiMinimumMinor = signal(250_000);
+  readonly spendHighlightThresholdMinor = signal(400_000);
+  readonly highlightDashboardSpending = signal(true);
   readonly flashTransactionSourceId = signal(readFlashSourcePreference() ?? '');
   readonly snoozedReminderCardIds = signal<readonly string[]>([]);
   readonly profileDisplayName = computed(() => {
@@ -304,7 +306,7 @@ export class CardNestStore {
     if (!this.database.ready()) return;
     const preferences = await this.database.query<{ key: string; encrypted_value: string }>(
       `SELECT key, encrypted_value FROM app_preferences
-       WHERE key IN ('budget_cycle_start_day', 'monthly_budget_minor', 'profile_title', 'profile_name', 'emi_minimum_minor', 'flash_transaction_source_id', 'snoozed_reminder_card_ids', 'payment_sources', 'data_cleared')`,
+       WHERE key IN ('budget_cycle_start_day', 'monthly_budget_minor', 'profile_title', 'profile_name', 'emi_minimum_minor', 'spend_highlight_threshold_minor', 'highlight_dashboard_spending', 'flash_transaction_source_id', 'snoozed_reminder_card_ids', 'payment_sources', 'data_cleared')`,
     );
     const values = new Map(preferences.map((item) => [item.key, item.encrypted_value]));
     this.dataWasCleared = values.get('data_cleared') === '1';
@@ -319,6 +321,12 @@ export class CardNestStore {
     this.profileName.set(values.get('profile_name') ?? '');
     const emiMinimum = Number(values.get('emi_minimum_minor'));
     if (Number.isFinite(emiMinimum) && emiMinimum >= 0) this.emiMinimumMinor.set(emiMinimum);
+    const spendThreshold = Number(values.get('spend_highlight_threshold_minor'));
+    if (Number.isFinite(spendThreshold) && spendThreshold >= 0)
+      this.spendHighlightThresholdMinor.set(spendThreshold);
+    const highlightSpending = values.get('highlight_dashboard_spending');
+    if (highlightSpending !== undefined)
+      this.highlightDashboardSpending.set(highlightSpending !== '0');
     const locallyStoredFlashSource = readFlashSourcePreference();
     const preferredFlashSource =
       locallyStoredFlashSource ?? values.get('flash_transaction_source_id') ?? '';
@@ -403,6 +411,16 @@ export class CardNestStore {
   async setEmiMinimum(amountMinor: number): Promise<void> {
     this.emiMinimumMinor.set(amountMinor);
     await this.upsertPreference('emi_minimum_minor', String(amountMinor));
+  }
+
+  async setSpendHighlightThreshold(amountMinor: number): Promise<void> {
+    this.spendHighlightThresholdMinor.set(amountMinor);
+    await this.upsertPreference('spend_highlight_threshold_minor', String(amountMinor));
+  }
+
+  async setHighlightDashboardSpending(enabled: boolean): Promise<void> {
+    this.highlightDashboardSpending.set(enabled);
+    await this.upsertPreference('highlight_dashboard_spending', enabled ? '1' : '0');
   }
 
   async setFlashTransactionSource(id: string): Promise<void> {
@@ -833,6 +851,8 @@ export class CardNestStore {
     this.profileTitle.set('');
     this.profileName.set('');
     this.emiMinimumMinor.set(250_000);
+    this.spendHighlightThresholdMinor.set(400_000);
+    this.highlightDashboardSpending.set(true);
     this.flashTransactionSourceId.set('');
     clearFlashSourcePreference();
     this.snoozedReminderCardIds.set([]);

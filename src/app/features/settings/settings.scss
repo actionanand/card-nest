@@ -137,6 +137,9 @@
 .toggle {
   grid-template-columns: 1fr auto;
 }
+.spend-toggle {
+  grid-column: 1 / -1;
+}
 .toggle input {
   width: 2.7rem;
   height: 1.45rem;

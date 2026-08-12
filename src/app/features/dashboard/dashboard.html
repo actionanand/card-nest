@@ -203,14 +203,25 @@
         <strong>{{ money(breakdownTotal()) }}</strong>
       </div>
 
-      <label class="breakdown-toggle">
-        <input
-          type="checkbox"
-          [checked]="ignorePaidDues()"
-          (change)="ignorePaidDues.set($any($event.target).checked)"
-        />
-        <span>Ignore paid dues</span>
-      </label>
+      <div class="breakdown-toggles">
+        <label class="breakdown-toggle">
+          <input
+            type="checkbox"
+            [checked]="ignorePaidDues()"
+            (change)="ignorePaidDues.set($any($event.target).checked)"
+          />
+          <span>Ignore paid dues</span>
+        </label>
+
+        <label class="breakdown-toggle">
+          <input
+            type="checkbox"
+            [checked]="store.highlightDashboardSpending()"
+            (change)="store.setHighlightDashboardSpending($any($event.target).checked)"
+          />
+          <span>Highlight big spends</span>
+        </label>
+      </div>
 
       <div class="breakdown-body">
         @for (group of breakdownGroups(); track group.card.id) {
@@ -247,7 +258,10 @@
                 }
                 @for (transaction of group.transactions; track transaction.id) {
                   @let transactionCategory = category(transaction.categoryId);
-                  <li>
+                  <li
+                    [class.spend-high]="spendTier(transaction) === 'high'"
+                    [class.spend-mid]="spendTier(transaction) === 'mid'"
+                  >
                     <div
                       class="transaction-icon"
                       [class.credit]="rowReducesBalance(transaction)"
@@ -263,7 +277,14 @@
                       />
                     </div>
                     <div class="breakdown-list__meta">
-                      <strong>{{ transaction.merchant || transaction.type }}</strong>
+                      <strong>
+                        <span class="tx-name">{{ transaction.merchant || transaction.type }}</span>
+                        @if (installmentBadge(transaction); as badge) {
+                          <span class="tx-badge"
+                            ><app-icon [name]="installmentIcon(transaction)" /> {{ badge }}</span
+                          >
+                        }
+                      </strong>
                       <small
                         >{{ categoryName(transaction.categoryId) }} ·
                         {{ transaction.transactionDate | appDate }}</small

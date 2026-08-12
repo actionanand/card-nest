@@ -131,6 +131,68 @@ export class DashboardPage {
     return `${minor < 0 ? '+' : '−'}${formatMoney(Math.abs(minor), 'INR')}`;
   }
 
+  /** Largest single spend (charge) in the current breakdown, used to grade highlights. */
+  readonly spendMax = computed(() => {
+    let max = 0;
+    for (const group of this.breakdownGroups()) {
+      for (const transaction of group.transactions) {
+        const effect = transactionEffect(transaction);
+        if (effect > max) max = effect;
+      }
+    }
+    return max;
+  });
+
+  /** Grades a spend row relative to the biggest spend in this popup; credits are never graded. */
+  spendTier(transaction: CardTransaction): 'high' | 'mid' | null {
+    if (!this.store.highlightDashboardSpending()) return null;
+    const effect = transactionEffect(transaction);
+    if (effect <= 0) return null;
+    const max = this.spendMax();
+    if (max <= 0) return null;
+    const threshold = this.store.spendHighlightThresholdMinor();
+    if (max >= threshold) {
+      // Only grade spends above the configured minimum, scaled across the qualifying range.
+      if (effect < threshold) return null;
+      const midpoint = (threshold + max) / 2;
+      return effect >= midpoint ? 'high' : 'mid';
+    }
+    // Everything is below the minimum: fall back to highlighting the largest relatively.
+    const ratio = effect / max;
+    if (ratio >= 0.66) return 'high';
+    if (ratio >= 0.33) return 'mid';
+    return null;
+  }
+
+  installmentIcon(transaction: CardTransaction): string {
+    return transaction.emiPlanId ? 'schedule' : 'repeat';
+  }
+  installmentBadge(transaction: CardTransaction): string | null {
+    if (transaction.emiPlanId && transaction.emiInstallmentNumber) {
+      const total =
+        transaction.emiTenureMonths ??
+        this.store.emiInstallments().filter((item) => item.emiPlanId === transaction.emiPlanId)
+          .length;
+      return `${transaction.emiInstallmentNumber}/${total || '∞'}`;
+    }
+    if (transaction.recurringRuleId) {
+      const siblings = this.store
+        .transactions()
+        .filter((item) => item.recurringRuleId === transaction.recurringRuleId)
+        .sort(
+          (left, right) =>
+            left.transactionDate.localeCompare(right.transactionDate) ||
+            left.createdAt.localeCompare(right.createdAt),
+        );
+      const position = Math.max(1, siblings.findIndex((item) => item.id === transaction.id) + 1);
+      const limit = this.store
+        .recurringRules()
+        .find((rule) => rule.id === transaction.recurringRuleId)?.occurrenceLimit;
+      return `${position}/${limit ?? '∞'}`;
+    }
+    return null;
+  }
+
   openBreakdown(view: BreakdownView): void {
     this.breakdownView.set(view);
   }

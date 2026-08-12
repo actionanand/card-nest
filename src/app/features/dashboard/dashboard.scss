@@ -503,12 +503,17 @@ button.hero-metric:focus-visible {
   font-weight: 600;
   font-variant-numeric: lining-nums tabular-nums;
 }
+.breakdown-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem 1.4rem;
+  padding: 0.7rem 1.35rem;
+  border-bottom: 1px solid var(--line);
+}
 .breakdown-toggle {
   display: flex;
   align-items: center;
   gap: 0.55rem;
-  padding: 0.7rem 1.35rem;
-  border-bottom: 1px solid var(--line);
   color: var(--muted);
   font-size: 0.8rem;
   font-weight: 650;
@@ -554,6 +559,12 @@ button.hero-metric:focus-visible {
 }
 .breakdown-group__total {
   font-variant-numeric: lining-nums tabular-nums;
+  padding: 0.22rem 0.55rem;
+  border-radius: 0.5rem;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 700;
+  font-size: 0.9rem;
 }
 .breakdown-list {
   list-style: none;
@@ -569,16 +580,50 @@ button.hero-metric:focus-visible {
   gap: 0.7rem;
   padding: 0.5rem 0;
 }
+.breakdown-list li.spend-high {
+  background: rgba(229, 72, 77, 0.14);
+  border-radius: 0.4rem;
+  padding: 0.5rem 0.55rem;
+}
+.breakdown-list li.spend-mid {
+  background: rgba(245, 165, 36, 0.14);
+  border-radius: 0.4rem;
+  padding: 0.5rem 0.55rem;
+}
 .breakdown-list__meta {
   display: grid;
   gap: 0.15rem;
   min-width: 0;
 }
 .breakdown-list__meta strong {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
   font-size: 0.85rem;
+  min-width: 0;
+}
+.tx-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
+}
+.tx-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.15rem;
+  flex-shrink: 0;
+  padding: 0.05rem 0.35rem;
+  border-radius: 0.4rem;
+  background: var(--canvas);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.62rem;
+  font-weight: 700;
+}
+.tx-badge app-icon {
+  width: 0.7rem;
+  height: 0.7rem;
 }
 .breakdown-list__meta small {
   color: var(--muted);
