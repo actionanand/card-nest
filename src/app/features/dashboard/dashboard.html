@@ -190,8 +190,19 @@
       <header class="breakdown-header">
         <div>
           <p class="eyebrow">Breakdown</p>
-          <h2 id="breakdown-title">{{ breakdownTitle() }}</h2>
-          <p class="breakdown-desc">{{ breakdownDescription() }}</p>
+          <button
+            type="button"
+            class="breakdown-title"
+            (click)="breakdownHelpOpen.set(!breakdownHelpOpen())"
+            [attr.aria-expanded]="breakdownHelpOpen()"
+            aria-controls="breakdown-help"
+          >
+            <h2 id="breakdown-title">{{ breakdownTitle() }}</h2>
+            <app-icon name="help" />
+          </button>
+          @if (breakdownHelpOpen()) {
+            <p id="breakdown-help" class="breakdown-desc">{{ breakdownDescription() }}</p>
+          }
         </div>
         <button type="button" (click)="closeBreakdown()" aria-label="Close breakdown">
           <app-icon name="close" />
@@ -199,8 +210,18 @@
       </header>
 
       <div class="breakdown-total">
-        <span>Total</span>
-        <strong>{{ money(breakdownTotal()) }}</strong>
+        <div class="breakdown-total__row">
+          <span>Total</span>
+          <strong>{{ money(breakdownTotal()) }}</strong>
+        </div>
+        @if (statementNearestDue(); as due) {
+          <small class="breakdown-total__due">
+            Nearest due {{ due | appDate }} ·
+            <span class="due-chip" [class]="dueTone(dueDays(due))">{{
+              dueDaysLabel(dueDays(due))
+            }}</span>
+          </small>
+        }
       </div>
 
       <div class="breakdown-toggles">
@@ -234,9 +255,19 @@
                 <strong>{{ group.card.nickname }}</strong>
                 <small>{{ group.card.issuerName }} · •••• {{ group.card.lastDigits }}</small>
               </div>
-              <strong class="breakdown-group__total">{{
-                money(group.subtotal, group.card.currencyCode)
-              }}</strong>
+              <div class="breakdown-group__amount">
+                <strong class="breakdown-group__total">{{
+                  money(group.subtotal, group.card.currencyCode)
+                }}</strong>
+                @if (group.dueDate) {
+                  <small class="breakdown-group__due"
+                    ><app-icon name="schedule" /> Due {{ group.dueDate | appDate }}</small
+                  >
+                  <span class="due-chip" [class]="dueTone(dueDays(group.dueDate))">{{
+                    dueDaysLabel(dueDays(group.dueDate))
+                  }}</span>
+                }
+              </div>
             </div>
             @if (group.carriedForwardMinor || group.transactions.length) {
               <ul class="breakdown-list">

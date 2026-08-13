@@ -50,6 +50,9 @@ Rows that belong to a plan carry a small badge:
 Checked by default. When on, any card whose subtotal is `₹0.00` (fully paid this cycle) is hidden.
 Turn it off to also see fully-settled cards with their offsetting payments.
 
+In the **Statement dues** view each card also shows its **payment due date** next to the card total,
+and cards are ordered with the **nearest due date first** so the most urgent bill sits at the top.
+
 ## "Highlight big spends" and the colouring rules
 
 A toggle (checked by default) is available both in the Breakdown popup and in

@@ -6,12 +6,13 @@ import {
   paymentDueDate,
   previousStatementDate,
   statementDateFor,
+  toIsoDate,
 } from '../../core/services/billing-cycle';
 import { formatMoney, transactionEffect } from '../../core/services/money';
 import { AppIcon } from '../../shared/app-icon';
 import { AppDatePipe } from '../../core/services/date-format.service';
 import { CardNetworkLogo } from '../../shared/card-network-logo';
-import { CardTransaction } from '../../core/models/domain';
+import { CardTransaction, CreditCard } from '../../core/models/domain';
 
 type BreakdownView = 'OUTSTANDING' | 'STATEMENT' | 'UNBILLED';
 
@@ -51,6 +52,7 @@ export class DashboardPage {
 
   readonly breakdownView = signal<BreakdownView | null>(null);
   readonly ignorePaidDues = signal(true);
+  readonly breakdownHelpOpen = signal(false);
   readonly breakdownTitle = computed(() => {
     switch (this.breakdownView()) {
       case 'STATEMENT':
@@ -90,7 +92,7 @@ export class DashboardPage {
   readonly breakdownGroups = computed(() => {
     const view = this.breakdownView();
     if (!view) return [];
-    return this.store
+    const groups = this.store
       .activeCards()
       .map((card) => {
         const transactions =
@@ -107,6 +109,7 @@ export class DashboardPage {
           card,
           subtotal,
           carriedForwardMinor,
+          dueDate: view === 'STATEMENT' ? this.cardStatementDueDate(card) : null,
           transactions: [...transactions].sort((left, right) =>
             right.transactionDate.localeCompare(left.transactionDate),
           ),
@@ -117,7 +120,28 @@ export class DashboardPage {
           ? group.subtotal > 0
           : group.subtotal > 0 || group.transactions.length > 0,
       );
+    if (view === 'STATEMENT') {
+      // Nearest payment due date first.
+      groups.sort((left, right) => (left.dueDate ?? '').localeCompare(right.dueDate ?? ''));
+    }
+    return groups;
   });
+
+  readonly statementNearestDue = computed(() =>
+    this.breakdownView() === 'STATEMENT'
+      ? (this.breakdownGroups().find((group) => group.dueDate)?.dueDate ?? null)
+      : null,
+  );
+
+  private cardStatementDueDate(card: CreditCard): string {
+    const reference = new Date();
+    const nextStatement = statementDateFor(reference, card.statementDay);
+    const latestStatement =
+      nextStatement.getTime() > reference.getTime()
+        ? previousStatementDate(nextStatement, card.statementDay)
+        : nextStatement;
+    return toIsoDate(paymentDueDate(latestStatement, card));
+  }
 
   /** Whether a row lowers what is owed (payments, refunds, cashbacks). */
   rowReducesBalance(transaction: CardTransaction): boolean {
@@ -195,6 +219,7 @@ export class DashboardPage {
 
   openBreakdown(view: BreakdownView): void {
     this.breakdownView.set(view);
+    this.breakdownHelpOpen.set(false);
   }
   closeBreakdown(): void {
     this.breakdownView.set(null);
@@ -230,5 +255,13 @@ export class DashboardPage {
     if (days <= 3) return 'urgent';
     if (days <= 8) return 'soon';
     return 'comfortable';
+  }
+  dueDays(dateIso: string): number {
+    return daysBetween(new Date(), new Date(`${dateIso}T00:00:00`));
+  }
+  dueDaysLabel(days: number): string {
+    if (days < 0) return `${-days} ${-days === 1 ? 'day' : 'days'} overdue`;
+    if (days === 0) return 'Due today';
+    return `${days} ${days === 1 ? 'day' : 'days'} left`;
   }
 }

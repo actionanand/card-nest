@@ -100,6 +100,7 @@ export class TransactionsPage {
   );
   readonly showEmiForm = signal(false);
   readonly showSplitForm = signal(false);
+  readonly helpOpen = signal(false);
   readonly deleteCandidate = signal<CardTransaction | null>(null);
   readonly payFromOpen = signal(false);
   readonly sourceFilterOpen = signal(false);

@@ -8,6 +8,23 @@
   max-width: 72rem;
   overflow-x: clip;
 }
+.page-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.page-title app-icon {
+  width: 1rem;
+  height: 1rem;
+  color: var(--muted);
+  display: none;
+}
 .add-transaction app-icon,
 .back-button app-icon {
   width: 1.15rem;
@@ -1103,6 +1120,15 @@ label small {
   }
   .page-header {
     padding-inline: 0.25rem;
+  }
+  .page-title app-icon {
+    display: inline-flex;
+  }
+  .transactions-page .subtitle {
+    display: none;
+  }
+  .transactions-page .subtitle.open {
+    display: block;
   }
   .add-transaction {
     display: none;
