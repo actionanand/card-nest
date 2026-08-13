@@ -2,8 +2,19 @@
   <header class="page-header">
     <div>
       <p class="eyebrow">Your wallet</p>
-      <h1>Cards</h1>
-      <p class="subtitle">Compact, private and ready for every billing cycle.</p>
+      <button
+        type="button"
+        class="page-title"
+        (click)="helpOpen.set(!helpOpen())"
+        [attr.aria-expanded]="helpOpen()"
+        aria-controls="cards-help"
+      >
+        <h1>Cards</h1>
+        <app-icon name="help" />
+      </button>
+      <p id="cards-help" class="subtitle" [class.open]="helpOpen()">
+        Compact, private and ready for every billing cycle.
+      </p>
     </div>
     <button
       class="btn btn-primary add-card"
@@ -46,6 +57,35 @@
       (valueChange)="updateCardFilter($event)"
     />
   </div>
+
+  @if (!showArchived() && (cardFilter() === 'DUE' || cardFilter() === 'GRACE')) {
+    <div class="card-subfilters">
+      @if (cardFilter() === 'DUE') {
+        <app-select-picker
+          class="card-filter"
+          label="Bill status"
+          [options]="dueScopeOptions"
+          [value]="dueBillGeneratedOnly() ? 'GENERATED' : 'ALL'"
+          (valueChange)="updateDueScope($event)"
+        />
+        <app-select-picker
+          class="card-filter"
+          label="Sort by"
+          [options]="dueSortOptions"
+          [value]="cardSort()"
+          (valueChange)="updateCardSort($event)"
+        />
+      } @else {
+        <app-select-picker
+          class="card-filter"
+          label="Sort by"
+          [options]="graceSortOptions"
+          [value]="cardSort()"
+          (valueChange)="updateCardSort($event)"
+        />
+      }
+    </div>
+  }
 
   @if (cardFilterTotal(); as total) {
     <section class="card-filter-total" aria-live="polite">
@@ -780,29 +820,44 @@
             [attr.aria-expanded]="selectedCardId() === card.id"
             [attr.aria-controls]="'details-' + card.id"
           >
-            <span class="network-tile"><app-card-network-logo [network]="card.network" /></span>
-            <span class="card-identity"
-              ><strong
-                >{{ card.nickname }}
-                <b
-                  >{{ card.network === 'AMERICAN_EXPRESS' ? '•••••' : '••••' }}
-                  {{ card.lastDigits }}</b
-                ></strong
-              ><small>
-                @if (card.archived) {
-                  {{ card.issuerName }} · Inactive
-                } @else {
-                  {{ card.issuerName }} · Exp {{ expiry(card) }}
-                  @if (!billIsDue(card)) {
-                    · {{ statementCountdown(card) }}
-                  }
-                }
-              </small>
-              @if (!card.archived && billIsDue(card)) {
-                <em class="bill-due-badge"
-                  ><app-icon name="schedule" /> Bill is due · {{ date(dueDate(card)) }}</em
-                >
+            <span class="network-cell">
+              <span class="network-tile"><app-card-network-logo [network]="card.network" /></span>
+              @if (linkGroupColour(card); as colour) {
+                <span
+                  class="link-dot"
+                  [style.background-color]="colour"
+                  [attr.title]="'Linked cards'"
+                  aria-label="Linked cards"
+                ></span>
               }
+            </span>
+            <span class="card-identity">
+              <span class="ci-line ci-line--name">
+                <strong class="card-identity__name"
+                  ><span class="card-nick">{{ card.nickname }}</span
+                  ><b>{{ card.lastDigits }}</b></strong
+                >
+                @if (filterChip(card); as chip) {
+                  <em class="filter-chip ci-chip {{ chip.tone }}">{{ chip.label }}</em>
+                }
+              </span>
+              <span class="ci-line ci-line--meta">
+                <small class="card-identity__meta">
+                  @if (card.archived) {
+                    {{ card.issuerName }} · Inactive
+                  } @else {
+                    {{ card.issuerName }} · Exp {{ expiry(card) }}
+                    @if (!billIsDue(card)) {
+                      · {{ statementCountdown(card) }}
+                    }
+                  }
+                </small>
+                @if (!card.archived && billIsDue(card)) {
+                  <em class="bill-due-badge ci-due"
+                    ><app-icon name="schedule" /> Due on · {{ date(dueDate(card)) }}</em
+                  >
+                }
+              </span>
               @if (card.subtype) {
                 <em class="compact-subtype">{{ card.subtype }}</em>
               }

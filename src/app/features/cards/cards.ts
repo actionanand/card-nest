@@ -18,13 +18,13 @@ import { CardNestStore } from '../../core/services/card-nest-store';
 import { formatMoney, parseMoneyToMinor } from '../../core/services/money';
 import { SensitiveCardDataService } from '../../core/services/sensitive-card-data.service';
 import { SnackbarService } from '../../core/services/snackbar.service';
+import { UiPreferencesService } from '../../core/services/ui-preferences.service';
 import { CardNetworkLogo } from '../../shared/card-network-logo';
 import { AppIcon } from '../../shared/app-icon';
 import { ConfirmationDialog } from '../../shared/confirmation-dialog';
 import { DateFormatService } from '../../core/services/date-format.service';
 import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
 
-type CardFilter = 'ALL' | 'DUE' | 'GRACE' | 'FEE' | 'EXPIRING';
 type PaymentMode = 'DUE' | 'OUTSTANDING' | 'CUSTOM';
 type ArchiveAction = 'ARCHIVE' | 'RESTORE';
 
@@ -61,6 +61,7 @@ export class CardsPage {
   private readonly document = inject(DOCUMENT);
   private readonly sanitizer = inject(DomSanitizer);
   private readonly dates = inject(DateFormatService);
+  private readonly uiPreferences = inject(UiPreferencesService);
   private readonly requestedEditId = this.route.snapshot.queryParamMap.get('edit');
   private requestedEditHandled = false;
   readonly showForm = signal(this.route.snapshot.queryParamMap.get('add') === 'true');
@@ -110,7 +111,39 @@ export class CardsPage {
   readonly revealedCardId = signal<string | null>(null);
   readonly revealedNumber = signal('');
   readonly revealedCvv = signal('');
-  readonly cardFilter = signal<CardFilter>('ALL');
+  readonly cardFilter = this.uiPreferences.cardsFilter;
+  readonly cardSort = this.uiPreferences.cardsSort;
+  readonly dueBillGeneratedOnly = this.uiPreferences.cardsDueBillGeneratedOnly;
+  readonly helpOpen = signal(false);
+  private readonly linkGroupPalette = [
+    '#e5484d',
+    '#f5a524',
+    '#3e63dd',
+    '#8e4ec6',
+    '#e93d82',
+    '#12a594',
+    '#d6409f',
+    '#5746af',
+    '#0091ff',
+    '#f76808',
+    '#30a46c',
+    '#aa5b00',
+  ];
+  readonly linkGroupColours = computed(() => {
+    const ids = [
+      ...new Set(
+        this.store
+          .cards()
+          .filter((card) => !card.deletedAt && card.relationshipGroupId)
+          .map((card) => card.relationshipGroupId as string),
+      ),
+    ].sort();
+    const map = new Map<string, string>();
+    ids.forEach((id, index) =>
+      map.set(id, this.linkGroupPalette[index % this.linkGroupPalette.length]),
+    );
+    return map;
+  });
   private readonly richTextRanges = new Map<'notes' | 'benefitNote', Range>();
   readonly visibleCards = computed(() =>
     this.store
@@ -119,7 +152,7 @@ export class CardsPage {
       .filter((card) => (this.showArchived() ? card.archived : !card.archived))
       .filter((card) => this.matchesFilter(card))
       .filter((card) => this.matchesSearch(card))
-      .sort((a, b) => a.nickname.localeCompare(b.nickname, undefined, { sensitivity: 'base' })),
+      .sort((a, b) => this.compareCards(a, b)),
   );
   readonly activeCardTotal = computed(
     () => this.store.cards().filter((card) => !card.deletedAt && !card.archived).length,
@@ -212,6 +245,18 @@ export class CardsPage {
     { value: 'GRACE', label: 'Longest grace period' },
     { value: 'FEE', label: 'Annual fee due' },
     { value: 'EXPIRING', label: 'Expiring soon' },
+  ];
+  readonly dueScopeOptions: readonly AppSelectOption[] = [
+    { value: 'GENERATED', label: 'Bill generated only' },
+    { value: 'ALL', label: 'All with a balance' },
+  ];
+  readonly dueSortOptions: readonly AppSelectOption[] = [
+    { value: 'DUE_SOON', label: 'Nearest due first' },
+    { value: 'NAME', label: 'Card name (A–Z)' },
+  ];
+  readonly graceSortOptions: readonly AppSelectOption[] = [
+    { value: 'GRACE_LONGEST', label: 'Longest grace first' },
+    { value: 'NAME', label: 'Card name (A–Z)' },
   ];
   readonly renewalMonthOptions: readonly AppSelectOption[] = this.months.map((month) => ({
     value: String(month),
@@ -391,6 +436,51 @@ export class CardsPage {
     const grace = gracePeriodBreakdown(card);
     return `${grace.totalDays} days (${grace.statementDays} + ${grace.paymentDays})`;
   }
+  dueTone(days: number): string {
+    if (days < 0) return 'overdue';
+    if (days <= 3) return 'urgent';
+    if (days <= 8) return 'soon';
+    return 'comfortable';
+  }
+  dueDaysLabel(days: number): string {
+    if (days < 0) return `${-days} ${-days === 1 ? 'day' : 'days'} overdue`;
+    if (days === 0) return 'Due today';
+    return `${days} ${days === 1 ? 'day' : 'days'} left`;
+  }
+  /** Contextual chip for the active card-view filter (due countdown, grace days, or expiry). */
+  filterChip(card: CreditCard): { label: string; tone: string } | null {
+    if (card.archived) return null;
+    const filter = this.cardFilter();
+    if (filter === 'DUE') {
+      const days = daysBetween(new Date(), this.dueDate(card));
+      return { label: this.dueDaysLabel(days), tone: this.dueTone(days) };
+    }
+    if (filter === 'GRACE') {
+      const grace = this.grace(card);
+      return { label: `${grace} ${grace === 1 ? 'day' : 'days'} grace`, tone: 'grace' };
+    }
+    if (filter === 'EXPIRING') return this.expiryChip(card);
+    return null;
+  }
+  private expiryChip(card: CreditCard): { label: string; tone: string } | null {
+    if (!card.expiryMonth || !card.expiryYear) return null;
+    const expiry = new Date(card.expiryYear, card.expiryMonth, 0);
+    const days = daysBetween(new Date(), expiry);
+    const tone = days < 0 ? 'overdue' : days <= 30 ? 'urgent' : days <= 90 ? 'soon' : 'comfortable';
+    const label =
+      days < 0
+        ? 'Expired'
+        : days <= 45
+          ? `${days} ${days === 1 ? 'day' : 'days'} left`
+          : `${Math.round(days / 30)} months left`;
+    return { label, tone };
+  }
+  /** A stable colour for the card's linked-card group, or null when the card is standalone. */
+  linkGroupColour(card: CreditCard): string | null {
+    return card.relationshipGroupId
+      ? (this.linkGroupColours().get(card.relationshipGroupId) ?? null)
+      : null;
+  }
   utilisation(card: CreditCard): number {
     return card.creditLimitMinor
       ? Math.max(0, Math.round((this.store.cardOutstanding(card.id) / card.creditLimitMinor) * 100))
@@ -495,7 +585,6 @@ export class CardsPage {
   }
   showCardArchive(archived: boolean): void {
     this.showArchived.set(archived);
-    if (archived) this.cardFilter.set('ALL');
     this.selectedCardId.set(null);
     this.hideRevealedSecrets();
     this.expandedBenefitId.set(null);
@@ -1186,12 +1275,42 @@ export class CardsPage {
     return this.sanitizer.bypassSecurityTrustHtml(this.sanitizedRichText(value));
   }
   updateCardFilter(value: string): void {
-    this.cardFilter.set(value as CardFilter);
+    this.uiPreferences.setCardsFilter(value);
+    if (value === 'DUE') {
+      this.uiPreferences.setCardsDueBillGeneratedOnly(true);
+      this.uiPreferences.setCardsSort('DUE_SOON');
+    } else if (value === 'GRACE') {
+      this.uiPreferences.setCardsSort('GRACE_LONGEST');
+    } else {
+      this.uiPreferences.setCardsSort('NAME');
+    }
+  }
+  updateCardSort(value: string): void {
+    this.uiPreferences.setCardsSort(value);
+  }
+  updateDueScope(value: string): void {
+    this.uiPreferences.setCardsDueBillGeneratedOnly(value === 'GENERATED');
+  }
+  private compareCards(a: CreditCard, b: CreditCard): number {
+    const sort = this.cardSort();
+    if (sort === 'DUE_SOON') {
+      const diff = this.dueDate(a).getTime() - this.dueDate(b).getTime();
+      if (diff !== 0) return diff;
+    } else if (sort === 'GRACE_LONGEST') {
+      const diff = this.grace(b) - this.grace(a);
+      if (diff !== 0) return diff;
+    }
+    return a.nickname.localeCompare(b.nickname, undefined, { sensitivity: 'base' });
   }
   private matchesFilter(card: CreditCard): boolean {
+    if (this.showArchived()) return true;
     const filter = this.cardFilter();
     if (filter === 'ALL' || filter === 'GRACE') return true;
-    if (filter === 'DUE') return this.store.cardOutstanding(card.id) > 0;
+    if (filter === 'DUE') {
+      return this.dueBillGeneratedOnly()
+        ? this.billIsDue(card)
+        : this.store.cardOutstanding(card.id) > 0;
+    }
     if (filter === 'FEE') return Boolean(card.annualFeeEnabled && card.annualFee);
     if (!card.expiryMonth || !card.expiryYear) return false;
     const expiry = new Date(card.expiryYear, card.expiryMonth, 0);

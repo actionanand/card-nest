@@ -2,8 +2,19 @@
   <header class="page-header">
     <div>
       <p class="eyebrow">Ledger</p>
-      <h1>Transactions</h1>
-      <p class="subtitle">Every purchase, refund and payment—clearly accounted for.</p>
+      <button
+        type="button"
+        class="page-title"
+        (click)="helpOpen.set(!helpOpen())"
+        [attr.aria-expanded]="helpOpen()"
+        aria-controls="transactions-help"
+      >
+        <h1>Transactions</h1>
+        <app-icon name="help" />
+      </button>
+      <p id="transactions-help" class="subtitle" [class.open]="helpOpen()">
+        Every purchase, refund and payment—clearly accounted for.
+      </p>
     </div>
     <button
       class="btn btn-primary add-transaction"

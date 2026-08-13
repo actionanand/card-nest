@@ -466,13 +466,30 @@ button.hero-metric:focus-visible {
 .breakdown-header h2 {
   margin: 0.2rem 0 0;
 }
+.breakdown-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.breakdown-title app-icon {
+  width: 1rem;
+  height: 1rem;
+  color: var(--muted);
+  flex-shrink: 0;
+}
 .breakdown-desc {
   margin: 0.4rem 0 0;
   color: var(--muted);
   font-size: 0.78rem;
   max-width: 26rem;
 }
-.breakdown-header button {
+.breakdown-header > button {
   display: grid;
   place-items: center;
   width: 2.2rem;
@@ -485,13 +502,18 @@ button.hero-metric:focus-visible {
 }
 .breakdown-total {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
+  gap: 0.35rem;
   padding: 0.9rem 1.35rem;
   background: var(--canvas);
   border-bottom: 1px solid var(--line);
 }
-.breakdown-total span {
+.breakdown-total__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.breakdown-total__row span {
   color: var(--muted);
   font-size: 0.78rem;
   font-weight: 700;
@@ -503,10 +525,38 @@ button.hero-metric:focus-visible {
   font-weight: 600;
   font-variant-numeric: lining-nums tabular-nums;
 }
+.breakdown-total__due {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+.due-chip {
+  padding: 0.16rem 0.42rem;
+  border-radius: 999px;
+  color: var(--success);
+  background: var(--success-soft);
+  font-size: 0.62rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.due-chip.soon {
+  color: var(--warning);
+  background: var(--warning-soft);
+}
+.due-chip.urgent,
+.due-chip.overdue {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
 .breakdown-toggles {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.6rem 1.4rem;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
   padding: 0.7rem 1.35rem;
   border-bottom: 1px solid var(--line);
 }
@@ -518,6 +568,7 @@ button.hero-metric:focus-visible {
   font-size: 0.8rem;
   font-weight: 650;
   cursor: pointer;
+  white-space: nowrap;
 }
 .breakdown-toggle input {
   width: 1.1rem;
@@ -565,6 +616,24 @@ button.hero-metric:focus-visible {
   color: #fff;
   font-weight: 700;
   font-size: 0.9rem;
+}
+.breakdown-group__amount {
+  display: grid;
+  justify-items: end;
+  gap: 0.25rem;
+}
+.breakdown-group__due {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  color: var(--muted);
+  font-size: 0.66rem;
+  font-weight: 650;
+  white-space: nowrap;
+}
+.breakdown-group__due app-icon {
+  width: 0.72rem;
+  height: 0.72rem;
 }
 .breakdown-list {
   list-style: none;
