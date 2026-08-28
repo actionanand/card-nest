@@ -161,13 +161,8 @@ export class App {
     this.flashAmount.set(sanitized);
   }
 
-  async updateFlashSource(sourceId: string): Promise<void> {
+  updateFlashSource(sourceId: string): void {
     this.flashSourceId.set(sourceId);
-    try {
-      await this.store.setFlashTransactionSource(sourceId);
-    } catch {
-      this.snackbar.show('Preferred Flash source could not be saved.', 'WARNING');
-    }
   }
 
   saveFlashTransaction(event: Event): void {
@@ -192,16 +187,6 @@ export class App {
       updatedAt: timestamp,
     };
     this.store.addTransaction(transaction);
-    if (this.store.flashTransactionSourceId() !== this.flashSourceId()) {
-      void this.store
-        .setFlashTransactionSource(this.flashSourceId())
-        .catch(() =>
-          this.snackbar.show(
-            'Transaction saved, but the preferred Flash source was not.',
-            'WARNING',
-          ),
-        );
-    }
     this.closeFlashTransaction();
     this.snackbar.show('Flash transaction added.');
   }

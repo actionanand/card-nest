@@ -18,6 +18,12 @@ import { Capacitor } from '@capacitor/core';
 import { PaymentSourcePicker } from '../../shared/payment-source-picker';
 import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
 import { UiPreferencesService } from '../../core/services/ui-preferences.service';
+import {
+  COUNTRY_CURRENCY_OPTIONS,
+  DISPLAY_CURRENCY_CODES,
+  currencyLabel,
+  currencySymbol,
+} from '../../core/services/currency-display';
 
 type PinAction = 'CHANGE' | 'DISABLE';
 type BackupAction = 'CREATE' | 'RESTORE';
@@ -72,7 +78,6 @@ export class SettingsPage {
   readonly retentionConfirmationOpen = signal(false);
   readonly retentionYears = signal(5);
   readonly autoLockDelay = signal('5');
-  readonly defaultCurrency = signal('INR');
   readonly reminderTiming = signal('5');
   readonly autoLockOptions: readonly AppSelectOption[] = [
     { value: '1', label: '1 minute' },
@@ -88,12 +93,18 @@ export class SettingsPage {
     { value: 'Mx', label: 'Mx' },
     { value: 'Dr', label: 'Dr' },
   ];
-  readonly currencyOptions: readonly AppSelectOption[] = [
-    { value: 'INR', label: 'Indian Rupee — INR' },
-    { value: 'USD', label: 'US Dollar — USD' },
-    { value: 'EUR', label: 'Euro — EUR' },
-    { value: 'GBP', label: 'British Pound — GBP' },
-  ];
+  readonly countryOptions: readonly AppSelectOption[] = COUNTRY_CURRENCY_OPTIONS.map((option) => ({
+    value: option.countryCode,
+    label: option.countryName,
+    detail: `${currencyLabel(option.currencyCode)} · ${option.currencyCode}`,
+  }));
+  readonly currencyOptions = computed<readonly AppSelectOption[]>(() =>
+    DISPLAY_CURRENCY_CODES.map((code) => ({
+      value: code,
+      label: `${currencyLabel(code)} — ${code}`,
+      detail: `Display symbol: ${currencySymbol(code, this.store.displayCountryCode())}`,
+    })),
+  );
   readonly dateFormatOptions: readonly AppSelectOption[] = this.dateFormats.options.map(
     (option) => ({ value: option.value, label: option.label }),
   );
@@ -319,6 +330,18 @@ export class SettingsPage {
     this.preferenceMessage.set(
       this.store.profileName() ? 'Greeting name saved.' : 'Greeting name removed.',
     );
+  }
+
+  async updateDisplayCountry(countryCode: string): Promise<void> {
+    await this.store.setDisplayCountry(countryCode);
+    this.preferenceMessage.set(
+      'Country and display currency updated. Stored amounts were not changed.',
+    );
+  }
+
+  async updateDisplayCurrency(currencyCode: string): Promise<void> {
+    await this.store.setDisplayCurrency(currencyCode);
+    this.preferenceMessage.set('Display currency updated. Stored amounts were not changed.');
   }
 
   async updateDateFormat(value: string): Promise<void> {

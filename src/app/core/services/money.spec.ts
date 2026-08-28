@@ -1,5 +1,11 @@
 import { CardTransaction } from '../models/domain';
-import { calculateNetSpending, calculateOutstanding, parseMoneyToMinor } from './money';
+import { configureMoneyDisplay } from './currency-display';
+import {
+  calculateNetSpending,
+  calculateOutstanding,
+  formatMoney,
+  parseMoneyToMinor,
+} from './money';
 
 function transaction(type: CardTransaction['type'], amountMinor: number): CardTransaction {
   return {
@@ -17,6 +23,8 @@ function transaction(type: CardTransaction['type'], amountMinor: number): CardTr
 }
 
 describe('money calculations', () => {
+  beforeEach(() => configureMoneyDisplay('IN', 'INR'));
+
   it('parses decimal input to integer minor units', () => {
     expect(parseMoneyToMinor('1,234.50')).toBe(123450);
     expect(parseMoneyToMinor('12.345')).toBeNull();
@@ -39,5 +47,11 @@ describe('money calculations', () => {
     ];
     expect(calculateNetSpending(items)).toBe(80000);
     expect(calculateNetSpending(items, false)).toBe(100000);
+  });
+
+  it('changes presentation currency without changing the stored currency', () => {
+    configureMoneyDisplay('GB', 'GBP');
+    expect(formatMoney(123450, 'INR')).toContain('£');
+    expect(formatMoney(123450, 'INR')).toContain('1,234.50');
   });
 });

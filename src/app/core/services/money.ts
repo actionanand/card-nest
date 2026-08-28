@@ -1,4 +1,5 @@
 import { CardTransaction, Money, TransactionType } from '../models/domain';
+import { preferredMoneyCurrency, preferredMoneyLocale } from './currency-display';
 
 const DECREASING_TYPES = new Set<TransactionType>(['PAYMENT', 'CREDIT', 'CASHBACK', 'REFUND']);
 
@@ -12,10 +13,17 @@ export function parseMoneyToMinor(value: string, fractionDigits = 2): Money | nu
   return Number.isSafeInteger(result) ? result : null;
 }
 
-export function formatMoney(minor: Money, currencyCode: string, locale = 'en-IN'): string {
-  return new Intl.NumberFormat(locale, { style: 'currency', currency: currencyCode }).format(
-    minor / 100,
-  );
+export function formatMoney(minor: Money, storedCurrencyCode: string, locale?: string): string {
+  // Entity currency remains part of the backup schema; the user preference controls presentation.
+  void storedCurrencyCode;
+  void locale;
+  return new Intl.NumberFormat(preferredMoneyLocale(), {
+    style: 'currency',
+    currency: preferredMoneyCurrency(),
+    currencyDisplay: 'narrowSymbol',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(minor / 100);
 }
 
 export function transactionEffect(

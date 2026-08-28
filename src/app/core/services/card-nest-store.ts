@@ -21,6 +21,11 @@ import {
   toIsoDate,
 } from './billing-cycle';
 import { calculateNetSpending, calculateOutstanding, transactionEffect } from './money';
+import {
+  configureMoneyDisplay,
+  countryOption,
+  isSupportedDisplayCurrency,
+} from './currency-display';
 
 const now = new Date();
 const today = now.toISOString().slice(0, 10);
@@ -243,6 +248,8 @@ export class CardNestStore {
   readonly incomeHistory = signal<readonly MonthlyIncomeRecord[]>([]);
   readonly profileTitle = signal('');
   readonly profileName = signal('');
+  readonly displayCountryCode = signal('IN');
+  readonly displayCurrencyCode = signal('INR');
   readonly emiMinimumMinor = signal(250_000);
   readonly spendHighlightThresholdMinor = signal(400_000);
   readonly highlightDashboardSpending = signal(true);
@@ -306,7 +313,7 @@ export class CardNestStore {
     if (!this.database.ready()) return;
     const preferences = await this.database.query<{ key: string; encrypted_value: string }>(
       `SELECT key, encrypted_value FROM app_preferences
-       WHERE key IN ('budget_cycle_start_day', 'monthly_budget_minor', 'profile_title', 'profile_name', 'emi_minimum_minor', 'spend_highlight_threshold_minor', 'highlight_dashboard_spending', 'flash_transaction_source_id', 'snoozed_reminder_card_ids', 'payment_sources', 'data_cleared')`,
+       WHERE key IN ('budget_cycle_start_day', 'monthly_budget_minor', 'profile_title', 'profile_name', 'default_country_code', 'default_currency_code', 'emi_minimum_minor', 'spend_highlight_threshold_minor', 'highlight_dashboard_spending', 'flash_transaction_source_id', 'snoozed_reminder_card_ids', 'payment_sources', 'data_cleared')`,
     );
     const values = new Map(preferences.map((item) => [item.key, item.encrypted_value]));
     this.dataWasCleared = values.get('data_cleared') === '1';
@@ -319,6 +326,15 @@ export class CardNestStore {
     else if (this.dataWasCleared) this.monthlyBudgetMinor.set(0);
     this.profileTitle.set(values.get('profile_title') ?? '');
     this.profileName.set(values.get('profile_name') ?? '');
+    const savedCountry = countryOption(values.get('default_country_code') ?? 'IN');
+    const countryCode = savedCountry?.countryCode ?? 'IN';
+    const savedCurrency = values.get('default_currency_code') ?? '';
+    const currencyCode = isSupportedDisplayCurrency(savedCurrency)
+      ? savedCurrency
+      : (savedCountry?.currencyCode ?? 'INR');
+    this.displayCountryCode.set(countryCode);
+    this.displayCurrencyCode.set(currencyCode);
+    configureMoneyDisplay(countryCode, currencyCode);
     const emiMinimum = Number(values.get('emi_minimum_minor'));
     if (Number.isFinite(emiMinimum) && emiMinimum >= 0) this.emiMinimumMinor.set(emiMinimum);
     const spendThreshold = Number(values.get('spend_highlight_threshold_minor'));
@@ -376,6 +392,25 @@ export class CardNestStore {
     );
     this.monthlyIncomeMinor.set(amountMinor);
     await this.refreshIncomeHistory();
+  }
+
+  async setDisplayCountry(countryCode: string): Promise<void> {
+    const option = countryOption(countryCode);
+    if (!option) return;
+    this.displayCountryCode.set(option.countryCode);
+    this.displayCurrencyCode.set(option.currencyCode);
+    configureMoneyDisplay(option.countryCode, option.currencyCode);
+    await Promise.all([
+      this.upsertPreference('default_country_code', option.countryCode),
+      this.upsertPreference('default_currency_code', option.currencyCode),
+    ]);
+  }
+
+  async setDisplayCurrency(currencyCode: string): Promise<void> {
+    if (!isSupportedDisplayCurrency(currencyCode)) return;
+    this.displayCurrencyCode.set(currencyCode);
+    configureMoneyDisplay(this.displayCountryCode(), currencyCode);
+    await this.upsertPreference('default_currency_code', currencyCode);
   }
 
   async setMonthlyBudget(amountMinor: number): Promise<void> {
@@ -850,6 +885,9 @@ export class CardNestStore {
     this.budgetCycleStartDay.set(1);
     this.profileTitle.set('');
     this.profileName.set('');
+    this.displayCountryCode.set('IN');
+    this.displayCurrencyCode.set('INR');
+    configureMoneyDisplay('IN', 'INR');
     this.emiMinimumMinor.set(250_000);
     this.spendHighlightThresholdMinor.set(400_000);
     this.highlightDashboardSpending.set(true);
