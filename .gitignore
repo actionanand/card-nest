@@ -3,7 +3,6 @@
 # Compiled output
 /dist
 /android
-/releases
 /release-keystore.jks
 /keystore.b64.txt
 /tmp
