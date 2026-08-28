@@ -334,14 +334,12 @@ export class SettingsPage {
 
   async updateDisplayCountry(countryCode: string): Promise<void> {
     await this.store.setDisplayCountry(countryCode);
-    this.preferenceMessage.set(
-      'Country and display currency updated. Stored amounts were not changed.',
-    );
+    this.preferenceMessage.set('Country and display currency updated.');
   }
 
   async updateDisplayCurrency(currencyCode: string): Promise<void> {
     await this.store.setDisplayCurrency(currencyCode);
-    this.preferenceMessage.set('Display currency updated. Stored amounts were not changed.');
+    this.preferenceMessage.set('Display currency updated.');
   }
 
   async updateDateFormat(value: string): Promise<void> {

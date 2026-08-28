@@ -334,7 +334,7 @@ const HELP_TOPICS: readonly HelpTopic[] = [
       'Open Settings, then Cards & currency, and choose your country or region.',
       'CardNest selects that country’s usual currency automatically. You can choose a different display currency when needed.',
       'The preference applies to screens, charts, exports, and notification amounts and is included in encrypted backups.',
-      'This is presentation only: CardNest does not perform exchange-rate conversion and existing SQLite card and transaction currency fields remain INR.',
+      'CardNest updates amount symbols and number formatting throughout the app. It does not perform exchange-rate conversion.',
     ],
     tips: [
       'India and INR are used when an older backup has no country or display-currency preference.',

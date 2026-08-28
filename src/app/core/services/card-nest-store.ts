@@ -24,6 +24,7 @@ import { calculateNetSpending, calculateOutstanding, transactionEffect } from '.
 import {
   configureMoneyDisplay,
   countryOption,
+  countryOptionForCurrency,
   isSupportedDisplayCurrency,
 } from './currency-display';
 
@@ -327,14 +328,22 @@ export class CardNestStore {
     this.profileTitle.set(values.get('profile_title') ?? '');
     this.profileName.set(values.get('profile_name') ?? '');
     const savedCountry = countryOption(values.get('default_country_code') ?? 'IN');
-    const countryCode = savedCountry?.countryCode ?? 'IN';
+    let countryCode = savedCountry?.countryCode ?? 'IN';
     const savedCurrency = values.get('default_currency_code') ?? '';
     const currencyCode = isSupportedDisplayCurrency(savedCurrency)
       ? savedCurrency
       : (savedCountry?.currencyCode ?? 'INR');
+    const matchingCountry = countryOptionForCurrency(currencyCode, countryCode);
+    countryCode = matchingCountry?.countryCode ?? countryCode;
     this.displayCountryCode.set(countryCode);
     this.displayCurrencyCode.set(currencyCode);
     configureMoneyDisplay(countryCode, currencyCode);
+    if (values.get('default_country_code') !== countryCode) {
+      await this.upsertPreference('default_country_code', countryCode);
+    }
+    if (values.get('default_currency_code') !== currencyCode) {
+      await this.upsertPreference('default_currency_code', currencyCode);
+    }
     const emiMinimum = Number(values.get('emi_minimum_minor'));
     if (Number.isFinite(emiMinimum) && emiMinimum >= 0) this.emiMinimumMinor.set(emiMinimum);
     const spendThreshold = Number(values.get('spend_highlight_threshold_minor'));
@@ -408,9 +417,15 @@ export class CardNestStore {
 
   async setDisplayCurrency(currencyCode: string): Promise<void> {
     if (!isSupportedDisplayCurrency(currencyCode)) return;
+    const country = countryOptionForCurrency(currencyCode, this.displayCountryCode());
+    if (!country) return;
+    this.displayCountryCode.set(country.countryCode);
     this.displayCurrencyCode.set(currencyCode);
-    configureMoneyDisplay(this.displayCountryCode(), currencyCode);
-    await this.upsertPreference('default_currency_code', currencyCode);
+    configureMoneyDisplay(country.countryCode, currencyCode);
+    await Promise.all([
+      this.upsertPreference('default_country_code', country.countryCode),
+      this.upsertPreference('default_currency_code', currencyCode),
+    ]);
   }
 
   async setMonthlyBudget(amountMinor: number): Promise<void> {
