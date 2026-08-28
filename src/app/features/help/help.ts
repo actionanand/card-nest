@@ -126,7 +126,7 @@ const HELP_TOPICS: readonly HelpTopic[] = [
     summary:
       'Create a traceable no-cost or standard-interest installment plan from an eligible purchase.',
     steps: [
-      'Open an eligible purchase and choose Convert to EMI. The default minimum is ₹2,500 and can be changed in Settings.',
+      'Open an eligible purchase and choose Convert to EMI. The default minimum is 2,500 in your selected display currency and can be changed in Settings.',
       'Choose no-cost EMI or standard EMI, the number of months, and an interest rate when required.',
       'Choose whether installments start in this statement month, next month, or a custom month.',
       'CardNest replaces the purchase in activity calculations with the applicable installments and creates a plan under Loans & EMIs.',
@@ -323,6 +323,26 @@ const HELP_TOPICS: readonly HelpTopic[] = [
     keywords: ['pin', 'fingerprint', 'biometric', 'lock', 'security', 'disable pin'],
     link: '/settings',
     linkLabel: 'Open security settings',
+  },
+  {
+    id: 'currency-display',
+    group: 'Security & data',
+    title: 'How do country and display currency work?',
+    summary:
+      'Choose a country for familiar number grouping and a currency symbol for amounts throughout CardNest.',
+    steps: [
+      'Open Settings, then Cards & currency, and choose your country or region.',
+      'CardNest selects that country’s usual currency automatically. You can choose a different display currency when needed.',
+      'The preference applies to screens, charts, exports, and notification amounts and is included in encrypted backups.',
+      'This is presentation only: CardNest does not perform exchange-rate conversion and existing SQLite card and transaction currency fields remain INR.',
+    ],
+    tips: [
+      'India and INR are used when an older backup has no country or display-currency preference.',
+      'When a currency has no distinct symbol, CardNest displays its three-letter currency code.',
+    ],
+    keywords: ['country', 'currency', 'symbol', 'usd', 'inr', 'pound', 'euro', 'format'],
+    link: '/settings',
+    linkLabel: 'Change currency display',
   },
   {
     id: 'backup-restore',

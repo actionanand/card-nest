@@ -26,6 +26,7 @@ import {
   type ChartConfiguration,
   type TooltipItem,
 } from 'chart.js';
+import { preferredMoneyCurrency, preferredMoneyLocale } from '../core/services/currency-display';
 import { ThemeService } from '../core/services/theme.service';
 
 export type ReportChartKind = 'doughnut' | 'bar' | 'column' | 'line' | 'comparison';
@@ -310,17 +311,19 @@ export class ReportChart {
     ` ${this.currency(Number(context.raw))}`;
 
   private currency(value: number): string {
-    return new Intl.NumberFormat('en-IN', {
+    return new Intl.NumberFormat(preferredMoneyLocale(), {
       style: 'currency',
-      currency: 'INR',
+      currency: preferredMoneyCurrency(),
+      currencyDisplay: 'narrowSymbol',
       maximumFractionDigits: 0,
     }).format(value);
   }
 
   private compactCurrency(value: number): string {
-    return new Intl.NumberFormat('en-IN', {
+    return new Intl.NumberFormat(preferredMoneyLocale(), {
       style: 'currency',
-      currency: 'INR',
+      currency: preferredMoneyCurrency(),
+      currencyDisplay: 'narrowSymbol',
       notation: 'compact',
       maximumFractionDigits: 1,
     }).format(value);

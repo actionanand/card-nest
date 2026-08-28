@@ -138,7 +138,7 @@
           <span aria-hidden="true"><app-icon name="spending" /></span>
           <div>
             <h2>Cards & currency</h2>
-            <p>Defaults used for new records.</p>
+            <p>Profile defaults and global amount display.</p>
           </div>
         </div>
         <div class="form-grid">
@@ -159,10 +159,25 @@
               (change)="updateProfileName($event)"
           /></label>
           <app-select-picker
-            label="Default currency"
-            [options]="currencyOptions"
-            [value]="defaultCurrency()"
-            (valueChange)="defaultCurrency.set($event)"
+            label="Country or region"
+            sheetTitle="Choose country or region"
+            [options]="countryOptions"
+            [value]="store.displayCountryCode()"
+            [disabled]="!database.ready()"
+            [searchable]="true"
+            searchPlaceholder="Search country or currency"
+            (valueChange)="updateDisplayCountry($event)"
+          />
+          <app-select-picker
+            label="Display currency"
+            sheetTitle="Choose display currency"
+            [options]="currencyOptions()"
+            [value]="store.displayCurrencyCode()"
+            [disabled]="!database.ready()"
+            [searchable]="true"
+            searchPlaceholder="Search currency name or code"
+            hint="Changes symbols and number formatting only. Stored card and transaction data remains INR."
+            (valueChange)="updateDisplayCurrency($event)"
           />
           <div class="flash-source-setting">
             <app-payment-source-picker

@@ -11,7 +11,10 @@ permissions:
 
 env:
   MIN_SDK_VERSION: 24
-  TARGET_SDK_VERSION: 36
+  COMPILE_SDK_VERSION: 37
+  TARGET_SDK_VERSION: 37
+  ANDROID_GRADLE_PLUGIN_VERSION: 9.1.1
+  GRADLE_VERSION: 9.3.1
   RELEASE_BASENAME: card-nest-release
 
 jobs:
@@ -35,6 +38,9 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+
+      - name: Install Android 17 SDK (API 37)
+        run: sdkmanager "platforms;android-${COMPILE_SDK_VERSION}" "build-tools;37.0.0"
 
       - name: Install dependencies
         run: npm ci
@@ -66,7 +72,14 @@ jobs:
           sed -i 's/versionCode [0-9]*/versionCode project.hasProperty("versionCode") ? project.versionCode.toInteger() : 1/' build.gradle
           sed -i 's/versionName "[^"]*"/versionName project.hasProperty("versionName") ? project.versionName : "1.0.0"/' build.gradle
           sed -i "s/minSdkVersion = .*/minSdkVersion = $MIN_SDK_VERSION/" ../variables.gradle
+          sed -i "s/compileSdkVersion = .*/compileSdkVersion = $COMPILE_SDK_VERSION/" ../variables.gradle
           sed -i "s/targetSdkVersion = .*/targetSdkVersion = $TARGET_SDK_VERSION/" ../variables.gradle
+          sed -i -E "s/com.android.tools.build:gradle:[0-9.]+/com.android.tools.build:gradle:$ANDROID_GRADLE_PLUGIN_VERSION/" ../build.gradle
+          find ../../node_modules -name build.gradle -type f -exec sed -i -E "s/com.android.tools.build:gradle:[0-9.]+/com.android.tools.build:gradle:$ANDROID_GRADLE_PLUGIN_VERSION/" {} +
+          sed -i -E "s#gradle-[0-9.]+-all.zip#gradle-$GRADLE_VERSION-all.zip#" ../gradle/wrapper/gradle-wrapper.properties
+          grep -E "(min|compile|target)SdkVersion" ../variables.gradle
+          grep "com.android.tools.build:gradle" ../build.gradle
+          grep "distributionUrl" ../gradle/wrapper/gradle-wrapper.properties
 
       - name: Generate launcher icons from public/card-nest.png
         run: |
