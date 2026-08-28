@@ -102,6 +102,40 @@ export function countryOption(countryCode: string): CountryCurrencyOption | unde
   return COUNTRY_CURRENCY_OPTIONS.find((option) => option.countryCode === countryCode);
 }
 
+const REPRESENTATIVE_COUNTRY_BY_CURRENCY: Readonly<Record<string, string>> = {
+  AUD: 'AU',
+  CHF: 'CH',
+  EUR: 'DE',
+  GBP: 'GB',
+  ILS: 'IL',
+  USD: 'US',
+  XAF: 'CM',
+  XCD: 'AG',
+  XOF: 'SN',
+};
+
+export function countryOptionForCurrency(
+  currencyCode: string,
+  preferredCountryCode?: string,
+): CountryCurrencyOption | undefined {
+  const matchingOptions = COUNTRY_CURRENCY_OPTIONS.filter(
+    (option) => option.currencyCode === currencyCode,
+  );
+  if (matchingOptions.length === 0) return undefined;
+
+  const preferredOption = matchingOptions.find(
+    (option) => option.countryCode === preferredCountryCode,
+  );
+  if (preferredOption) return preferredOption;
+
+  const representativeCountry = REPRESENTATIVE_COUNTRY_BY_CURRENCY[currencyCode];
+  return (
+    matchingOptions.find((option) => option.countryCode === representativeCountry) ??
+    matchingOptions.find((option) => option.countryCode === currencyCode.slice(0, 2)) ??
+    matchingOptions[0]
+  );
+}
+
 export function currencyLabel(currencyCode: string): string {
   return currencyNames?.of(currencyCode) ?? currencyCode;
 }

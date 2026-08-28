@@ -1,6 +1,8 @@
 :host {
   display: grid;
   min-width: 0;
+  align-content: start;
+  align-self: start;
   gap: 0.35rem;
 }
 .field-label {
