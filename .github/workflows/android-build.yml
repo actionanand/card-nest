@@ -9,53 +9,66 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   MIN_SDK_VERSION: 24
-  COMPILE_SDK_VERSION: 37
-  TARGET_SDK_VERSION: 37
-  ANDROID_GRADLE_PLUGIN_VERSION: 9.1.1
-  GRADLE_VERSION: 9.3.1
+  COMPILE_SDK_VERSION: 36
+  TARGET_SDK_VERSION: 36
   RELEASE_BASENAME: card-nest-release
 
 jobs:
   build:
+    name: Build APK and AAB
     runs-on: ubuntu-latest
+    timeout-minutes: 40
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '24.16.0'
+          node-version-file: '.nvmrc'
           cache: npm
 
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '21'
-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android 17 SDK (API 37)
-        run: sdkmanager "platforms;android-${COMPILE_SDK_VERSION}" "build-tools;37.0.0"
-
-      - name: Install dependencies
-        run: npm ci
-
       - name: Bump versionCode and commit
+        if: github.ref == 'refs/heads/main-android'
+        shell: bash
         run: |
-          git config user.name  "github-actions[bot]"
+          git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           node scripts/bump-android-version.js
           VERSION_CODE=$(node -p "require('./android-version.json').versionCode")
           VERSION_NAME=$(node -p "require('./android-version.json').versionName")
           echo "Building versionName=$VERSION_NAME versionCode=$VERSION_CODE"
-          git add android-version.json
-          git commit -m "chore: bump versionCode to $VERSION_CODE [skip ci]"
-          git push
+          git pull --rebase --autostash
+          git add android-version.json src/app/core/app-version.ts
+          if git diff --cached --quiet; then
+            echo "Android version is unchanged."
+          else
+            git commit -m "chore: bump Android versionCode to $VERSION_CODE [skip ci]"
+            git push
+          fi
+
+      - name: Read Android version
+        shell: bash
+        run: |
+          VERSION_CODE=$(node -p "require('./android-version.json').versionCode")
+          VERSION_NAME=$(node -p "require('./android-version.json').versionName")
+          VERSION_SUFFIX=${VERSION_NAME//./-}
+          echo "VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
+          echo "VERSION_NAME=$VERSION_NAME" >> "$GITHUB_ENV"
+          echo "RELEASE_FILE_BASENAME=${RELEASE_BASENAME}-${VERSION_SUFFIX}" >> "$GITHUB_ENV"
+          echo "Using Android versionName=$VERSION_NAME versionCode=$VERSION_CODE"
+
+      - name: Install dependencies
+        run: npm ci
 
       - name: Build Angular app
         run: npm run build -- --configuration=production
@@ -64,24 +77,88 @@ jobs:
         run: |
           npx cap add android
           npx cap sync android
-          node scripts/patch-android.mjs
+
+      - name: Setup Java and Gradle cache
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+          cache-dependency-path: |
+            android/**/*.gradle*
+            android/gradle/wrapper/gradle-wrapper.properties
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android 16 SDK and matching Build Tools
+        shell: bash
+        run: |
+          set -o pipefail
+          if (( COMPILE_SDK_VERSION < TARGET_SDK_VERSION )); then
+            echo "compileSdkVersion $COMPILE_SDK_VERSION cannot be lower than targetSdkVersion $TARGET_SDK_VERSION."
+            exit 1
+          fi
+
+          BUILD_TOOLS_VERSION=$(
+            sdkmanager --list |
+              awk -v api="$COMPILE_SDK_VERSION" '
+                $1 ~ /^build-tools;/ {
+                  version = $1
+                  sub(/^build-tools;/, "", version)
+                  pattern = "^" api "\\.[0-9]+\\.[0-9]+$"
+                  if (version ~ pattern) print version
+                }
+              ' |
+              sort -Vu |
+              tail -1
+          )
+          if [[ -z "$BUILD_TOOLS_VERSION" ]]; then
+            echo "No stable Build Tools release matches compile SDK $COMPILE_SDK_VERSION."
+            exit 1
+          fi
+
+          sdkmanager "platforms;android-$COMPILE_SDK_VERSION" "build-tools;$BUILD_TOOLS_VERSION"
+          echo "BUILD_TOOLS_VERSION=$BUILD_TOOLS_VERSION" >> "$GITHUB_ENV"
+          echo "Installed Android API $COMPILE_SDK_VERSION with Build Tools $BUILD_TOOLS_VERSION"
 
       - name: Apply Android versions and SDK levels
         working-directory: android/app
+        shell: bash
         run: |
           sed -i 's/versionCode [0-9]*/versionCode project.hasProperty("versionCode") ? project.versionCode.toInteger() : 1/' build.gradle
           sed -i 's/versionName "[^"]*"/versionName project.hasProperty("versionName") ? project.versionName : "1.0.0"/' build.gradle
           sed -i "s/minSdkVersion = .*/minSdkVersion = $MIN_SDK_VERSION/" ../variables.gradle
           sed -i "s/compileSdkVersion = .*/compileSdkVersion = $COMPILE_SDK_VERSION/" ../variables.gradle
           sed -i "s/targetSdkVersion = .*/targetSdkVersion = $TARGET_SDK_VERSION/" ../variables.gradle
-          sed -i -E "s/com.android.tools.build:gradle:[0-9.]+/com.android.tools.build:gradle:$ANDROID_GRADLE_PLUGIN_VERSION/" ../build.gradle
-          find ../../node_modules -name build.gradle -type f -exec sed -i -E "s/com.android.tools.build:gradle:[0-9.]+/com.android.tools.build:gradle:$ANDROID_GRADLE_PLUGIN_VERSION/" {} +
-          sed -i -E "s#gradle-[0-9.]+-all.zip#gradle-$GRADLE_VERSION-all.zip#" ../gradle/wrapper/gradle-wrapper.properties
-          grep -E "(min|compile|target)SdkVersion" ../variables.gradle
-          grep "com.android.tools.build:gradle" ../build.gradle
-          grep "distributionUrl" ../gradle/wrapper/gradle-wrapper.properties
+          if grep -Eq '^[[:space:]]*buildToolsVersion[[:space:]]' build.gradle; then
+            sed -i "s/^[[:space:]]*buildToolsVersion[[:space:]].*/    buildToolsVersion \"$BUILD_TOOLS_VERSION\"/" build.gradle
+          else
+            sed -i "/^[[:space:]]*android[[:space:]]*{/a\\    buildToolsVersion \"$BUILD_TOOLS_VERSION\"" build.gradle
+          fi
+          grep -Fq 'project.hasProperty("versionCode")' build.gradle
+          grep -Fq 'project.hasProperty("versionName")' build.gradle
+          grep -Fq "minSdkVersion = $MIN_SDK_VERSION" ../variables.gradle
+          grep -Fq "compileSdkVersion = $COMPILE_SDK_VERSION" ../variables.gradle
+          grep -Fq "targetSdkVersion = $TARGET_SDK_VERSION" ../variables.gradle
+          grep -Fq "buildToolsVersion \"$BUILD_TOOLS_VERSION\"" build.gradle
+          echo "Applied versionName=$VERSION_NAME versionCode=$VERSION_CODE"
+          echo "Applied minSdk=$MIN_SDK_VERSION compileSdk=$COMPILE_SDK_VERSION targetSdk=$TARGET_SDK_VERSION"
+
+      - name: Patch Android native shell
+        run: node scripts/patch-android.mjs
+
+      - name: Make Gradle executable
+        run: chmod +x android/gradlew
+
+      - name: Prepare repository release folder
+        shell: bash
+        run: |
+          mkdir -p releases
+          rm -f releases/*.apk releases/*.aab releases/*.apk.idsig releases/*-playstore-icon.png
 
       - name: Generate launcher icons from public/card-nest.png
+        shell: bash
         run: |
           sudo apt-get update
           sudo apt-get install -y imagemagick
@@ -94,162 +171,173 @@ jobs:
             convert public/card-nest.png -resize "${SIZE}x${SIZE}" "android/app/src/main/res/$DIR/ic_launcher_round.png"
             convert public/card-nest.png -resize "${SIZE}x${SIZE}" "android/app/src/main/res/$DIR/ic_launcher_foreground.png"
           done
-          mkdir -p releases
-          convert public/card-nest.png -resize 512x512 releases/playstore-icon.png
+          PLAYSTORE_ICON_TARGET="releases/${RELEASE_FILE_BASENAME}-playstore-icon.png"
+          convert public/card-nest.png -resize 512x512 "$PLAYSTORE_ICON_TARGET"
+          echo "PLAYSTORE_ICON_TARGET=$PLAYSTORE_ICON_TARGET" >> "$GITHUB_ENV"
 
-      - name: Build unsigned release artifacts
-        working-directory: android
-        run: |
-          VERSION_CODE=$(node -p "require('../android-version.json').versionCode")
-          VERSION_NAME=$(node -p "require('../android-version.json').versionName")
-          ./gradlew assembleRelease bundleRelease -PversionCode="$VERSION_CODE" -PversionName="$VERSION_NAME"
-
-      - name: Decode release keystore
+      - name: Decode optional signing keystore
         id: keystore
+        shell: bash
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          if [[ -n "$KEYSTORE_BASE64" && -n "$KEYSTORE_PASSWORD" && -n "$KEY_ALIAS" && -n "$KEY_PASSWORD" ]]; then
-            if printf '%s' "$KEYSTORE_BASE64" | base64 --decode > android/app/release-keystore.jks; then
+          if [[ -n "$KEYSTORE_BASE64" && -n "$KEYSTORE_PASSWORD" && -n "$KEY_ALIAS" ]]; then
+            if printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/card-nest-release.jks"; then
               echo "available=true" >> "$GITHUB_OUTPUT"
-              echo "Release keystore decoded. Signed artifacts will be attempted."
+              echo "Signing credentials found. Signed artifacts will be attempted."
             else
-              rm -f android/app/release-keystore.jks
+              rm -f "$RUNNER_TEMP/card-nest-release.jks"
               echo "available=false" >> "$GITHUB_OUTPUT"
-              echo "KEYSTORE_BASE64 could not be decoded. Unsigned APK and AAB will be created."
+              echo "Keystore decoding failed. Unsigned artifacts will be built."
             fi
           else
             echo "available=false" >> "$GITHUB_OUTPUT"
-            echo "One or more signing secrets are missing. Unsigned APK and AAB will be created."
+            echo "Signing secrets are incomplete. Unsigned artifacts will be built."
           fi
 
       - name: Detect keystore type
         id: keystore_type
         if: steps.keystore.outputs.available == 'true'
         continue-on-error: true
+        shell: bash
         env:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
         run: |
-          KS_TYPE=$(keytool -list -keystore android/app/release-keystore.jks -storepass:env KEYSTORE_PASSWORD 2>/dev/null | grep -i "Keystore type" | awk '{print $NF}')
-          echo "type=$KS_TYPE" >> "$GITHUB_OUTPUT"
-          echo "Detected keystore type: $KS_TYPE"
+          KEYSTORE_TYPE=$(keytool -list -keystore "$RUNNER_TEMP/card-nest-release.jks" -storepass:env KEYSTORE_PASSWORD 2>/dev/null | awk -F': ' '/Keystore type:/ { print toupper($2); exit }')
+          test -n "$KEYSTORE_TYPE"
+          echo "type=$KEYSTORE_TYPE" >> "$GITHUB_OUTPUT"
+          echo "Detected keystore type: $KEYSTORE_TYPE"
 
-      - name: Sign APK
-        id: sign_apk
-        if: steps.keystore.outputs.available == 'true'
-        continue-on-error: true
+      - name: Build release APK and AAB
+        working-directory: android
+        shell: bash
         env:
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ steps.keystore_type.outputs.type == 'PKCS12' && secrets.KEYSTORE_PASSWORD || secrets.KEY_PASSWORD }}
-        run: |
-          mkdir -p releases
-          UNSIGNED_APK=$(find android/app/build -name "*-release-unsigned.apk" | head -1)
-          OUTPUT_APK="releases/${RELEASE_BASENAME}.apk"
-          BUILD_TOOLS_DIR="${ANDROID_HOME}/build-tools/$(ls "${ANDROID_HOME}/build-tools/" | sort -V | tail -1)"
-          "$BUILD_TOOLS_DIR/zipalign" -v 4 "$UNSIGNED_APK" "$OUTPUT_APK"
-          "$BUILD_TOOLS_DIR/apksigner" sign --ks android/app/release-keystore.jks --ks-pass env:KEYSTORE_PASSWORD --ks-key-alias "$KEY_ALIAS" --key-pass env:KEY_PASSWORD "$OUTPUT_APK"
-          "$BUILD_TOOLS_DIR/apksigner" verify --verbose "$OUTPUT_APK"
-          echo "✅ SIGNED APK created: $OUTPUT_APK"
-
-      - name: Copy unsigned APK
-        if: steps.keystore.outputs.available != 'true' || steps.sign_apk.outcome == 'failure'
-        run: |
-          mkdir -p releases
-          rm -f "releases/${RELEASE_BASENAME}.apk"
-          UNSIGNED_APK=$(find android/app/build -name "*-release-unsigned.apk" | head -1)
-          cp "$UNSIGNED_APK" "releases/${RELEASE_BASENAME}-unsigned.apk"
-          echo "⚠️ UNSIGNED APK created: releases/${RELEASE_BASENAME}-unsigned.apk"
-
-      - name: Sign AAB
-        id: sign_aab
-        if: steps.keystore.outputs.available == 'true'
-        continue-on-error: true
-        env:
+          CAN_SIGN: ${{ steps.keystore.outputs.available == 'true' && steps.keystore_type.outcome == 'success' }}
+          KEYSTORE_TYPE: ${{ steps.keystore_type.outputs.type }}
+          KEYSTORE_PATH: ${{ runner.temp }}/card-nest-release.jks
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ steps.keystore_type.outputs.type == 'PKCS12' && secrets.KEYSTORE_PASSWORD || secrets.KEY_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          mkdir -p releases
-          UNSIGNED_AAB=$(find android/app/build -name "*-release.aab" | head -1)
-          OUTPUT_AAB="releases/${RELEASE_BASENAME}.aab"
-          STORE_PASS_FILE=$(mktemp)
-          KEY_PASS_FILE=$(mktemp)
-          trap 'rm -f "$STORE_PASS_FILE" "$KEY_PASS_FILE"' EXIT
-          printf '%s' "$KEYSTORE_PASSWORD" > "$STORE_PASS_FILE"
-          printf '%s' "$KEY_PASSWORD" > "$KEY_PASS_FILE"
-          jarsigner -verbose -keystore android/app/release-keystore.jks -storepass:file "$STORE_PASS_FILE" -keypass:file "$KEY_PASS_FILE" -signedjar "$OUTPUT_AAB" "$UNSIGNED_AAB" "$KEY_ALIAS"
-          jarsigner -verify -verbose -certs "$OUTPUT_AAB"
-          echo "✅ SIGNED AAB created: $OUTPUT_AAB"
+          BASE_GRADLE_ARGS=(
+            assembleRelease
+            bundleRelease
+            --no-daemon
+            "-PversionCode=$VERSION_CODE"
+            "-PversionName=$VERSION_NAME"
+          )
 
-      - name: Copy unsigned AAB
-        if: steps.keystore.outputs.available != 'true' || steps.sign_aab.outcome == 'failure'
+          SIGNED_BUILD=false
+          if [[ "$CAN_SIGN" == "true" ]]; then
+            EFFECTIVE_KEY_PASSWORD="$KEY_PASSWORD"
+            if [[ "$KEYSTORE_TYPE" == "PKCS12" ]]; then
+              EFFECTIVE_KEY_PASSWORD="$KEYSTORE_PASSWORD"
+            fi
+            SIGNING_ARGS=(
+              "-Pandroid.injected.signing.store.file=$KEYSTORE_PATH"
+              "-Pandroid.injected.signing.store.password=$KEYSTORE_PASSWORD"
+              "-Pandroid.injected.signing.key.alias=$KEY_ALIAS"
+              "-Pandroid.injected.signing.key.password=$EFFECTIVE_KEY_PASSWORD"
+            )
+            if ./gradlew "${BASE_GRADLE_ARGS[@]}" "${SIGNING_ARGS[@]}"; then
+              SIGNED_BUILD=true
+            else
+              echo "Signing failed. Rebuilding unsigned artifacts."
+              ./gradlew clean --no-daemon
+              ./gradlew "${BASE_GRADLE_ARGS[@]}"
+            fi
+          else
+            ./gradlew "${BASE_GRADLE_ARGS[@]}"
+          fi
+          echo "SIGNED_BUILD=$SIGNED_BUILD" >> "$GITHUB_ENV"
+
+      - name: Copy versioned Android artifacts to releases
+        shell: bash
         run: |
-          mkdir -p releases
-          rm -f "releases/${RELEASE_BASENAME}.aab"
-          UNSIGNED_AAB=$(find android/app/build -name "*-release.aab" | head -1)
-          cp "$UNSIGNED_AAB" "releases/${RELEASE_BASENAME}-unsigned.aab"
-          echo "⚠️ UNSIGNED AAB created: releases/${RELEASE_BASENAME}-unsigned.aab"
+          APK_SOURCE=$(find android/app/build/outputs/apk/release -type f -name '*.apk' | head -1)
+          AAB_SOURCE=$(find android/app/build/outputs/bundle/release -type f -name '*.aab' | head -1)
+          test -n "$APK_SOURCE"
+          test -n "$AAB_SOURCE"
+          test -s "$APK_SOURCE"
+          test -s "$AAB_SOURCE"
+
+          if [[ "$SIGNED_BUILD" == "true" ]]; then
+            APK_TARGET="releases/${RELEASE_FILE_BASENAME}.apk"
+            AAB_TARGET="releases/${RELEASE_FILE_BASENAME}.aab"
+            APK_STATUS="SIGNED APK: $APK_TARGET"
+            AAB_STATUS="SIGNED AAB: $AAB_TARGET"
+          else
+            APK_TARGET="releases/${RELEASE_FILE_BASENAME}-unsigned.apk"
+            AAB_TARGET="releases/${RELEASE_FILE_BASENAME}-unsigned.aab"
+            APK_STATUS="UNSIGNED APK: $APK_TARGET"
+            AAB_STATUS="UNSIGNED AAB: $AAB_TARGET"
+          fi
+
+          cp "$APK_SOURCE" "$APK_TARGET"
+          cp "$AAB_SOURCE" "$AAB_TARGET"
+          echo "APK_TARGET=$APK_TARGET" >> "$GITHUB_ENV"
+          echo "AAB_TARGET=$AAB_TARGET" >> "$GITHUB_ENV"
+          echo "APK_STATUS=$APK_STATUS" >> "$GITHUB_ENV"
+          echo "AAB_STATUS=$AAB_STATUS" >> "$GITHUB_ENV"
 
       - name: Summarize Android artifacts
-        if: always()
+        shell: bash
         run: |
+          test -s "$APK_TARGET"
+          test -s "$AAB_TARGET"
+          test -s "$PLAYSTORE_ICON_TARGET"
           echo "Android artifact summary"
-          echo "========================"
-          if [[ "${{ steps.keystore.outputs.available }}" == "true" && "${{ steps.sign_apk.outcome }}" == "success" ]]; then
-            APK_STATUS="✅ SIGNED APK created: releases/${RELEASE_BASENAME}.apk"
-          else
-            APK_STATUS="⚠️ UNSIGNED APK created: releases/${RELEASE_BASENAME}-unsigned.apk"
-          fi
-          if [[ "${{ steps.keystore.outputs.available }}" == "true" && "${{ steps.sign_aab.outcome }}" == "success" ]]; then
-            AAB_STATUS="✅ SIGNED AAB created: releases/${RELEASE_BASENAME}.aab"
-          else
-            AAB_STATUS="⚠️ UNSIGNED AAB created: releases/${RELEASE_BASENAME}-unsigned.aab"
-          fi
           echo "$APK_STATUS"
           echo "$AAB_STATUS"
           {
-            echo "## Android artifact summary"
+            echo "## Android release $VERSION_NAME ($VERSION_CODE)"
             echo "- $APK_STATUS"
             echo "- $AAB_STATUS"
+            echo "- Play Store icon: $PLAYSTORE_ICON_TARGET"
           } >> "$GITHUB_STEP_SUMMARY"
           ls -lh releases/
 
-      - name: Remove decoded keystore
-        if: always()
-        run: rm -f android/app/release-keystore.jks
+      - name: Commit versioned artifacts to main-android
+        if: github.ref == 'refs/heads/main-android'
+        shell: bash
+        run: |
+          test -s "$APK_TARGET"
+          test -s "$AAB_TARGET"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git pull --rebase --autostash
+          git add releases/
+          if git diff --cached --quiet; then
+            echo "Release files are unchanged."
+          else
+            git commit -m "build: add CardNest Android $VERSION_NAME ($VERSION_CODE) [skip ci]"
+            git push
+          fi
 
-      - name: Upload APK
+      - name: Upload Android artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: card-nest-release-apk
-          path: releases/*.apk
+          name: card-nest-android-${{ env.VERSION_NAME }}-${{ env.VERSION_CODE }}
+          path: |
+            releases/*.apk
+            releases/*.aab
+            releases/*-playstore-icon.png
           if-no-files-found: error
-          retention-days: 30
-
-      - name: Upload AAB
-        uses: actions/upload-artifact@v4
-        with:
-          name: card-nest-release-aab
-          path: releases/*.aab
-          if-no-files-found: error
-          retention-days: 30
-
-      - name: Upload Play Store icon
-        uses: actions/upload-artifact@v4
-        with:
-          name: card-nest-playstore-icon
-          path: releases/playstore-icon.png
           retention-days: 30
 
       - name: Create GitHub release
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: |
             releases/*.apk
             releases/*.aab
-            releases/playstore-icon.png
+            releases/*-playstore-icon.png
+          generate_release_notes: true
+
+      - name: Remove decoded keystore
+        if: always()
+        run: rm -f "$RUNNER_TEMP/card-nest-release.jks"
