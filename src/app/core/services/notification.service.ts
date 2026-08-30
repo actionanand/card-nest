@@ -5,8 +5,17 @@ import { CreditCard } from '../models/domain';
 import { paymentDueDate, previousStatementDate, statementDateFor } from './billing-cycle';
 import { formatMoney } from './money';
 import { SqliteDatabase } from '../data/sqlite-database';
+import {
+  catchUpReminderToday,
+  DEFAULT_REMINDER_DAYS_BEFORE,
+  MAX_REMINDER_DAYS_BEFORE,
+  normalizedReminderDays,
+  paymentReminderOffsets,
+  REMINDER_HOUR,
+} from './notification-schedule';
 
 const REMINDERS_ENABLED_KEY = 'notifications_payment_reminders';
+const REMINDER_DAYS_BEFORE_KEY = 'notifications_reminder_days_before';
 
 interface ReminderTarget {
   readonly id: number;
@@ -21,9 +30,11 @@ interface ReminderTarget {
 export class NotificationService {
   private readonly database = inject(SqliteDatabase);
   private readonly channelId = 'card-nest-reminders';
-  private readonly paymentOffsets = [5, 4, 3, 2, 1, 0] as const;
+  private rescheduleVersion = 0;
+  private rescheduleQueue: Promise<void> = Promise.resolve();
   readonly permission = signal<'unavailable' | 'prompt' | 'denied' | 'granted'>('unavailable');
   readonly enabled = signal(false);
+  readonly reminderDaysBefore = signal(DEFAULT_REMINDER_DAYS_BEFORE);
   readonly lastError = signal<string | null>(null);
 
   async initialise(
@@ -36,7 +47,11 @@ export class NotificationService {
     this.permission.set(
       status.display === 'granted' ? 'granted' : status.display === 'denied' ? 'denied' : 'prompt',
     );
-    const preference = await this.readEnabledPreference();
+    const [preference, reminderDaysBefore] = await Promise.all([
+      this.readEnabledPreference(),
+      this.readReminderDaysBeforePreference(),
+    ]);
+    this.reminderDaysBefore.set(reminderDaysBefore);
     this.enabled.set(status.display === 'granted' && (preference ?? true));
     if (this.enabled()) await this.reschedule(cards, outstandingFor);
   }
@@ -88,15 +103,45 @@ export class NotificationService {
     outstandingFor: (cardId: string) => number,
   ): Promise<void> {
     if (!this.isAndroid() || this.permission() !== 'granted' || !this.enabled()) return;
+    const version = ++this.rescheduleVersion;
+    const cardBalances = cards.map((card) => ({ card, dueMinor: outstandingFor(card.id) }));
+    const operation = this.rescheduleQueue.then(async () => {
+      if (version !== this.rescheduleVersion) return;
+      await this.performReschedule(cardBalances);
+    });
+    this.rescheduleQueue = operation.catch(() => undefined);
+    await operation;
+  }
+
+  async setReminderDaysBefore(
+    days: number,
+    cards: readonly CreditCard[],
+    outstandingFor: (cardId: string) => number,
+  ): Promise<void> {
+    const safeDays = normalizedReminderDays(days);
+    this.reminderDaysBefore.set(safeDays);
+    await this.writeReminderDaysBeforePreference(safeDays);
+    await this.reschedule(cards, outstandingFor);
+  }
+
+  private async performReschedule(
+    cardBalances: readonly { readonly card: CreditCard; readonly dueMinor: number }[],
+  ): Promise<void> {
     try {
-      const allIds = cards.flatMap((card) => this.notificationIds(card.id));
-      if (allIds.length)
+      const pending = await LocalNotifications.getPending();
+      const pendingCardNestIds = pending.notifications
+        .filter((notification) => this.isCardNestExtra(notification.extra))
+        .map((notification) => notification.id);
+      const knownIds = cardBalances.flatMap(({ card }) => this.notificationIds(card.id));
+      const allIds = [...new Set([...pendingCardNestIds, ...knownIds])];
+      if (allIds.length) {
         await LocalNotifications.cancel({ notifications: allIds.map((id) => ({ id })) });
+      }
 
       const now = new Date();
-      const targets = cards
-        .filter((card) => !card.archived)
-        .flatMap((card) => this.targetsForCard(card, outstandingFor(card.id), now))
+      const targets = cardBalances
+        .filter(({ card }) => !card.archived)
+        .flatMap(({ card, dueMinor }) => this.targetsForCard(card, dueMinor, now))
         .filter((target) => target.at.getTime() > now.getTime() + 30_000);
 
       if (targets.length) {
@@ -114,6 +159,15 @@ export class NotificationService {
           })),
         });
       }
+      const scheduled = await LocalNotifications.getPending();
+      const scheduledIds = new Set(
+        scheduled.notifications
+          .filter((notification) => this.isCardNestExtra(notification.extra))
+          .map((notification) => notification.id),
+      );
+      if (targets.some((target) => !scheduledIds.has(target.id))) {
+        throw new Error('One or more Android reminders were not retained by the scheduler.');
+      }
       this.lastError.set(null);
     } catch {
       this.lastError.set(
@@ -130,10 +184,20 @@ export class NotificationService {
   }
 
   async cancelAll(cards: readonly CreditCard[]): Promise<void> {
+    ++this.rescheduleVersion;
+    await this.rescheduleQueue;
     this.enabled.set(false);
     await this.writeEnabledPreference(false);
     if (!this.isAndroid()) return;
-    const ids = cards.flatMap((card) => this.notificationIds(card.id));
+    const pending = await LocalNotifications.getPending();
+    const ids = [
+      ...new Set([
+        ...cards.flatMap((card) => this.notificationIds(card.id)),
+        ...pending.notifications
+          .filter((notification) => this.isCardNestExtra(notification.extra))
+          .map((notification) => notification.id),
+      ]),
+    ];
     if (ids.length) await LocalNotifications.cancel({ notifications: ids.map((id) => ({ id })) });
   }
 
@@ -152,25 +216,18 @@ export class NotificationService {
     const amount = formatMoney(Math.max(0, outstandingMinor), card.currencyCode);
     const dueDisplay = due.toLocaleDateString('en-IN', { day: 'numeric', month: 'long' });
     const baseId = this.baseId(card.id);
-    const dueIsToday =
-      due.getFullYear() === now.getFullYear() &&
-      due.getMonth() === now.getMonth() &&
-      due.getDate() === now.getDate();
-
+    const paymentOffsets = paymentReminderOffsets(this.reminderDaysBefore());
     const paymentTargets =
       card.remindToSettle && outstandingMinor > 0
-        ? this.paymentOffsets.map((daysBefore, index): ReminderTarget => {
+        ? paymentOffsets.map((daysBefore, index): ReminderTarget => {
             const at = new Date(due);
             at.setDate(at.getDate() - daysBefore);
-            at.setHours(9, 0, 0, 0);
-            if (daysBefore === 0 && dueIsToday && at <= now) {
-              at.setTime(now.getTime() + 60_000);
-            }
+            const scheduledAt = catchUpReminderToday(at, now);
             return {
               id: baseId + index,
               title: this.countdownTitle('Payment due', daysBefore),
               body: `${amount} is due for ${cardLabel} on ${dueDisplay}.`,
-              at,
+              at: scheduledAt,
               cardId: card.id,
               kind: 'PAYMENT',
             };
@@ -183,7 +240,7 @@ export class NotificationService {
     if (annualFeeDate && card.annualFee) {
       const at = new Date(annualFeeDate);
       at.setDate(at.getDate() - 30);
-      at.setHours(9, 0, 0, 0);
+      at.setHours(REMINDER_HOUR, 0, 0, 0);
       if (at <= now) at.setTime(now.getTime() + 60_000);
       const daysUntilFee = this.calendarDaysBetween(at, annualFeeDate);
       targets.push({
@@ -226,7 +283,15 @@ export class NotificationService {
 
   private notificationIds(cardId: string): readonly number[] {
     const baseId = this.baseId(cardId);
-    return Array.from({ length: 8 }, (_, index) => baseId + index);
+    return Array.from({ length: MAX_REMINDER_DAYS_BEFORE + 3 }, (_, index) => baseId + index);
+  }
+
+  private isCardNestExtra(extra: unknown): boolean {
+    return (
+      typeof extra === 'object' &&
+      extra !== null &&
+      (extra as Record<string, unknown>)['source'] === 'card-nest'
+    );
   }
 
   private baseId(cardId: string): number {
@@ -268,7 +333,7 @@ export class NotificationService {
     if (expires <= now) return null;
     const at = new Date(expires);
     at.setDate(at.getDate() - 45);
-    at.setHours(9, 0, 0, 0);
+    at.setHours(REMINDER_HOUR, 0, 0, 0);
     if (at <= now) at.setTime(now.getTime() + 60_000);
     return at;
   }
@@ -293,6 +358,24 @@ export class NotificationService {
       `INSERT INTO app_preferences (key, encrypted_value) VALUES (?, ?)
        ON CONFLICT(key) DO UPDATE SET encrypted_value = excluded.encrypted_value`,
       [REMINDERS_ENABLED_KEY, enabled ? '1' : '0'],
+    );
+  }
+
+  private async readReminderDaysBeforePreference(): Promise<number> {
+    if (!this.database.ready()) return DEFAULT_REMINDER_DAYS_BEFORE;
+    const rows = await this.database.query<{ encrypted_value: string }>(
+      'SELECT encrypted_value FROM app_preferences WHERE key = ?',
+      [REMINDER_DAYS_BEFORE_KEY],
+    );
+    return normalizedReminderDays(Number(rows[0]?.encrypted_value));
+  }
+
+  private async writeReminderDaysBeforePreference(days: number): Promise<void> {
+    if (!this.database.ready()) return;
+    await this.database.run(
+      `INSERT INTO app_preferences (key, encrypted_value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET encrypted_value = excluded.encrypted_value`,
+      [REMINDER_DAYS_BEFORE_KEY, String(days)],
     );
   }
 }

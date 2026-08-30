@@ -276,6 +276,8 @@ const HELP_TOPICS: readonly HelpTopic[] = [
     summary: 'Receive local notifications for statement payments, annual fees, and card expiry.',
     steps: [
       'Open Reminders and enable Notifications, then grant Android notification permission when prompted.',
+      'CardNest schedules eligible reminders for 9:00 AM in the device’s local time. If the phone is idle, Android may deliver them shortly after 9:00 AM.',
+      'The default payment window starts five days before the due date and continues each morning through the due date. Change the lead time under Settings > Notifications.',
       'Filter the reminder list by payments, grace period, annual fee, expiry, or all cards.',
       'Longest grace period ranks cards by the exact final payment date for a purchase made today. For example, 17 days (2 + 15) means the statement generates in two days and the bank then allows fifteen days to pay.',
       'Record a payment or snooze a reminder; the list updates immediately.',
@@ -284,6 +286,7 @@ const HELP_TOPICS: readonly HelpTopic[] = [
     ],
     tips: [
       'Notifications contain only a nickname and masked digits. They never reveal a full card number.',
+      'Scheduled reminders survive a device restart, app update, time change, and time-zone change. Force-stopping CardNest in Android settings can pause alarms until the app is opened again.',
       'Grace-period comparisons appear in the Reminders page for planning; notifications are limited to statement amount due, annual fee due, and card expiry.',
     ],
     keywords: ['notification', 'reminder', 'snooze', 'payment due', 'fee', 'expiry'],

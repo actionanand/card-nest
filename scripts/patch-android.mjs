@@ -39,6 +39,22 @@ if (!manifest.includes('android.permission.USE_FINGERPRINT')) {
     '$1\n    <uses-permission android:name="android.permission.USE_FINGERPRINT" />',
   );
 }
+if (!manifest.includes('android.intent.action.MY_PACKAGE_REPLACED')) {
+  const notificationRestoreReceiver = `        <receiver
+            android:name="com.capacitorjs.plugins.localnotifications.LocalNotificationRestoreReceiver"
+            android:directBootAware="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+            </intent-filter>
+        </receiver>`;
+  manifest = manifest.replace(
+    '</application>',
+    `${notificationRestoreReceiver}\n    </application>`,
+  );
+}
 writeFileSync(manifestPath, manifest);
 
 if (existsSync(appBuildGradlePath)) {
