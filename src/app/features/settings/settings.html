@@ -304,7 +304,7 @@
             label="Default timing"
             [options]="reminderTimingOptions"
             [value]="reminderTiming()"
-            (valueChange)="reminderTiming.set($event)"
+            (valueChange)="updateReminderTiming($event)"
           />
         </div>
       </section>

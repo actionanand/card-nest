@@ -110,11 +110,13 @@ CardNest uses `@capacitor/local-notifications` directly. This matches the reliab
 
 1. Notification permission is checked only on Android at launch. CardNest first shows an accessible explanation dialog; the Android system prompt opens only after the user selects **Allow notifications**.
 2. A high-importance, private lock-screen channel is created.
-3. Card reminders are scheduled with stable IDs so updates replace existing notifications instead of duplicating them.
+3. Card reminders are scheduled with stable, app-scoped IDs so updates replace existing CardNest notifications instead of duplicating them. Notification IDs from another installed app cannot conflict with CardNest IDs.
 4. Notifications contain only amount, nickname, masked digits, and due date—never a full card number.
 5. Editing/archiving cards or recording payments causes reminders to be cancelled and recalculated.
-6. The Capacitor plugin contributes `POST_NOTIFICATIONS`, `RECEIVE_BOOT_COMPLETED`, wake-lock support, an Android alarm publisher, and a boot restore receiver through manifest merging.
-7. No exact-alarm permission is requested and `allowWhileIdle` is disabled. Android may deliver reminders approximately when battery optimization requires it.
+6. Statement-due reminders run at **9:00 AM local device time** each day from the selected lead day through the due date. The default lead time is five days and can be changed in **Settings > Notifications**.
+7. Annual-fee and card-expiry reminders also use 9:00 AM local device time. If CardNest is opened later on a reminder day before Android has delivered that reminder, the scheduler catches up all eligible cards rather than only the card due that day.
+8. The Capacitor plugin contributes `POST_NOTIFICATIONS`, `RECEIVE_BOOT_COMPLETED`, wake-lock support, an Android alarm publisher, and a boot restore receiver through manifest merging. CardNest additionally restores saved alarms after an app update, manual time change, or time-zone change.
+9. No exact-alarm permission is requested. Reminders use `allowWhileIdle`; Android may deliver them shortly after 9:00 AM when battery optimization or Doze mode requires it. Force-stopping the app in Android settings prevents Android alarms until the app is opened again.
 
 The Android patch script writes the monochrome credit-card small icon to `android/app/src/main/res/drawable/ic_stat_card_nest.xml`. `capacitor.config.ts` configures it as the plugin default, and each scheduled reminder also names `ic_stat_card_nest`. Android requires white artwork on a transparent background for notification small icons and applies the appropriate light or dark system tint in the status bar and notification shade.
 

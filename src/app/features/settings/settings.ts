@@ -78,7 +78,7 @@ export class SettingsPage {
   readonly retentionConfirmationOpen = signal(false);
   readonly retentionYears = signal(5);
   readonly autoLockDelay = signal('5');
-  readonly reminderTiming = signal('5');
+  readonly reminderTiming = computed(() => String(this.notifications.reminderDaysBefore()));
   readonly autoLockOptions: readonly AppSelectOption[] = [
     { value: '1', label: '1 minute' },
     { value: '5', label: '5 minutes' },
@@ -371,6 +371,15 @@ export class SettingsPage {
       return;
     }
     this.snackbar.show('Payment reminders enabled and scheduled.');
+  }
+
+  async updateReminderTiming(value: string): Promise<void> {
+    await this.notifications.setReminderDaysBefore(Number(value), this.store.cards(), (cardId) =>
+      this.store.cardDueAmount(cardId),
+    );
+    this.snackbar.show(
+      `Payment reminders will start ${value === '0' ? 'on the due date' : `${value} ${value === '1' ? 'day' : 'days'} before the due date`}.`,
+    );
   }
 
   openCreateBackup(): void {
