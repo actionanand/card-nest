@@ -104,12 +104,14 @@ export class App {
     const granted = await this.notifications.requestPermission(this.store.cards(), (cardId) =>
       this.store.cardDueAmount(cardId),
     );
+    const schedulingError = this.notifications.lastError();
 
     this.snackbar.show(
-      granted
+      granted && !schedulingError
         ? 'Notifications are enabled. CardNest will send private card reminders.'
-        : 'Notifications were not enabled. You can allow them later in Android settings.',
-      granted ? 'SUCCESS' : 'WARNING',
+        : (schedulingError ??
+            'Notifications were not enabled. You can allow them later in Android settings.'),
+      granted && !schedulingError ? 'SUCCESS' : 'WARNING',
       15000,
     );
     queueMicrotask(() => this.mainContent()?.nativeElement.focus());

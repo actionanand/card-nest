@@ -14,6 +14,8 @@ import { dirname, join } from 'node:path';
 const androidRoot = join(process.cwd(), 'android', 'app', 'src', 'main');
 const javaDirectory = join(androidRoot, 'java', 'com', 'actionanand', 'cardnest', 'app');
 const mainActivityPath = join(javaDirectory, 'MainActivity.java');
+const reminderSchedulerPath = join(javaDirectory, 'CardNestReminderScheduler.java');
+const reminderReceiverPath = join(javaDirectory, 'CardNestReminderReceiver.java');
 const manifestPath = join(androidRoot, 'AndroidManifest.xml');
 const appBuildGradlePath = join(process.cwd(), 'android', 'app', 'build.gradle');
 const notificationIconPath = join(androidRoot, 'res', 'drawable', 'ic_stat_card_nest.xml');
@@ -39,21 +41,23 @@ if (!manifest.includes('android.permission.USE_FINGERPRINT')) {
     '$1\n    <uses-permission android:name="android.permission.USE_FINGERPRINT" />',
   );
 }
-if (!manifest.includes('android.intent.action.MY_PACKAGE_REPLACED')) {
-  const notificationRestoreReceiver = `        <receiver
-            android:name="com.capacitorjs.plugins.localnotifications.LocalNotificationRestoreReceiver"
+if (!manifest.includes('com.actionanand.cardnest.app.CardNestReminderReceiver')) {
+  const cardNestReminderReceiver = `        <receiver
+            android:name="com.actionanand.cardnest.app.CardNestReminderReceiver"
             android:directBootAware="true"
             android:exported="false">
             <intent-filter>
+                <action android:name="com.actionanand.cardnest.app.REMINDER_ALARM" />
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
                 <action android:name="android.intent.action.TIME_SET" />
                 <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+                <action android:name="android.intent.action.USER_UNLOCKED" />
             </intent-filter>
         </receiver>`;
-  manifest = manifest.replace(
-    '</application>',
-    `${notificationRestoreReceiver}\n    </application>`,
-  );
+  manifest = manifest.replace('</application>', `${cardNestReminderReceiver}\n    </application>`);
 }
 writeFileSync(manifestPath, manifest);
 
@@ -88,6 +92,288 @@ writeFileSync(
         android:fillColor="#FFFFFFFF"
         android:pathData="M2,9h20v2.25H2zM5.5,14.25h6.5v2H5.5z" />
 </vector>
+`,
+);
+
+writeFileSync(
+  reminderSchedulerPath,
+  `package com.actionanand.cardnest.app;
+
+import android.Manifest;
+import android.app.AlarmManager;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.content.Context;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
+import android.graphics.Color;
+import android.net.Uri;
+import android.os.Build;
+
+import androidx.core.app.NotificationCompat;
+import androidx.core.app.NotificationManagerCompat;
+import androidx.core.content.ContextCompat;
+
+import java.util.Calendar;
+import java.util.HashSet;
+import java.util.Set;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+final class CardNestReminderScheduler {
+  static final String ACTION_ALARM = "com.actionanand.cardnest.app.REMINDER_ALARM";
+  private static final String CHANNEL_ID = "card-nest-reminders";
+  private static final String STORE = "card_nest_native_reminders";
+  private static final String RECORDS_KEY = "records";
+
+  private CardNestReminderScheduler() { }
+
+  static void replace(Context context, String recordsJson) throws Exception {
+    JSONArray replacement = new JSONArray(recordsJson);
+    ensureChannel(context);
+    if (replacement.length() > 0 && !channelEnabled(context)) {
+      throw new IllegalStateException("The CardNest reminder notification channel is disabled.");
+    }
+
+    JSONArray valid = new JSONArray();
+    long now = System.currentTimeMillis();
+    for (int index = 0; index < replacement.length(); index++) {
+      JSONObject record = replacement.getJSONObject(index);
+      if (!record.has("id") || record.optString("title").isEmpty()) {
+        throw new IllegalArgumentException("A reminder is missing its ID or title.");
+      }
+      long atMillis = record.optLong("atMillis", 0);
+      if (atMillis <= now) continue;
+      valid.put(record);
+    }
+
+    JSONArray previous = records(context);
+    cancelBatches(context, previous);
+    persist(context, valid);
+    scheduleBatches(context, valid, false);
+  }
+
+  static int pendingCount(Context context) {
+    return records(context).length();
+  }
+
+  static boolean channelEnabled(Context context) {
+    if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return false;
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return true;
+    NotificationManager manager =
+      (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+    if (manager == null) return false;
+    NotificationChannel channel = manager.getNotificationChannel(CHANNEL_ID);
+    return channel != null && channel.getImportance() != NotificationManager.IMPORTANCE_NONE;
+  }
+
+  static void deliver(Context context, long scheduledAt) {
+    JSONArray saved = records(context);
+    JSONArray remaining = new JSONArray();
+    for (int index = 0; index < saved.length(); index++) {
+      JSONObject record = saved.optJSONObject(index);
+      if (record == null) continue;
+      if (record.optLong("atMillis") == scheduledAt) showNotification(context, record);
+      else remaining.put(record);
+    }
+    persist(context, remaining);
+  }
+
+  static void rebuild(Context context) {
+    JSONArray saved = records(context);
+    cancelBatches(context, saved);
+    JSONArray valid = new JSONArray();
+    long now = System.currentTimeMillis();
+    for (int index = 0; index < saved.length(); index++) {
+      JSONObject record = saved.optJSONObject(index);
+      if (record == null) continue;
+      long rebuiltAt = localDateTimeMillis(record);
+      if (rebuiltAt <= 0) continue;
+      try { record.put("atMillis", rebuiltAt); } catch (Exception ignored) { continue; }
+      if (rebuiltAt > now || sameLocalDay(rebuiltAt, now)) valid.put(record);
+    }
+    persist(context, valid);
+    ensureChannel(context);
+    scheduleBatches(context, valid, true);
+  }
+
+  private static void scheduleBatches(Context context, JSONArray values, boolean catchUpToday) {
+    Set<Long> scheduledTimes = new HashSet<>();
+    long now = System.currentTimeMillis();
+    for (int index = 0; index < values.length(); index++) {
+      JSONObject record = values.optJSONObject(index);
+      if (record == null) continue;
+      long originalAt = record.optLong("atMillis", 0);
+      if (originalAt <= 0 || !scheduledTimes.add(originalAt)) continue;
+      long triggerAt = originalAt;
+      if (catchUpToday && originalAt <= now && sameLocalDay(originalAt, now)) {
+        triggerAt = now + 15_000;
+      }
+      if (triggerAt > now) scheduleAlarm(context, originalAt, triggerAt);
+    }
+  }
+
+  private static void scheduleAlarm(Context context, long batchAt, long triggerAt) {
+    AlarmManager alarms = (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
+    if (alarms == null) throw new IllegalStateException("Android AlarmManager is unavailable.");
+    PendingIntent pending = alarmIntent(context, batchAt, PendingIntent.FLAG_UPDATE_CURRENT);
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+      alarms.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, pending);
+    } else {
+      alarms.set(AlarmManager.RTC_WAKEUP, triggerAt, pending);
+    }
+  }
+
+  private static void cancelBatches(Context context, JSONArray values) {
+    AlarmManager alarms = (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
+    if (alarms == null) return;
+    Set<Long> times = new HashSet<>();
+    for (int index = 0; index < values.length(); index++) {
+      JSONObject record = values.optJSONObject(index);
+      if (record == null) continue;
+      long at = record.optLong("atMillis", 0);
+      if (at <= 0 || !times.add(at)) continue;
+      PendingIntent pending = alarmIntent(context, at, PendingIntent.FLAG_NO_CREATE);
+      if (pending != null) alarms.cancel(pending);
+    }
+  }
+
+  private static PendingIntent alarmIntent(Context context, long batchAt, int updateFlag) {
+    Intent intent = new Intent(context, CardNestReminderReceiver.class);
+    intent.setAction(ACTION_ALARM);
+    intent.setData(Uri.parse("cardnest://reminders/" + batchAt));
+    intent.putExtra("scheduledAt", batchAt);
+    return PendingIntent.getBroadcast(
+      context,
+      0,
+      intent,
+      updateFlag | PendingIntent.FLAG_IMMUTABLE
+    );
+  }
+
+  private static void showNotification(Context context, JSONObject record) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+      ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+        PackageManager.PERMISSION_GRANTED) return;
+    if (!channelEnabled(context)) return;
+
+    int id = record.optInt("id", -1);
+    if (id < 0) return;
+    Intent open = new Intent(context, MainActivity.class);
+    open.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+    open.putExtra("cardId", record.optString("cardId"));
+    PendingIntent content = PendingIntent.getActivity(
+      context,
+      id,
+      open,
+      PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+    );
+    String body = record.optString("body", "You have a CardNest reminder.");
+    NotificationCompat.Builder notification = new NotificationCompat.Builder(context, CHANNEL_ID)
+      .setSmallIcon(R.drawable.ic_stat_card_nest)
+      .setColor(Color.parseColor("#28684E"))
+      .setContentTitle(record.optString("title", "CardNest reminder"))
+      .setContentText(body)
+      .setStyle(new NotificationCompat.BigTextStyle().bigText(body))
+      .setCategory(NotificationCompat.CATEGORY_REMINDER)
+      .setPriority(NotificationCompat.PRIORITY_HIGH)
+      .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+      .setGroup("card-nest-reminders-" + record.optLong("atMillis"))
+      .setAutoCancel(true)
+      .setContentIntent(content);
+    NotificationManagerCompat.from(context).notify(id, notification.build());
+  }
+
+  private static void ensureChannel(Context context) {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
+    NotificationManager manager =
+      (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+    if (manager == null) return;
+    NotificationChannel channel = new NotificationChannel(
+      CHANNEL_ID,
+      "Card and payment reminders",
+      NotificationManager.IMPORTANCE_HIGH
+    );
+    channel.setDescription("Masked statement-due, annual-fee, and expiry reminders");
+    channel.enableLights(true);
+    channel.setLightColor(Color.parseColor("#28684E"));
+    channel.enableVibration(true);
+    channel.setLockscreenVisibility(Notification.VISIBILITY_PRIVATE);
+    manager.createNotificationChannel(channel);
+  }
+
+  private static long localDateTimeMillis(JSONObject record) {
+    try {
+      Calendar value = Calendar.getInstance();
+      value.clear();
+      value.setLenient(false);
+      value.set(
+        record.getInt("year"),
+        record.getInt("month") - 1,
+        record.getInt("day"),
+        record.getInt("hour"),
+        record.getInt("minute"),
+        0
+      );
+      return value.getTimeInMillis();
+    } catch (Exception ignored) {
+      return -1;
+    }
+  }
+
+  private static boolean sameLocalDay(long leftMillis, long rightMillis) {
+    Calendar left = Calendar.getInstance();
+    left.setTimeInMillis(leftMillis);
+    Calendar right = Calendar.getInstance();
+    right.setTimeInMillis(rightMillis);
+    return left.get(Calendar.ERA) == right.get(Calendar.ERA) &&
+      left.get(Calendar.YEAR) == right.get(Calendar.YEAR) &&
+      left.get(Calendar.DAY_OF_YEAR) == right.get(Calendar.DAY_OF_YEAR);
+  }
+
+  private static JSONArray records(Context context) {
+    String json = preferences(context).getString(RECORDS_KEY, "[]");
+    try { return new JSONArray(json); } catch (Exception ignored) { return new JSONArray(); }
+  }
+
+  private static void persist(Context context, JSONArray values) {
+    if (!preferences(context).edit().putString(RECORDS_KEY, values.toString()).commit()) {
+      throw new IllegalStateException("Reminder schedule could not be stored.");
+    }
+  }
+
+  private static SharedPreferences preferences(Context context) {
+    return context.getSharedPreferences(STORE, Context.MODE_PRIVATE);
+  }
+}
+`,
+);
+
+writeFileSync(
+  reminderReceiverPath,
+  `package com.actionanand.cardnest.app;
+
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.Intent;
+import android.os.UserManager;
+
+public class CardNestReminderReceiver extends BroadcastReceiver {
+  @Override
+  public void onReceive(Context context, Intent intent) {
+    if (CardNestReminderScheduler.ACTION_ALARM.equals(intent == null ? null : intent.getAction())) {
+      CardNestReminderScheduler.deliver(context, intent.getLongExtra("scheduledAt", -1));
+      return;
+    }
+    UserManager users = (UserManager) context.getSystemService(Context.USER_SERVICE);
+    if (users == null || !users.isUserUnlocked()) return;
+    CardNestReminderScheduler.rebuild(context);
+  }
+}
 `,
 );
 
@@ -136,6 +422,7 @@ public class MainActivity extends BridgeActivity {
   private View launchOverlay;
   private BiometricPrompt biometricPrompt;
   private boolean waitingForExitBackPress;
+  private String reminderScheduleError = "";
 
   @Override
   public void onCreate(Bundle savedInstanceState) {
@@ -192,6 +479,35 @@ public class MainActivity extends BridgeActivity {
   }
 
   public class CardNestNativeBridge {
+    @JavascriptInterface
+    public boolean replaceReminderSchedule(String remindersJson) {
+      try {
+        CardNestReminderScheduler.replace(MainActivity.this, remindersJson);
+        reminderScheduleError = "";
+        return true;
+      } catch (Exception error) {
+        reminderScheduleError = error.getMessage() == null
+          ? "Android could not store the reminder schedule."
+          : error.getMessage();
+        return false;
+      }
+    }
+
+    @JavascriptInterface
+    public int pendingReminderCount() {
+      return CardNestReminderScheduler.pendingCount(MainActivity.this);
+    }
+
+    @JavascriptInterface
+    public boolean reminderChannelEnabled() {
+      return CardNestReminderScheduler.channelEnabled(MainActivity.this);
+    }
+
+    @JavascriptInterface
+    public String reminderScheduleError() {
+      return reminderScheduleError;
+    }
+
     @JavascriptInterface
     public void setScreenSecure(boolean enabled) {
       runOnUiThread(() -> {
@@ -612,7 +928,7 @@ writeFileSync(
 );
 
 console.log(
-  'CardNest Android shell, status-bar icons, splash screen, styles, and notification icon patched.',
+  'CardNest Android shell, native reminder scheduler, status-bar icons, splash screen, styles, and notification icon patched.',
 );
 
 await import('./patch-android-export.mjs');

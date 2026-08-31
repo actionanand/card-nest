@@ -246,6 +246,9 @@ button:disabled {
   color: var(--success);
   font-size: 0.72rem;
 }
+.setting-status.notification-error {
+  color: var(--danger);
+}
 .income-history {
   margin-top: 1rem;
   padding: 0.75rem;

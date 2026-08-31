@@ -26,6 +26,17 @@ interface ReminderTarget {
   readonly kind: 'PAYMENT' | 'ANNUAL_FEE' | 'EXPIRY';
 }
 
+interface NativeReminderBridge {
+  replaceReminderSchedule(remindersJson: string): boolean;
+  pendingReminderCount(): number;
+  reminderChannelEnabled(): boolean;
+  reminderScheduleError(): string;
+}
+
+interface NativeReminderWindow extends Window {
+  CardNestNative?: NativeReminderBridge;
+}
+
 @Service()
 export class NotificationService {
   private readonly database = inject(SqliteDatabase);
@@ -35,6 +46,7 @@ export class NotificationService {
   readonly permission = signal<'unavailable' | 'prompt' | 'denied' | 'granted'>('unavailable');
   readonly enabled = signal(false);
   readonly reminderDaysBefore = signal(DEFAULT_REMINDER_DAYS_BEFORE);
+  readonly scheduledCount = signal(0);
   readonly lastError = signal<string | null>(null);
 
   async initialise(
@@ -72,11 +84,13 @@ export class NotificationService {
       this.permission.set(granted ? 'granted' : 'denied');
       this.enabled.set(granted);
       if (granted) {
+        this.lastError.set(null);
         await this.writeEnabledPreference(true);
         await this.ensureChannel();
         await this.reschedule(cards, outstandingFor);
+      } else {
+        this.lastError.set('Android notification permission was not granted.');
       }
-      this.lastError.set(null);
       return granted;
     } catch {
       this.permission.set('denied');
@@ -128,6 +142,52 @@ export class NotificationService {
     cardBalances: readonly { readonly card: CreditCard; readonly dueMinor: number }[],
   ): Promise<void> {
     try {
+      const now = new Date();
+      const targets = cardBalances
+        .filter(({ card }) => !card.archived)
+        .flatMap(({ card, dueMinor }) => this.targetsForCard(card, dueMinor, now))
+        .filter((target) => target.at.getTime() > now.getTime() + 30_000);
+      const nativeBridge = this.nativeReminderBridge();
+      if (nativeBridge) {
+        const accepted = nativeBridge.replaceReminderSchedule(
+          JSON.stringify(
+            targets.map((target) => ({
+              id: target.id,
+              title: target.title,
+              body: target.body,
+              cardId: target.cardId,
+              kind: target.kind,
+              atMillis: target.at.getTime(),
+              year: target.at.getFullYear(),
+              month: target.at.getMonth() + 1,
+              day: target.at.getDate(),
+              hour: target.at.getHours(),
+              minute: target.at.getMinutes(),
+            })),
+          ),
+        );
+        if (!accepted) {
+          throw new Error(
+            nativeBridge.reminderScheduleError() ||
+              'Android could not store the CardNest reminder schedule.',
+          );
+        }
+        if (!nativeBridge.reminderChannelEnabled()) {
+          throw new Error(
+            'The CardNest reminder notification channel is disabled in Android settings.',
+          );
+        }
+        const pendingCount = nativeBridge.pendingReminderCount();
+        if (pendingCount !== targets.length) {
+          throw new Error('Android did not retain the complete CardNest reminder schedule.');
+        }
+
+        await this.cancelLegacyPluginReminders(cardBalances.map(({ card }) => card));
+        this.scheduledCount.set(pendingCount);
+        this.lastError.set(null);
+        return;
+      }
+
       const pending = await LocalNotifications.getPending();
       const pendingCardNestIds = pending.notifications
         .filter((notification) => this.isCardNestExtra(notification.extra))
@@ -137,12 +197,6 @@ export class NotificationService {
       if (allIds.length) {
         await LocalNotifications.cancel({ notifications: allIds.map((id) => ({ id })) });
       }
-
-      const now = new Date();
-      const targets = cardBalances
-        .filter(({ card }) => !card.archived)
-        .flatMap(({ card, dueMinor }) => this.targetsForCard(card, dueMinor, now))
-        .filter((target) => target.at.getTime() > now.getTime() + 30_000);
 
       if (targets.length) {
         await LocalNotifications.schedule({
@@ -168,10 +222,13 @@ export class NotificationService {
       if (targets.some((target) => !scheduledIds.has(target.id))) {
         throw new Error('One or more Android reminders were not retained by the scheduler.');
       }
+      this.scheduledCount.set(scheduledIds.size);
       this.lastError.set(null);
-    } catch {
+    } catch (error: unknown) {
       this.lastError.set(
-        'Payment reminders could not be scheduled. Check Android notification settings.',
+        error instanceof Error && error.message
+          ? error.message
+          : 'Payment reminders could not be scheduled. Check Android notification settings.',
       );
     }
   }
@@ -187,8 +244,15 @@ export class NotificationService {
     ++this.rescheduleVersion;
     await this.rescheduleQueue;
     this.enabled.set(false);
+    this.scheduledCount.set(0);
     await this.writeEnabledPreference(false);
     if (!this.isAndroid()) return;
+    const nativeBridge = this.nativeReminderBridge();
+    if (nativeBridge && !nativeBridge.replaceReminderSchedule('[]')) {
+      this.lastError.set(
+        nativeBridge.reminderScheduleError() || 'Android reminders could not be cleared.',
+      );
+    }
     const pending = await LocalNotifications.getPending();
     const ids = [
       ...new Set([
@@ -340,6 +404,29 @@ export class NotificationService {
 
   private isAndroid(): boolean {
     return Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android';
+  }
+
+  private nativeReminderBridge(): NativeReminderBridge | undefined {
+    return (globalThis.window as NativeReminderWindow | undefined)?.CardNestNative;
+  }
+
+  private async cancelLegacyPluginReminders(cards: readonly CreditCard[]): Promise<void> {
+    try {
+      const pending = await LocalNotifications.getPending();
+      const ids = [
+        ...new Set([
+          ...cards.flatMap((card) => this.notificationIds(card.id)),
+          ...pending.notifications
+            .filter((notification) => this.isCardNestExtra(notification.extra))
+            .map((notification) => notification.id),
+        ]),
+      ];
+      if (ids.length) {
+        await LocalNotifications.cancel({ notifications: ids.map((id) => ({ id })) });
+      }
+    } catch {
+      // The native schedule is authoritative. A legacy-plugin cleanup failure must not disable it.
+    }
   }
 
   private async readEnabledPreference(): Promise<boolean | null> {

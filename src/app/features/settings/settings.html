@@ -307,6 +307,9 @@
             (valueChange)="updateReminderTiming($event)"
           />
         </div>
+        @if (notifications.lastError(); as notificationError) {
+          <p class="setting-status notification-error" role="status">{{ notificationError }}</p>
+        }
       </section>
       <section id="data" class="panel">
         <div class="setting-heading">

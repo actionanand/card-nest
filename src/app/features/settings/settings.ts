@@ -370,15 +370,22 @@ export class SettingsPage {
       );
       return;
     }
-    this.snackbar.show('Payment reminders enabled and scheduled.');
+    const schedulingError = this.notifications.lastError();
+    this.snackbar.show(
+      schedulingError ?? 'Payment reminders enabled and scheduled.',
+      schedulingError ? 'WARNING' : 'SUCCESS',
+    );
   }
 
   async updateReminderTiming(value: string): Promise<void> {
     await this.notifications.setReminderDaysBefore(Number(value), this.store.cards(), (cardId) =>
       this.store.cardDueAmount(cardId),
     );
+    const schedulingError = this.notifications.lastError();
     this.snackbar.show(
-      `Payment reminders will start ${value === '0' ? 'on the due date' : `${value} ${value === '1' ? 'day' : 'days'} before the due date`}.`,
+      schedulingError ??
+        `Payment reminders will start ${value === '0' ? 'on the due date' : `${value} ${value === '1' ? 'day' : 'days'} before the due date`}.`,
+      schedulingError ? 'WARNING' : 'SUCCESS',
     );
   }
 
