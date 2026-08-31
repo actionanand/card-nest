@@ -22,6 +22,7 @@ interface ReminderTarget {
   readonly title: string;
   readonly body: string;
   readonly at: Date;
+  readonly eventDate: Date;
   readonly cardId: string;
   readonly kind: 'PAYMENT' | 'ANNUAL_FEE' | 'EXPIRY';
 }
@@ -163,6 +164,9 @@ export class NotificationService {
               day: target.at.getDate(),
               hour: target.at.getHours(),
               minute: target.at.getMinutes(),
+              eventYear: target.eventDate.getFullYear(),
+              eventMonth: target.eventDate.getMonth() + 1,
+              eventDay: target.eventDate.getDate(),
             })),
           ),
         );
@@ -292,6 +296,7 @@ export class NotificationService {
               title: this.countdownTitle('Payment due', daysBefore),
               body: `${amount} is due for ${cardLabel} on ${dueDisplay}.`,
               at: scheduledAt,
+              eventDate: due,
               cardId: card.id,
               kind: 'PAYMENT',
             };
@@ -312,6 +317,7 @@ export class NotificationService {
         title: this.countdownTitle('Annual fee due', daysUntilFee),
         body: `${formatMoney(card.annualFee.amountMinor, card.currencyCode)} annual fee is due for ${cardLabel} on ${annualFeeDate.toLocaleDateString('en-IN', { day: 'numeric', month: 'long' })}.`,
         at,
+        eventDate: annualFeeDate,
         cardId: card.id,
         kind: 'ANNUAL_FEE',
       });
@@ -326,6 +332,7 @@ export class NotificationService {
         title: this.countdownTitle('Card expires', daysUntilExpiry),
         body: `${cardLabel} expires in ${String(card.expiryMonth).padStart(2, '0')}/${card.expiryYear}.`,
         at: expiryDate,
+        eventDate: expires,
         cardId: card.id,
         kind: 'EXPIRY',
       });
@@ -385,7 +392,10 @@ export class NotificationService {
         year,
         renewalMonth - 1,
         Math.min(renewalDay, new Date(year, renewalMonth, 0).getDate()),
-        9,
+        23,
+        59,
+        59,
+        999,
       );
     const thisYear = createDate(now.getFullYear());
     return thisYear > now ? thisYear : createDate(now.getFullYear() + 1);
