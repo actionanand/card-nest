@@ -273,10 +273,11 @@ final class CardNestReminderScheduler {
       PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
     );
     String body = record.optString("body", "You have a CardNest reminder.");
+    String title = deliveryTitle(record);
     NotificationCompat.Builder notification = new NotificationCompat.Builder(context, CHANNEL_ID)
       .setSmallIcon(R.drawable.ic_stat_card_nest)
       .setColor(Color.parseColor("#28684E"))
-      .setContentTitle(record.optString("title", "CardNest reminder"))
+      .setContentTitle(title)
       .setContentText(body)
       .setStyle(new NotificationCompat.BigTextStyle().bigText(body))
       .setCategory(NotificationCompat.CATEGORY_REMINDER)
@@ -286,6 +287,55 @@ final class CardNestReminderScheduler {
       .setAutoCancel(true)
       .setContentIntent(content);
     NotificationManagerCompat.from(context).notify(id, notification.build());
+  }
+
+  private static String deliveryTitle(JSONObject record) {
+    int days = eventDaysFromToday(record);
+    if (days == Integer.MIN_VALUE) {
+      return record.optString("title", "CardNest reminder");
+    }
+    String kind = record.optString("kind");
+    String subject = "PAYMENT".equals(kind)
+      ? "Payment due"
+      : "ANNUAL_FEE".equals(kind) ? "Annual fee due" : "Card expires";
+    if (days < 0) {
+      int overdueDays = Math.abs(days);
+      if ("EXPIRY".equals(kind)) {
+        return "Card expired " + overdueDays + " " +
+          (overdueDays == 1 ? "day" : "days") + " ago";
+      }
+      return subject.replace(" due", "") + " overdue by " + overdueDays + " " +
+        (overdueDays == 1 ? "day" : "days");
+    }
+    if (days == 0) return subject + " today";
+    if (days == 1) return subject + " tomorrow";
+    return subject + " in " + days + " days";
+  }
+
+  private static int eventDaysFromToday(JSONObject record) {
+    try {
+      Calendar today = Calendar.getInstance();
+      today.set(Calendar.HOUR_OF_DAY, 0);
+      today.set(Calendar.MINUTE, 0);
+      today.set(Calendar.SECOND, 0);
+      today.set(Calendar.MILLISECOND, 0);
+      Calendar event = Calendar.getInstance();
+      event.clear();
+      event.setLenient(false);
+      event.set(
+        record.getInt("eventYear"),
+        record.getInt("eventMonth") - 1,
+        record.getInt("eventDay"),
+        0,
+        0,
+        0
+      );
+      return (int) Math.round(
+        (event.getTimeInMillis() - today.getTimeInMillis()) / 86400000.0
+      );
+    } catch (Exception ignored) {
+      return Integer.MIN_VALUE;
+    }
   }
 
   private static void ensureChannel(Context context) {
