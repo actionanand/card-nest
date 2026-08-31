@@ -217,6 +217,10 @@
   width: max-content;
   max-width: 100%;
 }
+.section-heading .permission-pill.error {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
 .section-heading h2 {
   margin: 0;
 }

@@ -53,10 +53,14 @@
         [value]="filter()"
         (valueChange)="updateFilter($event)"
       />
-      <span class="pill permission-pill"
+      <span class="pill permission-pill" [class.error]="notifications.lastError()"
         ><i class="dot"></i
         >{{
-          notifications.permission() === 'granted' ? 'Notifications ready' : 'Permission needed'
+          notifications.lastError()
+            ? notifications.lastError()
+            : notifications.permission() === 'granted'
+              ? 'Notifications ready · ' + notifications.scheduledCount() + ' scheduled'
+              : 'Permission needed'
         }}</span
       >
     </div>

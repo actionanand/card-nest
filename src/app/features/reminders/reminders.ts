@@ -457,11 +457,12 @@ export class RemindersPage {
       this.store.cardDueAmount(cardId),
     );
     checkbox.checked = granted;
+    const schedulingError = this.notifications.lastError();
     this.snackbar.show(
-      granted
+      granted && !schedulingError
         ? 'Payment reminders enabled and scheduled.'
-        : (this.notifications.lastError() ?? 'Notification permission denied.'),
-      granted ? 'SUCCESS' : 'WARNING',
+        : (schedulingError ?? 'Notification permission denied.'),
+      granted && !schedulingError ? 'SUCCESS' : 'WARNING',
     );
   }
 
