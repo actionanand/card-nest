@@ -1,2 +1,2 @@
 // Updated automatically by scripts/bump-android-version.js.
-export const APP_VERSION = '1.1.3';
+export const APP_VERSION = '1.1.4';
