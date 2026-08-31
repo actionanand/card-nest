@@ -11,6 +11,7 @@ import {
 } from '../../core/services/billing-cycle';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { DateFormatService } from '../../core/services/date-format.service';
+import { CardExpiryService } from '../../core/services/card-expiry.service';
 import { formatMoney } from '../../core/services/money';
 import { NotificationService } from '../../core/services/notification.service';
 import { SnackbarService } from '../../core/services/snackbar.service';
@@ -61,6 +62,7 @@ export class RemindersPage {
   readonly notifications = inject(NotificationService);
   private readonly snackbar = inject(SnackbarService);
   private readonly dates = inject(DateFormatService);
+  private readonly cardExpiry = inject(CardExpiryService);
   readonly filter = signal<ReminderFilter>('DUE');
   readonly filterOptions: readonly AppSelectOption[] = [
     { value: 'DUE', label: 'Statement amount due' },
@@ -494,7 +496,9 @@ export class RemindersPage {
         : nextStatement;
     const due = paymentDueDate(latestStatement, card);
     const expiry =
-      card.expiryMonth && card.expiryYear ? new Date(card.expiryYear, card.expiryMonth, 0) : null;
+      card.expiryMonth && card.expiryYear
+        ? this.cardExpiry.date(card.expiryYear, card.expiryMonth)
+        : null;
     const feeDue = this.nextAnnualFeeDate(card, now);
     const grace = gracePeriodBreakdown(card, now);
     return {

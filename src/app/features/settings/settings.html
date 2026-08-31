@@ -307,6 +307,19 @@
             (valueChange)="updateReminderTiming($event)"
           />
         </div>
+        <label class="setting-row toggle"
+          ><span
+            ><strong>Use first day of expiry month</strong
+            ><small
+              >Checked: use the first day shown by MM/YYYY. Unchecked: use the final day of that
+              month.</small
+            ></span
+          ><input
+            type="checkbox"
+            [checked]="cardExpiry.useFirstDay()"
+            [disabled]="!database.ready()"
+            (change)="updateExpiryCalculation($any($event.target).checked)"
+        /></label>
         @if (notifications.lastError(); as notificationError) {
           <p class="setting-status notification-error" role="status">{{ notificationError }}</p>
         }

@@ -5,6 +5,7 @@ import { CreditCard } from '../models/domain';
 import { paymentDueDate, previousStatementDate, statementDateFor } from './billing-cycle';
 import { formatMoney } from './money';
 import { SqliteDatabase } from '../data/sqlite-database';
+import { CardExpiryService } from './card-expiry.service';
 import {
   catchUpReminderToday,
   DEFAULT_REMINDER_DAYS_BEFORE,
@@ -40,6 +41,7 @@ interface NativeReminderWindow extends Window {
 
 @Service()
 export class NotificationService {
+  private readonly cardExpiry = inject(CardExpiryService);
   private readonly database = inject(SqliteDatabase);
   private readonly channelId = 'card-nest-reminders';
   private rescheduleVersion = 0;
@@ -325,7 +327,7 @@ export class NotificationService {
 
     const expiryDate = this.expiryReminderDate(card, now);
     if (expiryDate && card.expiryMonth && card.expiryYear) {
-      const expires = new Date(card.expiryYear, card.expiryMonth, 0, 23, 59, 59);
+      const expires = this.cardExpiry.date(card.expiryYear, card.expiryMonth);
       const daysUntilExpiry = this.calendarDaysBetween(expiryDate, expires);
       targets.push({
         id: baseId + 7,
@@ -403,7 +405,7 @@ export class NotificationService {
 
   private expiryReminderDate(card: CreditCard, now: Date): Date | null {
     if (!card.expiryMonth || !card.expiryYear) return null;
-    const expires = new Date(card.expiryYear, card.expiryMonth, 0, 23, 59, 59);
+    const expires = this.cardExpiry.date(card.expiryYear, card.expiryMonth);
     if (expires <= now) return null;
     const at = new Date(expires);
     at.setDate(at.getDate() - 45);
