@@ -13,6 +13,7 @@ import { ApplicationPinService } from './core/services/application-pin.service';
 import { AppLockService } from './core/services/app-lock.service';
 import { SensitiveCardDataService } from './core/services/sensitive-card-data.service';
 import { DateFormatService } from './core/services/date-format.service';
+import { CardExpiryService } from './core/services/card-expiry.service';
 import { routes } from './app.routes';
 
 export const appConfig: ApplicationConfig = {
@@ -28,6 +29,7 @@ export const appConfig: ApplicationConfig = {
       const appLock = inject(AppLockService);
       const cardSecrets = inject(SensitiveCardDataService);
       const dateFormats = inject(DateFormatService);
+      const cardExpiry = inject(CardExpiryService);
       const initialiseStorage = database
         .initialise()
         .then(() =>
@@ -36,6 +38,7 @@ export const appConfig: ApplicationConfig = {
             pin.initialise(),
             cardSecrets.initialise(),
             dateFormats.initialise(),
+            cardExpiry.initialise(),
             store.initialisePreferences(),
           ]),
         )

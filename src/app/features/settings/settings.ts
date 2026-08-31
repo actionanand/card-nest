@@ -18,6 +18,7 @@ import { Capacitor } from '@capacitor/core';
 import { PaymentSourcePicker } from '../../shared/payment-source-picker';
 import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
 import { UiPreferencesService } from '../../core/services/ui-preferences.service';
+import { CardExpiryService } from '../../core/services/card-expiry.service';
 import {
   COUNTRY_CURRENCY_OPTIONS,
   DISPLAY_CURRENCY_CODES,
@@ -47,6 +48,7 @@ export class SettingsPage {
   readonly pin = inject(ApplicationPinService);
   readonly appLock = inject(AppLockService);
   readonly uiPreferences = inject(UiPreferencesService);
+  readonly cardExpiry = inject(CardExpiryService);
   private readonly themes = inject(ThemeService);
   private readonly snackbar = inject(SnackbarService);
   private readonly backups = inject(BackupService);
@@ -385,6 +387,19 @@ export class SettingsPage {
     this.snackbar.show(
       schedulingError ??
         `Payment reminders will start ${value === '0' ? 'on the due date' : `${value} ${value === '1' ? 'day' : 'days'} before the due date`}.`,
+      schedulingError ? 'WARNING' : 'SUCCESS',
+    );
+  }
+
+  async updateExpiryCalculation(useFirstDay: boolean): Promise<void> {
+    await this.cardExpiry.setUseFirstDay(useFirstDay);
+    await this.notifications.reschedule(this.store.cards(), (cardId) =>
+      this.store.cardDueAmount(cardId),
+    );
+    const schedulingError = this.notifications.lastError();
+    this.snackbar.show(
+      schedulingError ??
+        `Card expiry will use the ${useFirstDay ? 'first' : 'final'} day of the expiry month.`,
       schedulingError ? 'WARNING' : 'SUCCESS',
     );
   }

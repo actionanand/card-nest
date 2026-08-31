@@ -23,6 +23,7 @@ import { CardNetworkLogo } from '../../shared/card-network-logo';
 import { AppIcon } from '../../shared/app-icon';
 import { ConfirmationDialog } from '../../shared/confirmation-dialog';
 import { DateFormatService } from '../../core/services/date-format.service';
+import { CardExpiryService } from '../../core/services/card-expiry.service';
 import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
 
 type PaymentMode = 'DUE' | 'OUTSTANDING' | 'CUSTOM';
@@ -61,6 +62,7 @@ export class CardsPage {
   private readonly document = inject(DOCUMENT);
   private readonly sanitizer = inject(DomSanitizer);
   private readonly dates = inject(DateFormatService);
+  private readonly cardExpiry = inject(CardExpiryService);
   private readonly uiPreferences = inject(UiPreferencesService);
   private readonly requestedEditId = this.route.snapshot.queryParamMap.get('edit');
   private requestedEditHandled = false;
@@ -464,7 +466,7 @@ export class CardsPage {
   }
   private expiryChip(card: CreditCard): { label: string; tone: string } | null {
     if (!card.expiryMonth || !card.expiryYear) return null;
-    const expiry = new Date(card.expiryYear, card.expiryMonth, 0);
+    const expiry = this.cardExpiry.date(card.expiryYear, card.expiryMonth);
     const days = daysBetween(new Date(), expiry);
     const tone = days < 0 ? 'overdue' : days <= 30 ? 'urgent' : days <= 90 ? 'soon' : 'comfortable';
     const label =
@@ -771,7 +773,7 @@ export class CardsPage {
     const expiryIncomplete = (value.expiryMonth === null) !== (value.expiryYear === null);
     const expiryDate =
       value.expiryMonth && value.expiryYear
-        ? new Date(value.expiryYear, value.expiryMonth, 0, 23, 59, 59)
+        ? this.cardExpiry.date(value.expiryYear, value.expiryMonth)
         : null;
     if (expiryIncomplete || (expiryDate && expiryDate < new Date())) {
       this.form.controls.expiryMonth.setErrors({ expiry: true });
@@ -1313,7 +1315,7 @@ export class CardsPage {
     }
     if (filter === 'FEE') return Boolean(card.annualFeeEnabled && card.annualFee);
     if (!card.expiryMonth || !card.expiryYear) return false;
-    const expiry = new Date(card.expiryYear, card.expiryMonth, 0);
+    const expiry = this.cardExpiry.date(card.expiryYear, card.expiryMonth);
     return expiry.getTime() - Date.now() <= 1000 * 60 * 60 * 24 * 120;
   }
   private matchesSearch(card: CreditCard): boolean {
