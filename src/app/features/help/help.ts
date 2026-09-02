@@ -278,6 +278,7 @@ const HELP_TOPICS: readonly HelpTopic[] = [
       'Open Reminders and enable Notifications, then grant Android notification permission when prompted.',
       'CardNest schedules eligible reminders for 9:00 AM in the device’s local time. If the phone is idle, Android may deliver them shortly after 9:00 AM.',
       'When several cards need attention on the same morning, one Android wake-up publishes every eligible card notification. This avoids Android suppressing multiple idle alarms set for exactly the same time.',
+      'After each morning batch is delivered, Android immediately arms the next scheduled day. You do not need to reopen CardNest to continue the reminder sequence.',
       'The notification countdown is recalculated when Android delivers it, so a delayed reminder still shows the correct number of calendar days remaining.',
       'The default payment window starts five days before the due date and continues each morning through the due date. Change the lead time under Settings > Notifications.',
       'Annual-fee reminders are scheduled 30 days before renewal, and card-expiry reminders are scheduled 45 days before the calculated expiry date.',

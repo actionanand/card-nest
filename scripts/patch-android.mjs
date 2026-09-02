@@ -118,7 +118,9 @@ import androidx.core.app.NotificationManagerCompat;
 import androidx.core.content.ContextCompat;
 
 import java.util.Calendar;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
 
 import org.json.JSONArray;
@@ -154,7 +156,7 @@ final class CardNestReminderScheduler {
     JSONArray previous = records(context);
     cancelBatches(context, previous);
     persist(context, valid);
-    scheduleBatches(context, valid, false);
+    scheduleNextBatch(context, valid, false);
   }
 
   static int pendingCount(Context context) {
@@ -174,13 +176,30 @@ final class CardNestReminderScheduler {
   static void deliver(Context context, long scheduledAt) {
     JSONArray saved = records(context);
     JSONArray remaining = new JSONArray();
+    Map<String, JSONObject> dueByOccurrence = new HashMap<>();
+    long now = System.currentTimeMillis();
+    long deliveryCutoff = Math.max(now, scheduledAt);
     for (int index = 0; index < saved.length(); index++) {
       JSONObject record = saved.optJSONObject(index);
       if (record == null) continue;
-      if (record.optLong("atMillis") == scheduledAt) showNotification(context, record);
-      else remaining.put(record);
+      long atMillis = record.optLong("atMillis", 0);
+      if (atMillis > 0 && atMillis <= deliveryCutoff) {
+        String occurrence = occurrenceKey(record);
+        JSONObject current = dueByOccurrence.get(occurrence);
+        if (current == null || current.optLong("atMillis", 0) < atMillis) {
+          dueByOccurrence.put(occurrence, record);
+        }
+      } else remaining.put(record);
     }
+    for (JSONObject record : dueByOccurrence.values()) showNotification(context, record);
     persist(context, remaining);
+    scheduleNextBatch(context, remaining, false);
+  }
+
+  private static String occurrenceKey(JSONObject record) {
+    return record.optString("kind") + "|" + record.optString("cardId") + "|" +
+      record.optInt("eventYear") + "-" + record.optInt("eventMonth") + "-" +
+      record.optInt("eventDay");
   }
 
   static void rebuild(Context context) {
@@ -198,23 +217,28 @@ final class CardNestReminderScheduler {
     }
     persist(context, valid);
     ensureChannel(context);
-    scheduleBatches(context, valid, true);
+    scheduleNextBatch(context, valid, true);
   }
 
-  private static void scheduleBatches(Context context, JSONArray values, boolean catchUpToday) {
-    Set<Long> scheduledTimes = new HashSet<>();
+  private static void scheduleNextBatch(
+    Context context,
+    JSONArray values,
+    boolean catchUpToday
+  ) {
     long now = System.currentTimeMillis();
+    long nextAt = Long.MAX_VALUE;
     for (int index = 0; index < values.length(); index++) {
       JSONObject record = values.optJSONObject(index);
       if (record == null) continue;
-      long originalAt = record.optLong("atMillis", 0);
-      if (originalAt <= 0 || !scheduledTimes.add(originalAt)) continue;
-      long triggerAt = originalAt;
-      if (catchUpToday && originalAt <= now && sameLocalDay(originalAt, now)) {
-        triggerAt = now + 15_000;
-      }
-      if (triggerAt > now) scheduleAlarm(context, originalAt, triggerAt);
+      long atMillis = record.optLong("atMillis", 0);
+      if (atMillis > 0 && atMillis < nextAt) nextAt = atMillis;
     }
+    if (nextAt == Long.MAX_VALUE) return;
+    long triggerAt = nextAt;
+    if (catchUpToday && nextAt <= now && sameLocalDay(nextAt, now)) {
+      triggerAt = now + 15_000;
+    }
+    if (triggerAt > now) scheduleAlarm(context, nextAt, triggerAt);
   }
 
   private static void scheduleAlarm(Context context, long batchAt, long triggerAt) {
