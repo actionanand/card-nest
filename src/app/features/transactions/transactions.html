@@ -870,6 +870,13 @@
               placeholder="e.g. Amazon no-cost, extra cashback applied to purchase"
             ></textarea>
           </label>
+          <label class="ownership-checkbox">
+            <input type="checkbox" formControlName="forFriendsOrRelatives" />
+            <span>
+              <strong>For friends/relatives</strong>
+              <small>Keep this EMI separate from your own commitments.</small>
+            </span>
+          </label>
           @if (emiPreview(); as preview) {
             <dl class="emi-preview">
               <div>

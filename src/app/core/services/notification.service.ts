@@ -325,19 +325,38 @@ export class NotificationService {
       });
     }
 
-    const expiryDate = this.expiryReminderDate(card, now);
-    if (expiryDate && card.expiryMonth && card.expiryYear) {
+    if (card.expiryMonth && card.expiryYear) {
       const expires = this.cardExpiry.date(card.expiryYear, card.expiryMonth);
-      const daysUntilExpiry = this.calendarDaysBetween(expiryDate, expires);
-      targets.push({
-        id: baseId + 7,
-        title: this.countdownTitle('Card expires', daysUntilExpiry),
-        body: `${cardLabel} expires in ${String(card.expiryMonth).padStart(2, '0')}/${card.expiryYear}.`,
-        at: expiryDate,
-        eventDate: expires,
-        cardId: card.id,
-        kind: 'EXPIRY',
-      });
+      const expiryDate = this.expiryReminderDate(card, now);
+      if (expiryDate) {
+        const daysUntilExpiry = this.calendarDaysBetween(expiryDate, expires);
+        targets.push({
+          id: baseId + 7,
+          title: this.countdownTitle('Card expires', daysUntilExpiry),
+          body: `${cardLabel} expires in ${String(card.expiryMonth).padStart(2, '0')}/${card.expiryYear}.`,
+          at: expiryDate,
+          eventDate: expires,
+          cardId: card.id,
+          kind: 'EXPIRY',
+        });
+      }
+      const expiredReminder = this.expiredReminderDate(expires, now);
+      if (expiredReminder) {
+        const expiryLabel = expires.toLocaleDateString('en-US', {
+          day: 'numeric',
+          month: 'long',
+          year: 'numeric',
+        });
+        targets.push({
+          id: baseId + 8,
+          title: 'Card expired yesterday',
+          body: `${cardLabel} expired on ${expiryLabel}.`,
+          at: expiredReminder,
+          eventDate: expires,
+          cardId: card.id,
+          kind: 'EXPIRY',
+        });
+      }
     }
     return targets;
   }
@@ -356,7 +375,7 @@ export class NotificationService {
 
   private notificationIds(cardId: string): readonly number[] {
     const baseId = this.baseId(cardId);
-    return Array.from({ length: MAX_REMINDER_DAYS_BEFORE + 3 }, (_, index) => baseId + index);
+    return Array.from({ length: MAX_REMINDER_DAYS_BEFORE + 4 }, (_, index) => baseId + index);
   }
 
   private isCardNestExtra(extra: unknown): boolean {
@@ -412,6 +431,22 @@ export class NotificationService {
     at.setHours(REMINDER_HOUR, 0, 0, 0);
     if (at <= now) at.setTime(now.getTime() + 60_000);
     return at;
+  }
+
+  private expiredReminderDate(expires: Date, now: Date): Date | null {
+    const at = new Date(expires);
+    at.setDate(at.getDate() + 1);
+    at.setHours(REMINDER_HOUR, 0, 0, 0);
+    if (at > now) return at;
+    if (
+      at.getFullYear() === now.getFullYear() &&
+      at.getMonth() === now.getMonth() &&
+      at.getDate() === now.getDate()
+    ) {
+      at.setTime(now.getTime() + 60_000);
+      return at;
+    }
+    return null;
   }
 
   private isAndroid(): boolean {

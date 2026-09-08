@@ -325,8 +325,9 @@ final class CardNestReminderScheduler {
     if (days < 0) {
       int overdueDays = Math.abs(days);
       if ("EXPIRY".equals(kind)) {
-        return "Card expired " + overdueDays + " " +
-          (overdueDays == 1 ? "day" : "days") + " ago";
+        if (overdueDays == 1) return "Card expired yesterday";
+        if (overdueDays == 2) return "Card expired 2 days ago";
+        return "Card expired on " + eventDateLabel(record);
       }
       return subject.replace(" due", "") + " overdue by " + overdueDays + " " +
         (overdueDays == 1 ? "day" : "days");
@@ -360,6 +361,18 @@ final class CardNestReminderScheduler {
     } catch (Exception ignored) {
       return Integer.MIN_VALUE;
     }
+  }
+
+  private static String eventDateLabel(JSONObject record) {
+    String[] months = {
+      "January", "February", "March", "April", "May", "June",
+      "July", "August", "September", "October", "November", "December"
+    };
+    int month = record.optInt("eventMonth");
+    int day = record.optInt("eventDay");
+    int year = record.optInt("eventYear");
+    if (month < 1 || month > 12 || day < 1 || year < 1) return "its expiry date";
+    return months[month - 1] + " " + day + ", " + year;
   }
 
   private static void ensureChannel(Context context) {

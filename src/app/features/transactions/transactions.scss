@@ -1020,6 +1020,29 @@ label small {
   display: grid;
   gap: 0.75rem;
 }
+.ownership-checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  padding: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 0.7rem;
+  background: var(--canvas);
+}
+.ownership-checkbox input {
+  width: 1.1rem;
+  height: 1.1rem;
+  margin-top: 0.1rem;
+}
+.ownership-checkbox span {
+  display: grid;
+  gap: 0.15rem;
+}
+.ownership-checkbox small {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 500;
+}
 .split-parts fieldset {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(8rem, 0.6fr) auto;
