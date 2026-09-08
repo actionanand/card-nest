@@ -13,17 +13,17 @@ No application-login SHA1 hash or password is injected. Android release-signing 
 
 ## Build files
 
-| File                                  | Purpose                                                                                                |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `capacitor.config.ts`                 | App ID, app name, output directory, Android colors, and notification icon configuration                |
-| `.github/workflows/android-build.yml` | Builds, optionally signs, verifies, summarizes, and uploads APK/AAB files                              |
-| `android-version.json`                | Stores Android `versionCode` and `versionName`                                                         |
-| `scripts/bump-android-version.js`     | Updates Android version values                                                                         |
-| `scripts/patch-android.mjs`           | Adds the native notification icon, secure-window flag, system-bar colors, and invokes the export patch |
-| `scripts/patch-android-export.mjs`    | Generates the native PDF/CSV export plugin and private cache `FileProvider`                            |
-| `scripts/generate-keystore.mjs`       | Generates a PKCS12 release keystore                                                                    |
-| `scripts/detect-keystore-format.mjs`  | Displays the keystore type                                                                             |
-| `public/card-nest.png`                | Source image for launcher and Play Store icons                                                         |
+| File                                  | Purpose                                                                                 |
+| ------------------------------------- | --------------------------------------------------------------------------------------- |
+| `capacitor.config.ts`                 | App ID, app name, output directory, Android colors, and notification icon configuration |
+| `.github/workflows/android-build.yml` | Builds, optionally signs, verifies, summarizes, and uploads APK/AAB files               |
+| `android-version.json`                | Stores Android `versionCode` and `versionName`                                          |
+| `scripts/bump-android-version.js`     | Updates Android version values                                                          |
+| `scripts/patch-android.mjs`           | Adds the native shell and bridge, then enables AGP 9/R8 release optimization            |
+| `scripts/patch-android-export.mjs`    | Generates the native PDF/CSV export plugin and private cache `FileProvider`             |
+| `scripts/generate-keystore.mjs`       | Generates a PKCS12 release keystore                                                     |
+| `scripts/detect-keystore-format.mjs`  | Displays the keystore type                                                              |
+| `public/card-nest.png`                | Source image for launcher and Play Store icons                                          |
 
 ## GitHub signing secrets
 
@@ -81,14 +81,32 @@ Copy the single-line content of `keystore.b64.txt` into `KEYSTORE_BASE64`. Store
 2. `npm ci` installs the locked dependencies.
 3. Angular builds `dist/card-nest/browser`.
 4. Capacitor generates and syncs the Android project.
-5. `scripts/patch-android.mjs` adds the white notification icon, secure-window flag, and native shell colors, then applies the PDF/CSV export bridge.
-6. CI applies the Android version, minimum SDK 24, and target SDK 35.
+5. `scripts/patch-android.mjs` adds the native shell and bridges, upgrades the generated project to Android Gradle Plugin 9.0.1 with Gradle 9.1.0, and enables R8 optimization for release builds.
+6. CI applies the Android version, minimum SDK 24, and compile/target SDK 36.
 7. ImageMagick generates launcher icons from `public/card-nest.png`.
 8. Gradle creates unsigned release APK/AAB inputs.
 9. If all secrets exist, CI decodes the keystore, detects its type, signs, and verifies both artifacts.
 10. If no keystore is available or signing fails, CI copies clearly named unsigned artifacts.
 11. The console and GitHub job summary show the signed/unsigned result.
-12. APK, AAB, and Play Store icon artifacts are retained for 30 days. A `v*` tag also creates a GitHub Release.
+12. APK, AAB, Play Store icon, and private R8 diagnostic artifacts are retained for 30 days. A `v*` tag also creates a GitHub Release; the R8 mapping is intentionally not attached to the public release.
+
+## R8 release optimization
+
+The generated Capacitor Android template disables release minification by default. CardNest corrects that during every CI build rather than editing the uncommitted `android/` directory manually:
+
+- Android Gradle Plugin is pinned to 9.0.1 and its compatible Gradle wrapper to 9.1.0.
+- Capacitor's generated modules use the same AGP version, and Kotlin-based plugins are guarded against AGP 9's built-in Kotlin duplicate-extension conflict.
+- `minifyEnabled true` enables R8 code shrinking, optimization, and obfuscation.
+- `shrinkResources true` enables optimized resource shrinking.
+- `proguard-android-optimize.txt` supplies Android's optimized default rules.
+- Only methods annotated with `@JavascriptInterface` keep their JavaScript-visible names. There are no global `-dontobfuscate`, `-dontoptimize`, or `-dontshrink` rules.
+- CI fails if these settings disappear or R8 does not produce a non-empty `mapping.txt`.
+
+The mapping and R8 diagnostic files are uploaded only in the access-controlled GitHub Actions artifact. Keep the mapping for crash deobfuscation, but do not publish it in a GitHub Release or commit it to the repository.
+
+Google Play calculates optimization percentages after processing a newly uploaded AAB. Therefore, the previous release continues to show its old 1% score; upload the next AAB produced by this workflow and wait for Play Console analysis. The exact percentage depends on the final dependency mix, but this configuration enables all optimization controls measured by Play.
+
+Configuration reference: [Enable app optimization with R8](https://developer.android.com/topic/performance/app-optimization/enable-app-optimization).
 
 Signed outputs:
 
@@ -187,7 +205,8 @@ git push origin main-android
 
 ```yaml
 MIN_SDK_VERSION: 24
-TARGET_SDK_VERSION: 35
+COMPILE_SDK_VERSION: 36
+TARGET_SDK_VERSION: 36
 ```
 
 Raise the target when Google Play requirements change and verify Capacitor compatibility before merging.

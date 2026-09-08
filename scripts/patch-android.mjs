@@ -17,15 +17,144 @@ const mainActivityPath = join(javaDirectory, 'MainActivity.java');
 const reminderSchedulerPath = join(javaDirectory, 'CardNestReminderScheduler.java');
 const reminderReceiverPath = join(javaDirectory, 'CardNestReminderReceiver.java');
 const manifestPath = join(androidRoot, 'AndroidManifest.xml');
+const rootBuildGradlePath = join(process.cwd(), 'android', 'build.gradle');
 const appBuildGradlePath = join(process.cwd(), 'android', 'app', 'build.gradle');
+const cordovaBuildGradlePath = join(
+  process.cwd(),
+  'android',
+  'capacitor-cordova-android-plugins',
+  'build.gradle',
+);
+const proguardRulesPath = join(process.cwd(), 'android', 'app', 'proguard-rules.pro');
+const gradleWrapperPath = join(
+  process.cwd(),
+  'android',
+  'gradle',
+  'wrapper',
+  'gradle-wrapper.properties',
+);
+const capacitorPackagesPath = join(process.cwd(), 'node_modules', '@capacitor');
 const notificationIconPath = join(androidRoot, 'res', 'drawable', 'ic_stat_card_nest.xml');
 
-for (const requiredPath of [mainActivityPath, manifestPath]) {
+const androidGradlePluginVersion = '9.0.1';
+const gradleVersion = '9.1.0';
+
+for (const requiredPath of [
+  mainActivityPath,
+  manifestPath,
+  rootBuildGradlePath,
+  appBuildGradlePath,
+  cordovaBuildGradlePath,
+  proguardRulesPath,
+  gradleWrapperPath,
+]) {
   if (!existsSync(requiredPath)) {
     throw new Error(
       `Android project file not found: ${requiredPath}. Run "npx cap add android" first.`,
     );
   }
+}
+
+const androidGradlePluginPattern = /com\.android\.tools\.build:gradle:[^'"\s]+/g;
+const patchAndroidGradlePlugin = (path) => {
+  const source = readFileSync(path, 'utf8');
+  if (!androidGradlePluginPattern.test(source)) {
+    androidGradlePluginPattern.lastIndex = 0;
+    throw new Error(`Android Gradle plugin declaration not found: ${path}`);
+  }
+  androidGradlePluginPattern.lastIndex = 0;
+  const patched = source.replace(
+    androidGradlePluginPattern,
+    `com.android.tools.build:gradle:${androidGradlePluginVersion}`,
+  );
+  androidGradlePluginPattern.lastIndex = 0;
+  writeFileSync(path, patched);
+};
+
+patchAndroidGradlePlugin(rootBuildGradlePath);
+patchAndroidGradlePlugin(cordovaBuildGradlePath);
+const capacitorBuildGradlePaths = readdirSync(capacitorPackagesPath, {
+  withFileTypes: true,
+})
+  .filter((entry) => entry.isDirectory())
+  .map((entry) => join(capacitorPackagesPath, entry.name, 'android', 'build.gradle'))
+  .filter((path) => existsSync(path));
+const capacitorCoreBuildGradlePath = join(
+  capacitorPackagesPath,
+  'android',
+  'capacitor',
+  'build.gradle',
+);
+if (existsSync(capacitorCoreBuildGradlePath)) {
+  capacitorBuildGradlePaths.push(capacitorCoreBuildGradlePath);
+}
+for (const path of capacitorBuildGradlePaths) {
+  patchAndroidGradlePlugin(path);
+  const source = readFileSync(path, 'utf8');
+  const unconditionalKotlinPlugin = "apply plugin: 'kotlin-android'";
+  const kotlinExtensionGuard = "project.extensions.findByName('kotlin')";
+  if (source.includes(unconditionalKotlinPlugin) && !source.includes(kotlinExtensionGuard)) {
+    writeFileSync(
+      path,
+      source.replace(
+        unconditionalKotlinPlugin,
+        `if (project.extensions.findByName('kotlin') == null) {
+    apply plugin: 'kotlin-android'
+}`,
+      ),
+    );
+  }
+}
+
+let gradleWrapper = readFileSync(gradleWrapperPath, 'utf8');
+if (!/gradle-[\d.]+-(?:all|bin)\.zip/.test(gradleWrapper)) {
+  throw new Error('Gradle distribution URL was not found in the wrapper properties.');
+}
+const patchedGradleWrapper = gradleWrapper.replace(
+  /gradle-[\d.]+-(?:all|bin)\.zip/,
+  `gradle-${gradleVersion}-bin.zip`,
+);
+gradleWrapper = patchedGradleWrapper;
+writeFileSync(gradleWrapperPath, gradleWrapper);
+
+let appBuildGradle = readFileSync(appBuildGradlePath, 'utf8');
+appBuildGradle = appBuildGradle
+  .replace(/minifyEnabled\s+(?:false|true)/, 'minifyEnabled true')
+  .replace(
+    /proguardFiles\s+getDefaultProguardFile\(['"]proguard-android(?:-optimize)?\.txt['"]\),\s*['"]proguard-rules\.pro['"]/,
+    "proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'",
+  );
+if (!/shrinkResources\s+true/.test(appBuildGradle)) {
+  appBuildGradle = appBuildGradle.replace(
+    /(minifyEnabled\s+true)/,
+    '$1\n            shrinkResources true',
+  );
+}
+for (const requiredSetting of [
+  /minifyEnabled\s+true/,
+  /shrinkResources\s+true/,
+  /proguard-android-optimize\.txt/,
+]) {
+  if (!requiredSetting.test(appBuildGradle)) {
+    throw new Error(`R8 release setting was not applied: ${requiredSetting}`);
+  }
+}
+writeFileSync(appBuildGradlePath, appBuildGradle);
+
+const cardNestR8Rules = `
+
+# CardNest exposes only annotated bridge methods directly to its WebView.
+# Preserve those JavaScript-visible method names while allowing their classes and
+# all unrelated native code to be shrunk, optimized, and obfuscated by R8.
+-keepattributes RuntimeVisibleAnnotations,AnnotationDefault
+-keepclassmembers,allowoptimization class * {
+    @android.webkit.JavascriptInterface <methods>;
+}
+`;
+let proguardRules = readFileSync(proguardRulesPath, 'utf8');
+if (!proguardRules.includes('@android.webkit.JavascriptInterface <methods>;')) {
+  proguardRules += cardNestR8Rules;
+  writeFileSync(proguardRulesPath, proguardRules);
 }
 
 let manifest = readFileSync(manifestPath, 'utf8');
@@ -62,13 +191,13 @@ if (!manifest.includes('com.actionanand.cardnest.app.CardNestReminderReceiver'))
 writeFileSync(manifestPath, manifest);
 
 if (existsSync(appBuildGradlePath)) {
-  let buildGradle = readFileSync(appBuildGradlePath, 'utf8');
-  if (!buildGradle.includes('androidx.biometric:biometric')) {
-    buildGradle = buildGradle.replace(
+  let buildGradleWithDependencies = readFileSync(appBuildGradlePath, 'utf8');
+  if (!buildGradleWithDependencies.includes('androidx.biometric:biometric')) {
+    buildGradleWithDependencies = buildGradleWithDependencies.replace(
       /(dependencies\s*\{)/,
       '$1\n    implementation "androidx.biometric:biometric:1.1.0"',
     );
-    writeFileSync(appBuildGradlePath, buildGradle);
+    writeFileSync(appBuildGradlePath, buildGradleWithDependencies);
   }
 }
 
@@ -1015,7 +1144,7 @@ writeFileSync(
 );
 
 console.log(
-  'CardNest Android shell, native reminder scheduler, status-bar icons, splash screen, styles, and notification icon patched.',
+  `CardNest Android shell and R8 release optimization patched (AGP ${androidGradlePluginVersion}, Gradle ${gradleVersion}).`,
 );
 
 await import('./patch-android-export.mjs');
