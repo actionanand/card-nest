@@ -78,6 +78,35 @@ jobs:
           npx cap add android
           npx cap sync android
 
+      - name: Patch Android native shell and release optimizer
+        run: node scripts/patch-android.mjs
+
+      - name: Verify R8 release configuration
+        shell: bash
+        run: |
+          grep -Fq 'com.android.tools.build:gradle:9.0.1' android/build.gradle
+          grep -Fq 'com.android.tools.build:gradle:9.0.1' android/capacitor-cordova-android-plugins/build.gradle
+          if grep -R -Eq "com\.android\.tools\.build:gradle:(8\.|7\.)" node_modules/@capacitor --include='build.gradle'; then
+            echo 'A Capacitor Android module still uses an older Android Gradle plugin.'
+            exit 1
+          fi
+          while IFS= read -r KOTLIN_GRADLE; do
+            if ! grep -Fq "project.extensions.findByName('kotlin')" "$KOTLIN_GRADLE"; then
+              echo "Capacitor Kotlin module is not guarded for AGP 9 built-in Kotlin: $KOTLIN_GRADLE"
+              exit 1
+            fi
+          done < <(grep -Rl "apply plugin: 'kotlin-android'" node_modules/@capacitor --include='build.gradle')
+          grep -Fq 'gradle-9.1.0-bin.zip' android/gradle/wrapper/gradle-wrapper.properties
+          grep -Eq 'minifyEnabled[[:space:]]+true' android/app/build.gradle
+          grep -Eq 'shrinkResources[[:space:]]+true' android/app/build.gradle
+          grep -Fq "proguard-android-optimize.txt" android/app/build.gradle
+          grep -Fq '@android.webkit.JavascriptInterface <methods>;' android/app/proguard-rules.pro
+          if grep -Eq '^[[:space:]]*-dont(obfuscate|optimize|shrink)' android/app/proguard-rules.pro; then
+            echo 'A global R8 optimization disable rule is not allowed.'
+            exit 1
+          fi
+          echo 'R8 code optimization, obfuscation, and resource shrinking are enabled for release.'
+
       - name: Setup Java and Gradle cache
         uses: actions/setup-java@v4
         with:
@@ -87,6 +116,7 @@ jobs:
           cache-dependency-path: |
             android/**/*.gradle*
             android/gradle/wrapper/gradle-wrapper.properties
+            node_modules/@capacitor/**/android/build.gradle
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
@@ -144,9 +174,6 @@ jobs:
           grep -Fq "buildToolsVersion \"$BUILD_TOOLS_VERSION\"" build.gradle
           echo "Applied versionName=$VERSION_NAME versionCode=$VERSION_CODE"
           echo "Applied minSdk=$MIN_SDK_VERSION compileSdk=$COMPILE_SDK_VERSION targetSdk=$TARGET_SDK_VERSION"
-
-      - name: Patch Android native shell
-        run: node scripts/patch-android.mjs
 
       - name: Make Gradle executable
         run: chmod +x android/gradlew
@@ -254,6 +281,27 @@ jobs:
           fi
           echo "SIGNED_BUILD=$SIGNED_BUILD" >> "$GITHUB_ENV"
 
+      - name: Verify R8 release outputs
+        shell: bash
+        run: |
+          R8_OUTPUT="android/app/build/outputs/mapping/release"
+          test -s "$R8_OUTPUT/mapping.txt"
+          OBFUSCATED_CLASSES=$(awk '
+            /^[^[:space:]].* -> [^[:space:]]+:$/ {
+              original = $1
+              obfuscated = $3
+              sub(/:$/, "", obfuscated)
+              if (original != obfuscated) count++
+            }
+            END { print count + 0 }
+          ' "$R8_OUTPUT/mapping.txt")
+          if (( OBFUSCATED_CLASSES == 0 )); then
+            echo 'R8 mapping contains no obfuscated classes.'
+            exit 1
+          fi
+          echo "R8 obfuscated $OBFUSCATED_CLASSES classes."
+          echo "R8_MAPPING_PATH=$R8_OUTPUT/mapping.txt" >> "$GITHUB_ENV"
+
       - name: Copy versioned Android artifacts to releases
         shell: bash
         run: |
@@ -289,6 +337,7 @@ jobs:
           test -s "$APK_TARGET"
           test -s "$AAB_TARGET"
           test -s "$PLAYSTORE_ICON_TARGET"
+          test -s "$R8_MAPPING_PATH"
           echo "Android artifact summary"
           echo "$APK_STATUS"
           echo "$AAB_STATUS"
@@ -297,6 +346,7 @@ jobs:
             echo "- $APK_STATUS"
             echo "- $AAB_STATUS"
             echo "- Play Store icon: $PLAYSTORE_ICON_TARGET"
+            echo "- R8 mapping generated and retained in the private workflow artifact"
           } >> "$GITHUB_STEP_SUMMARY"
           ls -lh releases/
 
@@ -325,6 +375,10 @@ jobs:
             releases/*.apk
             releases/*.aab
             releases/*-playstore-icon.png
+            android/app/build/outputs/mapping/release/mapping.txt
+            android/app/build/outputs/mapping/release/configuration.txt
+            android/app/build/outputs/mapping/release/seeds.txt
+            android/app/build/outputs/mapping/release/usage.txt
           if-no-files-found: error
           retention-days: 30
 
