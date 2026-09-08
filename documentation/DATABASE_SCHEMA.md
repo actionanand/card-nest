@@ -81,22 +81,22 @@ erDiagram
 
 ### Transaction tables
 
-| Table                       | Primary key                  | Purpose                                                                          | Important fields                                                                                                     |
-| --------------------------- | ---------------------------- | -------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `card_transactions`         | `id`                         | Purchases, payments, refunds, cashback, fees, interest, credits, and adjustments | `card_id`, `category_id`, `type`, `amount_minor`, `currency_code`, `transaction_date`, `payload`, timestamps         |
-| `transaction_links`         | `transaction_id`             | Links a refund or adjustment to its original transaction                         | `related_transaction_id`, constrained `relationship_type`, `created_at`                                              |
-| `transaction_split_groups`  | `id`                         | Records the total represented by a split transaction                             | `original_amount_minor`, `created_at`                                                                                |
-| `transaction_split_members` | `(group_id, transaction_id)` | Associates two to four generated transactions with a split group                 | `transaction_id` is unique                                                                                           |
-| `attachments`               | `id`                         | Receipt metadata belonging to a transaction                                      | `transaction_id`, `private_path`, `encrypted_metadata`; image bytes live at the private path rather than in this row |
-| `recurring_rules`           | `id`                         | Rules that generate repeated transactions                                        | `card_id`, `next_occurrence_date`, `status`, `payload`                                                               |
-| `loan_commitments`          | `id`                         | User-managed external loan and EMI schedules                                     | `status`, `payload`, `updated_at`                                                                                    |
+| Table                       | Primary key                  | Purpose                                                                          | Important fields                                                                                                       |
+| --------------------------- | ---------------------------- | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `card_transactions`         | `id`                         | Purchases, payments, refunds, cashback, fees, interest, credits, and adjustments | `card_id`, `category_id`, `type`, `amount_minor`, `currency_code`, `transaction_date`, `payload`, timestamps           |
+| `transaction_links`         | `transaction_id`             | Links a refund or adjustment to its original transaction                         | `related_transaction_id`, constrained `relationship_type`, `created_at`                                                |
+| `transaction_split_groups`  | `id`                         | Records the total represented by a split transaction                             | `original_amount_minor`, `created_at`                                                                                  |
+| `transaction_split_members` | `(group_id, transaction_id)` | Associates two to four generated transactions with a split group                 | `transaction_id` is unique                                                                                             |
+| `attachments`               | `id`                         | Receipt metadata belonging to a transaction                                      | `transaction_id`, `private_path`, `encrypted_metadata`; image bytes live at the private path rather than in this row   |
+| `recurring_rules`           | `id`                         | Rules that generate repeated transactions                                        | `card_id`, `next_occurrence_date`, `status`, `payload`                                                                 |
+| `loan_commitments`          | `id`                         | User-managed external loan and EMI schedules                                     | `status`, `payload`, `updated_at`; the JSON payload optionally records whether the commitment is for friends/relatives |
 
 ### EMI tables
 
-| Table              | Primary key | Purpose                                                  | Important fields                                                                                 |
-| ------------------ | ----------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `emi_plans`        | `id`        | EMI conversion tied to one original transaction and card | unique `transaction_id`, `card_id`, `status`, `payload`                                          |
-| `emi_installments` | `id`        | Individual scheduled installments                        | `emi_plan_id`, `installment_number`, statement/due dates, principal, interest, `paid`, `payload` |
+| Table              | Primary key | Purpose                                                  | Important fields                                                                                                                       |
+| ------------------ | ----------- | -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `emi_plans`        | `id`        | EMI conversion tied to one original transaction and card | unique `transaction_id`, `card_id`, `status`, `payload`; the JSON payload optionally records whether the plan is for friends/relatives |
+| `emi_installments` | `id`        | Individual scheduled installments                        | `emi_plan_id`, `installment_number`, statement/due dates, principal, interest, `paid`, `payload`                                       |
 
 ## Payment-source caveat
 

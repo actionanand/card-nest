@@ -22,6 +22,32 @@
       </button>
     </div>
   </header>
+  <div class="owner-tabs" role="group" aria-label="Commitment owner">
+    <button
+      type="button"
+      [class.active]="commitmentOwner() === 'ALL'"
+      [attr.aria-pressed]="commitmentOwner() === 'ALL'"
+      (click)="selectOwner('ALL')"
+    >
+      All
+    </button>
+    <button
+      type="button"
+      [class.active]="commitmentOwner() === 'ME'"
+      [attr.aria-pressed]="commitmentOwner() === 'ME'"
+      (click)="selectOwner('ME')"
+    >
+      Me
+    </button>
+    <button
+      type="button"
+      [class.active]="commitmentOwner() === 'FRIENDS'"
+      [attr.aria-pressed]="commitmentOwner() === 'FRIENDS'"
+      (click)="selectOwner('FRIENDS')"
+    >
+      Friends &amp; relatives
+    </button>
+  </div>
   <section class="panel monthly-due-summary" aria-labelledby="monthly-due-title">
     <div class="monthly-due-total">
       <span class="monthly-due-icon" aria-hidden="true"><app-icon name="schedule" /></span>
@@ -74,6 +100,13 @@
             (valueChange)="setEndDate($event)"
           />
           <label class="full">Notes<textarea formControlName="notes"></textarea></label>
+          <label class="full ownership-checkbox">
+            <input type="checkbox" formControlName="forFriendsOrRelatives" />
+            <span>
+              <strong>For friends/relatives</strong>
+              <small>Keep this commitment separate from your own loans and EMIs.</small>
+            </span>
+          </label>
         </div>
         <div class="form-actions">
           <button class="btn" type="button" (click)="showForm.set(false)">Cancel</button
@@ -200,6 +233,9 @@
                 >{{ store.sourceDetail(plan.cardId) }} · {{ plan.tenureMonths }} months ·
                 {{ plan.status.toLowerCase() }}</small
               >
+              @if (plan.forFriendsOrRelatives) {
+                <span class="owner-badge">Friends &amp; relatives</span>
+              }
               @if (emiDebitDate(plan.id); as debitDate) {
                 <span class="debit-date-badge emi-date"
                   ><app-icon name="schedule" /> {{ debitDate | appDate }}</span
@@ -289,6 +325,9 @@
             <div>
               <h2>{{ loan.name }}</h2>
               <p>{{ loan.lender || 'Personal commitment' }}</p>
+              @if (loan.forFriendsOrRelatives) {
+                <span class="owner-badge">Friends &amp; relatives</span>
+              }
               @if (loanDebitDate(loan); as debitDate) {
                 <span class="debit-date-badge loan-date"
                   ><app-icon name="schedule" /> {{ debitDate | appDate }}</span
@@ -325,7 +364,7 @@
   @if (!visibleRepeats().length && !visibleEmiPlans().length && !visibleLoans().length) {
     <div class="panel empty">
       <app-icon name="layers_plus" />
-      <h2>No {{ commitmentFilter() === 'ACTIVE' ? 'active ' : '' }}commitments</h2>
+      <h2>No matching commitments</h2>
       <p>Change the filter or add a loan, EMI, or recurring transaction.</p>
     </div>
   }

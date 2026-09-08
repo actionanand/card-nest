@@ -12,6 +12,7 @@ import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker
 import { AppDatePicker } from '../../shared/app-date-picker';
 
 type CommitmentFilter = 'ACTIVE' | 'INACTIVE' | 'ALL';
+type CommitmentOwner = 'ALL' | 'ME' | 'FRIENDS';
 
 @Component({
   selector: 'app-loans-page',
@@ -32,6 +33,7 @@ export class LoansPage {
   private readonly snackbar = inject(SnackbarService);
   readonly showForm = signal(false);
   readonly commitmentFilter = signal<CommitmentFilter>('ACTIVE');
+  readonly commitmentOwner = signal<CommitmentOwner>('ALL');
   readonly selectedEmiId = signal<string | null>(this.route.snapshot.queryParamMap.get('emi'));
   readonly selectedRepeatId = signal<string | null>(
     this.route.snapshot.queryParamMap.get('repeat'),
@@ -43,13 +45,27 @@ export class LoansPage {
   readonly terminateRepeatCandidate = signal<RecurringRule | null>(null);
   readonly cancelLoanCandidate = signal<LoanCommitment | null>(null);
   readonly visibleRepeats = computed(() =>
-    this.store.recurringRules().filter((rule) => this.matchesFilter(rule.status === 'ACTIVE')),
+    this.store
+      .recurringRules()
+      .filter((rule) => this.matchesFilter(rule.status === 'ACTIVE') && this.matchesOwner(false)),
   );
   readonly visibleEmiPlans = computed(() =>
-    this.store.emiPlans().filter((plan) => this.matchesFilter(plan.status === 'ACTIVE')),
+    this.store
+      .emiPlans()
+      .filter(
+        (plan) =>
+          this.matchesFilter(plan.status === 'ACTIVE') &&
+          this.matchesOwner(plan.forFriendsOrRelatives ?? false),
+      ),
   );
   readonly visibleLoans = computed(() =>
-    this.store.loans().filter((loan) => this.matchesFilter(loan.status === 'ACTIVE')),
+    this.store
+      .loans()
+      .filter(
+        (loan) =>
+          this.matchesFilter(loan.status === 'ACTIVE') &&
+          this.matchesOwner(loan.forFriendsOrRelatives ?? false),
+      ),
   );
   readonly currentMonthKey = new Date().toISOString().slice(0, 7);
   readonly currentMonthLabel = new Date().toLocaleDateString('en-IN', {
@@ -59,13 +75,16 @@ export class LoansPage {
   readonly recurringDueThisMonth = computed(() =>
     this.store
       .recurringRules()
-      .filter((rule) => rule.status === 'ACTIVE')
+      .filter((rule) => rule.status === 'ACTIVE' && this.matchesOwner(false))
       .reduce((total, rule) => total + this.recurringDueForMonth(rule), 0),
   );
   readonly emiDueThisMonth = computed(() =>
     this.store
       .emiPlans()
-      .filter((plan) => plan.status === 'ACTIVE')
+      .filter(
+        (plan) =>
+          plan.status === 'ACTIVE' && this.matchesOwner(plan.forFriendsOrRelatives ?? false),
+      )
       .reduce(
         (total, plan) =>
           total +
@@ -81,7 +100,12 @@ export class LoansPage {
   readonly loanDueThisMonth = computed(() =>
     this.store
       .loans()
-      .filter((loan) => loan.status === 'ACTIVE' && this.loanRunsInCurrentMonth(loan))
+      .filter(
+        (loan) =>
+          loan.status === 'ACTIVE' &&
+          this.matchesOwner(loan.forFriendsOrRelatives ?? false) &&
+          this.loanRunsInCurrentMonth(loan),
+      )
       .reduce((total, loan) => total + loan.installmentMinor, 0),
   );
   readonly totalDueThisMonth = computed(
@@ -109,12 +133,16 @@ export class LoansPage {
     }),
     endDate: new FormControl('', { nonNullable: true, validators: [Validators.required] }),
     notes: new FormControl('', { nonNullable: true }),
+    forFriendsOrRelatives: new FormControl(false, { nonNullable: true }),
   });
   money(value: number): string {
     return formatMoney(value, 'INR');
   }
   updateCommitmentFilter(value: string): void {
     this.commitmentFilter.set(value as CommitmentFilter);
+  }
+  selectOwner(owner: CommitmentOwner): void {
+    this.commitmentOwner.set(owner);
   }
   setDebitDay(value: string): void {
     this.form.controls.debitDay.setValue(Number(value));
@@ -251,6 +279,7 @@ export class LoansPage {
       endDate: value.endDate,
       status: 'ACTIVE',
       notes: value.notes.trim() || undefined,
+      forFriendsOrRelatives: value.forFriendsOrRelatives,
     };
     this.store.addLoan(loan);
     this.showForm.set(false);
@@ -263,12 +292,20 @@ export class LoansPage {
       startDate: new Date().toISOString().slice(0, 10),
       endDate: '',
       notes: '',
+      forFriendsOrRelatives: false,
     });
   }
 
   private matchesFilter(active: boolean): boolean {
     if (this.commitmentFilter() === 'ALL') return true;
     return this.commitmentFilter() === 'ACTIVE' ? active : !active;
+  }
+
+  private matchesOwner(forFriendsOrRelatives: boolean): boolean {
+    const owner = this.commitmentOwner();
+    return (
+      owner === 'ALL' || (owner === 'FRIENDS' ? forFriendsOrRelatives : !forFriendsOrRelatives)
+    );
   }
 
   private recurringDueForMonth(rule: RecurringRule): number {

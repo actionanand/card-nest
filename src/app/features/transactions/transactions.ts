@@ -276,6 +276,7 @@ export class TransactionsPage {
     startMode: new FormControl<EmiStartMode>('THIS_MONTH', { nonNullable: true }),
     customStart: new FormControl('', { nonNullable: true }),
     notes: new FormControl('', { nonNullable: true, validators: [Validators.maxLength(200)] }),
+    forFriendsOrRelatives: new FormControl(false, { nonNullable: true }),
   });
   readonly splitForm = new FormGroup({
     parts: new FormArray([this.createSplitPart(), this.createSplitPart()]),
@@ -1006,6 +1007,7 @@ export class TransactionsPage {
       startMode: 'THIS_MONTH',
       customStart: transaction.transactionDate.slice(0, 7),
       notes: '',
+      forFriendsOrRelatives: false,
     });
     this.showEmiForm.set(true);
   }
@@ -1046,6 +1048,7 @@ export class TransactionsPage {
       originalTransactionDate: transaction.transactionDate,
       originalMerchant: transaction.merchant,
       notes: value.notes.trim() || undefined,
+      forFriendsOrRelatives: value.forFriendsOrRelatives,
     };
     this.store.saveEmiPlan(plan, createEmiSchedule(plan, card));
     this.showEmiForm.set(false);

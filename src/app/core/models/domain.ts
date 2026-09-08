@@ -201,6 +201,8 @@ export interface LoanCommitment {
   endDate: string;
   status: 'ACTIVE' | 'CANCELLED' | 'COMPLETED';
   notes?: string;
+  /** Undefined is treated as false for commitments created before ownership tracking. */
+  forFriendsOrRelatives?: boolean;
 }
 
 export interface EmiPlan {
@@ -220,6 +222,8 @@ export interface EmiPlan {
   originalMerchant?: string;
   closedAt?: string;
   notes?: string;
+  /** Undefined is treated as false for plans created before ownership tracking. */
+  forFriendsOrRelatives?: boolean;
 }
 
 export interface EmiInstallment {
