@@ -34,6 +34,7 @@ const gradleWrapperPath = join(
   'gradle-wrapper.properties',
 );
 const capacitorPackagesPath = join(process.cwd(), 'node_modules', '@capacitor');
+const capacitorCommunityPackagesPath = join(process.cwd(), 'node_modules', '@capacitor-community');
 const notificationIconPath = join(androidRoot, 'res', 'drawable', 'ic_stat_card_nest.xml');
 
 const androidGradlePluginVersion = '9.0.1';
@@ -73,12 +74,14 @@ const patchAndroidGradlePlugin = (path) => {
 
 patchAndroidGradlePlugin(rootBuildGradlePath);
 patchAndroidGradlePlugin(cordovaBuildGradlePath);
-const capacitorBuildGradlePaths = readdirSync(capacitorPackagesPath, {
-  withFileTypes: true,
-})
-  .filter((entry) => entry.isDirectory())
-  .map((entry) => join(capacitorPackagesPath, entry.name, 'android', 'build.gradle'))
-  .filter((path) => existsSync(path));
+const capacitorBuildGradlePaths = [capacitorPackagesPath, capacitorCommunityPackagesPath]
+  .filter((packagesPath) => existsSync(packagesPath))
+  .flatMap((packagesPath) =>
+    readdirSync(packagesPath, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => join(packagesPath, entry.name, 'android', 'build.gradle'))
+      .filter((path) => existsSync(path)),
+  );
 const capacitorCoreBuildGradlePath = join(
   capacitorPackagesPath,
   'android',
@@ -141,7 +144,7 @@ for (const requiredSetting of [
 }
 writeFileSync(appBuildGradlePath, appBuildGradle);
 
-const cardNestR8Rules = `
+const cardNestBridgeR8Rules = `
 
 # CardNest exposes only annotated bridge methods directly to its WebView.
 # Preserve those JavaScript-visible method names while allowing their classes and
@@ -153,9 +156,24 @@ const cardNestR8Rules = `
 `;
 let proguardRules = readFileSync(proguardRulesPath, 'utf8');
 if (!proguardRules.includes('@android.webkit.JavascriptInterface <methods>;')) {
-  proguardRules += cardNestR8Rules;
-  writeFileSync(proguardRulesPath, proguardRules);
+  proguardRules += cardNestBridgeR8Rules;
 }
+const tinkCompileOnlyAnnotationRules = [
+  '-dontwarn javax.annotation.Nullable',
+  '-dontwarn javax.annotation.concurrent.GuardedBy',
+];
+const missingTinkAnnotationRules = tinkCompileOnlyAnnotationRules.filter(
+  (rule) => !proguardRules.includes(rule),
+);
+if (missingTinkAnnotationRules.length > 0) {
+  proguardRules += `
+
+# Tink declares these JSR-305 annotations as compile-time-only metadata. They
+# are not Android runtime classes, so suppress only these two known references.
+${missingTinkAnnotationRules.join('\n')}
+`;
+}
+writeFileSync(proguardRulesPath, proguardRules);
 
 let manifest = readFileSync(manifestPath, 'utf8');
 if (!manifest.includes('android.permission.USE_BIOMETRIC')) {

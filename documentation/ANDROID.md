@@ -96,6 +96,7 @@ The generated Capacitor Android template disables release minification by defaul
 
 - Android Gradle Plugin is pinned to 9.0.1 and its compatible Gradle wrapper to 9.1.0.
 - Capacitor's generated modules use the same AGP version, and Kotlin-based plugins are guarded against AGP 9's built-in Kotlin duplicate-extension conflict.
+- SQLCipher's Tink dependency references two compile-time-only JSR-305 annotations. The generated R8 rules suppress only `javax.annotation.Nullable` and `javax.annotation.concurrent.GuardedBy`; no global warning suppression is used.
 - `minifyEnabled true` enables R8 code shrinking, optimization, and obfuscation.
 - `shrinkResources true` enables optimized resource shrinking.
 - `proguard-android-optimize.txt` supplies Android's optimized default rules.

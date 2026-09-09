@@ -86,7 +86,7 @@ jobs:
         run: |
           grep -Fq 'com.android.tools.build:gradle:9.0.1' android/build.gradle
           grep -Fq 'com.android.tools.build:gradle:9.0.1' android/capacitor-cordova-android-plugins/build.gradle
-          if grep -R -Eq "com\.android\.tools\.build:gradle:(8\.|7\.)" node_modules/@capacitor --include='build.gradle'; then
+          if grep -R -Eq "com\.android\.tools\.build:gradle:(8\.|7\.)" node_modules/@capacitor node_modules/@capacitor-community --include='build.gradle'; then
             echo 'A Capacitor Android module still uses an older Android Gradle plugin.'
             exit 1
           fi
@@ -101,6 +101,8 @@ jobs:
           grep -Eq 'shrinkResources[[:space:]]+true' android/app/build.gradle
           grep -Fq "proguard-android-optimize.txt" android/app/build.gradle
           grep -Fq '@android.webkit.JavascriptInterface <methods>;' android/app/proguard-rules.pro
+          grep -Fq -- '-dontwarn javax.annotation.Nullable' android/app/proguard-rules.pro
+          grep -Fq -- '-dontwarn javax.annotation.concurrent.GuardedBy' android/app/proguard-rules.pro
           if grep -Eq '^[[:space:]]*-dont(obfuscate|optimize|shrink)' android/app/proguard-rules.pro; then
             echo 'A global R8 optimization disable rule is not allowed.'
             exit 1
@@ -117,6 +119,7 @@ jobs:
             android/**/*.gradle*
             android/gradle/wrapper/gradle-wrapper.properties
             node_modules/@capacitor/**/android/build.gradle
+            node_modules/@capacitor-community/**/android/build.gradle
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
