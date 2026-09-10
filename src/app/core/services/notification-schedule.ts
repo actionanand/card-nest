@@ -26,3 +26,15 @@ export function catchUpReminderToday(at: Date, now: Date): Date {
   }
   return scheduled;
 }
+
+export function expiredCardReminderDate(expires: Date, now: Date): Date {
+  const firstReminder = new Date(expires);
+  firstReminder.setDate(firstReminder.getDate() + 1);
+  firstReminder.setHours(REMINDER_HOUR, 0, 0, 0);
+  if (firstReminder > now) return firstReminder;
+
+  const nextReminder = new Date(now);
+  nextReminder.setHours(REMINDER_HOUR, 0, 0, 0);
+  if (nextReminder <= now) nextReminder.setDate(nextReminder.getDate() + 1);
+  return nextReminder;
+}

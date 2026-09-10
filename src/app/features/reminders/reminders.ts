@@ -101,7 +101,7 @@ export class RemindersPage {
         if (this.filter() === 'DUE') return item.amount > 0;
         if (this.filter() === 'CREDIT') return item.outstanding < 0;
         if (this.filter() === 'FEE') return item.feeDue !== null;
-        return item.expiryDays !== null && item.expiryDays >= 0 && item.expiryDays <= 90;
+        return item.expiryDays !== null && item.expiryDays <= 90;
       })
       .sort((a, b) => {
         if (this.filter() === 'GRACE') return b.graceEndDate.getTime() - a.graceEndDate.getTime();
@@ -278,7 +278,9 @@ export class RemindersPage {
   }
 
   reminderDetail(item: PaymentReminder): string {
-    if (this.filter() === 'EXPIRING' && item.expiry) return `Expires ${this.date(item.expiry)}`;
+    if (this.filter() === 'EXPIRING' && item.expiry) {
+      return `${(item.expiryDays ?? 0) < 0 ? 'Expired' : 'Expires'} ${this.date(item.expiry)}`;
+    }
     if (this.filter() === 'FEE' && item.feeDue) return `Renews ${this.date(item.feeDue)}`;
     if (this.filter() === 'GRACE') {
       return `Pay by ${this.date(item.graceEndDate)} · ${this.graceLabel(item)}`;
@@ -293,7 +295,11 @@ export class RemindersPage {
   }
 
   reminderValue(item: PaymentReminder): string {
-    if (this.filter() === 'EXPIRING') return 'Review or replace this card before expiry';
+    if (this.filter() === 'EXPIRING') {
+      return (item.expiryDays ?? 0) < 0
+        ? 'Archive, remove, or update this expired card'
+        : 'Review or replace this card before expiry';
+    }
     if (this.filter() === 'FEE') {
       return item.card.annualFee
         ? `${this.money(item.card.annualFee.amountMinor, item.card.currencyCode)} annual fee`

@@ -278,6 +278,7 @@ final class CardNestReminderScheduler {
   private static final String CHANNEL_ID = "card-nest-reminders";
   private static final String STORE = "card_nest_native_reminders";
   private static final String RECORDS_KEY = "records";
+  private static final int DAILY_REMINDER_HOUR = 9;
 
   private CardNestReminderScheduler() { }
 
@@ -336,6 +337,10 @@ final class CardNestReminderScheduler {
         if (current == null || current.optLong("atMillis", 0) < atMillis) {
           dueByOccurrence.put(occurrence, record);
         }
+        if (record.optBoolean("repeatDaily", false)) {
+          JSONObject next = nextDailyRecord(record, now);
+          if (next != null) remaining.put(next);
+        }
       } else remaining.put(record);
     }
     for (JSONObject record : dueByOccurrence.values()) showNotification(context, record);
@@ -360,6 +365,11 @@ final class CardNestReminderScheduler {
       long rebuiltAt = localDateTimeMillis(record);
       if (rebuiltAt <= 0) continue;
       try { record.put("atMillis", rebuiltAt); } catch (Exception ignored) { continue; }
+      if (rebuiltAt <= now && record.optBoolean("repeatDaily", false)) {
+        JSONObject next = nextDailyRecord(record, now);
+        if (next != null) valid.put(next);
+        continue;
+      }
       if (rebuiltAt > now || sameLocalDay(rebuiltAt, now)) valid.put(record);
     }
     persist(context, valid);
@@ -396,6 +406,29 @@ final class CardNestReminderScheduler {
       alarms.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, pending);
     } else {
       alarms.set(AlarmManager.RTC_WAKEUP, triggerAt, pending);
+    }
+  }
+
+  private static JSONObject nextDailyRecord(JSONObject record, long now) {
+    try {
+      Calendar next = Calendar.getInstance();
+      next.setTimeInMillis(now);
+      next.set(Calendar.HOUR_OF_DAY, DAILY_REMINDER_HOUR);
+      next.set(Calendar.MINUTE, 0);
+      next.set(Calendar.SECOND, 0);
+      next.set(Calendar.MILLISECOND, 0);
+      if (next.getTimeInMillis() <= now) next.add(Calendar.DAY_OF_MONTH, 1);
+
+      JSONObject replacement = new JSONObject(record.toString());
+      replacement.put("atMillis", next.getTimeInMillis());
+      replacement.put("year", next.get(Calendar.YEAR));
+      replacement.put("month", next.get(Calendar.MONTH) + 1);
+      replacement.put("day", next.get(Calendar.DAY_OF_MONTH));
+      replacement.put("hour", DAILY_REMINDER_HOUR);
+      replacement.put("minute", 0);
+      return replacement;
+    } catch (Exception ignored) {
+      return null;
     }
   }
 
