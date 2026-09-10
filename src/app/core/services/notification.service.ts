@@ -9,6 +9,7 @@ import { CardExpiryService } from './card-expiry.service';
 import {
   catchUpReminderToday,
   DEFAULT_REMINDER_DAYS_BEFORE,
+  expiredCardReminderDate,
   MAX_REMINDER_DAYS_BEFORE,
   normalizedReminderDays,
   paymentReminderOffsets,
@@ -26,6 +27,7 @@ interface ReminderTarget {
   readonly eventDate: Date;
   readonly cardId: string;
   readonly kind: 'PAYMENT' | 'ANNUAL_FEE' | 'EXPIRY';
+  readonly repeatDaily?: boolean;
 }
 
 interface NativeReminderBridge {
@@ -169,6 +171,7 @@ export class NotificationService {
               eventYear: target.eventDate.getFullYear(),
               eventMonth: target.eventDate.getMonth() + 1,
               eventDay: target.eventDate.getDate(),
+              repeatDaily: target.repeatDaily ?? false,
             })),
           ),
         );
@@ -340,8 +343,8 @@ export class NotificationService {
           kind: 'EXPIRY',
         });
       }
-      const expiredReminder = this.expiredReminderDate(expires, now);
-      if (expiredReminder) {
+      if (expires <= now) {
+        const expiredReminder = expiredCardReminderDate(expires, now);
         const expiryLabel = expires.toLocaleDateString('en-US', {
           day: 'numeric',
           month: 'long',
@@ -349,12 +352,13 @@ export class NotificationService {
         });
         targets.push({
           id: baseId + 8,
-          title: 'Card expired yesterday',
-          body: `${cardLabel} expired on ${expiryLabel}.`,
+          title: 'Card expired',
+          body: `${cardLabel} expired on ${expiryLabel}. Archive, remove, or update this card.`,
           at: expiredReminder,
           eventDate: expires,
           cardId: card.id,
           kind: 'EXPIRY',
+          repeatDaily: true,
         });
       }
     }
@@ -431,22 +435,6 @@ export class NotificationService {
     at.setHours(REMINDER_HOUR, 0, 0, 0);
     if (at <= now) at.setTime(now.getTime() + 60_000);
     return at;
-  }
-
-  private expiredReminderDate(expires: Date, now: Date): Date | null {
-    const at = new Date(expires);
-    at.setDate(at.getDate() + 1);
-    at.setHours(REMINDER_HOUR, 0, 0, 0);
-    if (at > now) return at;
-    if (
-      at.getFullYear() === now.getFullYear() &&
-      at.getMonth() === now.getMonth() &&
-      at.getDate() === now.getDate()
-    ) {
-      at.setTime(now.getTime() + 60_000);
-      return at;
-    }
-    return null;
   }
 
   private isAndroid(): boolean {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   catchUpReminderToday,
+  expiredCardReminderDate,
   normalizedReminderDays,
   paymentReminderOffsets,
 } from './notification-schedule';
@@ -30,6 +31,24 @@ describe('notification scheduling', () => {
     const now = new Date(2026, 7, 30, 8, 0, 0);
     expect(catchUpReminderToday(new Date(2026, 7, 30), now)).toEqual(
       new Date(2026, 7, 30, 9, 0, 0),
+    );
+  });
+
+  it('starts expired-card reminders the morning after expiry', () => {
+    const expires = new Date(2026, 8, 1, 23, 59, 59, 999);
+    const now = new Date(2026, 7, 30, 12, 0, 0);
+
+    expect(expiredCardReminderDate(expires, now)).toEqual(new Date(2026, 8, 2, 9, 0, 0));
+  });
+
+  it('keeps reminding for an older active expired card at the next 9:00 AM', () => {
+    const expires = new Date(2026, 8, 1, 23, 59, 59, 999);
+
+    expect(expiredCardReminderDate(expires, new Date(2026, 8, 10, 8, 0, 0))).toEqual(
+      new Date(2026, 8, 10, 9, 0, 0),
+    );
+    expect(expiredCardReminderDate(expires, new Date(2026, 8, 10, 9, 11, 0))).toEqual(
+      new Date(2026, 8, 11, 9, 0, 0),
     );
   });
 });

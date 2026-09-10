@@ -286,7 +286,7 @@ const HELP_TOPICS: readonly HelpTopic[] = [
       'The notification countdown is recalculated when Android delivers it, so a delayed reminder still shows the correct number of calendar days remaining.',
       'The default payment window starts five days before the due date and continues each morning through the due date. Change the lead time under Settings > Notifications.',
       'Annual-fee reminders are scheduled 30 days before renewal, and card-expiry reminders are scheduled 45 days before the calculated expiry date.',
-      'An expired card receives one follow-up notification the next morning. If Android delays it, the title says expired yesterday, expired two days ago, or shows the explicit expiry date.',
+      'An active expired card receives a daily 9:00 AM reminder until you archive, remove, or update it. The title says expired yesterday, expired two days ago, or shows the explicit expiry date.',
       'Card expiry uses the first day of the MM/YYYY expiry month by default. In Settings > Notifications, clear “Use first day of expiry month” to use the final day instead.',
       'Filter the reminder list by payments, grace period, annual fee, expiry, or all cards.',
       'Longest grace period ranks cards by the exact final payment date for a purchase made today. For example, 17 days (2 + 15) means the statement generates in two days and the bank then allows fifteen days to pay.',
