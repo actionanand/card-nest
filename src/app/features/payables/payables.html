@@ -1,0 +1,91 @@
+<div class="page payables-page">
+  <header class="page-header">
+    <div>
+      <p class="eyebrow">Monthly planning</p>
+      <h1>Payables</h1>
+      <p class="subtitle">
+        Statement dues and external-loan installments that need your attention.
+      </p>
+    </div>
+  </header>
+  <div class="owner-tabs" role="group" aria-label="Payable owner">
+    <button
+      type="button"
+      [class.active]="owner() === 'ALL'"
+      [attr.aria-pressed]="owner() === 'ALL'"
+      (click)="selectOwner('ALL')"
+    >
+      All
+    </button>
+    <button
+      type="button"
+      [class.active]="owner() === 'ME'"
+      [attr.aria-pressed]="owner() === 'ME'"
+      (click)="selectOwner('ME')"
+    >
+      Me
+    </button>
+    <button
+      type="button"
+      [class.active]="owner() === 'FRIENDS'"
+      [attr.aria-pressed]="owner() === 'FRIENDS'"
+      (click)="selectOwner('FRIENDS')"
+    >
+      Friends &amp; relatives
+    </button>
+  </div>
+  <section class="panel payable-total" aria-labelledby="payable-total-title">
+    <span class="payable-total__icon" aria-hidden="true"><app-icon name="schedule" /></span
+    ><span
+      ><small id="payable-total-title">Total payable</small
+      ><strong>{{ money(totalPayable()) }}</strong></span
+    ><span
+      ><small>Statement dues</small><b>{{ money(cardTotal()) }}</b></span
+    ><span
+      ><small>Loans &amp; EMIs</small><b>{{ money(loanTotal()) }}</b></span
+    >
+  </section>
+  @if (cardPayables().length) {
+    <section class="payable-list" aria-labelledby="statement-dues-heading">
+      <h2 id="statement-dues-heading">Credit card statement dues</h2>
+      @for (payable of cardPayables(); track payable.card.id) {
+        <article class="panel payable-row">
+          <span class="payable-row__icon" aria-hidden="true"><app-icon name="cards" /></span
+          ><span
+            ><strong>{{ payable.card.nickname }}</strong
+            ><small
+              >{{ payable.card.issuerName }} · Due {{ payable.dueDate | appDate }}</small
+            ></span
+          ><strong>{{ money(payable.amountMinor) }}</strong>
+        </article>
+      }
+    </section>
+  }
+  @if (loanPayables().length) {
+    <section class="payable-list" aria-labelledby="loan-dues-heading">
+      <h2 id="loan-dues-heading">Upcoming external loans &amp; EMIs</h2>
+      <p class="section-note">
+        Installments appear 15 days before their debit date and disappear after it passes.
+      </p>
+      @for (payable of loanPayables(); track payable.loan.id) {
+        <article class="panel payable-row">
+          <span class="payable-row__icon loan" aria-hidden="true"><app-icon name="loans" /></span
+          ><span
+            ><strong>{{ payable.loan.name }}</strong
+            ><small
+              >{{ payable.loan.lender || 'Personal commitment' }} ·
+              {{ dueLabel(payable.daysUntilDue) }} ({{ payable.dueDate | appDate }})</small
+            ></span
+          ><strong>{{ money(payable.loan.installmentMinor) }}</strong>
+        </article>
+      }
+    </section>
+  }
+  @if (!cardPayables().length && !loanPayables().length) {
+    <section class="panel empty">
+      <app-icon name="schedule" />
+      <h2>No payables due right now</h2>
+      <p>External loans will appear here from 15 days before their debit date.</p>
+    </section>
+  }
+</div>

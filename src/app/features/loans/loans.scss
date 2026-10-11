@@ -6,7 +6,7 @@
 }
 .loan-header-actions {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 0.55rem;
 }
 .owner-tabs {
@@ -393,12 +393,78 @@
   margin-top: 0.8rem;
   color: var(--danger);
 }
+.schedule-editor {
+  display: grid;
+  gap: 0.7rem;
+  margin-top: 0.9rem;
+  padding: 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: 0.7rem;
+  background: var(--canvas);
+}
+.schedule-editor p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+.schedule-editor > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.schedule-dialog-backdrop {
+  position: fixed;
+  z-index: 1100;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: calc(env(safe-area-inset-top) + 1rem) max(1rem, env(safe-area-inset-right))
+    max(1rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
+  background: rgb(10 25 18 / 68%);
+  backdrop-filter: blur(4px);
+}
+.schedule-dialog {
+  width: min(100%, 28rem);
+  padding: 1.1rem;
+}
+.schedule-dialog header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.schedule-dialog header p,
+.schedule-dialog header h2 {
+  margin: 0;
+}
+.schedule-dialog header h2 {
+  font-size: 1.15rem;
+}
+.schedule-dialog header button {
+  display: grid;
+  width: 2.4rem;
+  height: 2.4rem;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  color: var(--accent);
+  background: var(--accent-soft);
+}
 .loan-list article {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 1rem;
   padding: 1rem;
+}
+.loan-actions {
+  display: grid;
+  gap: 0.55rem;
+}
+.loan-actions .schedule-editor {
+  min-width: 15rem;
+  margin-top: 0;
 }
 .loan-list article > div:first-child {
   display: flex;
@@ -414,6 +480,21 @@
   color: var(--muted);
   font-size: 0.7rem;
 }
+.loan-list p.loan-note {
+  max-width: 20rem;
+  margin-top: 0.35rem;
+  color: var(--ink);
+  font-size: 0.68rem;
+  line-height: 1.4;
+}
+.installment-progress {
+  display: inline-block;
+  margin-top: 0.2rem;
+  color: var(--accent);
+  font-size: 0.68rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
 .loan-icon {
   display: grid;
   width: 2.7rem;
@@ -426,6 +507,8 @@
 }
 .loan-list dl {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 1rem;
   margin: 0;
 }
@@ -502,6 +585,22 @@
   }
   .loan-list .btn {
     width: 100%;
+  }
+  .loan-actions .schedule-editor {
+    min-width: 0;
+  }
+  .schedule-dialog-backdrop {
+    align-items: end;
+    padding: 0;
+  }
+  .schedule-dialog {
+    width: 100%;
+    padding: 1.2rem max(1rem, env(safe-area-inset-right)) max(1.2rem, env(safe-area-inset-bottom))
+      max(1rem, env(safe-area-inset-left));
+    border-radius: 1.2rem 1.2rem 0 0;
+  }
+  .schedule-dialog .schedule-editor > div .btn {
+    flex: 1;
   }
   .emi-summary {
     grid-template-columns: auto minmax(0, 1fr) auto;

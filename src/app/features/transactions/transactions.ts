@@ -29,6 +29,7 @@ import {
 import { AppDatePipe, DateFormatService } from '../../core/services/date-format.service';
 import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
 import { AppDatePicker } from '../../shared/app-date-picker';
+import { indiaCurrentMonth, indiaTodayIso } from '../../core/services/india-date';
 
 type GroupingMode = 'MONTH' | 'CYCLE' | 'STATEMENT';
 type TransactionTypeFilter = TransactionType | 'ALL' | 'WITH_IMAGE';
@@ -251,7 +252,7 @@ export class TransactionsPage {
       { nonNullable: true, validators: [Validators.required] },
     ),
     amount: new FormControl('', { nonNullable: true, validators: [Validators.required] }),
-    transactionDate: new FormControl(new Date().toISOString().slice(0, 10), {
+    transactionDate: new FormControl(indiaTodayIso(), {
       nonNullable: true,
       validators: [Validators.required],
     }),
@@ -386,7 +387,7 @@ export class TransactionsPage {
   readonly filtered = computed(() => {
     const term = this.search().trim().toLocaleLowerCase();
     const numericTerm = term.replace(/[^0-9.]/g, '');
-    const currentMonth = new Date().toISOString().slice(0, 7);
+    const currentMonth = indiaCurrentMonth();
     return this.store
       .transactions()
       .filter(
@@ -497,7 +498,7 @@ export class TransactionsPage {
     if (!groups.length) return null;
     const todayKey = this.periodForMode(
       {
-        transactionDate: new Date().toISOString().slice(0, 10),
+        transactionDate: indiaTodayIso(),
         cardId: this.sourceFilter(),
       } as CardTransaction,
       this.effectiveGrouping(),
@@ -1449,7 +1450,7 @@ export class TransactionsPage {
       cardId: sourceId,
       type: 'PURCHASE',
       amount: '',
-      transactionDate: new Date().toISOString().slice(0, 10),
+      transactionDate: indiaTodayIso(),
       categoryId: 'other',
       merchant: '',
       notes: '',

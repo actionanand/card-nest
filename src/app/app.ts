@@ -16,6 +16,7 @@ import { SnackbarService } from './core/services/snackbar.service';
 import { AppIcon } from './shared/app-icon';
 import { PaymentSourcePicker } from './shared/payment-source-picker';
 import { CardTransaction } from './core/models/domain';
+import { indiaTodayIso } from './core/services/india-date';
 import { parseMoneyToMinor } from './core/services/money';
 import { UiPreferencesService } from './core/services/ui-preferences.service';
 
@@ -181,7 +182,7 @@ export class App {
       type: 'PURCHASE',
       amountMinor,
       currencyCode: 'INR',
-      transactionDate: timestamp.slice(0, 10),
+      transactionDate: indiaTodayIso(),
       merchant: this.flashMerchant().trim() || undefined,
       categoryId: 'other',
       attachmentIds: [],
