@@ -1,0 +1,24 @@
+const INDIA_TIME_ZONE = 'Asia/Kolkata';
+
+/** Returns the current calendar date in India, independent of the device time zone. */
+export function indiaTodayIso(now = new Date()): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: INDIA_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(now);
+  const value = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((part) => part.type === type)?.value ?? '';
+  return `${value('year')}-${value('month')}-${value('day')}`;
+}
+
+/** A noon local Date for safe calendar arithmetic on an ISO calendar date. */
+export function indiaTodayDate(now = new Date()): Date {
+  const [year, month, day] = indiaTodayIso(now).split('-').map(Number);
+  return new Date(year, month - 1, day, 12);
+}
+
+export function indiaCurrentMonth(now = new Date()): string {
+  return indiaTodayIso(now).slice(0, 7);
+}

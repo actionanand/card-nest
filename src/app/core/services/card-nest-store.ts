@@ -21,6 +21,7 @@ import {
   toIsoDate,
 } from './billing-cycle';
 import { calculateNetSpending, calculateOutstanding, transactionEffect } from './money';
+import { indiaTodayIso } from './india-date';
 import {
   configureMoneyDisplay,
   countryOption,
@@ -690,6 +691,7 @@ export class CardNestStore {
       relatedTransactionId: undefined,
       splitGroupId: undefined,
       splitOriginalAmountMinor: undefined,
+      transactionDate: indiaTodayIso(),
       createdAt: timestamp,
       updatedAt: timestamp,
     };
@@ -697,6 +699,12 @@ export class CardNestStore {
     return duplicate;
   }
   saveEmiPlan(plan: EmiPlan, installments: readonly EmiInstallment[]): void {
+    // A rescheduled plan replaces, rather than duplicates, its future generated transactions.
+    for (const existing of this.transactions().filter(
+      (item) => item.emiPlanId === plan.id && item.id !== plan.transactionId,
+    )) {
+      this.deleteTransaction(existing.id);
+    }
     this.emiPlans.update((plans) => [plan, ...plans.filter((item) => item.id !== plan.id)]);
     const storedInstallments = installments.map((installment) => ({
       ...installment,
@@ -830,6 +838,10 @@ export class CardNestStore {
   addLoan(loan: LoanCommitment): void {
     this.loans.update((loans) => [loan, ...loans]);
     void this.persistLoan(loan);
+  }
+  updateLoan(updated: LoanCommitment): void {
+    this.loans.update((loans) => loans.map((loan) => (loan.id === updated.id ? updated : loan)));
+    void this.persistLoan(updated);
   }
   cancelLoan(loanId: string): void {
     this.loans.update((loans) =>

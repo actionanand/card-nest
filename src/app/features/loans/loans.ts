@@ -10,6 +10,8 @@ import { AppDatePipe } from '../../core/services/date-format.service';
 import { SnackbarService } from '../../core/services/snackbar.service';
 import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
 import { AppDatePicker } from '../../shared/app-date-picker';
+import { indiaCurrentMonth, indiaTodayIso } from '../../core/services/india-date';
+import { createEmiSchedule } from '../../core/services/emi';
 
 type CommitmentFilter = 'ACTIVE' | 'INACTIVE' | 'ALL';
 type CommitmentOwner = 'ALL' | 'ME' | 'FRIENDS';
@@ -44,6 +46,11 @@ export class LoansPage {
   readonly closeEmiCandidate = signal<EmiPlan | null>(null);
   readonly terminateRepeatCandidate = signal<RecurringRule | null>(null);
   readonly cancelLoanCandidate = signal<LoanCommitment | null>(null);
+  readonly editingLoanId = signal<string | null>(null);
+  readonly editingEmiStartId = signal<string | null>(null);
+  readonly editingLoan = computed(
+    () => this.store.loans().find((loan) => loan.id === this.editingLoanId()) ?? null,
+  );
   readonly visibleRepeats = computed(() =>
     this.store
       .recurringRules()
@@ -67,8 +74,9 @@ export class LoansPage {
           this.matchesOwner(loan.forFriendsOrRelatives ?? false),
       ),
   );
-  readonly currentMonthKey = new Date().toISOString().slice(0, 7);
+  readonly currentMonthKey = indiaCurrentMonth();
   readonly currentMonthLabel = new Date().toLocaleDateString('en-IN', {
+    timeZone: 'Asia/Kolkata',
     month: 'long',
     year: 'numeric',
   });
@@ -127,13 +135,20 @@ export class LoansPage {
     principal: new FormControl('', { nonNullable: true, validators: [Validators.required] }),
     installment: new FormControl('', { nonNullable: true, validators: [Validators.required] }),
     debitDay: new FormControl(5, { nonNullable: true }),
-    startDate: new FormControl(new Date().toISOString().slice(0, 10), {
+    startDate: new FormControl(indiaTodayIso(), {
       nonNullable: true,
       validators: [Validators.required],
     }),
     endDate: new FormControl('', { nonNullable: true, validators: [Validators.required] }),
     notes: new FormControl('', { nonNullable: true }),
     forFriendsOrRelatives: new FormControl(false, { nonNullable: true }),
+  });
+  readonly loanScheduleForm = new FormGroup({
+    startDate: new FormControl('', { nonNullable: true, validators: [Validators.required] }),
+    endDate: new FormControl('', { nonNullable: true, validators: [Validators.required] }),
+  });
+  readonly emiStartForm = new FormGroup({
+    startDate: new FormControl('', { nonNullable: true, validators: [Validators.required] }),
   });
   money(value: number): string {
     return formatMoney(value, 'INR');
@@ -153,6 +168,59 @@ export class LoansPage {
   setEndDate(value: string): void {
     this.form.controls.endDate.setValue(value);
   }
+  editLoanSchedule(loan: LoanCommitment): void {
+    this.editingLoanId.set(loan.id);
+    this.loanScheduleForm.setValue({ startDate: loan.startDate, endDate: loan.endDate });
+  }
+  closeLoanScheduleFromBackdrop(event: MouseEvent): void {
+    if (event.target === event.currentTarget) this.editingLoanId.set(null);
+  }
+  setLoanScheduleStartDate(value: string): void {
+    this.loanScheduleForm.controls.startDate.setValue(value);
+  }
+  setLoanScheduleEndDate(value: string): void {
+    this.loanScheduleForm.controls.endDate.setValue(value);
+  }
+  saveLoanSchedule(event: SubmitEvent, loan: LoanCommitment): void {
+    event.preventDefault();
+    this.loanScheduleForm.markAllAsTouched();
+    const value = this.loanScheduleForm.getRawValue();
+    if (this.loanScheduleForm.invalid || value.endDate < value.startDate) {
+      if (value.endDate < value.startDate)
+        this.loanScheduleForm.controls.endDate.setErrors({ range: true });
+      return;
+    }
+    this.store.updateLoan({ ...loan, startDate: value.startDate, endDate: value.endDate });
+    this.editingLoanId.set(null);
+    this.snackbar.show('Loan schedule updated.');
+  }
+  editEmiStart(plan: EmiPlan): void {
+    if (this.installments(plan.id).some((installment) => installment.paid)) {
+      this.snackbar.show('A started EMI schedule cannot be moved.', 'WARNING');
+      return;
+    }
+    this.editingEmiStartId.set(plan.id);
+    this.emiStartForm.setValue({ startDate: plan.startDate });
+  }
+  setEmiStartDate(value: string): void {
+    this.emiStartForm.controls.startDate.setValue(value);
+  }
+  setEmiStartToCurrentMonth(offset: number): void {
+    const [year, month] = indiaCurrentMonth().split('-').map(Number);
+    const date = new Date(year, month - 1 + offset, 1, 12);
+    this.emiStartForm.controls.startDate.setValue(this.localIso(date));
+  }
+  saveEmiStart(event: SubmitEvent, plan: EmiPlan): void {
+    event.preventDefault();
+    this.emiStartForm.markAllAsTouched();
+    if (this.emiStartForm.invalid) return;
+    const card = this.store.cards().find((item) => item.id === plan.cardId);
+    if (!card) return;
+    const updated = { ...plan, startDate: this.emiStartForm.controls.startDate.value };
+    this.store.saveEmiPlan(updated, createEmiSchedule(updated, card));
+    this.editingEmiStartId.set(null);
+    this.snackbar.show('EMI start month updated.');
+  }
   emiTitle(plan: EmiPlan): string {
     return plan.originalMerchant || 'Card purchase';
   }
@@ -166,8 +234,17 @@ export class LoansPage {
     const total = this.installments(planId).reduce((sum, item) => sum + item.totalMinor, 0);
     return Math.max(0, total - originalMinor);
   }
+  emiProgress(plan: EmiPlan): string {
+    const next = this.installments(plan.id).find((installment) => !installment.paid);
+    return `${next?.installmentNumber ?? plan.tenureMonths}/${plan.tenureMonths}`;
+  }
+  loanProgress(loan: LoanCommitment): string {
+    const dates = this.loanInstallmentDates(loan);
+    const nextIndex = dates.findIndex((date) => date >= indiaTodayIso());
+    return `${nextIndex === -1 ? dates.length : nextIndex + 1}/${dates.length}`;
+  }
   nextInstallment(planId: string): EmiInstallment | undefined {
-    const month = new Date().toISOString().slice(0, 7);
+    const month = indiaCurrentMonth();
     return this.installments(planId).find(
       (item) => !item.paid && item.statementDate.slice(0, 7) >= month,
     );
@@ -289,7 +366,7 @@ export class LoansPage {
       principal: '',
       installment: '',
       debitDay: 5,
-      startDate: new Date().toISOString().slice(0, 10),
+      startDate: indiaTodayIso(),
       endDate: '',
       notes: '',
       forFriendsOrRelatives: false,
@@ -328,6 +405,22 @@ export class LoansPage {
     const [year, month] = this.currentMonthKey.split('-').map(Number);
     const monthEnd = this.localIso(new Date(year, month, 0, 12));
     return loan.startDate <= monthEnd && loan.endDate >= monthStart;
+  }
+
+  private loanInstallmentDates(loan: LoanCommitment): readonly string[] {
+    const [startYear, startMonth] = loan.startDate.split('-').map(Number);
+    const [endYear, endMonth] = loan.endDate.split('-').map(Number);
+    const dates: string[] = [];
+    const monthCount = (endYear - startYear) * 12 + endMonth - startMonth;
+    for (let index = 0; index <= monthCount; index += 1) {
+      const month = new Date(startYear, startMonth - 1 + index, 1, 12);
+      const lastDay = new Date(month.getFullYear(), month.getMonth() + 1, 0).getDate();
+      const date = this.localIso(
+        new Date(month.getFullYear(), month.getMonth(), Math.min(loan.debitDay, lastDay), 12),
+      );
+      if (date >= loan.startDate && date <= loan.endDate) dates.push(date);
+    }
+    return dates;
   }
 
   private localIso(date: Date): string {

@@ -1,4 +1,5 @@
 import { Component, computed, input, output, signal } from '@angular/core';
+import { indiaCurrentMonth, indiaTodayIso } from '../core/services/india-date';
 import { AppIcon } from './app-icon';
 
 interface CalendarCell {
@@ -79,9 +80,9 @@ export class AppDatePicker {
   readonly value = input.required<string>();
   readonly valueChange = output<string>();
   readonly open = signal(false);
-  readonly viewMonth = signal(new Date().toISOString().slice(0, 7));
+  readonly viewMonth = signal(indiaCurrentMonth());
   readonly weekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
-  readonly today = new Date().toISOString().slice(0, 10);
+  readonly today = indiaTodayIso();
 
   readonly selectedLabel = computed(() => this.dateLabel(this.value()));
   readonly monthLabel = computed(() => {

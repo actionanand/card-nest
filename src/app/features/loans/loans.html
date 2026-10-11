@@ -230,8 +230,8 @@
             <span>
               <strong>{{ emiTitle(plan) }}</strong>
               <small
-                >{{ store.sourceDetail(plan.cardId) }} · {{ plan.tenureMonths }} months ·
-                {{ plan.status.toLowerCase() }}</small
+                >{{ store.sourceDetail(plan.cardId) }} · ({{ emiProgress(plan) }}) ·
+                {{ plan.tenureMonths }} months · {{ plan.status.toLowerCase() }}</small
               >
               @if (plan.forFriendsOrRelatives) {
                 <span class="owner-badge">Friends &amp; relatives</span>
@@ -263,7 +263,7 @@
                 }
                 <div>
                   <dt>Started</dt>
-                  <dd>{{ plan.startDate }}</dd>
+                  <dd>{{ plan.startDate | appDate }}</dd>
                 </div>
                 <div>
                   <dt>Interest</dt>
@@ -293,7 +293,7 @@
                     <span
                       >EMI {{ installment.installmentNumber }} of {{ plan.tenureMonths
                       }}<small
-                        >{{ installment.statementDate }} statement · due
+                        >{{ installment.statementDate | appDate }} statement · due
                         {{ installment.dueDate | appDate }}</small
                       ></span
                     >
@@ -302,6 +302,32 @@
                 }
               </div>
               @if (plan.status === 'ACTIVE') {
+                @if (editingEmiStartId() === plan.id) {
+                  <form class="schedule-editor" (submit)="saveEmiStart($event, plan)">
+                    <app-date-picker
+                      label="First EMI month"
+                      [value]="emiStartForm.controls.startDate.value"
+                      (valueChange)="setEmiStartDate($event)"
+                    />
+                    <p>Changing the start month rebuilds this EMI schedule.</p>
+                    <div>
+                      <button type="button" class="btn" (click)="setEmiStartToCurrentMonth(0)">
+                        This month
+                      </button>
+                      <button type="button" class="btn" (click)="setEmiStartToCurrentMonth(1)">
+                        Next month
+                      </button>
+                      <button type="button" class="btn" (click)="editingEmiStartId.set(null)">
+                        Cancel
+                      </button>
+                      <button type="submit" class="btn btn-primary">Save start month</button>
+                    </div>
+                  </form>
+                } @else {
+                  <button class="btn" type="button" (click)="editEmiStart(plan)">
+                    Change start month
+                  </button>
+                }
                 <button class="btn close-emi" type="button" (click)="requestCloseEmi(plan)">
                   Close EMI
                 </button>
@@ -325,6 +351,10 @@
             <div>
               <h2>{{ loan.name }}</h2>
               <p>{{ loan.lender || 'Personal commitment' }}</p>
+              @if (loan.notes) {
+                <p class="loan-note">{{ loan.notes }}</p>
+              }
+              <span class="installment-progress">({{ loanProgress(loan) }})</span>
               @if (loan.forFriendsOrRelatives) {
                 <span class="owner-badge">Friends &amp; relatives</span>
               }
@@ -337,8 +367,16 @@
           </div>
           <dl>
             <div>
+              <dt>Original principal</dt>
+              <dd>{{ money(loan.principalMinor) }}</dd>
+            </div>
+            <div>
               <dt>Installment</dt>
               <dd>{{ money(loan.installmentMinor) }}</dd>
+            </div>
+            <div>
+              <dt>Started</dt>
+              <dd>{{ loan.startDate | appDate }}</dd>
             </div>
             <div>
               <dt>Debit date</dt>
@@ -346,17 +384,22 @@
             </div>
             <div>
               <dt>Runs until</dt>
-              <dd>{{ loan.endDate }}</dd>
+              <dd>{{ loan.endDate | appDate }}</dd>
             </div>
           </dl>
-          <button
-            class="btn"
-            type="button"
-            [disabled]="loan.status !== 'ACTIVE'"
-            (click)="requestCancelLoan(loan)"
-          >
-            {{ loan.status === 'ACTIVE' ? 'Cancel loan / EMI' : loan.status.toLowerCase() }}
-          </button>
+          <div class="loan-actions">
+            <button class="btn" type="button" (click)="editLoanSchedule(loan)">
+              Edit schedule
+            </button>
+            <button
+              class="btn"
+              type="button"
+              [disabled]="loan.status !== 'ACTIVE'"
+              (click)="requestCancelLoan(loan)"
+            >
+              {{ loan.status === 'ACTIVE' ? 'Cancel loan / EMI' : loan.status.toLowerCase() }}
+            </button>
+          </div>
         </article>
       }
     </section>
@@ -408,4 +451,50 @@
     (confirmed)="confirmCancelLoan()"
     (cancelled)="cancelLoanCandidate.set(null)"
   />
+}
+
+@if (editingLoan(); as loan) {
+  <div
+    class="schedule-dialog-backdrop"
+    tabindex="-1"
+    (click)="closeLoanScheduleFromBackdrop($event)"
+    (keydown.escape)="editingLoanId.set(null)"
+  >
+    <section
+      class="panel schedule-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="loan-schedule-title"
+      tabindex="-1"
+    >
+      <header>
+        <div>
+          <p class="eyebrow">{{ loan.name }}</p>
+          <h2 id="loan-schedule-title">Edit loan schedule</h2>
+        </div>
+        <button type="button" (click)="editingLoanId.set(null)" aria-label="Close schedule editor">
+          <app-icon name="close" />
+        </button>
+      </header>
+      <form class="schedule-editor" (submit)="saveLoanSchedule($event, loan)">
+        <app-date-picker
+          label="Start date"
+          [value]="loanScheduleForm.controls.startDate.value"
+          (valueChange)="setLoanScheduleStartDate($event)"
+        />
+        <app-date-picker
+          label="End date (extend tenure)"
+          [value]="loanScheduleForm.controls.endDate.value"
+          (valueChange)="setLoanScheduleEndDate($event)"
+        />
+        @if (loanScheduleForm.controls.endDate.hasError('range')) {
+          <p class="form-error">The end date must be after the start date.</p>
+        }
+        <div>
+          <button type="button" class="btn" (click)="editingLoanId.set(null)">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save schedule</button>
+        </div>
+      </form>
+    </section>
+  </div>
 }

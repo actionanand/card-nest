@@ -71,5 +71,9 @@ export const routes: Routes = [
     path: 'loans',
     loadComponent: () => import('./features/loans/loans').then((item) => item.LoansPage),
   },
+  {
+    path: 'payables',
+    loadComponent: () => import('./features/payables/payables').then((item) => item.PayablesPage),
+  },
   { path: '**', redirectTo: '' },
 ];
