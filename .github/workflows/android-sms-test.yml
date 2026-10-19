@@ -101,7 +101,7 @@ jobs:
               ("targetSdkVersion", "36"),
           ):
               source, count = re.subn(
-                  rf"(?m)^([ \\t]*{key}[ \\t]*=[ \\t]*).*?$",
+                  rf"(?m)^(\s*{key}\s*=\s*).*?$",
                   lambda match, v=value: match.group(1) + v,
                   source,
               )
