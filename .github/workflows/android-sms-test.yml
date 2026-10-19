@@ -1,0 +1,171 @@
+name: Android SMS Test APK
+
+# Feature branches only. Never signs or publishes the production application.
+on:
+  push:
+    branches:
+      - 'feature/**'
+
+permissions:
+  contents: read
+
+jobs:
+  build-sms-test:
+    name: Build isolated SMS test app
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      COMPILE_SDK_VERSION: '36'
+      TARGET_SDK_VERSION: '36'
+      MIN_SDK_VERSION: '24'
+      TEST_APPLICATION_ID: com.actionanand.cardnest.app.smsdebug
+
+    steps:
+      - name: Check out feature branch
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Lint Angular
+        run: npm run lint
+
+      - name: Run Angular unit tests
+        run: npm test -- --watch=false
+
+      - name: Build production web assets for Capacitor
+        run: npm run build -- --configuration=production
+
+      - name: Generate and patch Android project
+        run: |
+          npx cap add android
+          npx cap sync android
+          node scripts/patch-android.mjs
+
+      - name: Set up Java and Gradle cache
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+          cache-dependency-path: |
+            android/**/*.gradle*
+            android/gradle/wrapper/gradle-wrapper.properties
+            node_modules/@capacitor/**/android/build.gradle
+            node_modules/@capacitor-community/**/android/build.gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android 16 platform and build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUILD_TOOLS_VERSION=$(
+            sdkmanager --list |
+              awk -v api="$COMPILE_SDK_VERSION" '
+                $1 ~ /^build-tools;/ {
+                  version = $1
+                  sub(/^build-tools;/, "", version)
+                  if (version ~ ("^" api "\\.[0-9]+\\.[0-9]+$")) print version
+                }
+              ' |
+              sort -Vu |
+              tail -1
+          )
+          test -n "$BUILD_TOOLS_VERSION"
+          sdkmanager "platforms;android-$COMPILE_SDK_VERSION" "build-tools;$BUILD_TOOLS_VERSION"
+          echo "BUILD_TOOLS_VERSION=$BUILD_TOOLS_VERSION" >> "$GITHUB_ENV"
+
+      - name: Configure SDK levels and isolated debug app identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          variables = Path("android/variables.gradle")
+          source = variables.read_text()
+          import re
+          for key, value in (
+              ("minSdkVersion", "24"),
+              ("compileSdkVersion", "36"),
+              ("targetSdkVersion", "36"),
+          ):
+              source, count = re.subn(
+                  rf"(?m)^([ \\t]*{key}[ \\t]*=[ \\t]*).*?$",
+                  lambda match, v=value: match.group(1) + v,
+                  source,
+              )
+              if count != 1:
+                  raise RuntimeError(f"Expected exactly one {key} in {variables}, found {count}")
+          variables.write_text(source)
+
+          gradle = Path("android/app/build.gradle")
+          source = gradle.read_text()
+          anchor = "buildTypes {"
+          if source.count(anchor) != 1:
+              raise RuntimeError("Could not locate exactly one Android buildTypes block")
+          # The namespace and Kotlin/Java packages remain unchanged; ONLY the
+          # debug APK application ID is suffixed to isolate app data from release.
+          source = source.replace(anchor, """buildTypes {
+                  debug {
+                      applicationIdSuffix ".smsdebug"
+                      versionNameSuffix "-sms-test"
+                  }
+          """, 1)
+          gradle.write_text(source)
+
+          # This overlay applies exclusively to assembleDebug, never release.
+          overlay = Path("android/app/src/debug/AndroidManifest.xml")
+          overlay.parent.mkdir(parents=True, exist_ok=True)
+          overlay.write_text("""<?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+                    xmlns:tools="http://schemas.android.com/tools">
+              <application android:label="CardNest SMS Test"
+                           tools:replace="android:label" />
+          </manifest>
+          """)
+          PY
+
+          grep -Fq 'applicationIdSuffix ".smsdebug"' android/app/build.gradle
+          grep -Fq 'CardNest SMS Test' android/app/src/debug/AndroidManifest.xml
+          echo "Isolated test app identity configured; production applicationId remains unchanged."
+
+      - name: Run native tests and build debug APK
+        working-directory: android
+        run: |
+          chmod +x ./gradlew
+          ./gradlew --no-daemon testDebugUnitTest assembleDebug
+
+      - name: Verify APK application ID and debug signature
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=android/app/build/outputs/apk/debug/app-debug.apk
+          test -s "$APK"
+          AAPT="$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION/aapt"
+          APKSIGNER="$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION/apksigner"
+          "$AAPT" dump badging "$APK" | grep -F "package: name='$TEST_APPLICATION_ID'"
+          "$APKSIGNER" verify --verbose "$APK"
+          echo "## CardNest SMS Test APK" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Application ID: `$TEST_APPLICATION_ID` (separate from production)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- APK: `app-debug.apk` (download from this run's artifact)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Warning: an ephemeral debug signing key may prevent upgrading older CI test APKs without uninstalling the TEST app." >> "$GITHUB_STEP_SUMMARY"
+          echo "- Native device SMS permissions and receiver behavior still require manual Android testing." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload isolated debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: cardnest-sms-test-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
