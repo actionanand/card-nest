@@ -18,7 +18,7 @@ jobs:
       COMPILE_SDK_VERSION: '36'
       TARGET_SDK_VERSION: '36'
       MIN_SDK_VERSION: '24'
-      TEST_APPLICATION_ID: com.actionanand.cardnest.app.smsdebug
+      TEST_APPLICATION_ID: com.actionanand.cardnest.app.debug
 
     steps:
       - name: Check out feature branch
@@ -121,7 +121,7 @@ jobs:
           # debug APK application ID is suffixed to isolate app data from release.
           source = source.replace(anchor, """buildTypes {
                   debug {
-                      applicationIdSuffix ".smsdebug"
+                      applicationIdSuffix ".debug"
                       versionNameSuffix "-sms-test"
                   }
           """, 1)
@@ -139,7 +139,7 @@ jobs:
           """)
           PY
 
-          grep -Fq 'applicationIdSuffix ".smsdebug"' android/app/build.gradle
+          grep -Fq 'applicationIdSuffix ".debug"' android/app/build.gradle
           grep -Fq 'CardNest SMS Test' android/app/src/debug/AndroidManifest.xml
           echo "Isolated test app identity configured; production applicationId remains unchanged."
 
@@ -153,7 +153,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          APK=android/app/build/outputs/apk/debug/app-debug.apk
+          # Keep the original Gradle output intact; publish a stable test filename.
+          cp android/app/build/outputs/apk/debug/app-debug.apk \
+            android/app/build/outputs/apk/debug/card-nest-1-0-24-debug.apk
+          APK=android/app/build/outputs/apk/debug/card-nest-1-0-24-debug.apk
           test -s "$APK"
           AAPT="$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION/aapt"
           APKSIGNER="$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION/apksigner"
@@ -161,14 +164,14 @@ jobs:
           "$APKSIGNER" verify --verbose "$APK"
           echo "## CardNest SMS Test APK" >> "$GITHUB_STEP_SUMMARY"
           echo "- Application ID: $TEST_APPLICATION_ID (separate from production)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- APK: app-debug.apk (download from this run's artifact)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- APK: card-nest-1-0-24-debug.apk (download from this run's artifact)" >> "$GITHUB_STEP_SUMMARY"
           echo "- Warning: an ephemeral debug signing key may prevent upgrading older CI test APKs without uninstalling the TEST app." >> "$GITHUB_STEP_SUMMARY"
           echo "- Native device SMS permissions and receiver behavior still require manual Android testing." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload isolated debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: cardnest-sms-test-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: card-nest-1-0-24-debug
+          path: android/app/build/outputs/apk/debug/card-nest-1-0-24-debug.apk
           if-no-files-found: error
           retention-days: 14
