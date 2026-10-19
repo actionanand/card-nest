@@ -49,7 +49,9 @@ class SmsCorpusTest(private val fixture: JSONObject, private val oracle: String)
     if (fixture.getString("id") == "EXTRA-14") assertEquals("KA02CD5678",result.vehicleNumber)
     if (fixture.getString("id") == "BASE-13") {
       assertEquals("2026-10-20",result.dueDate); assertEquals(21700L,result.minimumDueMinor)
+      assertEquals("2026-10-01",result.statementDate)
     }
+    if (fixture.getString("id") == "BASE-25") assertNull(result.statementDate)
   }
   companion object {
     private val accounts = mapOf("BASE-04" to "444","BASE-05" to "444","BASE-06" to "444","BASE-07" to "444","BASE-08" to "444",

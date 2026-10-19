@@ -119,7 +119,8 @@ object SmsTransactionParser {
       cardNetwork = if (issuer == "AMEX") "AMERICAN_EXPRESS" else if (has("rupay")) "RUPAY" else null,
       confidence = if (digits != null && issuer != null) "SOURCE_EVIDENCE" else "SOURCE_SELECTION_REQUIRED",
       earnedForPeriod = if (kind == Kind.CASHBACK && has("last month")) "previous month" else null,
-      statementDate = if (has("statement dated|statement.+generated")) event.first.toLocalDate().toString() else null)
+      statementDate = rx("statement\\s+dated\\s+(.+)").find(safe)?.groupValues?.get(1)
+        ?.let { event(it,receivedAtMillis,zone) }?.takeIf { !it.second }?.first?.toLocalDate()?.toString())
   }
 
   private fun event(text: String, receipt: Long, zone: ZoneId): Pair<ZonedDateTime, Boolean>? {
