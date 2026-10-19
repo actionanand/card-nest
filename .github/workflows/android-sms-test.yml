@@ -41,8 +41,11 @@ jobs:
       - name: Run Angular unit tests
         run: npm test -- --watch=false
 
-      - name: Build production web assets for Capacitor
-        run: npm run build -- --configuration=production
+      - name: Build Android-specific frontend for Capacitor
+        run: npm run build:android
+
+      - name: Validate SMS fixtures
+        run: npm run test:sms:fixtures
 
       - name: Generate and patch Android project
         run: |
@@ -157,8 +160,8 @@ jobs:
           "$AAPT" dump badging "$APK" | grep -F "package: name='$TEST_APPLICATION_ID'"
           "$APKSIGNER" verify --verbose "$APK"
           echo "## CardNest SMS Test APK" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Application ID: `$TEST_APPLICATION_ID` (separate from production)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- APK: `app-debug.apk` (download from this run's artifact)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Application ID: $TEST_APPLICATION_ID (separate from production)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- APK: app-debug.apk (download from this run's artifact)" >> "$GITHUB_STEP_SUMMARY"
           echo "- Warning: an ephemeral debug signing key may prevent upgrading older CI test APKs without uninstalling the TEST app." >> "$GITHUB_STEP_SUMMARY"
           echo "- Native device SMS permissions and receiver behavior still require manual Android testing." >> "$GITHUB_STEP_SUMMARY"
 
