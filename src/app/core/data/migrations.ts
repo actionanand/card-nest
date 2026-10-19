@@ -64,4 +64,13 @@ export const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
       `CREATE INDEX IF NOT EXISTS idx_loan_commitments_status ON loan_commitments(status)`,
     ],
   },
+  {
+    version: 7,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS sms_candidates (id TEXT PRIMARY KEY NOT NULL, provider_id TEXT NOT NULL, event_at TEXT NOT NULL, kind TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('PENDING','REJECTED','IGNORED','IMPORTED','MATCHED_EXISTING','DEFERRED','ERROR')), payload TEXT, transaction_id TEXT, updated_at TEXT NOT NULL, decision TEXT, FOREIGN KEY(transaction_id) REFERENCES card_transactions(id) ON DELETE SET NULL)`,
+      `CREATE INDEX IF NOT EXISTS idx_sms_review ON sms_candidates(state, event_at DESC)`,
+      `CREATE TABLE IF NOT EXISTS sms_reconciliation (id TEXT PRIMARY KEY NOT NULL, candidate_id TEXT NOT NULL UNIQUE, target_id TEXT, decision TEXT NOT NULL, amount_minor INTEGER, created_at TEXT NOT NULL, FOREIGN KEY(candidate_id) REFERENCES sms_candidates(id) ON DELETE CASCADE)`,
+      `CREATE TABLE IF NOT EXISTS sms_sync_state (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL)`,
+    ],
+  },
 ];

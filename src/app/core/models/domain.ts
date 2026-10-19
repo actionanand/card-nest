@@ -112,9 +112,11 @@ export interface CardTransaction {
   emiCancelled?: boolean;
   createdAt: string;
   updatedAt: string;
+  /** Historical SMS rows can be recorded without replaying a balance already in the cutover snapshot. */
+  sourceBalanceApplied?: boolean;
 }
 
-export type PaymentSourceKind = 'CASH' | 'DEBIT' | 'MEAL';
+export type PaymentSourceKind = 'CASH' | 'DEBIT' | 'MEAL' | 'FASTAG';
 
 export interface PaymentSource {
   id: string;
@@ -128,6 +130,9 @@ export interface PaymentSource {
   loadDay?: number;
   autoLoad: boolean;
   lastLoadedPeriod?: string;
+  vehicleNumber?: string;
+  balanceCutoverAt?: string;
+  balanceSnapshotMinor?: Money;
   archived: boolean;
 }
 
@@ -163,6 +168,7 @@ export interface CardStatement {
   totalPaidMinor: Money;
   status: 'UPCOMING' | 'PENDING' | 'PARTIALLY_PAID' | 'MINIMUM_PAID' | 'FULLY_PAID' | 'OVERDUE';
   notes?: string;
+  reconciledPaymentId?: string;
 }
 
 export interface RecurringRule {

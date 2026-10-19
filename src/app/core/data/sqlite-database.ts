@@ -2,9 +2,18 @@ import { CapacitorSQLite } from '@capacitor-community/sqlite';
 import { Capacitor } from '@capacitor/core';
 import { Service, signal } from '@angular/core';
 import { DATABASE_MIGRATIONS } from './migrations';
+import { clearPlatformDiscovery } from './platform-data';
 
 interface JeepSqliteElement extends HTMLElement {
   wasmPath: string;
+}
+
+export interface DatabaseSession {
+  query<T extends Record<string, unknown>>(
+    statement: string,
+    values?: readonly unknown[],
+  ): Promise<readonly T[]>;
+  run(statement: string, values?: readonly unknown[]): Promise<number>;
 }
 
 interface PortableBackupTable {
@@ -44,9 +53,15 @@ const BACKUP_TABLES = [
   'loan_commitments',
   'monthly_income',
   'category_limits',
+  'sms_candidates',
+  'sms_reconciliation',
+  'sms_sync_state',
 ] as const;
 
 const DELETE_TABLES = [
+  'sms_reconciliation',
+  'sms_candidates',
+  'sms_sync_state',
   'transaction_links',
   'transaction_split_members',
   'transaction_split_groups',
@@ -180,10 +195,70 @@ export class SqliteDatabase {
     // The plugin's schema parser treats commas inside CHECK constraints as column
     // separators on web. Export rows directly so backups have the same stable format
     // on every platform and do not depend on re-parsing CREATE TABLE SQL.
-    return this.exportPortableBackupJson();
+    return this.exclusive(() => this.exportPortableBackupJson());
+  }
+
+  /** Shares the ledger write queue. Use only the supplied session inside work. */
+  async atomic<T>(work: (session: DatabaseSession) => Promise<T>): Promise<T> {
+    if (!this.ready()) throw new Error('SQLite database is unavailable.');
+    const operation = this.writeQueue.then(async () => {
+      await CapacitorSQLite.beginTransaction({ database: this.databaseName });
+      const session: DatabaseSession = {
+        query: async <R extends Record<string, unknown>>(
+          statement: string,
+          values: readonly unknown[] = [],
+        ) => {
+          const result = await CapacitorSQLite.query({
+            database: this.databaseName,
+            statement,
+            values: [...values],
+          });
+          return (result.values ?? []) as readonly R[];
+        },
+        run: async (statement, values = []) => {
+          const result = await CapacitorSQLite.run({
+            database: this.databaseName,
+            statement,
+            values: [...values],
+            transaction: false,
+          });
+          return result.changes?.changes ?? 0;
+        },
+      };
+      let value: T;
+      try {
+        value = await work(session);
+        await CapacitorSQLite.commitTransaction({ database: this.databaseName });
+      } catch (error: unknown) {
+        await CapacitorSQLite.rollbackTransaction({ database: this.databaseName });
+        throw error;
+      }
+      if (this.isWeb) await CapacitorSQLite.saveToStore({ database: this.databaseName });
+      return value;
+    });
+    this.writeQueue = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    return operation;
   }
 
   async restoreBackupJson(json: string): Promise<void> {
+    await this.exclusive(async () => {
+      await this.restoreBackupJsonUnqueued(json);
+    });
+  }
+
+  private async exclusive<T>(work: () => Promise<T>): Promise<T> {
+    const operation = this.writeQueue.then(work);
+    this.writeQueue = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    return operation;
+  }
+
+  private async restoreBackupJsonUnqueued(json: string): Promise<void> {
     if (!this.ready()) throw new Error('SQLite database is unavailable.');
     const parsed = JSON.parse(json) as Record<string, unknown>;
     if (parsed['format'] === 'cardnest-portable-sqlite') {
@@ -198,6 +273,7 @@ export class SqliteDatabase {
     const jsonstring = JSON.stringify(parsed);
     const validation = await CapacitorSQLite.isJsonValid({ jsonstring });
     if (!validation.result) throw new Error('The backup database is invalid.');
+    await clearPlatformDiscovery();
 
     try {
       await CapacitorSQLite.close({ database: this.databaseName });
@@ -243,6 +319,13 @@ export class SqliteDatabase {
   }
 
   async deleteAllData(): Promise<void> {
+    await this.exclusive(async () => {
+      await clearPlatformDiscovery();
+      await this.deleteAllDataUnqueued();
+    });
+  }
+
+  private async deleteAllDataUnqueued(): Promise<void> {
     if (!this.ready()) throw new Error('SQLite database is unavailable.');
     await CapacitorSQLite.execute({
       database: this.databaseName,
@@ -253,6 +336,11 @@ export class SqliteDatabase {
   }
 
   async deleteDataOlderThan(cutoffIso: string): Promise<number> {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(cutoffIso)) throw new Error('Invalid retention date.');
+    return this.exclusive(() => this.deleteDataOlderThanUnqueued(cutoffIso));
+  }
+
+  private async deleteDataOlderThanUnqueued(cutoffIso: string): Promise<number> {
     if (!this.ready()) throw new Error('SQLite database is unavailable.');
     const countResult = await CapacitorSQLite.query({
       database: this.databaseName,
@@ -264,6 +352,7 @@ export class SqliteDatabase {
       database: this.databaseName,
       transaction: true,
       statements: `
+        UPDATE sms_candidates SET payload = NULL WHERE event_at < '${cutoffIso}';
         DELETE FROM transaction_links
          WHERE transaction_id IN (SELECT id FROM card_transactions WHERE transaction_date < '${cutoffIso}')
             OR related_transaction_id IN (SELECT id FROM card_transactions WHERE transaction_date < '${cutoffIso}');
@@ -299,7 +388,10 @@ export class SqliteDatabase {
     for (const name of BACKUP_TABLES) {
       const result = await CapacitorSQLite.query({
         database: this.databaseName,
-        statement: `SELECT * FROM ${name}`,
+        statement:
+          name === 'sms_candidates'
+            ? `SELECT id, provider_id, event_at, kind, state, NULL AS payload, transaction_id, updated_at, decision FROM sms_candidates`
+            : `SELECT * FROM ${name}`,
         values: [],
       });
       tables.push({ name, rows: (result.values ?? []) as Record<string, unknown>[] });
@@ -333,6 +425,7 @@ export class SqliteDatabase {
       backupTables.set(item['name'], item['rows'] as readonly Record<string, unknown>[]);
     }
 
+    await clearPlatformDiscovery();
     await CapacitorSQLite.beginTransaction({ database: this.databaseName });
     try {
       await CapacitorSQLite.execute({

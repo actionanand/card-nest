@@ -1,6 +1,7 @@
 import { Service, computed, inject, signal } from '@angular/core';
 import {
   CardTransaction,
+  CardStatement,
   Category,
   CreditCard,
   DashboardSnapshot,
@@ -221,10 +222,8 @@ const PAYMENT_SOURCES: readonly PaymentSource[] = [
     kind: 'MEAL',
     institution: 'Pluxee',
     noLimit: false,
-    balanceMinor: 880000,
-    loadAmountMinor: 880000,
-    loadDay: 25,
-    autoLoad: true,
+    balanceMinor: 0,
+    autoLoad: false,
     lastLoadedPeriod: today.slice(0, 7),
     archived: false,
   },
@@ -244,6 +243,7 @@ export class CardNestStore {
   readonly loans = signal<readonly LoanCommitment[]>([]);
   readonly emiPlans = signal<readonly EmiPlan[]>([]);
   readonly emiInstallments = signal<readonly EmiInstallment[]>([]);
+  readonly reconciledStatements = signal<readonly CardStatement[]>([]);
   readonly monthlyBudgetMinor = signal(6000000);
   readonly monthlyIncomeMinor = signal(8000000);
   readonly budgetCycleStartDay = signal(1);
@@ -379,6 +379,12 @@ export class CardNestStore {
     await this.loadCategories();
     await this.loadCategoryLimits();
     await this.loadTransactions();
+    const statementRows = await this.database.query<{ payload: string }>(
+      'SELECT payload FROM statements',
+    );
+    this.reconciledStatements.set(
+      statementRows.map((row) => JSON.parse(row.payload) as CardStatement),
+    );
     await this.loadRecurringRules();
     this.materializeRecurringTransactions();
     await this.loadEmiPlans();
@@ -519,6 +525,18 @@ export class CardNestStore {
         ? previousStatementDate(nextStatement, card.statementDay)
         : nextStatement;
     const statementIso = toIsoDate(latestStatement);
+    if (
+      this.reconciledStatements().some(
+        (statement) =>
+          statement.cardId === cardId &&
+          statement.statementDate === statementIso &&
+          statement.status === 'FULLY_PAID' &&
+          this.transactions().some(
+            (t) => t.id === statement.reconciledPaymentId && t.type === 'PAYMENT',
+          ),
+      )
+    )
+      return 0;
     const excludesStatementDay = excludesStatementDayTransactions(card);
     const dueAtStatement = this.transactions()
       .filter(
@@ -644,6 +662,41 @@ export class CardNestStore {
     });
     this.adjustPaymentSourceBalance(transaction, 1);
     void this.persistTransaction(transaction);
+  }
+
+  /** SMS import calls this only after the ledger, binding and balances commit together. */
+  acceptCommittedImport(
+    transaction: CardTransaction | null,
+    sources: readonly PaymentSource[],
+  ): void {
+    if (transaction)
+      this.transactions.update((items) => {
+        const next = [transaction, ...items.filter((item) => item.id !== transaction.id)];
+        this.cacheTransactions(next);
+        return next;
+      });
+    this.paymentSources.set(sources);
+  }
+
+  acceptCommittedStatement(statement: CardStatement): void {
+    this.reconciledStatements.update((items) => [
+      statement,
+      ...items.filter((item) => item.id !== statement.id),
+    ]);
+  }
+
+  async addWallet(source: PaymentSource): Promise<void> {
+    if (source.kind !== 'FASTAG' && source.kind !== 'MEAL')
+      throw new Error('Choose a wallet kind.');
+    if (!source.nickname.trim() || this.paymentSources().some((item) => item.id === source.id))
+      throw new Error('Invalid wallet.');
+    const sources = [...this.paymentSources(), source];
+    await this.database.run(
+      `INSERT INTO app_preferences(key, encrypted_value) VALUES ('payment_sources', ?)
+      ON CONFLICT(key) DO UPDATE SET encrypted_value = excluded.encrypted_value`,
+      [JSON.stringify(sources)],
+    );
+    this.paymentSources.set(sources);
   }
   updateTransaction(updated: CardTransaction): boolean {
     const existing = this.transactions().find((transaction) => transaction.id === updated.id);
@@ -906,6 +959,7 @@ export class CardNestStore {
     this.loans.set([]);
     this.emiPlans.set([]);
     this.emiInstallments.set([]);
+    this.reconciledStatements.set([]);
     this.incomeHistory.set([]);
     this.monthlyIncomeMinor.set(0);
     this.monthlyBudgetMinor.set(0);
@@ -1139,20 +1193,17 @@ export class CardNestStore {
   }
 
   materializeSourceLoads(asOf = today): void {
-    const period = asOf.slice(0, 7);
-    const currentDay = Number(asOf.slice(8, 10));
+    // Preserve balances already containing simulated loads. Never replay historical credits.
     this.paymentSources.update((sources) =>
       sources.map((source) =>
-        source.kind === 'MEAL' &&
-        source.autoLoad &&
-        source.loadAmountMinor &&
-        source.loadDay &&
-        currentDay >= source.loadDay &&
-        source.lastLoadedPeriod !== period
+        source.kind === 'MEAL' && (!source.balanceCutoverAt || source.autoLoad)
           ? {
               ...source,
-              balanceMinor: (source.balanceMinor ?? 0) + source.loadAmountMinor,
-              lastLoadedPeriod: period,
+              autoLoad: false,
+              balanceCutoverAt:
+                source.balanceCutoverAt ??
+                (asOf === today ? new Date().toISOString() : `${asOf}T23:59:59.999Z`),
+              balanceSnapshotMinor: source.balanceSnapshotMinor ?? source.balanceMinor ?? 0,
             }
           : source,
       ),
@@ -1166,6 +1217,7 @@ export class CardNestStore {
   }
 
   private adjustPaymentSourceBalance(transaction: CardTransaction, direction: 1 | -1): void {
+    if (transaction.sourceBalanceApplied === false) return;
     const source = this.paymentSources().find((item) => item.id === transaction.cardId);
     if (!source || source.noLimit || source.balanceMinor === undefined) return;
     const isCredit = ['PAYMENT', 'REFUND', 'CASHBACK', 'CREDIT'].includes(transaction.type);
@@ -1174,7 +1226,7 @@ export class CardNestStore {
     this.paymentSources.update((sources) =>
       sources.map((item) =>
         item.id === source.id
-          ? { ...item, balanceMinor: Math.max(0, (item.balanceMinor ?? 0) + transactionEffect) }
+          ? { ...item, balanceMinor: (item.balanceMinor ?? 0) + transactionEffect }
           : item,
       ),
     );
