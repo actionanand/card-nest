@@ -1199,3 +1199,4 @@ console.log(
 );
 
 await import('./patch-android-export.mjs');
+await import('./patch-android-sms.mjs');

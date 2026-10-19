@@ -23,10 +23,12 @@ object SmsTransactionParser {
     val eventAt: String, val receivedAt: Long, val dateFallback: Boolean,
     val availableLimitMinor: Long?, val statementTotalMinor: Long?, val minimumDueMinor: Long?,
     val dueDate: String?, val fingerprint: String, val currency: String = "INR",
-    val evidence: String = "Verify source, event date and amount before approval."
+    val evidence: String = "Verify source, event date and amount before approval.",
+    val eventTime: String, val timeZone: String, val cardNetwork: String?, val confidence: String,
+    val earnedForPeriod: String?, val statementDate: String?
   )
   private fun rx(s: String) = Regex(s, RegexOption.IGNORE_CASE)
-  private const val NUMBER = "([0-9][0-9,]*(?:\\.[0-9]{1,2})?)(?![0-9.]\\d)"
+  private const val NUMBER = "([0-9][0-9,]*(?:\\.[0-9]{1,2})?)(?![0-9]|\\.[0-9])"
   private const val MONEY = "(?:₹|\\bINR\\b|\\bRs\\.?)[\\s:.]*(?:Dr\\.?\\s*)?"
   private val money = rx(MONEY + NUMBER)
   private fun minor(s: String?): Long? = try {
@@ -97,21 +99,30 @@ object SmsTransactionParser {
       .firstOrNull { has(it.second) }?.first
     val ref = rx("\\b(?:UPI\\s*(?:ref(?:erence)?\\s*(?:no\\.?)?)?|RRN|UTR|Ref(?:erence)?\\s*(?:No\\.?)?)\\s*[:#.]?\\s*([A-Z0-9]{9,30})\\b")
       .find(flat)?.groupValues?.get(1)
-    val merchant = rx("\\bat\\s+(.+?)(?=\\s+(?:on|via|through|avl|wallet bal)\\b|\\s*\\.\\s*Avl|$)").find(flat)?.groupValues?.get(1)
-      ?: rx("\\bfor (.+?) has been charged").find(flat)?.groupValues?.get(1)
-      ?: text.lines().getOrNull(3)?.takeIf { has("spent") && !it.contains("limit", true) }
+    val merchant = rx("\\bfor (.+?) has been charged").find(flat)?.groupValues?.get(1)
+      ?: rx("\\bat\\s+(.+?)(?=\\s+(?:on|via|through|avl|wallet bal)\\b|\\s*\\.\\s*Avl|$)").find(flat)?.groupValues?.get(1)
+      ?: safe.lines().getOrNull(3)?.takeIf { has("spent") && !it.contains("limit", true) }
+      ?: rx("\\bon [0-9]{1,2}[-/][A-Za-z0-9]{2,3}[-/][0-9]{2,4} on (.+?)(?:\\. Avl|$)").find(flat)?.groupValues?.get(1)
+      ?: rx(";\\s*(.+?) credited").find(flat)?.groupValues?.get(1)
       ?: rx("(?:refunded by|from) (.+?)(?= on | is credited|\\.|$)").find(flat)?.groupValues?.get(1)
-    val event = event(safe, receivedAtMillis, zone)
+    val event = event(safe, receivedAtMillis, zone) ?: return null
+    val dueText = rx("(?:due on|due by|payable by|\\bby)[: ]+(.+)").find(safe)?.groupValues?.get(1)
+    val parsedDue = dueText?.let { event(it, receivedAtMillis, zone) }?.takeIf { !it.second }?.first?.toLocalDate()?.toString()
     return Result(kind, amount, event.first.toLocalDate().toString(), merchant?.trim()?.trimEnd('.')?.take(100),
       digits, account, issuer, ref, value(flat, "current meal wallet balance is|current balance|(?:avl|available|wallet) bal(?:ance)?"),
       if (tag) rx("\\b[A-Z]{2}\\s?[0-9]{1,2}\\s?[A-Z]{1,3}\\s?[0-9]{4}\\b").find(flat)?.value?.replace(" ", "")?.uppercase(Locale.ROOT) else null,
       eventAt = event.first.toInstant().toString(), receivedAt = receivedAtMillis, dateFallback = event.second,
       availableLimitMinor = value(flat, "(?:avl|available) limit"), statementTotalMinor = total,
-      minimumDueMinor = minimum, dueDate = if (due) event.first.toLocalDate().toString() else null,
-      fingerprint = fingerprint(text))
+      minimumDueMinor = minimum, dueDate = parsedDue,
+      fingerprint = fingerprint(text + if (event.second) "|${event.first.toLocalDate()}" else ""),
+      eventTime = event.first.toLocalTime().toString(), timeZone = event.first.zone.id,
+      cardNetwork = if (issuer == "AMEX") "AMERICAN_EXPRESS" else if (has("rupay")) "RUPAY" else null,
+      confidence = if (digits != null && issuer != null) "SOURCE_EVIDENCE" else "SOURCE_SELECTION_REQUIRED",
+      earnedForPeriod = if (kind == Kind.CASHBACK && has("last month")) "previous month" else null,
+      statementDate = if (has("statement dated|statement.+generated")) event.first.toLocalDate().toString() else null)
   }
 
-  private fun event(text: String, receipt: Long, zone: ZoneId): Pair<ZonedDateTime, Boolean> {
+  private fun event(text: String, receipt: Long, zone: ZoneId): Pair<ZonedDateTime, Boolean>? {
     val dateRx = rx("\\b(?:[0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{1,2}[-/][0-9]{1,2}[-/](?:[0-9]{4}|[0-9]{2})|[0-9]{1,2}[-/ ][A-Za-z]{3,9}[-/ ](?:[0-9]{4}|[0-9]{2})|(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) [A-Za-z]{3} [0-9]{1,2} [0-9]{4})(?:(?: at)? [0-9]{1,2}:[0-9]{2}(?::[0-9]{1,2})?(?: [AP]M)?)?")
     val dateText = text.replace(rx("([0-9]{1,2})(?:st|nd|rd|th)\\b"), "$1")
     val raw = dateRx.find(dateText)?.value?.replace(" at ", " ", true)?.replace(Regex("^[A-Za-z]{3} "), "")
@@ -127,6 +138,7 @@ object SmsTransactionParser {
           return LocalDateTime.parse(raw, formatter).atZone(if (text.contains("IST")) ZoneId.of("Asia/Kolkata") else zone) to false
         } catch (_: DateTimeException) { }
       }
+      return null // Explicit invalid dates must not silently become the receipt date.
     }
     return Instant.ofEpochMilli(receipt).atZone(zone) to true
   }

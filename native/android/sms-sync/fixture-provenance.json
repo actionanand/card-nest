@@ -1,0 +1,5 @@
+{
+  "description": "User-supplied fictional corpus; changes require a human privacy review. This is an integrity check, not a claim that pattern matching proves synthetic origin.",
+  "sha256": "c9e72c10790844c17b4674be48fdbfd1cab950ad3ad34627c72cf12c86892e8e",
+  "fictionalVehicles": ["KA01AB1234", "KA02CD5678"]
+}

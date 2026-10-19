@@ -39,8 +39,36 @@ class SmsCorpusTest(private val fixture: JSONObject, private val oracle: String)
     assertTrue(result.requiresReview)
     assertEquals(64, result.fingerprint.length)
     assertEquals(Instant.parse("2026-10-19T12:00:00Z").toEpochMilli(), result.receivedAt)
+    references[fixture.getString("id")]?.let { assertEquals(it,result.reference) }
+    merchants[fixture.getString("id")]?.let { assertEquals(it,result.merchant) }
+    accounts[fixture.getString("id")]?.let { assertEquals(it,result.accountDigits) }
+    if (fixture.getString("id") in setOf("BASE-14","BASE-15","BASE-30","BASE-31","BASE-32","BASE-33")) {
+      assertEquals("AMEX",result.issuer); assertEquals("AMERICAN_EXPRESS",result.cardNetwork)
+    }
+    if (fixture.getString("id") in setOf("BASE-27","BASE-28","EXTRA-13")) assertEquals("KA01AB1234",result.vehicleNumber)
+    if (fixture.getString("id") == "EXTRA-14") assertEquals("KA02CD5678",result.vehicleNumber)
+    if (fixture.getString("id") == "BASE-13") {
+      assertEquals("2026-10-20",result.dueDate); assertEquals(21700L,result.minimumDueMinor)
+    }
   }
   companion object {
+    private val accounts = mapOf("BASE-04" to "444","BASE-05" to "444","BASE-06" to "444","BASE-07" to "444","BASE-08" to "444",
+      "BASE-35" to "4040","BASE-36" to "4040","BASE-37" to "6060","BASE-41" to "444","BASE-56" to "1516",
+      "EXTRA-05" to "444","EXTRA-06" to "444","EXTRA-07" to "4040")
+    private val references = mapOf("BASE-04" to "910667248461","BASE-05" to "926571136735","BASE-06" to "911121549053","BASE-07" to "953963767557",
+      "BASE-08" to "994098391434","BASE-09" to "960864318957","BASE-10" to "928994255740","BASE-11" to "935212789417","BASE-12" to "988317120750",
+      "BASE-17" to "SYNTHREF123456","BASE-18" to "915349566827","BASE-26" to "987089660905","BASE-29" to "981536729229","BASE-35" to "972429848961",
+      "BASE-37" to "926571136735","BASE-38" to "954527936440","BASE-39" to "968342021109","BASE-40" to "945873329926","BASE-48" to "937878628349",
+      "BASE-51" to "966158478185","BASE-56" to "910623164981","EXTRA-08" to "941069222863")
+    private val merchants = mapOf("BASE-01" to "DEMO CAFE","BASE-02" to "DEMO GROCERY ONE","BASE-03" to "DEMO GROCERY TWO",
+      "BASE-09" to "DEMO TELECOM","BASE-10" to "DEMO PHARMACY","BASE-11" to "DEMO MERCHANT A","BASE-12" to "DEMO MERCHANT B",
+      "BASE-14" to "DEMO INSURANCE","BASE-15" to "DEMO INSURANCE","BASE-18" to "merchant.one@sampleupi","BASE-20" to "DEMO SHOP A",
+      "BASE-21" to "DEMO SHOP B","BASE-22" to "DEMO ONLINE SHOP","BASE-24" to "DEMO FUEL STATION","BASE-26" to "merchant.two@sampleupi",
+      "BASE-27" to "DEMO PLAZA A","BASE-28" to "DEMO PLAZA B","BASE-29" to "merchant.three@sampleupi","BASE-30" to "DEMO CLINIC",
+      "BASE-31" to "DEMO INSURANCE","BASE-32" to "DEMO SUBSCRIPTION","BASE-34" to "DEMO FUEL STATION","BASE-38" to "DEMO EATERY",
+      "BASE-39" to "DEMO MERCHANT C","BASE-40" to "DEMO MERCHANT B","BASE-44" to "DEMO ECOMMERCE","BASE-48" to "DEMO PETROL",
+      "BASE-50" to "DEMO ONLINE RETAILER","BASE-51" to "merchant.four@sampleupi","BASE-53" to "DEMO DINING","BASE-54" to "DEMO MEDIA",
+      "BASE-55" to "910106351458 DEMO STORE","EXTRA-04" to "DEMO MEDIA","EXTRA-14" to "DEMO PLAZA C")
     @JvmStatic @Parameterized.Parameters(name = "{index}: {0}") fun cases(): Collection<Array<Any>> {
       val stream = SmsCorpusTest::class.java.getResourceAsStream("/sms-corpus.json")
       val text = stream?.bufferedReader()?.use { it.readText() }
