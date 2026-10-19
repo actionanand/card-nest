@@ -1,5 +1,7 @@
 # Feature 8 acceptance audit
 
+**Historical implementation audit.** The follow-up [Android validation audit](./SMS_SYNC_ANDROID_VALIDATION.md) supersedes the results and blocked-build statements below. It records fresh Capacitor generation, actual debug/release artifacts, the EXTRA-06 correction, expanded tests, and remaining physical-device gates. The original seven commits remain intact.
+
 The final Angular suite also exercises the real manual store against SQLite while SMS approval, source renaming and wallet creation are queued together, then verifies manual edit/delete reversals. All durable source balances and ledger counts remain consistent. This regression brought the final Angular total to 61 passing tests.
 
 Validation date: 19 October 2026 (Asia/Calcutta). Branch: `feature/8-android-sms-transaction-sync`.

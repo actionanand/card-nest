@@ -670,6 +670,7 @@ import android.widget.Toast;
 
 import androidx.biometric.BiometricManager;
 import androidx.biometric.BiometricPrompt;
+import androidx.activity.OnBackPressedCallback;
 import androidx.core.content.ContextCompat;
 
 import com.getcapacitor.BridgeActivity;
@@ -694,6 +695,14 @@ public class MainActivity extends BridgeActivity {
   @Override
   public void onCreate(Bundle savedInstanceState) {
     super.onCreate(savedInstanceState);
+    // Android 16 gestures no longer invoke Activity.onBackPressed(). Keep the
+    // existing dashboard/double-back exit flow through AndroidX on every API.
+    getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+      @Override
+      public void handleOnBackPressed() {
+        handleCardNestBack();
+      }
+    });
     showLaunchOverlay();
     darkMode = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
       == Configuration.UI_MODE_NIGHT_YES;
@@ -709,8 +718,7 @@ public class MainActivity extends BridgeActivity {
     if (launchOverlay == null) applySystemBarStyle(darkMode);
   }
 
-  @Override
-  public void onBackPressed() {
+  private void handleCardNestBack() {
     if (waitingForExitBackPress) {
       finishAffinity();
       return;
@@ -939,7 +947,9 @@ public class MainActivity extends BridgeActivity {
     }
     int flags = decor.getSystemUiVisibility();
     flags &= ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
-    flags &= ~View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      flags &= ~View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+    }
     decor.setSystemUiVisibility(flags);
   }
 
@@ -1024,10 +1034,14 @@ public class MainActivity extends BridgeActivity {
     int flags = decor.getSystemUiVisibility();
     if (darkMode) {
       flags &= ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
-      flags &= ~View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        flags &= ~View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+      }
     } else {
       flags |= View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
-      flags |= View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        flags |= View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+      }
     }
     decor.setSystemUiVisibility(flags);
   }
@@ -1118,12 +1132,13 @@ writeFileSync(
 // 3. Reference the branded splash drawable in the launch theme.
 const stylesItems = `        <item name="android:statusBarColor">#F5F6F1</item>
         <item name="android:windowLightStatusBar">true</item>
-        <item name="android:navigationBarColor">#F5F6F1</item>
-        <item name="android:windowLightNavigationBar">true</item>`;
+        <item name="android:navigationBarColor">#F5F6F1</item>`;
 
 const stylesPath = join(androidRoot, 'res', 'values', 'styles.xml');
 if (existsSync(stylesPath)) {
   let styles = readFileSync(stylesPath, 'utf8');
+  // This platform attribute only exists from API 27; repair older patch output.
+  styles = styles.replace(/\s*<item name="android:windowLightNavigationBar">[^<]*<\/item>/g, '');
   if (!styles.includes('android:windowLightStatusBar')) {
     // Inject the status-bar items into the first <style …> block.
     styles = styles.replace(
@@ -1164,10 +1179,33 @@ if (
         <item name="android:statusBarColor">#17211C</item>
         <item name="android:windowLightStatusBar">false</item>
         <item name="android:navigationBarColor">#17211C</item>
-        <item name="android:windowLightNavigationBar">false</item>
     </style>
 </resources>
 `,
+  );
+}
+
+// Preserve all theme items/parents while qualifying the API-27 platform attribute.
+for (const [basePath, qualifier, enabled] of [
+  [stylesPath, 'values-v27', true],
+  [nightStylesPath, 'values-night-v27', false],
+]) {
+  const base = readFileSync(basePath, 'utf8').replace(
+    /\s*<item name="android:windowLightNavigationBar">[^<]*<\/item>/g,
+    '',
+  );
+  writeFileSync(basePath, base);
+  const theme = base.match(/<style name="AppTheme"[^>]*>[\s\S]*?<\/style>/)?.[0];
+  if (!theme) throw new Error(`Missing base AppTheme: ${basePath}`);
+  const qualified = theme.replace(
+    '</style>',
+    `    <item name="android:windowLightNavigationBar">${enabled}</item>\n    </style>`,
+  );
+  const directory = join(androidRoot, 'res', qualifier);
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(
+    join(directory, 'styles.xml'),
+    `<?xml version="1.0" encoding="utf-8"?>\n<resources>\n    ${qualified}\n</resources>\n`,
   );
 }
 

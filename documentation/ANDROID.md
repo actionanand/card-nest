@@ -163,7 +163,7 @@ The cache provider grants read access only to the chosen receiving app. Exports 
 From WSL/Linux, ensure the Android SDK and Java 21 are available. First setup:
 
 ```bash
-npm run build
+npm run build:android
 npm run android:add
 npm run android:sync
 ```

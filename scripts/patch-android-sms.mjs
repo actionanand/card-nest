@@ -33,6 +33,12 @@ for (const permission of ['READ_SMS', 'RECEIVE_SMS', 'RECEIVE_BOOT_COMPLETED']) 
       `<uses-permission android:name="android.permission.${permission}" />\n    <application`,
     );
 }
+// SMS discovery is optional; tablets/Chromebooks retain manual entry and paste.
+if (!manifest.includes('android.hardware.telephony'))
+  manifest = manifest.replace(
+    '<application',
+    '<uses-feature android:name="android.hardware.telephony" android:required="false" />\n    <application',
+  );
 if (!manifest.includes('.sms.SmsReceivedReceiver'))
   manifest = manifest.replace(
     '</application>',

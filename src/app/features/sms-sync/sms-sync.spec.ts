@@ -133,5 +133,8 @@ describe('SMS review privacy and explicit approval UI', () => {
       // jsdom cannot evaluate rendered colour contrast. A real WebView AXE pass remains a release gate.
       document.documentElement.removeAttribute('data-theme');
     },
+    // Two real AXE audits can exceed Vitest's 5s default during native/R8 builds.
+    // Keep every rule/assertion and allow the awaited audit to finish before the next theme.
+    30_000,
   );
 });

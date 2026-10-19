@@ -32,6 +32,7 @@
     "capacitor:sync:after": "node scripts/capacitor-sync-after.mjs",
     "test:sms:fixtures": "node scripts/validate-sms-fixtures.mjs",
     "test:web-isolation": "node scripts/verify-web-sms-isolation.mjs",
+    "test:android-isolation": "node --test scripts/verify-android-sms-integration.mjs",
     "capacitor:sync:before": "node scripts/capacitor-sync-before.mjs"
   },
   "private": true,

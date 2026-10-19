@@ -5,6 +5,8 @@ import { SqliteDatabase } from './sqlite-database';
 
 vi.mock('@capacitor-community/sqlite', () => ({
   CapacitorSQLite: {
+    createConnection: vi.fn(),
+    open: vi.fn(),
     beginTransaction: vi.fn(),
     commitTransaction: vi.fn(),
     rollbackTransaction: vi.fn(),
@@ -27,6 +29,36 @@ describe('SQLite shared write queue', () => {
     vi.mocked(CapacitorSQLite.query).mockResolvedValue({ values: [] });
   });
   afterEach(() => vi.restoreAllMocks());
+  it('initializes an Android version-6 database with only the additive SMS migration', async () => {
+    database.ready.set(false);
+    vi.mocked(CapacitorSQLite.query).mockResolvedValue({ values: [{ user_version: 6 }] });
+    await database.initialise();
+    expect(CapacitorSQLite.createConnection).toHaveBeenCalledWith(
+      expect.objectContaining({ database: 'cardnest', version: 7, readonly: false }),
+    );
+    expect(CapacitorSQLite.open).toHaveBeenCalledOnce();
+    const migrations = vi
+      .mocked(CapacitorSQLite.execute)
+      .mock.calls.map(([options]) => options)
+      .filter((options) => options.transaction);
+    expect(migrations).toHaveLength(1);
+    expect(migrations[0].statements).toContain('CREATE TABLE IF NOT EXISTS sms_candidates');
+    expect(migrations[0].statements).toContain('PRAGMA user_version = 7');
+    expect(migrations[0].statements).not.toContain('DROP TABLE');
+    expect(database.ready()).toBe(true);
+  });
+  it('does not expose a ready database after an SMS migration failure', async () => {
+    database.ready.set(false);
+    vi.mocked(CapacitorSQLite.query).mockResolvedValue({ values: [{ user_version: 6 }] });
+    vi.mocked(CapacitorSQLite.execute).mockImplementation(async (options) => {
+      if (options.transaction) throw new Error('Synthetic migration failure');
+      return { changes: { changes: 0 } };
+    });
+    await database.initialise();
+    expect(database.ready()).toBe(false);
+    expect(database.unavailableReason()).toContain('Synthetic migration failure');
+    vi.mocked(CapacitorSQLite.execute).mockReset();
+  });
   it('serializes standalone writes after an entire import transaction', async () => {
     const events: string[] = [];
     vi.mocked(CapacitorSQLite.beginTransaction).mockImplementation(async () => {
