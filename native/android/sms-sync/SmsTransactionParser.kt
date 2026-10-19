@@ -60,7 +60,8 @@ object SmsTransactionParser {
     val credit = has("\\b(credited|received)\\b")
     val due = has("is due|due on|due by|payable by|amount due|minimum due|emi reminder")
     val loan = has("loan|\\bemi\\b|\\becs\\b|merchantmandate")
-    val confirmed = card && has("payment of.{0,100}(received|credited)|online payment.{0,100}credited")
+    val aggregator = has("\\bcred\\b|cheq|ccbp")
+    val confirmed = card && !aggregator && has("payment of.{0,100}(received|credited)|online payment.{0,100}credited")
     val kind = when {
       has("refunded|refund successful|refund of|reversal|reversed") && (credit || has("refunded|reversed")) -> Kind.REFUND
       card && has("cashback") && credit -> Kind.CASHBACK
@@ -69,11 +70,12 @@ object SmsTransactionParser {
       tag && debit -> Kind.FASTAG_TOLL
       tag && has("recharged|loaded|credited|topped up") -> Kind.FASTAG_TOPUP
       confirmed -> Kind.CARD_PAYMENT_RECEIVED
+      aggregator && has("payment.{0,80}(received|processed)|sent|debited") && !due && !loan -> Kind.PAYMENT_INITIATED
       has("statement.+generated") -> Kind.STATEMENT
       loan && due && !has("has been debited|(?:account|acc) [x*0-9]+ debited") -> Kind.LOAN_REMINDER
       due && !debit -> Kind.PAYMENT_REMINDER
       loan && debit && bank -> Kind.LOAN_DEBIT
-      card && debit -> Kind.PURCHASE
+      card && debit && (!bank || has("(?:spent|charged).{0,40}(?:your|using|on).{0,20}card|(?:credit card|card)[x*0-9\\s]{0,20}debited")) -> Kind.PURCHASE
       bank && debit && has("\\bcred\\b|cheq|ccbp") -> Kind.PAYMENT_INITIATED
       bank && has("sent from|credited.+debited from") -> Kind.BANK_TRANSFER
       bank && debit -> Kind.BANK_DEBIT

@@ -65,4 +65,12 @@ class SmsEdgeCaseTest {
   @Test fun explicitInvalidDatesFailClosedInsteadOfBecomingReceiptDate() {
     assertNull(SmsTransactionParser.parse("Spent INR 12 on AMEX card ** 54321 on 31/02/2026",receipt))
   }
+  @Test fun mentioningTargetCreditCardDoesNotTurnBankDebitIntoPurchase() {
+    assertEquals(SmsTransactionParser.Kind.PAYMENT_INITIATED,parse("Bank account XX4321 debited INR 300 to CRED towards credit card bill on 18/10/26").kind)
+    assertEquals(SmsTransactionParser.Kind.BANK_DEBIT,parse("Bank account XX4321 debited INR 300 towards credit card payment on 18/10/26").kind)
+  }
+  @Test fun aggregatorReceiptIsNotFinalIssuerConfirmation() {
+    assertEquals(SmsTransactionParser.Kind.PAYMENT_INITIATED,parse("CRED payment of INR 300 received for your credit card XX5432 on 18/10/26 and processing").kind)
+    assertEquals(SmsTransactionParser.Kind.LOAN_DEBIT,parse("Bank account XX4321 debited INR 300 towards CRED cash loan EMI on 18/10/26").kind)
+  }
 }
