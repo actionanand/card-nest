@@ -1,5 +1,7 @@
 # Android Smart SMS Transaction Sync
 
+Manual ledger inserts, edits and deletions now persist their wallet deltas in the same serialized SQLite transaction as the ledger row. Source metadata edits merge only changed fields into durable preferences, and wallet creation reads the latest durable source list. This prevents a stale manual preference or concurrent SMS approval from overwriting a balance. Startup source migration persists only after saved preferences have loaded. The public manual-entry API retains its existing optimistic UI behavior.
+
 The provider query baseline was checked against the [AOSP SMS provider implementation](https://android.googlesource.com/platform/packages/providers/TelephonyProvider/+/master/src/com/android/providers/telephony/SmsProvider.java). OEM provider behavior still requires physical-device validation.
 
 See [SMS_SYNC_VALIDATION.md](./SMS_SYNC_VALIDATION.md) for the executed acceptance audit and remaining release gates. The Capacitor pre-sync hook rejects a normal web bundle when preparing Android, preventing an APK that requests SMS permission without providing its review screen.

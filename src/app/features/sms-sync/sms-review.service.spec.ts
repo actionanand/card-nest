@@ -125,6 +125,7 @@ describe('SMS approved import integrity', () => {
         {
           provide: SqliteDatabase,
           useValue: {
+            ready: signal(true),
             query: async (statement: string, values: readonly unknown[] = []) =>
               rows(statement, values),
             run: async (statement: string, values: readonly unknown[] = []) =>
@@ -328,6 +329,70 @@ describe('SMS approved import integrity', () => {
     expect(transferRelationship(a, b)).toBe(true);
     expect(ledgerType(a)).toBeUndefined();
     expect(ledgerType(b)).toBeUndefined();
+  });
+  it('serializes real manual wallet writes, source edits and creation with SMS approval', async () => {
+    const wallet: PaymentSource = {
+      id: 'meal',
+      nickname: 'DEMO wallet',
+      kind: 'MEAL',
+      balanceMinor: 10000,
+      noLimit: false,
+      autoLoad: false,
+      archived: false,
+    };
+    run(`INSERT INTO app_preferences VALUES ('payment_sources',?)`, [JSON.stringify([wallet])]);
+    sources.set([{ ...wallet }]);
+    const manual = TestBed.runInInjectionContext(() => new CardNestStore());
+    manual.cards.set([card]);
+    manual.transactions.set([]);
+    manual.paymentSources.set([{ ...wallet }]);
+    const entry: CardTransaction = {
+      id: 'manual-wallet',
+      cardId: 'meal',
+      type: 'PURCHASE',
+      amountMinor: 1000,
+      currencyCode: 'INR',
+      transactionDate: '2026-10-17',
+      categoryId: 'other',
+      attachmentIds: [],
+      createdAt: 'now',
+      updatedAt: 'now',
+    };
+    manual.addTransaction(entry);
+    const approval = service.approve(
+      stage(evidence({ kind: 'PLUXEE_TOPUP', amountMinor: 2000 })),
+      'meal',
+      2000,
+      'Load',
+    );
+    manual.updatePaymentSource({ ...manual.paymentSources()[0], nickname: 'Renamed wallet' });
+    const creation = manual.addWallet({
+      id: 'tag-extra',
+      nickname: 'Fictional vehicle',
+      kind: 'FASTAG',
+      balanceMinor: 0,
+      noLimit: false,
+      autoLoad: false,
+      archived: false,
+      vehicleNumber: 'KA01AB1234',
+    });
+    await Promise.all([approval, creation]);
+    const readWallets = () =>
+      JSON.parse(
+        rows<{ encrypted_value: string }>(
+          `SELECT encrypted_value FROM app_preferences WHERE key='payment_sources'`,
+        )[0].encrypted_value,
+      ) as PaymentSource[];
+    expect(readWallets()[0].balanceMinor).toBe(11000);
+    expect(readWallets()[0].nickname).toBe('Renamed wallet');
+    expect(readWallets()).toHaveLength(2);
+    expect(count('card_transactions')).toBe(2);
+    manual.updateTransaction({ ...entry, amountMinor: 2000 });
+    await TestBed.inject(SqliteDatabase).atomic(async () => undefined);
+    expect(readWallets()[0].balanceMinor).toBe(10000);
+    manual.deleteTransaction(entry.id);
+    await TestBed.inject(SqliteDatabase).atomic(async () => undefined);
+    expect(readWallets()[0].balanceMinor).toBe(12000);
   });
   it('explicit wallet reconciliation creates a documented adjustment and rejects an older snapshot', async () => {
     const wallet: PaymentSource = {

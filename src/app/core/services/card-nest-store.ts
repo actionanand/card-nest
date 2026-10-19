@@ -12,7 +12,7 @@ import {
   PaymentSource,
   RecurringRule,
 } from '../models/domain';
-import { SqliteDatabase } from '../data/sqlite-database';
+import { DatabaseSession, SqliteDatabase } from '../data/sqlite-database';
 import {
   excludesStatementDayTransactions,
   isTransactionIncludedInStatement,
@@ -233,6 +233,7 @@ const PAYMENT_SOURCES: readonly PaymentSource[] = [
 export class CardNestStore {
   private readonly database = inject(SqliteDatabase);
   private dataWasCleared = false;
+  private sourcesLoaded = false;
   readonly cards = signal<readonly CreditCard[]>(SAMPLE_CARDS);
   readonly transactions = signal<readonly CardTransaction[]>(
     readCachedTransactions() ?? SAMPLE_TRANSACTIONS,
@@ -374,6 +375,7 @@ export class CardNestStore {
     } catch {
       this.paymentSources.set(PAYMENT_SOURCES);
     }
+    this.sourcesLoaded = true;
     this.materializeSourceLoads();
     await Promise.all([this.loadCurrentIncome(), this.loadCards()]);
     await this.loadCategories();
@@ -694,12 +696,13 @@ export class CardNestStore {
       throw new Error('Choose a wallet kind.');
     if (!source.nickname.trim() || this.paymentSources().some((item) => item.id === source.id))
       throw new Error('Invalid wallet.');
-    const sources = [...this.paymentSources(), source];
-    await this.database.run(
-      `INSERT INTO app_preferences(key, encrypted_value) VALUES ('payment_sources', ?)
-      ON CONFLICT(key) DO UPDATE SET encrypted_value = excluded.encrypted_value`,
-      [JSON.stringify(sources)],
-    );
+    const sources = await this.database.atomic(async (tx) => {
+      const stored = await this.readStoredSources(tx);
+      if (stored.some((item) => item.id === source.id)) throw new Error('Wallet already exists.');
+      const next = [...(stored.length ? stored : this.paymentSources()), source];
+      await this.writeStoredSources(tx, next);
+      return next;
+    });
     this.paymentSources.set(sources);
   }
   updateTransaction(updated: CardTransaction): boolean {
@@ -729,7 +732,7 @@ export class CardNestStore {
       return next;
     });
     if (this.database.ready()) {
-      void this.database.run('DELETE FROM card_transactions WHERE id = ?', [transactionId]);
+      void this.removePersistedTransaction(transactionId);
     }
     return true;
   }
@@ -895,11 +898,25 @@ export class CardNestStore {
     this.paymentSources.update((sources) =>
       sources.map((source) => (source.id === updated.id ? updated : source)),
     );
-    void this.upsertPreference(
-      PAYMENT_SOURCES_PREFERENCE_KEY,
-      JSON.stringify(this.paymentSources()),
+    if (!this.database.ready()) return;
+    const changed = Object.keys(updated).filter(
+      (key) => updated[key as keyof PaymentSource] !== previous?.[key as keyof PaymentSource],
     );
-    this.materializeSourceLoads();
+    void this.database
+      .atomic(async (tx) => {
+        const sources = await this.readStoredSources(tx);
+        const next = sources.map((source) =>
+          source.id === updated.id
+            ? (Object.fromEntries([
+                ...Object.entries(source),
+                ...changed.map((key) => [key, updated[key as keyof PaymentSource]]),
+              ]) as unknown as PaymentSource)
+            : source,
+        );
+        await this.writeStoredSources(tx, next);
+        return next;
+      })
+      .then((sources) => this.paymentSources.set(sources));
   }
   addLoan(loan: LoanCommitment): void {
     this.loans.update((loans) => [loan, ...loans]);
@@ -1221,7 +1238,7 @@ export class CardNestStore {
           : source,
       ),
     );
-    if (this.database.ready()) {
+    if (this.sourcesLoaded && this.database.ready()) {
       void this.upsertPreference(
         PAYMENT_SOURCES_PREFERENCE_KEY,
         JSON.stringify(this.paymentSources()),
@@ -1471,11 +1488,17 @@ export class CardNestStore {
 
   private async persistTransaction(transaction: CardTransaction): Promise<void> {
     if (!this.database.ready()) return;
-    const creditCardId = this.cards().some((card) => card.id === transaction.cardId)
-      ? transaction.cardId
-      : null;
-    await this.database.run(
-      `INSERT INTO card_transactions
+    const sources = await this.database.atomic(async (tx) => {
+      const [stored] = await tx.query<{ payload: string }>(
+        'SELECT payload FROM card_transactions WHERE id = ?',
+        [transaction.id],
+      );
+      const previous = stored ? (JSON.parse(stored.payload) as CardTransaction) : null;
+      const creditCardId = this.cards().some((card) => card.id === transaction.cardId)
+        ? transaction.cardId
+        : null;
+      await tx.run(
+        `INSERT INTO card_transactions
        (id, card_id, category_id, type, amount_minor, currency_code, transaction_date, payload, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
@@ -1487,33 +1510,101 @@ export class CardNestStore {
          transaction_date = excluded.transaction_date,
          payload = excluded.payload,
          updated_at = excluded.updated_at`,
-      [
-        transaction.id,
-        creditCardId,
-        transaction.categoryId,
-        transaction.type,
-        transaction.amountMinor,
-        transaction.currencyCode,
-        transaction.transactionDate,
-        JSON.stringify(transaction),
-        transaction.createdAt,
-        transaction.updatedAt,
-      ],
-    );
-    await this.database.run('DELETE FROM transaction_links WHERE transaction_id = ?', [
-      transaction.id,
-    ]);
-    if (
-      transaction.relatedTransactionId &&
-      (transaction.type === 'REFUND' || transaction.type === 'ADJUSTMENT')
-    ) {
-      await this.database.run(
-        `INSERT INTO transaction_links
+        [
+          transaction.id,
+          creditCardId,
+          transaction.categoryId,
+          transaction.type,
+          transaction.amountMinor,
+          transaction.currencyCode,
+          transaction.transactionDate,
+          JSON.stringify(transaction),
+          transaction.createdAt,
+          transaction.updatedAt,
+        ],
+      );
+      await tx.run('DELETE FROM transaction_links WHERE transaction_id = ?', [transaction.id]);
+      if (
+        transaction.relatedTransactionId &&
+        (transaction.type === 'REFUND' || transaction.type === 'ADJUSTMENT')
+      ) {
+        await tx.run(
+          `INSERT INTO transaction_links
          (transaction_id, related_transaction_id, relationship_type, created_at)
          VALUES (?, ?, ?, ?)`,
-        [transaction.id, transaction.relatedTransactionId, transaction.type, transaction.createdAt],
+          [
+            transaction.id,
+            transaction.relatedTransactionId,
+            transaction.type,
+            transaction.createdAt,
+          ],
+        );
+      }
+      const wallets = await this.readStoredSources(tx);
+      this.applyStoredSourceEffect(wallets, previous, -1);
+      this.applyStoredSourceEffect(wallets, transaction, 1);
+      if (wallets.length) await this.writeStoredSources(tx, wallets);
+      return wallets;
+    });
+    this.publishStoredBalances(sources);
+  }
+
+  private async readStoredSources(tx: DatabaseSession): Promise<PaymentSource[]> {
+    const [row] = await tx.query<{ encrypted_value: string }>(
+      `SELECT encrypted_value FROM app_preferences WHERE key='payment_sources'`,
+    );
+    return row ? (JSON.parse(row.encrypted_value) as PaymentSource[]) : [];
+  }
+
+  private async writeStoredSources(
+    tx: DatabaseSession,
+    sources: readonly PaymentSource[],
+  ): Promise<void> {
+    await tx.run(
+      `INSERT INTO app_preferences(key,encrypted_value) VALUES ('payment_sources',?) ON CONFLICT(key) DO UPDATE SET encrypted_value=excluded.encrypted_value`,
+      [JSON.stringify(sources)],
+    );
+  }
+
+  private applyStoredSourceEffect(
+    sources: PaymentSource[],
+    transaction: CardTransaction | null,
+    direction: 1 | -1,
+  ): void {
+    if (!transaction || transaction.sourceBalanceApplied === false) return;
+    const source = sources.find((item) => item.id === transaction.cardId);
+    if (!source || source.noLimit || source.balanceMinor === undefined) return;
+    source.balanceMinor -= transactionEffect(transaction) * direction;
+    if (!Number.isSafeInteger(source.balanceMinor))
+      throw new Error('Wallet balance would overflow.');
+  }
+
+  private publishStoredBalances(sources: readonly PaymentSource[]): void {
+    this.paymentSources.update((items) =>
+      items.map((item) => {
+        const stored = sources.find((source) => source.id === item.id);
+        return stored ? { ...item, balanceMinor: stored.balanceMinor } : item;
+      }),
+    );
+  }
+
+  private async removePersistedTransaction(id: string): Promise<void> {
+    const sources = await this.database.atomic(async (tx) => {
+      const [row] = await tx.query<{ payload: string }>(
+        'SELECT payload FROM card_transactions WHERE id=?',
+        [id],
       );
-    }
+      const wallets = await this.readStoredSources(tx);
+      this.applyStoredSourceEffect(
+        wallets,
+        row ? (JSON.parse(row.payload) as CardTransaction) : null,
+        -1,
+      );
+      await tx.run('DELETE FROM card_transactions WHERE id=?', [id]);
+      if (wallets.length) await this.writeStoredSources(tx, wallets);
+      return wallets;
+    });
+    this.publishStoredBalances(sources);
   }
 
   private async persistRecurringRule(rule: RecurringRule): Promise<void> {

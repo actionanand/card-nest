@@ -194,8 +194,13 @@ export class SmsSyncPage {
   }
   closeEditor(): void {
     const id = this.selected()?.id;
+    if (!id) return;
     this.selected.set(null);
-    queueMicrotask(() => document.getElementById(`review-${id}`)?.focus());
+    queueMicrotask(() =>
+      (
+        document.getElementById(`review-${id}`) ?? document.getElementById('sms-inbox-title')
+      )?.focus(),
+    );
   }
   matches(): readonly { id: string; label: string }[] {
     const item = this.selected()?.item;
