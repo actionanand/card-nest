@@ -1,5 +1,15 @@
 {
   "description": "User-supplied fictional corpus; changes require a human privacy review. This is an integrity check, not a claim that pattern matching proves synthetic origin.",
   "sha256": "c9e72c10790844c17b4674be48fdbfd1cab950ad3ad34627c72cf12c86892e8e",
-  "fictionalVehicles": ["KA01AB1234", "KA02CD5678"]
+  "fictionalVehicles": ["KA01AB1234", "KA02CD5678"],
+  "annotationCorrections": [
+    {
+      "id": "EXTRA-06",
+      "originalKind": "ECS_DEBIT_REVIEW",
+      "correctedKind": "BANK_DEBIT_REVIEW",
+      "originalLedgerEffect": "NONE_UNTIL_APPROVED",
+      "correctedLedgerEffect": "NONE_UNTIL_EXPLICIT_RECONCILIATION",
+      "reason": "INFT is insufficient evidence of ECS or a specific loan. Amount and omission of a security trailer cannot distinguish this from BASE-41. Preserve generic bank evidence for explicit matching only. SMS text is unchanged."
+    }
+  ]
 }

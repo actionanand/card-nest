@@ -36,7 +36,7 @@ Integer paise is checked for precision and overflow; conflicting event amounts f
 
 Card suffixes require card context and cannot come from block commands, phone numbers, CODE tags or UPI references. AMEX four/five-digit variants may suggest the same source with issuer context. All imports still require explicit source selection. Ambiguous suffixes stay ambiguous. FASTag plate equality narrows eligible wallets but does not prove ownership. Archived sources remain available for historical review.
 
-The supplied corpus has one semantic inconsistency: BASE-41 and EXTRA-06 differ only in amount, while EXTRA-06 requests ECS classification without ECS/loan wording. Both are conservatively classified as bank-debit evidence. `SmsCorpusTest` documents this deliberate exception; no amount-based loan rule exists.
+The EXTRA-06 annotation erratum corrects its expected kind to BANK_DEBIT_REVIEW and its ledger policy to explicit reconciliation. Its INFT wording has no ECS/loan evidence, just like BASE-41; amounts and security trailers cannot establish a loan. The SMS text remains unchanged. Corpus tests now use the corrected annotation directly, without a fixture-ID exception. Additional tests vary amounts/trailers and require actual ECS/loan/mandate markers for loan-debit evidence. Even explicit ECS evidence requires user matching; it never proves a particular loan was paid. The provenance validator projects only this declared annotation correction back to the original reviewed checksum, preserving the integrity check for every SMS and identifier.
 
 ## Review and atomic import
 
@@ -72,8 +72,10 @@ npm run test:web-isolation
 npm run test:sms:fixtures
 npm run build:android
 npm run android:sync
+npm run test:android-isolation
 cd android
 ./gradlew testDebugUnitTest compileDebugKotlin assembleDebug
+./gradlew assembleRelease bundleRelease lintDebug
 ```
 
 JVM tests consume all 70 JSON fixtures, plus original parser tests, additional strict-field/date/privacy cases and streaming recovery boundaries. The fixture validator pins the reviewed synthetic corpus checksum and fictional vehicle allowlist, checks IDs/counts and flags potential full financial identifiers. These are heuristics and provenance checks, not proof that an arbitrary new message is synthetic. Changes to the corpus require human review before updating its checksum.

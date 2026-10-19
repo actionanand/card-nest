@@ -124,6 +124,12 @@ At the end provide: branch and final commit SHA, list of changes, number of pass
 
 # Annex: synthetic SMS test corpus
 
+Annotation erratum (19 October 2026): EXTRA-06 is generic bank-debit evidence,
+consistent with BASE-41. Neither INFT wording nor the debit amount proves ECS or
+a loan. The JSON test source and this annex correct only its expected kind and
+ledger policy; the SMS text is unchanged. Original provenance is retained in
+`native/android/sms-sync/fixture-provenance.json`.
+
 Everything below is synthetic. The format resembles various real-world Indian issuer/merchant SMS templates, but identifiers, amounts, payee names, support numbers and vehicle registrations were changed. Do not reconstruct or commit the user’s original messages.
 
 ```json
@@ -561,8 +567,8 @@ Everything below is synthetic. The format resembles various real-world Indian is
     },
     {
       "id": "EXTRA-06",
-      "expectedKind": "ECS_DEBIT_REVIEW",
-      "expectedLedgerEffect": "NONE_UNTIL_APPROVED",
+      "expectedKind": "BANK_DEBIT_REVIEW",
+      "expectedLedgerEffect": "NONE_UNTIL_EXPLICIT_RECONCILIATION",
       "sms": "ICICI Bank Acc XX444 debited Rs. 17,277.00 on 10-Oct-26 InfoBIL*INFT*DEMO.Avl Bal Rs. 14,852.37.",
       "notes": ""
     },

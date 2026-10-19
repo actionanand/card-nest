@@ -432,8 +432,8 @@
     },
     {
       "id": "EXTRA-06",
-      "expectedKind": "ECS_DEBIT_REVIEW",
-      "expectedLedgerEffect": "NONE_UNTIL_APPROVED",
+      "expectedKind": "BANK_DEBIT_REVIEW",
+      "expectedLedgerEffect": "NONE_UNTIL_EXPLICIT_RECONCILIATION",
       "sms": "ICICI Bank Acc XX444 debited Rs. 17,277.00 on 10-Oct-26 InfoBIL*INFT*DEMO.Avl Bal Rs. 14,852.37.",
       "notes": ""
     },

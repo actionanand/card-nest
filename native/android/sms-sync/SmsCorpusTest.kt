@@ -26,8 +26,7 @@ class SmsCorpusTest(private val fixture: JSONObject, private val oracle: String)
       "BANK_DEBIT_INFORMATION", "BANK_DEBIT_REVIEW" -> "BANK_DEBIT"
       "BANK_CREDIT_INFORMATION" -> "BANK_CREDIT"
       "BANK_TRANSFER_INFORMATION" -> "BANK_TRANSFER"
-      // EXTRA-06 contains no ECS/loan evidence (same wording as BASE-41). Never infer from money.
-      "ECS_DEBIT_REVIEW" -> if (fixture.getString("id") == "EXTRA-06") "BANK_DEBIT" else "LOAN_DEBIT"
+      "ECS_DEBIT_REVIEW" -> "LOAN_DEBIT"
       else -> expected
     }
     assertEquals(kind, result.kind.name)

@@ -8,6 +8,23 @@ import org.junit.Test
 class SmsEdgeCaseTest {
   private val receipt = Instant.parse("2026-10-19T12:00:00Z").toEpochMilli()
   private fun parse(s: String) = requireNotNull(SmsTransactionParser.parse(s, receipt))
+  @Test fun genericInftDebitIsNeverProofOfEcsOrLoan() {
+    for (amount in listOf("17,273.00", "17,277.00", "1.00")) {
+      for (trailer in listOf("", "To dispute call 9000000000 or SMS BLOCK 444 to 9000000001")) {
+        val r = parse("ICICI Bank Acc XX444 debited Rs. $amount on 10-Oct-26 InfoBIL*INFT*DEMO.Avl Bal Rs. 14,852.37.$trailer")
+        assertEquals(SmsTransactionParser.Kind.BANK_DEBIT, r.kind)
+        assertEquals("444", r.accountDigits)
+        assertTrue(r.requiresReview)
+      }
+    }
+  }
+  @Test fun explicitEcsAndLoanMarkersRemainEvidenceRequiringReview() {
+    for (purpose in listOf("ECS", "Auto Loan", "MerchantMandate AutoPay")) {
+      val r = parse("ICICI Bank Acc XX444 debited Rs. 17,277.00 on 10-Oct-26 towards $purpose.Avl Bal Rs. 14,852.37.")
+      assertEquals(SmsTransactionParser.Kind.LOAN_DEBIT, r.kind)
+      assertTrue(r.requiresReview)
+    }
+  }
   @Test fun securityBlockSuffixCannotMatchCard() {
     val r = parse("A transaction of Rs.17 was made using your HDFC Credit Card at DEMO STORE on 18/10/26. SMS BLOCKPCC 9876 to 9000000000")
     assertNull(r.cardDigits)

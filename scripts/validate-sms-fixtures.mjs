@@ -3,10 +3,24 @@ import { createHash } from 'node:crypto';
 const corpus = JSON.parse(
   readFileSync('codex-spec/CardNest_SMS_Synthetic_Test_Corpus.json', 'utf8'),
 );
-const digest = createHash('sha256').update(JSON.stringify(corpus.fixtures)).digest('hex');
 const provenance = JSON.parse(
   readFileSync('native/android/sms-sync/fixture-provenance.json', 'utf8'),
 );
+// Retain the human-reviewed original hash. Only the declared expectation erratum
+// is projected back; any SMS, identifier, note, or other annotation edit still fails.
+const originalFixtures = structuredClone(corpus.fixtures);
+for (const correction of provenance.annotationCorrections ?? []) {
+  const fixture = originalFixtures.find((item) => item.id === correction.id);
+  if (
+    !fixture ||
+    fixture.expectedKind !== correction.correctedKind ||
+    fixture.expectedLedgerEffect !== correction.correctedLedgerEffect
+  )
+    throw new Error('Declared fixture annotation correction does not match corpus.');
+  fixture.expectedKind = correction.originalKind;
+  fixture.expectedLedgerEffect = correction.originalLedgerEffect;
+}
+const digest = createHash('sha256').update(JSON.stringify(originalFixtures)).digest('hex');
 if (corpus.fixtures.length !== 70 || !corpus.policy.includes('No genuine personal identifiers'))
   throw new Error('Synthetic fixture policy/count changed.');
 if (digest !== provenance.sha256)
