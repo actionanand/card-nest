@@ -1,0 +1,80 @@
+:host {
+  display: block;
+}
+.panel {
+  padding: 1.25rem;
+  margin-block: 1rem;
+}
+h2 {
+  font-size: 1.2rem;
+}
+label {
+  display: grid;
+  gap: 0.35rem;
+  margin-block: 0.75rem;
+}
+input,
+select,
+textarea {
+  color: inherit;
+  background: var(--surface, Canvas);
+  border: 1px solid currentColor;
+  border-radius: 0.4rem;
+  padding: 0.65rem;
+  width: 100%;
+  max-width: 100%;
+}
+button,
+select {
+  min-height: 44px;
+}
+.actions,
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+.filters label {
+  flex: 1 1 200px;
+}
+.candidate {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: center;
+  padding-block: 1rem;
+  border-bottom: 1px solid currentColor;
+}
+.candidate p,
+dd {
+  overflow-wrap: anywhere;
+}
+dl {
+  display: grid;
+  grid-template-columns: minmax(100px, 1fr) 3fr;
+  gap: 0.5rem;
+}
+dd {
+  margin: 0;
+}
+.check {
+  display: flex;
+  align-items: center;
+}
+.check input {
+  width: 1.2rem;
+  height: 1.2rem;
+}
+:focus-visible {
+  outline: 3px solid currentColor;
+  outline-offset: 3px;
+}
+@media (max-width: 600px) {
+  .candidate {
+    align-items: start;
+    flex-direction: column;
+  }
+  dl {
+    grid-template-columns: 1fr;
+  }
+}

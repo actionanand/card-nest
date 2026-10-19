@@ -1,5 +1,7 @@
 # CardNest Android build guide
 
+For the Android SMS feature, use `npm run build:android` before Capacitor sync; the default web build deliberately excludes the SMS route, screen and native cleanup integration. See [SMS_SYNC.md](./SMS_SYNC.md) for restricted-permission distribution requirements, encrypted staging, approval rules and device release gates.
+
 CardNest uses Capacitor and GitHub Actions to package the Angular application as an Android APK and AAB. CI generates the `android/` directory, so it is not committed.
 
 The workflow supports both outcomes:

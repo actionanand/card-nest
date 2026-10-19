@@ -61,6 +61,9 @@ class SmsQueue(context: Context) : SQLiteOpenHelper(context, "sms-discovery.db",
     }
     ack(ids)
   }
+  fun destroyKey() {
+    KeyStore.getInstance("AndroidKeyStore").apply { load(null); deleteEntry("cardnest-sms-v1") }
+  }
   companion object {
     fun json(r: SmsTransactionParser.Result, providerId: String): JSONObject = JSONObject().apply {
       put("id", r.fingerprint); put("providerId", providerId); put("kind", r.kind.name)

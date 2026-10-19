@@ -58,4 +58,11 @@ class SmsEdgeCaseTest {
     val body = "Refund of INR 12 credited to credit card XX4321 on 18/10/26 UTR SYNTHREF1234"
     assertEquals(parse(body).fingerprint,parse(body).fingerprint)
   }
+  @Test fun datesInsideReferencesAndLinksAreNotFinancialDates() {
+    val r=parse("Spent INR 12 on AMEX card ** 54321 Ref 2026-01-01 https://example.invalid/2026-02-02")
+    assertTrue(r.dateFallback);assertEquals("2026-10-19",r.eventDate)
+  }
+  @Test fun explicitInvalidDatesFailClosedInsteadOfBecomingReceiptDate() {
+    assertNull(SmsTransactionParser.parse("Spent INR 12 on AMEX card ** 54321 on 31/02/2026",receipt))
+  }
 }

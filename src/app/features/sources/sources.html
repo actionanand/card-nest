@@ -9,6 +9,21 @@
       <app-icon name="plus" /><span>Add transaction</span>
     </a>
   </header>
+  <details class="panel">
+    <summary>Add a vehicle FASTag wallet</summary>
+    <p>
+      Choose your own vehicle and provider. A detected registration does not establish ownership.
+    </p>
+    <form [formGroup]="walletForm" (submit)="addFastag($event)">
+      <label>Wallet name<input formControlName="name" maxlength="80" required /></label>
+      <label>Provider<input formControlName="provider" maxlength="80" /></label>
+      <label>Vehicle registration<input formControlName="plate" maxlength="16" required /></label>
+      @if (walletError()) {
+        <p role="alert">{{ walletError() }}</p>
+      }
+      <button type="submit" class="btn" [disabled]="!walletForm.valid">Create wallet</button>
+    </form>
+  </details>
 
   <div class="source-tabs" role="tablist" aria-label="Money source views">
     <button
@@ -55,6 +70,9 @@
                 @if (source.lastDigits) {
                   · {{ source.lastDigits }}
                 }
+                @if (source.vehicleNumber) {
+                  · {{ source.vehicleNumber }}
+                }
               </p>
             </div>
           </div>
@@ -91,7 +109,7 @@
                 ><strong>{{ money(monthlyUsed(source)) }}</strong></span
               >
               <span
-                ><small>Monthly amount remaining</small
+                ><small>Net top-ups less spending this cycle</small
                 ><strong>{{ money(monthlyRemaining(source)) }}</strong></span
               >
             </div>
@@ -111,29 +129,12 @@
               >Current Pluxee balance<input
                 inputmode="decimal"
                 [value]="(source.balanceMinor ?? 0) / 100"
-                (change)="updateAmount(source, $event, 'balanceMinor')" /></label
-            ><label
-              >Monthly load amount<input
-                inputmode="decimal"
-                [value]="(source.loadAmountMinor ?? 0) / 100"
-                (change)="updateAmount(source, $event, 'loadAmountMinor')" /></label
-            ><app-select-picker
-              label="Load date"
-              [options]="loadDayOptions"
-              [value]="source.loadDay?.toString() ?? '25'"
-              (valueChange)="updateLoadDay(source, $event)"
-            />
-            <label class="toggle-row"
-              ><span
-                ><strong>Load automatically</strong
-                ><small
-                  >Add the configured amount to the carried-forward balance monthly</small
-                ></span
-              ><input
-                type="checkbox"
-                [checked]="source.autoLoad"
-                (change)="toggle(source, 'autoLoad')"
+                (change)="updateAmount(source, $event, 'balanceMinor')"
             /></label>
+            <p>
+              Top-ups use actual amounts and dates. Add a Credit transaction manually or approve an
+              SMS top-up. Historical simulated loads are included in the preserved balance snapshot.
+            </p>
           }
           <div class="source-actions">
             <button class="btn" type="button" (click)="showSourceActivity(source.id)">

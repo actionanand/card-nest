@@ -15,9 +15,12 @@ import {
   SmsEvidence,
   ScanStatus,
   ReviewState,
+  ReconciliationChoice,
+  ApprovalEdits,
   ledgerType,
   validEvidence,
   existingSuggestions,
+  transferRelationship,
 } from './sms-model';
 
 interface NativeSms {
@@ -27,6 +30,7 @@ interface NativeSms {
   cancel(): Promise<ScanStatus>;
   scanPage(): Promise<ScanStatus>;
   beginScan(): Promise<void>;
+  catchUp(): Promise<void>;
   pending(): Promise<{ items: unknown[] }>;
   acknowledge(options: { ids: string[] }): Promise<void>;
   parseText(options: { text: string }): Promise<{ item: unknown }>;
@@ -57,6 +61,50 @@ export class SmsReviewService {
     await this.refresh();
   }
   private cancelled = false;
+  async relatedFor(candidate: SmsCandidate): Promise<readonly SmsCandidate[]> {
+    this.assertUnlocked();
+    const item = candidate.item;
+    if (!item?.reference) return [];
+    const rows = await this.database.query<{
+      id: string;
+      state: ReviewState;
+      kind: SmsEvidence['kind'];
+      event_at: string;
+      payload: string;
+      transaction_id: string;
+    }>(
+      `SELECT * FROM sms_candidates WHERE id != ? AND payload IS NOT NULL AND payload LIKE ? LIMIT 50`,
+      [candidate.id, `%${item.reference}%`],
+    );
+    return rows.flatMap((row) => {
+      const other: unknown = JSON.parse(row.payload);
+      if (
+        !validEvidence(other) ||
+        other.reference !== item.reference ||
+        other.amountMinor !== item.amountMinor
+      )
+        return [];
+      if (
+        !transferRelationship(item, other) &&
+        !(
+          ledgerType(item) === ledgerType(other) ||
+          item.kind === 'PAYMENT_INITIATED' ||
+          other.kind === 'PAYMENT_INITIATED'
+        )
+      )
+        return [];
+      return [
+        {
+          id: row.id,
+          state: row.state,
+          kind: row.kind,
+          eventAt: row.event_at,
+          item: other,
+          transactionId: row.transaction_id,
+        },
+      ];
+    });
+  }
   private assertUnlocked(): void {
     if (Capacitor.getPlatform() !== 'android' || this.lock.locked() || !this.lock.foreground())
       throw new Error('Unlock CardNest on Android to review SMS.');
@@ -141,6 +189,8 @@ export class SmsReviewService {
       this.error.set(error instanceof Error ? error.message : 'Scan failed. Retry is safe.');
     } finally {
       this.busy.set(false);
+      if (!this.cancelled && this.status()?.more && (!this.lock.foreground() || this.lock.locked()))
+        await native.catchUp();
     }
   }
   async paste(text: string): Promise<void> {
@@ -153,16 +203,20 @@ export class SmsReviewService {
   }
   private async stage(items: readonly SmsEvidence[]): Promise<void> {
     await this.database.atomic(async (tx) => {
+      const [retention] = await tx.query<{ value: string }>(
+        `SELECT value FROM sms_sync_state WHERE key='retention_cutoff'`,
+      );
       for (const item of items) {
         const changes = await tx.run(
           `INSERT OR IGNORE INTO sms_candidates(id, provider_id, event_at, kind, state, payload, updated_at)
-          VALUES (?, ?, ?, ?, 'PENDING', ?, ?)`,
+          VALUES (?, ?, ?, ?, ?, ?, ?)`,
           [
             item.id,
             item.providerId,
             item.eventAt,
             item.kind,
-            JSON.stringify(item),
+            retention && item.eventDate < retention.value ? 'IGNORED' : 'PENDING',
+            retention && item.eventDate < retention.value ? null : JSON.stringify(item),
             new Date().toISOString(),
           ],
         );
@@ -193,16 +247,28 @@ export class SmsReviewService {
     );
     await this.refresh();
   }
+  async rejectBatch(candidates: readonly SmsCandidate[]): Promise<void> {
+    this.assertUnlocked();
+    await this.database.atomic(async (tx) => {
+      for (const candidate of candidates.slice(0, 200))
+        await tx.run(
+          `UPDATE sms_candidates SET state='REJECTED',updated_at=? WHERE id=? AND state IN ('PENDING','DEFERRED')`,
+          [new Date().toISOString(), candidate.id],
+        );
+    });
+    await this.refresh();
+  }
   async approve(
     candidate: SmsCandidate,
     sourceId: string,
     amountMinor: number,
     merchant: string,
     existingId = '',
-    reconciliation: 'PENDING' | 'FULLY_PAID' | 'RETAIN_BALANCE' = 'PENDING',
+    reconciliation: ReconciliationChoice = 'PENDING',
     allowSeparate = false,
     settlementDate = '',
     statementDueMinor = 0,
+    edits: ApprovalEdits = {},
   ): Promise<void> {
     this.assertUnlocked();
     const result = await this.database.atomic(async (tx) => {
@@ -228,7 +294,7 @@ export class SmsReviewService {
       );
       const sources = pref
         ? (JSON.parse(pref.encrypted_value) as PaymentSource[])
-        : [...this.store.paymentSources()];
+        : this.store.paymentSources().map((source) => ({ ...source }));
       const source = sources.find((s) => s.id === sourceId);
       const wallet = item.kind.startsWith('PLUXEE') || item.kind.startsWith('FASTAG');
       if (
@@ -237,6 +303,10 @@ export class SmsReviewService {
           : !card
       )
         throw new Error('Source type does not match this event.');
+      if (card && card.currencyCode !== item.currency)
+        throw new Error(
+          'Currency differs from this card. Use manual entry with an explicit currency conversion.',
+        );
       if (
         source?.kind === 'FASTAG' &&
         item.vehicleNumber &&
@@ -247,22 +317,55 @@ export class SmsReviewService {
         await tx.query<{ payload: string }>('SELECT payload FROM card_transactions')
       ).map((r) => JSON.parse(r.payload) as CardTransaction);
       const now = new Date().toISOString();
+      const transactionDate = edits.transactionDate ?? item.eventDate;
+      if (
+        !/^\d{4}-\d{2}-\d{2}$/.test(transactionDate) ||
+        !Number.isFinite(Date.parse(transactionDate)) ||
+        new Date(transactionDate).toISOString().slice(0, 10) !== transactionDate
+      )
+        throw new Error('Enter a valid event date.');
       let statement: CardStatement | null = null;
+      let balanceAdjustment: CardTransaction | null = null;
       let transaction: CardTransaction | null = null;
       let transactionId = existingId;
       if (existingId) {
         const existing = ledger.find((t) => t.id === existingId);
         if (!existing || existing.cardId !== sourceId || existing.type !== type)
           throw new Error('Existing entry must have the same source and event type.');
-        if (existing.amountMinor !== amountMinor)
+        if (existing.amountMinor !== amountMinor && reconciliation !== 'REPAIR_EXISTING')
           throw new Error('Amounts differ. Repair the existing transaction before linking.');
+        if (reconciliation === 'REPAIR_EXISTING') {
+          if (!source || existing.type !== 'CREDIT')
+            throw new Error('Only a confirmed existing wallet top-up can be repaired here.');
+          transaction = {
+            ...existing,
+            amountMinor,
+            merchant: merchant.trim().slice(0, 100),
+            updatedAt: now,
+          };
+          await tx.run(
+            'UPDATE card_transactions SET amount_minor=?,payload=?,updated_at=? WHERE id=?',
+            [amountMinor, JSON.stringify(transaction), now, existingId],
+          );
+          if (existing.sourceBalanceApplied !== false && !source.noLimit) {
+            source.balanceMinor = (source.balanceMinor ?? 0) + amountMinor - existing.amountMinor;
+            if (!Number.isSafeInteger(source.balanceMinor))
+              throw new Error('Wallet balance would overflow.');
+            await tx.run(
+              `INSERT INTO app_preferences(key,encrypted_value) VALUES ('payment_sources',?) ON CONFLICT(key) DO UPDATE SET encrypted_value=excluded.encrypted_value`,
+              [JSON.stringify(sources)],
+            );
+          }
+        }
       } else {
+        if (reconciliation === 'REPAIR_EXISTING')
+          throw new Error('Select the existing top-up to repair.');
         if (!allowSeparate && existingSuggestions(item, sourceId, ledger).length)
           throw new Error(
             'Possible existing transaction. Match it or explicitly confirm a separate event.',
           );
         // Cross-message issuer confirmations with a shared reference cannot post twice.
-        if (item.reference) {
+        if (item.reference && type === 'PAYMENT') {
           const bindings = await tx.query<{ payload: string; transaction_id: string }>(
             `SELECT payload,transaction_id FROM sms_candidates WHERE state IN ('IMPORTED','MATCHED_EXISTING') AND payload IS NOT NULL`,
           );
@@ -293,7 +396,7 @@ export class SmsReviewService {
           type,
           amountMinor,
           currencyCode: 'INR',
-          transactionDate: item.eventDate,
+          transactionDate,
           transactionTime: item.eventTime,
           merchant: merchant.trim().slice(0, 100),
           categoryId:
@@ -308,6 +411,18 @@ export class SmsReviewService {
           updatedAt: now,
         };
         transaction.sourceBalanceApplied = !beforeCutover;
+        if (edits.categoryId && type !== 'CASHBACK') transaction.categoryId = edits.categoryId;
+        if (edits.relatedTransactionId) {
+          const original = ledger.find((t) => t.id === edits.relatedTransactionId);
+          if (
+            type !== 'REFUND' ||
+            !original ||
+            original.type !== 'PURCHASE' ||
+            original.cardId !== sourceId
+          )
+            throw new Error('Choose an original purchase on the same source.');
+          transaction.relatedTransactionId = original.id;
+        }
         await tx.run(
           `INSERT INTO card_transactions(id,card_id,category_id,type,amount_minor,currency_code,transaction_date,payload,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)`,
           [
@@ -323,14 +438,86 @@ export class SmsReviewService {
             now,
           ],
         );
+        if (transaction.relatedTransactionId)
+          await tx.run(
+            `INSERT INTO transaction_links(transaction_id,related_transaction_id,relationship_type,created_at) VALUES (?,?,'REFUND',?)`,
+            [transaction.id, transaction.relatedTransactionId, now],
+          );
         if (source && !source.noLimit && !beforeCutover) {
           source.balanceMinor =
             (source.balanceMinor ?? 0) + (type === 'PURCHASE' ? -amountMinor : amountMinor);
+          if (!Number.isSafeInteger(source.balanceMinor))
+            throw new Error('Wallet balance would overflow.');
           await tx.run(
-            `UPDATE app_preferences SET encrypted_value = ? WHERE key = 'payment_sources'`,
+            `INSERT INTO app_preferences(key,encrypted_value) VALUES ('payment_sources',?) ON CONFLICT(key) DO UPDATE SET encrypted_value=excluded.encrypted_value`,
             [JSON.stringify(sources)],
           );
         }
+      }
+      if (reconciliation === 'ADJUST_BALANCE') {
+        if (
+          !source ||
+          !wallet ||
+          source.noLimit ||
+          !Number.isSafeInteger(item.reportedBalanceMinor) ||
+          (item.reportedBalanceMinor ?? -1) < 0
+        )
+          throw new Error('A reported wallet balance is required.');
+        if (
+          (source.balanceCutoverAt &&
+            Date.parse(item.eventAt) < Date.parse(source.balanceCutoverAt)) ||
+          ledger.some(
+            (t) =>
+              t.cardId === sourceId && t.id !== existingId && t.transactionDate >= item.eventDate,
+          )
+        )
+          throw new Error(
+            'This balance snapshot may be older than tracked activity. Retain the calculated balance.',
+          );
+        const delta = (item.reportedBalanceMinor ?? 0) - (source.balanceMinor ?? 0);
+        if (delta) {
+          balanceAdjustment = {
+            id: `sms-adjustment-${item.id}`,
+            cardId: sourceId,
+            type: 'ADJUSTMENT',
+            adjustmentDirection: delta > 0 ? 'DECREASE' : 'INCREASE',
+            amountMinor: Math.abs(delta),
+            currencyCode: 'INR',
+            transactionDate: item.eventDate,
+            categoryId: 'other',
+            merchant: 'Approved wallet balance reconciliation',
+            notes: `Explicit user adjustment to reported balance at ${item.eventAt}`,
+            relatedTransactionId: transactionId,
+            attachmentIds: [],
+            createdAt: now,
+            updatedAt: now,
+          };
+          await tx.run(
+            `INSERT INTO card_transactions(id,card_id,category_id,type,amount_minor,currency_code,transaction_date,payload,created_at,updated_at) VALUES (?,NULL,?,?,?,?,?,?,?,?)`,
+            [
+              balanceAdjustment.id,
+              'other',
+              'ADJUSTMENT',
+              Math.abs(delta),
+              'INR',
+              item.eventDate,
+              JSON.stringify(balanceAdjustment),
+              now,
+              now,
+            ],
+          );
+          await tx.run(
+            `INSERT INTO transaction_links(transaction_id,related_transaction_id,relationship_type,created_at) VALUES (?,?,'ADJUSTMENT',?)`,
+            [balanceAdjustment.id, transactionId, now],
+          );
+        }
+        source.balanceMinor = item.reportedBalanceMinor;
+        source.balanceCutoverAt = item.eventAt;
+        source.balanceSnapshotMinor = item.reportedBalanceMinor;
+        await tx.run(
+          `INSERT INTO app_preferences(key,encrypted_value) VALUES ('payment_sources',?) ON CONFLICT(key) DO UPDATE SET encrypted_value=excluded.encrypted_value`,
+          [JSON.stringify(sources)],
+        );
       }
       await tx.run(
         `UPDATE sms_candidates SET state = ?, transaction_id = ?, decision = ?, updated_at = ? WHERE id = ?`,
@@ -364,9 +551,12 @@ export class SmsReviewService {
           dueDate: previous?.dueDate ?? item.eventDate,
           calculatedAmountMinor: previous?.calculatedAmountMinor ?? statementDueMinor,
           bankStatementAmountMinor: previous?.bankStatementAmountMinor ?? statementDueMinor,
-          totalPaidMinor: (previous?.totalPaidMinor ?? 0) + amountMinor,
+          totalPaidMinor:
+            (previous?.totalPaidMinor ?? 0) +
+            (previous?.reconciledPaymentId === transactionId ? 0 : amountMinor),
           status: 'FULLY_PAID',
           reconciledPaymentId: transactionId,
+          reconciledPaymentAmountMinor: amountMinor,
           notes:
             'User explicitly settled this statement; actual payment amount retained. Overall outstanding remains ledger-derived.',
         };
@@ -384,10 +574,12 @@ export class SmsReviewService {
           ],
         );
       }
-      return { transaction, sources, statement };
+      return { transaction, sources, statement, balanceAdjustment };
     });
     if (result) {
       this.store.acceptCommittedImport(result.transaction, result.sources);
+      if (result.balanceAdjustment)
+        this.store.acceptCommittedImport(result.balanceAdjustment, result.sources);
       if (result.statement) this.store.acceptCommittedStatement(result.statement);
     }
     await this.refresh();

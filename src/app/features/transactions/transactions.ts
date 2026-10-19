@@ -30,6 +30,7 @@ import { AppDatePipe, DateFormatService } from '../../core/services/date-format.
 import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
 import { AppDatePicker } from '../../shared/app-date-picker';
 import { indiaCurrentMonth, indiaTodayIso } from '../../core/services/india-date';
+import { PlatformTools } from '../../shared/platform-tools';
 
 type GroupingMode = 'MONTH' | 'CYCLE' | 'STATEMENT';
 type TransactionTypeFilter = TransactionType | 'ALL' | 'WITH_IMAGE';
@@ -62,6 +63,7 @@ function sanitizedMoneyInput(value: string): string {
     ConfirmationDialog,
     AppSelectPicker,
     AppDatePicker,
+    PlatformTools,
   ],
   templateUrl: './transactions.html',
   styleUrl: './transactions.scss',

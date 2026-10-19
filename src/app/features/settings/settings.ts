@@ -1,4 +1,5 @@
 import { Component, ElementRef, computed, inject, signal, viewChild } from '@angular/core';
+import { PlatformTools } from '../../shared/platform-tools';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { SqliteDatabase } from '../../core/data/sqlite-database';
 import { ApplicationPinService } from '../../core/services/application-pin.service';
@@ -32,7 +33,14 @@ type ProtectedDataAction = 'DELETE_ALL' | 'RETENTION';
 
 @Component({
   selector: 'app-settings-page',
-  imports: [ReactiveFormsModule, AppIcon, ConfirmationDialog, PaymentSourcePicker, AppSelectPicker],
+  imports: [
+    ReactiveFormsModule,
+    AppIcon,
+    ConfirmationDialog,
+    PaymentSourcePicker,
+    AppSelectPicker,
+    PlatformTools,
+  ],
   templateUrl: './settings.html',
   styleUrl: './settings.scss',
   host: { '(document:keydown.escape)': 'closeDialogs()' },

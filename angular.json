@@ -64,6 +64,22 @@
                   "with": "src/environments/environment.development.ts"
                 }
               ]
+            },
+            "android": {
+              "fileReplacements": [
+                {
+                  "replace": "src/app/platform-routes.ts",
+                  "with": "src/app/platform-routes.android.ts"
+                },
+                {
+                  "replace": "src/app/shared/platform-tools.ts",
+                  "with": "src/app/shared/platform-tools.android.ts"
+                },
+                {
+                  "replace": "src/app/core/data/platform-data.ts",
+                  "with": "src/app/core/data/platform-data.android.ts"
+                }
+              ]
             }
           },
           "defaultConfiguration": "production"

@@ -532,7 +532,11 @@ export class CardNestStore {
           statement.statementDate === statementIso &&
           statement.status === 'FULLY_PAID' &&
           this.transactions().some(
-            (t) => t.id === statement.reconciledPaymentId && t.type === 'PAYMENT',
+            (t) =>
+              t.id === statement.reconciledPaymentId &&
+              t.type === 'PAYMENT' &&
+              t.cardId === cardId &&
+              t.amountMinor === statement.reconciledPaymentAmountMinor,
           ),
       )
     )
@@ -701,6 +705,8 @@ export class CardNestStore {
   updateTransaction(updated: CardTransaction): boolean {
     const existing = this.transactions().find((transaction) => transaction.id === updated.id);
     if (!existing) return false;
+    if (existing.sourceBalanceApplied === false && updated.cardId !== existing.cardId)
+      updated = { ...updated, sourceBalanceApplied: true };
     this.adjustPaymentSourceBalance(existing, -1);
     this.transactions.update((items) => {
       const next = items.map((transaction) =>
@@ -879,6 +885,13 @@ export class CardNestStore {
     if (updated) void this.persistRecurringRule(updated);
   }
   updatePaymentSource(updated: PaymentSource): void {
+    const previous = this.paymentSources().find((source) => source.id === updated.id);
+    if (previous?.balanceMinor !== updated.balanceMinor)
+      updated = {
+        ...updated,
+        balanceCutoverAt: new Date().toISOString(),
+        balanceSnapshotMinor: updated.balanceMinor,
+      };
     this.paymentSources.update((sources) =>
       sources.map((source) => (source.id === updated.id ? updated : source)),
     );
@@ -1220,13 +1233,11 @@ export class CardNestStore {
     if (transaction.sourceBalanceApplied === false) return;
     const source = this.paymentSources().find((item) => item.id === transaction.cardId);
     if (!source || source.noLimit || source.balanceMinor === undefined) return;
-    const isCredit = ['PAYMENT', 'REFUND', 'CASHBACK', 'CREDIT'].includes(transaction.type);
-    const transactionEffect =
-      (isCredit ? transaction.amountMinor : -transaction.amountMinor) * direction;
+    const balanceEffect = -transactionEffect(transaction) * direction;
     this.paymentSources.update((sources) =>
       sources.map((item) =>
         item.id === source.id
-          ? { ...item, balanceMinor: (item.balanceMinor ?? 0) + transactionEffect }
+          ? { ...item, balanceMinor: (item.balanceMinor ?? 0) + balanceEffect }
           : item,
       ),
     );

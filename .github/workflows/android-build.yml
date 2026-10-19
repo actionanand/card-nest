@@ -71,7 +71,7 @@ jobs:
         run: npm ci
 
       - name: Build Angular app
-        run: npm run build -- --configuration=production
+        run: npm run build:android
 
       - name: Generate and sync Android project
         run: |

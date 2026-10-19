@@ -24,7 +24,7 @@ object SmsDiscovery {
   fun clear(context: Context) = synchronized(lock) {
     settings(context).edit().clear().commit()
     (context.getSystemService(Context.JOB_SCHEDULER_SERVICE) as JobScheduler).cancel(JOB_ID)
-    SmsQueue(context).use { it.writableDatabase.delete("queue", null, null) }
+    SmsQueue(context).use { it.writableDatabase.delete("queue", null, null); it.destroyKey() }
   }
   fun prune(context: Context, cutoff: String) = synchronized(lock) { SmsQueue(context).use { it.prune(cutoff) } }
   fun settings(context: Context) = context.getSharedPreferences("sms-discovery", Context.MODE_PRIVATE)

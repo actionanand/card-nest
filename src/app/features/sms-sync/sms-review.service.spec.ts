@@ -55,7 +55,11 @@ describe('SMS approved import integrity', () => {
       transaction: CardTransaction | null,
       wallets: readonly PaymentSource[],
     ) => {
-      if (transaction) transactions.update((items) => [transaction, ...items]);
+      if (transaction)
+        transactions.update((items) => [
+          transaction,
+          ...items.filter((item) => item.id !== transaction.id),
+        ]);
       sources.set(wallets);
     },
     acceptCommittedStatement: vi.fn(),
@@ -324,6 +328,92 @@ describe('SMS approved import integrity', () => {
     expect(transferRelationship(a, b)).toBe(true);
     expect(ledgerType(a)).toBeUndefined();
     expect(ledgerType(b)).toBeUndefined();
+  });
+  it('explicit wallet reconciliation creates a documented adjustment and rejects an older snapshot', async () => {
+    const wallet: PaymentSource = {
+      id: 'meal',
+      nickname: 'DEMO',
+      kind: 'MEAL',
+      balanceMinor: 5000,
+      noLimit: false,
+      autoLoad: false,
+      archived: false,
+    };
+    sources.set([wallet]); // Missing preference must be created durably without mutating the signal early.
+    const candidate = stage(
+      evidence({ kind: 'PLUXEE_TOPUP', amountMinor: 2000, reportedBalanceMinor: 8000 }),
+    );
+    await service.approve(candidate, 'meal', 2000, 'Load', '', 'ADJUST_BALANCE');
+    expect(sources()[0].balanceMinor).toBe(8000);
+    expect(count('card_transactions')).toBe(2);
+    expect(transactions().find((t) => t.type === 'ADJUSTMENT')?.amountMinor).toBe(1000);
+    const older = stage(
+      evidence({
+        id: 'b'.repeat(64),
+        kind: 'PLUXEE_TOPUP',
+        eventDate: '2026-10-17',
+        eventAt: '2026-10-17T12:00:00Z',
+        reportedBalanceMinor: 1000,
+      }),
+    );
+    await expect(
+      service.approve(older, 'meal', 45000, 'Older', '', 'ADJUST_BALANCE'),
+    ).rejects.toThrow('snapshot');
+    expect(sources()[0].balanceMinor).toBe(8000);
+    expect(count('card_transactions')).toBe(2);
+  });
+  it('repairs the selected existing top-up without posting a second load', async () => {
+    const wallet: PaymentSource = {
+      id: 'meal',
+      nickname: 'DEMO',
+      kind: 'MEAL',
+      balanceMinor: 5000,
+      noLimit: false,
+      autoLoad: false,
+      archived: false,
+    };
+    sources.set([wallet]);
+    run(`INSERT INTO app_preferences VALUES ('payment_sources',?)`, [JSON.stringify([wallet])]);
+    await service.approve(
+      stage(evidence({ kind: 'PLUXEE_TOPUP', amountMinor: 2000 })),
+      'meal',
+      2000,
+      'Load',
+    );
+    const existing = transactions()[0];
+    await service.approve(
+      stage(evidence({ id: 'b'.repeat(64), kind: 'PLUXEE_TOPUP', amountMinor: 3000 })),
+      'meal',
+      3000,
+      'Corrected',
+      existing.id,
+      'REPAIR_EXISTING',
+    );
+    expect(count('card_transactions')).toBe(1);
+    expect(transactions()).toHaveLength(1);
+    expect(transactions()[0].amountMinor).toBe(3000);
+    expect(sources()[0].balanceMinor).toBe(8000);
+  });
+  it('failed wallet import never mutates fallback source signals', async () => {
+    const wallet: PaymentSource = {
+      id: 'meal',
+      nickname: 'DEMO',
+      kind: 'MEAL',
+      balanceMinor: 5000,
+      noLimit: false,
+      autoLoad: false,
+      archived: false,
+    };
+    sources.set([wallet]);
+    sql.exec(
+      `CREATE TRIGGER fail_binding BEFORE INSERT ON sms_reconciliation BEGIN SELECT RAISE(ABORT,'synthetic failure'); END`,
+    );
+    await expect(
+      service.approve(stage(evidence({ kind: 'PLUXEE_TOPUP' })), 'meal', 45000, 'Load'),
+    ).rejects.toThrow();
+    expect(wallet.balanceMinor).toBe(5000);
+    expect(sources()[0].balanceMinor).toBe(5000);
+    expect(count('card_transactions')).toBe(0);
   });
   it('ambiguous suffixes remain multiple candidates and no suffix never guesses a card', () => {
     const cards = [card, { ...card, id: 'second' }] as Parameters<typeof eligibleSources>[1];

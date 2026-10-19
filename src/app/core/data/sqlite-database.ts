@@ -2,7 +2,7 @@ import { CapacitorSQLite } from '@capacitor-community/sqlite';
 import { Capacitor } from '@capacitor/core';
 import { Service, signal } from '@angular/core';
 import { DATABASE_MIGRATIONS } from './migrations';
-import { clearPlatformDiscovery } from './platform-data';
+import { clearPlatformDiscovery, prunePlatformDiscovery } from './platform-data';
 
 interface JeepSqliteElement extends HTMLElement {
   wasmPath: string;
@@ -342,6 +342,7 @@ export class SqliteDatabase {
 
   private async deleteDataOlderThanUnqueued(cutoffIso: string): Promise<number> {
     if (!this.ready()) throw new Error('SQLite database is unavailable.');
+    await prunePlatformDiscovery(cutoffIso);
     const countResult = await CapacitorSQLite.query({
       database: this.databaseName,
       statement: 'SELECT COUNT(*) AS count FROM card_transactions WHERE transaction_date < ?',
@@ -353,6 +354,7 @@ export class SqliteDatabase {
       transaction: true,
       statements: `
         UPDATE sms_candidates SET payload = NULL WHERE event_at < '${cutoffIso}';
+        INSERT INTO sms_sync_state(key,value) VALUES ('retention_cutoff','${cutoffIso}') ON CONFLICT(key) DO UPDATE SET value=excluded.value;
         DELETE FROM transaction_links
          WHERE transaction_id IN (SELECT id FROM card_transactions WHERE transaction_date < '${cutoffIso}')
             OR related_transaction_id IN (SELECT id FROM card_transactions WHERE transaction_date < '${cutoffIso}');

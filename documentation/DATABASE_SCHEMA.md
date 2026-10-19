@@ -1,5 +1,7 @@
 # CardNest SQLite schema and database inspection
 
+Migration 7 adds `sms_candidates` (unique processing identities, indexed state/event time and optional ledger binding), `sms_reconciliation` (explicit decisions and targets), and `sms_sync_state` (retention metadata). Portable backups omit extracted candidate payloads while retaining dedup tombstones and approved financial entries. Native staging is a separate Keystore-encrypted private queue and never opens the Capacitor database. See [SMS_SYNC.md](./SMS_SYNC.md) for recovery and privacy behavior.
+
 This document describes the current CardNest SQLite schema, its relationships, deletion behavior, storage locations, and safe ways to inspect tables during development. The executable source of truth is [`src/app/core/data/migrations.ts`](../src/app/core/data/migrations.ts); update this document whenever a new migration changes the schema.
 
 For platform initialization, WebAssembly setup, and migration architecture, also see [`SQLITE.md`](./SQLITE.md). For controlled development-only data fixes from DevTools, see [`BACKEND_DATA_MAINTENANCE.md`](./BACKEND_DATA_MAINTENANCE.md).

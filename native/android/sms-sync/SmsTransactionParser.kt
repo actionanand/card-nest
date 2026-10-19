@@ -124,7 +124,8 @@ object SmsTransactionParser {
 
   private fun event(text: String, receipt: Long, zone: ZoneId): Pair<ZonedDateTime, Boolean>? {
     val dateRx = rx("\\b(?:[0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{1,2}[-/][0-9]{1,2}[-/](?:[0-9]{4}|[0-9]{2})|[0-9]{1,2}[-/ ][A-Za-z]{3,9}[-/ ](?:[0-9]{4}|[0-9]{2})|(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) [A-Za-z]{3} [0-9]{1,2} [0-9]{4})(?:(?: at)? [0-9]{1,2}:[0-9]{2}(?::[0-9]{1,2})?(?: [AP]M)?)?")
-    val dateText = text.replace(rx("([0-9]{1,2})(?:st|nd|rd|th)\\b"), "$1")
+    val dateText = text.replace(rx("\\b(?:Ref(?:erence)?(?: No\\.?)?|UTR|RRN|UPI Ref(?: No\\.?)?)\\s*[:#.]?\\s*[A-Z0-9-]{8,30}"), "")
+      .replace(rx("([0-9]{1,2})(?:st|nd|rd|th)\\b"), "$1")
     val raw = dateRx.find(dateText)?.value?.replace(" at ", " ", true)?.replace(Regex("^[A-Za-z]{3} "), "")
     if (raw != null) {
       val datePatterns = listOf("uuuu-MM-dd", "d-M-uuuu", "d/M/uuuu", "d-M-yy", "d/M/yy", "d-MMM-yy", "d/MMM/uuuu", "d-MMM-uuuu", "d MMMM uuuu", "d MMM uuuu", "MMM d uuuu")

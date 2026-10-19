@@ -169,6 +169,7 @@ export interface CardStatement {
   status: 'UPCOMING' | 'PENDING' | 'PARTIALLY_PAID' | 'MINIMUM_PAID' | 'FULLY_PAID' | 'OVERDUE';
   notes?: string;
   reconciledPaymentId?: string;
+  reconciledPaymentAmountMinor?: Money;
 }
 
 export interface RecurringRule {

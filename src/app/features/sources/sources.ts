@@ -8,6 +8,7 @@ import { AppIcon } from '../../shared/app-icon';
 import { PaymentSourceLogo } from '../../shared/payment-source-logo';
 import { AppDatePipe } from '../../core/services/date-format.service';
 import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
+import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 
 type SourceTab = 'ACCOUNTS' | 'ACTIVITY';
 
@@ -20,11 +21,52 @@ interface SourceCycleGroup {
 
 @Component({
   selector: 'app-sources-page',
-  imports: [RouterLink, AppIcon, PaymentSourceLogo, AppDatePipe, AppSelectPicker],
+  imports: [
+    RouterLink,
+    AppIcon,
+    PaymentSourceLogo,
+    AppDatePipe,
+    AppSelectPicker,
+    ReactiveFormsModule,
+  ],
   templateUrl: './sources.html',
   styleUrl: './sources.scss',
 })
 export class SourcesPage {
+  readonly walletError = signal('');
+  readonly walletForm = new FormGroup({
+    name: new FormControl('', {
+      nonNullable: true,
+      validators: [Validators.required, Validators.maxLength(80)],
+    }),
+    provider: new FormControl('', { nonNullable: true, validators: Validators.maxLength(80) }),
+    plate: new FormControl('', {
+      nonNullable: true,
+      validators: [Validators.required, Validators.pattern(/^[A-Za-z0-9 -]{5,16}$/)],
+    }),
+  });
+  async addFastag(event: Event): Promise<void> {
+    event.preventDefault();
+    if (!this.walletForm.valid) return;
+    this.walletError.set('');
+    const value = this.walletForm.getRawValue();
+    try {
+      await this.store.addWallet({
+        id: crypto.randomUUID(),
+        nickname: value.name.trim(),
+        kind: 'FASTAG',
+        institution: value.provider.trim(),
+        vehicleNumber: value.plate.replace(/[ -]/g, '').toUpperCase(),
+        noLimit: false,
+        balanceMinor: 0,
+        autoLoad: false,
+        archived: false,
+      });
+      this.walletForm.reset();
+    } catch (error: unknown) {
+      this.walletError.set(error instanceof Error ? error.message : 'Wallet could not be saved.');
+    }
+  }
   readonly store = inject(CardNestStore);
   private readonly route = inject(ActivatedRoute);
   private readonly snackbar = inject(SnackbarService);
@@ -208,7 +250,10 @@ export class SourcesPage {
   }
 
   monthlyRemaining(source: PaymentSource): number {
-    return Math.max(0, (source.loadAmountMinor ?? 0) - this.monthlyUsed(source));
+    const loads = this.currentCycleTransactions()
+      .filter((t) => t.cardId === source.id && this.isCredit(t.type))
+      .reduce((sum, t) => sum + t.amountMinor, 0);
+    return loads - this.monthlyUsed(source);
   }
 
   private cycleFor(dateIso: string): { startIso: string; endIso: string; label: string } {

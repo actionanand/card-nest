@@ -24,6 +24,8 @@ export type SmsKind =
   | 'LOAN_REMINDER';
 export type ReviewState =
   'PENDING' | 'REJECTED' | 'IGNORED' | 'IMPORTED' | 'MATCHED_EXISTING' | 'DEFERRED' | 'ERROR';
+export type ReconciliationChoice =
+  'PENDING' | 'FULLY_PAID' | 'RETAIN_BALANCE' | 'REPAIR_EXISTING' | 'ADJUST_BALANCE';
 export interface SmsEvidence {
   eventTime?: string;
   timeZone?: string;
@@ -52,6 +54,11 @@ export interface SmsEvidence {
   minimumDueMinor?: number;
   dueDate?: string;
   evidence: string;
+}
+export interface ApprovalEdits {
+  transactionDate?: string;
+  categoryId?: string;
+  relatedTransactionId?: string;
 }
 export interface SmsCandidate {
   id: string;

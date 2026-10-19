@@ -1,4 +1,5 @@
 import { CanDeactivateFn, Routes } from '@angular/router';
+import { platformRoutes } from './platform-routes';
 
 interface DirtyTransactionEditor {
   canDeactivate(): boolean | Promise<boolean>;
@@ -8,6 +9,7 @@ const confirmTransactionDraft: CanDeactivateFn<DirtyTransactionEditor> = (compon
   component.canDeactivate();
 
 export const routes: Routes = [
+  ...platformRoutes,
   {
     path: '',
     pathMatch: 'full',
