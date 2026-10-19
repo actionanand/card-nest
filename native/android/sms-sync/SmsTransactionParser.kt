@@ -28,21 +28,21 @@ object SmsTransactionParser {
     val requiresReview: Boolean = true
   )
 
-  private val money = Regex("""(?i)(?:₹|\\bINR\\b|\\bRs\\.?)(?:\\s*[:.]?\\s*)([0-9][0-9,]*(?:\\.[0-9]{1,2})?)""")
-  private val amountBeforeVerb = Regex("""(?i)(?:₹|\\bINR\\b|\\bRs\\.?)[\\s:.]*([0-9][0-9,]*(?:\\.[0-9]{1,2})?)[\\s]*(?:has\\s+been\\s+)?(?:spent|debited|refunded|credited|sent|paid)\\b""")
+  private val money = Regex("""(?i)(?:₹|\bINR\b|\bRs\.?)(?:\s*[:.]?\s*)([0-9][0-9,]*(?:\.[0-9]{1,2})?)""")
+  private val amountBeforeVerb = Regex("""(?i)(?:₹|\bINR\b|\bRs\.?)[\s:.]*([0-9][0-9,]*(?:\.[0-9]{1,2})?)[\s]*(?:has\s+been\s+)?(?:spent|debited|refunded|credited|sent|paid)\b""")
   private val cardContext = listOf(
-    Regex("""(?i)(?:credit\\s+card|card\\s+no\\.?|card\\s+ending|card\\s+\\*+|your\\s+card|card\\s+xx|card\\s+x)[^\\n]{0,60}?(?:\\*+|x+|ending(?:\\s+with)?|no\\.?|\\s)([0-9]{4,5})\\b"""),
-    Regex("""(?i)\\b(?:BOBCARD|AMEX|American\\s+Express)\\s+(?:\\*+|x+)([0-9]{4,5})\\b"""),
-    Regex("""(?i)\\bcard\\s+(?:ending\\s+(?:with\\s+)?)?([0-9]{4,5})\\b""")
+    Regex("""(?i)(?:credit\s+card|card\s+no\.?|card\s+ending|card\s+\*+|your\s+card|card\s+xx|card\s+x)[^\n]{0,60}?(?:\*+|x+|ending(?:\s+with)?|no\.?|\s)([0-9]{4,5})\b"""),
+    Regex("""(?i)\b(?:BOBCARD|AMEX|American\s+Express)\s+(?:\*+|x+)([0-9]{4,5})\b"""),
+    Regex("""(?i)\bcard\s+(?:ending\s+(?:with\s+)?)?([0-9]{4,5})\b""")
   )
-  private val accountContext = Regex("""(?i)\\b(?:acct|acc|a/c|account)\\s*(?:no\\.?\\s*)?(?:x+|\\*+|[0-9]+x+)([0-9]{3,5})\\b""")
-  private val referenceContext = Regex("""(?i)\\b(?:UPI\\s*(?:ref(?:erence)?\\s*(?:no\\.?)?)?|RRN|UTR|Ref(?:erence)?\\s*(?:No\\.?)?)\\s*[:#.]?\\s*([0-9]{9,15})\\b""")
-  private val plate = Regex("""\\b[A-Z]{2}\\s?[0-9]{1,2}\\s?[A-Z]{1,3}\\s?[0-9]{4}\\b""")
-  private val reportedBalance = Regex("""(?i)(?:current\\s+(?:meal\\s+wallet\\s+)?balance|(?:avl|available|wallet)\\s*bal(?:ance)?)[\\s:]*((?:₹|INR|Rs\\.?)\\s*[0-9][0-9,]*(?:\\.[0-9]{1,2})?)""")
+  private val accountContext = Regex("""(?i)\b(?:acct|acc|a/c|account)\s*(?:no\.?\s*)?(?:x+|\*+|[0-9]+x+)([0-9]{3,5})\b""")
+  private val referenceContext = Regex("""(?i)\b(?:UPI\s*(?:ref(?:erence)?\s*(?:no\.?)?)?|RRN|UTR|Ref(?:erence)?\s*(?:No\.?)?)\s*[:#.]?\s*([0-9]{9,15})\b""")
+  private val plate = Regex("""\b[A-Z]{2}\s?[0-9]{1,2}\s?[A-Z]{1,3}\s?[0-9]{4}\b""")
+  private val reportedBalance = Regex("""(?i)(?:current\s+(?:meal\s+wallet\s+)?balance|(?:avl|available|wallet)\s*bal(?:ance)?)[\s:]*((?:₹|INR|Rs\.?)\s*[0-9][0-9,]*(?:\.[0-9]{1,2})?)""")
   private val spendingMerchant = listOf(
-    Regex("""(?i)\\b(?:spent|debited|charged)\\b[\\s\\S]{0,130}?\\bat\\s+(.+?)(?:\\s+on\\s+|\\s+via\\s+|\\s+through\\s+|\\s+avl\\b|\\s+not\\s+you|$)"""),
-    Regex("""(?i)\\bat\\s+(.+?)(?:\\s+on\\s+|\\s+via\\s+|\\s+through\\s+|\\s+avl\\b|\\s+not\\s+you|$)"""),
-    Regex("""(?i)\\bto\\s+(.+?)(?:\\s+on\\s+|\\s+\\(|\\s+UPI\\b|\\s+ref\\b|$)""")
+    Regex("""(?i)\b(?:spent|debited|charged)\b[\s\S]{0,130}?\bat\s+(.+?)(?:\s+on\s+|\s+via\s+|\s+through\s+|\s+avl\b|\s+not\s+you|$)"""),
+    Regex("""(?i)\bat\s+(.+?)(?:\s+on\s+|\s+via\s+|\s+through\s+|\s+avl\b|\s+not\s+you|$)"""),
+    Regex("""(?i)\bto\s+(.+?)(?:\s+on\s+|\s+\(|\s+UPI\b|\s+ref\b|$)""")
   )
   private val dateFormats = listOf(
     "dd-MM-yyyy HH:mm:ss", "d-M-yyyy HH:mm:ss", "dd-MM-yyyy HH:mm:s",
@@ -51,17 +51,17 @@ object SmsTransactionParser {
     "dd-MM-yy", "d-MM-yy", "dd MMMM yyyy", "d MMMM yyyy",
     "EEE MMM dd yyyy HH:mm:ss", "EEE MMM d yyyy HH:mm:ss"
   )
-  private val dateExpression = Regex("""(?i)\\b(?:[0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{1,2}[-/][0-9]{1,2}[-/][0-9]{2,4}|[0-9]{1,2}[- ][A-Za-z]{3,9}[- ](?:[0-9]{2}|[0-9]{4})|(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\\s+[A-Za-z]{3}\\s+[0-9]{1,2}\\s+[0-9]{4})(?:\\s+[0-9]{1,2}:[0-9]{1,2}(?::[0-9]{1,2})?)?""")
+  private val dateExpression = Regex("""(?i)\b(?:[0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{1,2}[-/][0-9]{1,2}[-/][0-9]{2,4}|[0-9]{1,2}[- ][A-Za-z]{3,9}[- ](?:[0-9]{2}|[0-9]{4})|(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+[A-Za-z]{3}\s+[0-9]{1,2}\s+[0-9]{4})(?:\s+[0-9]{1,2}:[0-9]{1,2}(?::[0-9]{1,2})?)?""")
 
   fun parse(body: String, receivedAtMillis: Long): Result? {
     if (body.length > 16_384 || body.isBlank()) return null
-    val normalized = body.replace('\u00a0', ' ').replace(Regex("""[ \\t]+"""), " ").trim()
+    val normalized = body.replace('\u00a0', ' ').replace(Regex("""[ \t]+"""), " ").trim()
     val plain = normalized.replace('\n', ' ')
     val lower = plain.lowercase(Locale.ROOT)
-    if (Regex("""(?i)\\b(?:otp|one.time.password|verification\\s+code|login\\s+code)\\b""").containsMatchIn(plain) &&
-      !Regex("""(?i)\\b(?:debited|spent|credited|refund|cashback|payment\\s+received)\\b""").containsMatchIn(plain)) return null
-    if (Regex("""(?i)\\b(?:offer|discount|cashback\\s+offer|reward\\s+points|not\\s+been\\s+used|has\\s+not\\s+been\\s+used|not\\s+been\\s+used\\s+for)\\b""").containsMatchIn(plain) &&
-      !Regex("""(?i)\\b(?:spent|debited|credited|refunded|payment\\s+(?:of|received))\\b""").containsMatchIn(plain)) return null
+    if (Regex("""(?i)\b(?:otp|one.time.password|verification\s+code|login\s+code)\b""").containsMatchIn(plain) &&
+      !Regex("""(?i)\b(?:debited|spent|credited|refund|cashback|payment\s+received)\b""").containsMatchIn(plain)) return null
+    if (Regex("""(?i)\b(?:offer|discount|cashback\s+offer|reward\s+points|not\s+been\s+used|has\s+not\s+been\s+used|not\s+been\s+used\s+for)\b""").containsMatchIn(plain) &&
+      !Regex("""(?i)\b(?:spent|debited|credited|refunded|payment\s+(?:of|received))\b""").containsMatchIn(plain)) return null
 
     val pluxee = lower.contains("pluxee") || lower.contains("sodexo")
     val fastag = lower.contains("toll paid") || lower.contains("fastag") || lower.contains("toll plaza")
@@ -69,26 +69,26 @@ object SmsTransactionParser {
       lower.contains("merchantmandate") || lower.contains("autopay")
     val statement = (lower.contains("statement") && (lower.contains("generated") || lower.contains("total due") || lower.contains("minimum due"))) ||
       lower.contains("minimum amount due") || lower.contains("minimum due") || lower.contains("total amount due")
-    val due = Regex("""(?i)\\b(?:emi|payment|amount|total|minimum)\\b.{0,90}\\b(?:is\\s+due|due\\s+on|due\\s+by|payable\\s+by)\\b""").containsMatchIn(plain)
-    val topup = Regex("""(?i)\\b(?:credited|loaded|recharged|topped\\s*up)\\b""").containsMatchIn(plain) &&
+    val due = Regex("""(?i)\b(?:emi|payment|amount|total|minimum)\b.{0,90}\b(?:is\s+due|due\s+on|due\s+by|payable\s+by)\b""").containsMatchIn(plain)
+    val topup = Regex("""(?i)\b(?:credited|loaded|recharged|topped\s*up)\b""").containsMatchIn(plain) &&
       !lower.contains("refunded")
-    val refund = Regex("""(?i)\\b(?:refunded|refund\\s+successful|refund\\s+of|reversal|reversed)\\b""").containsMatchIn(plain)
-    val cashback = Regex("""(?i)\\bcashback\\b.{0,100}\\b(?:credited|received|deposited)\\b""").containsMatchIn(plain) ||
-      Regex("""(?i)\\b(?:credited|received)\\b.{0,100}\\bcashback\\b""").containsMatchIn(plain)
-    val cardPayment = Regex("""(?i)(?:payment\\s+(?:of\\s+.{0,40}?)?(?:has\\s+been\\s+)?received|payment\\s+(?:of\\s+.{0,50}?)?was\\s+credited|online\\s+payment.{0,100}credited)""").containsMatchIn(plain) &&
+    val refund = Regex("""(?i)\b(?:refunded|refund\s+successful|refund\s+of|reversal|reversed)\b""").containsMatchIn(plain)
+    val cashback = Regex("""(?i)\bcashback\b.{0,100}\b(?:credited|received|deposited)\b""").containsMatchIn(plain) ||
+      Regex("""(?i)\b(?:credited|received)\b.{0,100}\bcashback\b""").containsMatchIn(plain)
+    val cardPayment = Regex("""(?i)(?:payment\s+(?:of\s+.{0,40}?)?(?:has\s+been\s+)?received|payment\s+(?:of\s+.{0,50}?)?was\s+credited|online\s+payment.{0,100}credited)""").containsMatchIn(plain) &&
       (lower.contains("card") || lower.contains("bobcard"))
-    val debit = Regex("""(?i)\\b(?:debited|spent|charged|sent|toll\\s+paid)\\b""").containsMatchIn(plain)
-    val credit = Regex("""(?i)\\b(?:credited|received)\\b""").containsMatchIn(plain)
+    val debit = Regex("""(?i)\b(?:debited|spent|charged|sent|toll\s+paid)\b""").containsMatchIn(plain)
+    val credit = Regex("""(?i)\b(?:credited|received)\b""").containsMatchIn(plain)
     val sourceCard = lower.contains("credit card") || lower.contains("amex") || lower.contains("bobcard") ||
       (lower.contains("card") && !pluxee && !fastag && !lower.contains("debit card"))
-    val bank = Regex("""(?i)\\b(?:acct|account|a/c|savings)\\b""").containsMatchIn(plain)
+    val bank = Regex("""(?i)\b(?:acct|account|a/c|savings)\b""").containsMatchIn(plain)
     val amount = extractAmount(plain, cashback, statement)
     val kind = when {
       refund -> Kind.REFUND
       cashback -> Kind.CASHBACK
       pluxee && topup && !debit -> Kind.PLUXEE_TOPUP
       pluxee && debit -> Kind.PLUXEE_PURCHASE
-      fastag && Regex("""(?i)\\b(?:toll\\s+paid|debited|spent)\\b""").containsMatchIn(plain) -> Kind.FASTAG_TOLL
+      fastag && Regex("""(?i)\b(?:toll\s+paid|debited|spent)\b""").containsMatchIn(plain) -> Kind.FASTAG_TOLL
       fastag && topup -> Kind.FASTAG_TOPUP
       cardPayment -> Kind.CARD_PAYMENT_RECEIVED
       statement -> Kind.STATEMENT
@@ -135,12 +135,12 @@ object SmsTransactionParser {
 
   private fun extractAmount(text: String, cashback: Boolean, statement: Boolean): Long? {
     if (statement) {
-      val total = Regex("""(?i)(?:total\\s+(?:amt|amount|due)[\\s:.]*|total\\s+fresh\\s+pro\\s+credited.{0,5})(?:INR|Rs\\.?|₹)?\\s*(?:Dr\\.?\\s*)?([0-9][0-9,]*(?:\\.[0-9]{1,2})?)""")
+      val total = Regex("""(?i)(?:total\s+(?:amt|amount|due)[\s:.]*|total\s+fresh\s+pro\s+credited.{0,5})(?:INR|Rs\.?|₹)?\s*(?:Dr\.?\s*)?([0-9][0-9,]*(?:\.[0-9]{1,2})?)""")
         .find(text)?.groupValues?.getOrNull(1)
       if (total != null) return parseMinor(total)
     }
     if (cashback) {
-      val match = Regex("""(?i)cashback\\s+(?:of\\s+)?(?:INR|Rs\\.?|₹)\\s*([0-9][0-9,]*(?:\\.[0-9]{1,2})?)""")
+      val match = Regex("""(?i)cashback\s+(?:of\s+)?(?:INR|Rs\.?|₹)\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)""")
         .find(text)?.groupValues?.getOrNull(1)
       if (match != null) return parseMinor(match)
     }
