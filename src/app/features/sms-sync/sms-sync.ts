@@ -9,6 +9,8 @@ import {
   viewChild,
 } from '@angular/core';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
+import { Router } from '@angular/router';
+import { AppIcon } from '../../shared/app-icon';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { parseMoneyToMinor } from '../../core/services/money';
 import { SmsReviewService } from './sms-review.service';
@@ -22,9 +24,18 @@ import {
   merchantTitle,
 } from './sms-model';
 
+function isReviewEntry(info: unknown): boolean {
+  return (
+    typeof info === 'object' &&
+    info !== null &&
+    'smsReviewEntry' in info &&
+    info.smsReviewEntry === true
+  );
+}
+
 @Component({
   selector: 'app-sms-sync',
-  imports: [ReactiveFormsModule],
+  imports: [ReactiveFormsModule, AppIcon],
   templateUrl: './sms-sync.html',
   styleUrl: './sms-sync.scss',
   host: {
@@ -37,6 +48,9 @@ import {
 export class SmsSyncPage {
   readonly sync = inject(SmsReviewService);
   readonly store = inject(CardNestStore);
+  // Router `info` is transient: refresh, restored history and ordinary app launch
+  // cannot replay the explicit link action and request permission on startup.
+  private entryPermissionPending = isReviewEntry(inject(Router).currentNavigation()?.extras.info);
   readonly range = signal(30);
   readonly search = signal('');
   readonly kind = signal('ALL');
@@ -47,6 +61,14 @@ export class SmsSyncPage {
   readonly advanced = signal(false);
   readonly loading = signal(false);
   readonly notice = signal('');
+  readonly pageCount = computed(() => Math.max(1, Math.ceil(this.sync.total() / 200)));
+  readonly scanLabel = computed(() =>
+    this.sync.busy()
+      ? 'Scanning…'
+      : this.sync.status()?.more || this.sync.status()?.backgroundPending
+        ? 'Resume scan'
+        : 'Scan now',
+  );
   readonly dialog = viewChild<ElementRef<HTMLDialogElement>>('reviewDialog');
   readonly title = merchantTitle;
   readonly filterChips = computed(() =>
@@ -177,10 +199,10 @@ export class SmsSyncPage {
   });
   readonly accessTitle = computed(() => {
     if (this.sync.requestingPermission()) return 'Requesting permission';
+    if (this.sync.changingSync()) return 'Updating sync…';
     const status = this.sync.status();
     if (!status) return 'Checking SMS access';
-    if (status.permission === 'granted')
-      return status.enabled ? 'Granted and enabled' : 'Granted · Temporarily disabled by you';
+    if (status.permission === 'granted') return status.enabled ? 'Sync on' : 'Sync off';
     const labels: Record<string, string> = {
       'not requested': 'Not requested',
       denied: 'Denied',
@@ -213,7 +235,13 @@ export class SmsSyncPage {
       const available = !this.sync.lock.locked() && this.sync.lock.foreground();
       if (available)
         untracked(() => {
-          void this.run(() => this.sync.refresh());
+          void this.run(async () => {
+            if (this.entryPermissionPending) {
+              this.entryPermissionPending = false;
+              await this.sync.enterFromReview(this.range());
+            }
+            await this.sync.refresh();
+          });
         });
       else {
         this.selected.set(null);
@@ -289,6 +317,14 @@ export class SmsSyncPage {
   }
   enable(): void {
     void this.run(() => this.sync.enable(this.range()));
+  }
+  toggleSync(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    const enabled = input.checked;
+    // Reflect confirmed native state, including a denied/failed request returning OFF.
+    input.checked = this.sync.syncEnabled();
+    if (enabled) this.enable();
+    else this.disable();
   }
   refreshAccess(): void {
     if (!this.sync.lock.locked() && this.sync.lock.foreground())

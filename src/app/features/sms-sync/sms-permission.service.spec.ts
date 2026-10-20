@@ -14,6 +14,7 @@ const native = vi.hoisted(() => ({
   scanPage: vi.fn(),
   pending: vi.fn(),
   catchUp: vi.fn(),
+  disable: vi.fn(),
 }));
 vi.mock('@capacitor/core', () => ({
   Capacitor: { getPlatform: () => 'android' },
@@ -50,6 +51,7 @@ describe('SMS permission interaction through the native bridge', () => {
     native.status.mockResolvedValue(denied);
     native.enable.mockResolvedValue(denied);
     native.pending.mockResolvedValue({ items: [] });
+    native.disable.mockResolvedValue({ ...granted, enabled: false });
     TestBed.configureTestingModule({
       providers: [
         SmsReviewService,
@@ -65,6 +67,66 @@ describe('SMS permission interaction through the native bridge', () => {
     await service.refreshAccess();
     expect(service.status()?.permission).toBe('not requested');
     expect(native.enable).not.toHaveBeenCalled();
+    expect(database.atomic).not.toHaveBeenCalled();
+    expect(database.run).not.toHaveBeenCalled();
+  });
+  it('deliberate first Review entry reads actual permission and requests once, even for concurrent entries', async () => {
+    native.status.mockResolvedValue({ ...denied, permission: 'not requested' });
+    native.enable.mockResolvedValue(granted);
+    await Promise.all([service.enterFromReview(30), service.enterFromReview(30)]);
+    expect(native.status).toHaveBeenCalled();
+    expect(native.enable).toHaveBeenCalledOnce();
+    expect(service.syncEnabled()).toBe(true);
+    await service.enterFromReview(30);
+    expect(native.enable).toHaveBeenCalledOnce();
+    expect(database.atomic).not.toHaveBeenCalled();
+    expect(native.beginScan).not.toHaveBeenCalled();
+  });
+  it.each(['denied', 'revoked', 'unavailable', 'granted'])(
+    'Review entry does not request again for %s access or re-enable an explicit opt-out',
+    async (permission) => {
+      native.status.mockResolvedValue({ ...denied, permission, enabled: false });
+      await service.enterFromReview(30);
+      await service.enterFromReview(30);
+      expect(native.enable).not.toHaveBeenCalled();
+      expect(service.syncEnabled()).toBe(false);
+    },
+  );
+  it('a failed first-entry request is not repeated on later navigation; explicit ON can retry', async () => {
+    native.status.mockResolvedValue({ ...denied, permission: 'not requested' });
+    native.enable.mockRejectedValue(new Error('Synthetic request failure'));
+    await service.enterFromReview(30);
+    await service.enterFromReview(30);
+    expect(native.enable).toHaveBeenCalledOnce();
+    expect(service.syncEnabled()).toBe(false);
+    native.enable.mockResolvedValue(granted);
+    await service.enable(30);
+    expect(service.syncEnabled()).toBe(true);
+    expect(native.enable).toHaveBeenCalledTimes(2);
+  });
+  it('OFF cancels discovery through native disable, immediately blocks Scan and retains progress/financial data', async () => {
+    service.status.set(granted);
+    service.busy.set(true);
+    let finish!: (status: ScanStatus) => void;
+    native.disable.mockReturnValue(
+      new Promise<ScanStatus>((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const disable = service.disable();
+    expect(service.changingSync()).toBe(true);
+    expect(service.canScan()).toBe(false);
+    finish({ ...granted, enabled: false });
+    await disable;
+    expect(service.status()).toMatchObject({
+      permission: 'granted',
+      enabled: false,
+      cursorDate: 42,
+      cursorId: 17,
+      pages: 4,
+    });
+    expect(service.syncEnabled()).toBe(false);
+    expect(service.canScan()).toBe(false);
     expect(database.atomic).not.toHaveBeenCalled();
     expect(database.run).not.toHaveBeenCalled();
   });

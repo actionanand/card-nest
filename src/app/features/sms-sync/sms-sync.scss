@@ -49,6 +49,10 @@ h2 {
 .dialog-header {
   justify-content: space-between;
 }
+.section-heading h2 {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .metrics {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -310,4 +314,225 @@ dd {
   dd {
     margin-bottom: 0.4rem;
   }
+}
+/* Keep each control group intact as the available card width changes. */
+.page-heading h1 {
+  margin-block: 0.25rem 0;
+}
+.page-heading .eyebrow {
+  margin-bottom: 0.35rem;
+}
+.intro {
+  max-width: 48rem;
+  margin-block: 0.65rem 1.1rem;
+  line-height: 1.5;
+}
+.scan-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr));
+  align-items: end;
+  gap: 0.75rem;
+  margin-block: 0.5rem 0.85rem;
+}
+.scan-controls .scan-history {
+  margin: 0;
+  min-width: 0;
+}
+.scan-history select {
+  text-overflow: clip;
+  padding-inline-end: 2rem;
+}
+.scan-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: stretch;
+  gap: 0.5rem;
+}
+.scan-actions .btn {
+  position: relative;
+  min-width: 0;
+  min-height: 3rem;
+  padding: 0.65rem 0.75rem;
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+.scan-actions .btn-primary {
+  padding-inline-start: 1.6rem;
+}
+.scan-spinner {
+  position: absolute;
+  inset-inline-start: 0.55rem;
+  width: 0.75rem;
+  height: 0.75rem;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: sms-spin 0.85s linear infinite;
+}
+@keyframes sms-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.sync-switch-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 3rem;
+  align-items: center;
+  gap: 0.8rem;
+  min-height: 3.5rem;
+  padding-block: 0.7rem;
+  cursor: pointer;
+}
+.switch-copy {
+  display: grid;
+  gap: 0.25rem;
+}
+.switch-copy strong {
+  color: var(--ink);
+  font-size: 0.9rem;
+}
+.switch-copy > span {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 400;
+  line-height: 1.5;
+}
+.sync-switch-row input {
+  position: absolute;
+  inset-inline-end: 0;
+  inset-block: 0;
+  z-index: 1;
+  width: 3rem;
+  height: 2.75rem;
+  min-height: 2.75rem;
+  padding: 0;
+  margin-block: auto;
+  opacity: 0;
+  cursor: pointer;
+}
+.switch-track {
+  display: flex;
+  align-items: center;
+  width: 3rem;
+  height: 1.75rem;
+  padding: 0.2rem;
+  border: 1px solid transparent;
+  border-radius: 2rem;
+  background: var(--muted);
+}
+.switch-track > span {
+  display: block;
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 50%;
+  background: var(--surface);
+  transition: transform 0.15s ease;
+}
+.sync-switch-row input:checked + .switch-track {
+  background: var(--accent);
+}
+.sync-switch-row input:checked + .switch-track > span {
+  transform: translateX(1.2rem);
+}
+.sync-switch-row input:focus-visible + .switch-track {
+  outline: 3px solid var(--accent);
+  outline-offset: 4px;
+}
+.sync-switch-row input:disabled + .switch-track {
+  opacity: 0.5;
+}
+.search-bar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 0.5rem;
+  align-items: end;
+}
+.search-bar label {
+  min-width: 0;
+  margin: 0;
+  grid-column: 1 / -1;
+}
+.search-bar .btn {
+  min-width: 0;
+  padding: 0.6rem 0.9rem;
+}
+.search-bar > button:first-of-type {
+  grid-column: 2;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  max-width: 100%;
+  min-height: 2.75rem;
+  padding: 0.45rem 0.7rem;
+}
+.chip span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.chip app-icon {
+  width: 1rem;
+  height: 1rem;
+}
+.chip:active {
+  background: var(--surface-2);
+}
+.clear {
+  border-color: transparent;
+  color: var(--accent);
+  background: transparent;
+}
+.pagination {
+  display: grid;
+  grid-template-columns: 2.75rem minmax(0, 1fr) 2.75rem;
+  justify-items: center;
+  align-items: center;
+  gap: 0.5rem;
+}
+.pagination .btn {
+  width: 2.75rem;
+  min-width: 0;
+  padding: 0.6rem;
+}
+.pagination span {
+  text-align: center;
+}
+@media (min-width: 600px) {
+  .search-bar label {
+    grid-column: auto;
+  }
+  .search-bar > button:first-of-type {
+    grid-column: auto;
+  }
+}
+@media (max-width: 375px) {
+  .filters {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .scan-spinner {
+    animation: none;
+  }
+  .switch-track > span {
+    transition: none;
+  }
+}
+@media (forced-colors: active) {
+  .switch-track {
+    border-color: ButtonText;
+  }
+  .switch-track > span {
+    background: ButtonText;
+  }
+  .sync-switch-row input:checked + .switch-track {
+    background: Highlight;
+  }
+}
+.scan-actions .btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }

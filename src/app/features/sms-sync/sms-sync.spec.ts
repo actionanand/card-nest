@@ -6,6 +6,7 @@ import { CardNestStore } from '../../core/services/card-nest-store';
 import { ScanStatus, SmsCandidate } from './sms-model';
 import axe from 'axe-core';
 import { CreditCard } from '../../core/models/domain';
+import { Router } from '@angular/router';
 
 const demoCard: CreditCard = {
   id: 'demo-card',
@@ -54,11 +55,17 @@ describe('SMS review privacy and explicit approval UI', () => {
   const candidates = signal<readonly SmsCandidate[]>([]);
   const status = signal<ScanStatus | null>(null);
   const requestingPermission = signal(false);
+  const changingSync = signal(false);
+  const navigation = signal<{ extras: { info?: unknown; state?: Record<string, unknown> } } | null>(
+    null,
+  );
   const sync = {
     lock: { locked, foreground },
     candidates,
     status,
     requestingPermission,
+    changingSync,
+    syncEnabled: computed(() => status()?.permission === 'granted' && status()?.enabled === true),
     canScan: computed(
       () =>
         status()?.permission === 'granted' && status()?.enabled === true && !requestingPermission(),
@@ -78,6 +85,11 @@ describe('SMS review privacy and explicit approval UI', () => {
     refreshAccess: vi.fn().mockResolvedValue(undefined),
     openSettings: vi.fn().mockResolvedValue(undefined),
     filterReview: vi.fn().mockResolvedValue(undefined),
+    enterFromReview: vi.fn().mockResolvedValue(undefined),
+    disable: vi.fn().mockResolvedValue(undefined),
+    cancel: vi.fn().mockResolvedValue(undefined),
+    scan: vi.fn().mockResolvedValue(undefined),
+    turnPage: vi.fn().mockResolvedValue(undefined),
   };
   beforeEach(() => {
     locked.set(false);
@@ -85,10 +97,16 @@ describe('SMS review privacy and explicit approval UI', () => {
     candidates.set([]);
     status.set(null);
     requestingPermission.set(false);
+    changingSync.set(false);
+    navigation.set(null);
+    sync.busy.set(false);
+    sync.total.set(0);
+    sync.reviewPage.set(0);
     vi.clearAllMocks();
     TestBed.configureTestingModule({
       imports: [SmsSyncPage],
       providers: [
+        { provide: Router, useValue: { currentNavigation: navigation } },
         { provide: SmsReviewService, useValue: sync },
         {
           provide: CardNestStore,
@@ -131,7 +149,7 @@ describe('SMS review privacy and explicit approval UI', () => {
     fixture.detectChanges();
     expect(fixture.nativeElement.textContent).not.toContain('Background catch-up is pending');
     const buttons = [...fixture.nativeElement.querySelectorAll('button')] as HTMLButtonElement[];
-    expect(buttons.find((b) => b.textContent?.includes('Scan now'))?.disabled).toBe(true);
+    expect(buttons.find((b) => b.textContent?.includes('Resume scan'))?.disabled).toBe(true);
     buttons.find((b) => b.textContent?.includes('Open app settings'))?.click();
     expect(sync.openSettings).toHaveBeenCalledOnce();
   });
@@ -139,13 +157,125 @@ describe('SMS review privacy and explicit approval UI', () => {
     requestingPermission.set(true);
     const fixture = TestBed.createComponent(SmsSyncPage);
     fixture.detectChanges();
-    const buttons = [...fixture.nativeElement.querySelectorAll('button')] as HTMLButtonElement[];
-    expect(buttons.find((b) => b.textContent?.includes('Requesting permission'))?.disabled).toBe(
-      true,
-    );
+    expect(
+      (fixture.nativeElement.querySelector('[role=switch]') as HTMLInputElement).disabled,
+    ).toBe(true);
     expect(fixture.nativeElement.textContent).toContain(
       "Waiting for Android's SMS permission response.",
     );
+  });
+  it('only explicit transient SMS Review navigation invokes first-entry handling', async () => {
+    navigation.set({ extras: { info: { smsReviewEntry: true } } });
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(sync.enterFromReview).toHaveBeenCalledExactlyOnceWith(30);
+    foreground.set(false);
+    fixture.detectChanges();
+    foreground.set(true);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(sync.enterFromReview).toHaveBeenCalledOnce();
+    expect(sync.approve).not.toHaveBeenCalled();
+  });
+  it('persisted browser state cannot replay a permission request on restart', async () => {
+    navigation.set({ extras: { state: { smsReviewEntry: true } } });
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(sync.enterFromReview).not.toHaveBeenCalled();
+    expect(sync.enable).not.toHaveBeenCalled();
+  });
+  const grantedStatus = (enabled: boolean): ScanStatus => ({
+    permission: 'granted',
+    enabled,
+    cursorDate: 42,
+    cursorId: 17,
+    completedAt: 0,
+    pages: 2,
+    scanned: 200,
+    found: 10,
+    more: false,
+    error: '',
+  });
+  it('keeps granted-but-disabled sync OFF and Scan disabled; denial cannot leave an optimistic ON switch', async () => {
+    status.set(grantedStatus(false));
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    const input = fixture.nativeElement.querySelector('[role=switch]') as HTMLInputElement;
+    expect(input.checked).toBe(false);
+    const scan = [
+      ...(fixture.nativeElement.querySelectorAll('button') as NodeListOf<HTMLButtonElement>),
+    ].find((button) => button.textContent?.includes('Scan now'))!;
+    expect(scan.disabled).toBe(true);
+    input.checked = true;
+    input.dispatchEvent(new Event('change'));
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(sync.enable).toHaveBeenCalledWith(30);
+    expect(input.checked).toBe(false);
+    status.set(grantedStatus(true));
+    fixture.detectChanges();
+    expect(input.checked).toBe(true);
+    expect(scan.disabled).toBe(false);
+    input.checked = false;
+    input.dispatchEvent(new Event('change'));
+    await fixture.whenStable();
+    expect(sync.disable).toHaveBeenCalledOnce();
+    status.set(grantedStatus(false));
+    fixture.detectChanges();
+    expect(input.checked).toBe(false);
+    expect(scan.disabled).toBe(true);
+  });
+  it('keeps Cancel functional and prevents a repeated Scan during discovery', async () => {
+    status.set(grantedStatus(true));
+    sync.busy.set(true);
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    const buttons = [
+      ...(fixture.nativeElement.querySelectorAll('button') as NodeListOf<HTMLButtonElement>),
+    ];
+    expect(buttons.find((button) => button.textContent?.includes('Scanning…'))?.disabled).toBe(
+      true,
+    );
+    buttons.find((button) => button.textContent?.includes('Cancel scan'))?.click();
+    await fixture.whenStable();
+    expect(sync.cancel).toHaveBeenCalledOnce();
+    expect(sync.scan).not.toHaveBeenCalled();
+  });
+  it('shows balanced pagination only for multiple pages and respects both boundaries', async () => {
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    await vi.waitFor(() => expect(fixture.componentInstance.loading()).toBe(false));
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('.pagination')).toBeNull();
+    sync.total.set(401);
+    fixture.detectChanges();
+    const previous = fixture.nativeElement.querySelector(
+      '[aria-label="Previous page"]',
+    ) as HTMLButtonElement;
+    const next = fixture.nativeElement.querySelector(
+      '[aria-label="Next page"]',
+    ) as HTMLButtonElement;
+    expect(previous.disabled).toBe(true);
+    expect(next.disabled).toBe(false);
+    expect(fixture.nativeElement.textContent).toContain('Page 1 of 3');
+    next.click();
+    await fixture.whenStable();
+    await vi.waitFor(() => expect(fixture.componentInstance.loading()).toBe(false));
+    expect(sync.turnPage).toHaveBeenCalledWith(1);
+    sync.reviewPage.set(2);
+    fixture.detectChanges();
+    expect(previous.disabled).toBe(false);
+    expect(next.disabled).toBe(true);
+    previous.click();
+    await fixture.whenStable();
+    expect(sync.turnPage).toHaveBeenCalledWith(-1);
+    sync.total.set(1);
+    sync.reviewPage.set(0);
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('.pagination')).toBeNull();
   });
   it('refreshes permission on settings return without requesting or enabling', () => {
     const fixture = TestBed.createComponent(SmsSyncPage);

@@ -1,7 +1,7 @@
 <div class="page sms-page">
   <header class="page-heading">
     <div>
-      <p class="eyebrow">Private · Android</p>
+      <p class="eyebrow">Private</p>
       <h1>SMS Sync</h1>
     </div>
   </header>
@@ -11,6 +11,12 @@
     <p class="intro">
       Nothing changes your transactions or balances until you explicitly approve it.
     </p>
+    @if (sync.requestingPermission()) {
+      <p class="permission-note" role="status">
+        CardNest needs SMS access to discover financial messages for your review. Android controls
+        permission.
+      </p>
+    }
     <section class="panel sync-panel" aria-labelledby="sms-access-title">
       <div class="section-heading">
         <h2 id="sms-access-title">SMS synchronization</h2>
@@ -35,7 +41,7 @@
         </div>
       </div>
       <div class="scan-controls">
-        <label
+        <label class="scan-history"
           >Scan history<select
             [value]="range()"
             (change)="setRange($event)"
@@ -46,17 +52,22 @@
             <option value="0">All available history</option>
           </select></label
         >
-        <button
-          class="btn btn-primary"
-          type="button"
-          (click)="scan()"
-          [disabled]="sync.busy() || !sync.canScan()"
-        >
-          {{ sync.busy() ? 'Scanning…' : 'Scan now / retry' }}
-        </button>
-        @if (sync.busy()) {
-          <button class="btn" type="button" (click)="cancel()">Cancel scan</button>
-        }
+        <div class="scan-actions" role="group" aria-label="Scan controls">
+          <button
+            class="btn btn-primary"
+            type="button"
+            (click)="scan()"
+            [disabled]="sync.busy() || !sync.canScan()"
+          >
+            @if (sync.busy()) {
+              <span class="scan-spinner" aria-hidden="true"></span>
+            }
+            {{ scanLabel() }}
+          </button>
+          <button class="btn" type="button" (click)="cancel()" [disabled]="!sync.busy()">
+            Cancel scan
+          </button>
+        </div>
       </div>
       <p class="muted">Last complete sync: {{ date(sync.status()?.completedAt ?? 0) }}</p>
       @if (sync.canScan() && sync.status()?.backgroundPending) {
@@ -64,6 +75,39 @@
       }
       <details>
         <summary>Access and scan details</summary>
+        <label class="sync-switch-row" for="sms-sync-toggle">
+          <span class="switch-copy"
+            ><strong>SMS sync</strong
+            ><span id="sms-sync-description"
+              >Allow CardNest to discover financial SMS for your review.</span
+            ></span
+          >
+          <input
+            id="sms-sync-toggle"
+            type="checkbox"
+            role="switch"
+            [checked]="sync.syncEnabled()"
+            [disabled]="
+              !sync.status() ||
+              sync.requestingPermission() ||
+              sync.changingSync() ||
+              (!sync.syncEnabled() &&
+                (sync.busy() ||
+                  (sync.status()?.permission !== 'granted' && sync.status()?.canRequest === false)))
+            "
+            (change)="toggleSync($event)"
+            aria-label="SMS sync"
+            aria-describedby="sms-sync-description sms-access-state"
+          />
+          <span class="switch-track" aria-hidden="true"><span></span></span>
+        </label>
+        <p id="sms-access-state" role="status">
+          @if (sync.status()?.permission === 'granted') {
+            SMS permission granted. Synchronization is {{ sync.syncEnabled() ? 'on' : 'off' }}.
+          } @else {
+            {{ accessTitle() }}. Synchronization is off.
+          }
+        </p>
         <p>
           {{
             sync.requestingPermission()
@@ -76,24 +120,6 @@
           bounded pages. Detected events can include repeats and previously reviewed items.
         </p>
         <div class="actions">
-          <button
-            class="btn"
-            type="button"
-            (click)="enable()"
-            [disabled]="
-              sync.busy() || sync.requestingPermission() || sync.status()?.canRequest === false
-            "
-          >
-            {{ sync.requestingPermission() ? 'Requesting permission…' : 'Enable SMS access' }}
-          </button>
-          <button
-            class="btn"
-            type="button"
-            (click)="disable()"
-            [disabled]="sync.requestingPermission() || !sync.status()?.enabled"
-          >
-            Disable
-          </button>
           @if (sync.status()?.settingsRecommended) {
             <button
               class="btn"
@@ -250,9 +276,10 @@
             class="chip"
             type="button"
             (click)="removeFilter(chip.key)"
-            [attr.aria-label]="'Remove filter ' + chip.label"
+            [attr.aria-label]="'Remove ' + chip.label + ' filter'"
           >
-            {{ chip.label }} ×
+            <span>{{ chip.label }}</span
+            ><app-icon name="close" />
           </button>
         }
         <button class="btn clear" type="button" (click)="clearFilters()">Clear filters</button>
@@ -293,24 +320,28 @@
           }}
         </p>
       }
-      <nav class="pagination" aria-label="Review pages">
-        <button
-          type="button"
-          class="btn"
-          (click)="page(-1)"
-          [disabled]="sync.reviewPage() === 0 || loading()"
-        >
-          Previous</button
-        ><span>Page {{ sync.reviewPage() + 1 }}</span
-        ><button
-          type="button"
-          class="btn"
-          (click)="page(1)"
-          [disabled]="(sync.reviewPage() + 1) * 200 >= sync.total() || loading()"
-        >
-          Next
-        </button>
-      </nav>
+      @if (pageCount() > 1) {
+        <nav class="pagination" aria-label="Review pages">
+          <button
+            type="button"
+            class="btn"
+            aria-label="Previous page"
+            (click)="page(-1)"
+            [disabled]="sync.reviewPage() === 0 || loading()"
+          >
+            <app-icon name="chevron_left" /></button
+          ><span aria-live="polite">Page {{ sync.reviewPage() + 1 }} of {{ pageCount() }}</span
+          ><button
+            type="button"
+            class="btn"
+            aria-label="Next page"
+            (click)="page(1)"
+            [disabled]="(sync.reviewPage() + 1) * 200 >= sync.total() || loading()"
+          >
+            <app-icon name="chevron_right" />
+          </button>
+        </nav>
+      }
     </section>
     @if (selected(); as candidate) {
       <dialog

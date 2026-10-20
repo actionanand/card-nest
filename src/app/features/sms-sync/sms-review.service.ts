@@ -48,9 +48,18 @@ export class SmsReviewService {
   readonly candidates = signal<readonly SmsCandidate[]>([]);
   readonly busy = signal(false);
   readonly requestingPermission = signal(false);
+  readonly changingSync = signal(false);
+  readonly syncEnabled = computed(
+    () => this.status()?.permission === 'granted' && this.status()?.enabled === true,
+  );
   readonly canScan = computed(() => {
     const status = this.status();
-    return status?.permission === 'granted' && status.enabled && !this.requestingPermission();
+    return (
+      status?.permission === 'granted' &&
+      status.enabled &&
+      !this.requestingPermission() &&
+      !this.changingSync()
+    );
   });
   readonly error = signal('');
   readonly duplicates = signal(0);
@@ -60,6 +69,20 @@ export class SmsReviewService {
   readonly savedTotal = signal(0);
   readonly notice = signal('');
   private accessRevision = 0;
+  private reviewEntryAttempted = false;
+  /** Called only by deliberate SMS Review navigation, never application startup. */
+  async enterFromReview(days: number): Promise<void> {
+    this.assertUnlocked();
+    await this.refreshAccess();
+    if (
+      this.reviewEntryAttempted ||
+      this.status()?.permission !== 'not requested' ||
+      this.status()?.canRequest === false
+    )
+      return;
+    this.reviewEntryAttempted = true;
+    await this.enable(days);
+  }
   private filters = { state: 'PENDING', kind: 'ALL', search: '', source: '', from: '', to: '' };
   async filterReview(
     filters: Omit<typeof this.filters, 'from' | 'to'> & { from?: string; to?: string },
@@ -180,7 +203,7 @@ export class SmsReviewService {
   }
   async enable(days: number): Promise<void> {
     this.assertUnlocked();
-    if (this.requestingPermission() || this.busy()) return;
+    if (this.requestingPermission() || this.changingSync() || this.busy()) return;
     this.requestingPermission.set(true);
     this.error.set('');
     const revision = ++this.accessRevision;
@@ -233,12 +256,19 @@ export class SmsReviewService {
     await native.openSettings();
   }
   async disable(): Promise<void> {
+    this.assertUnlocked();
+    if (this.changingSync() || this.requestingPermission()) return;
+    this.changingSync.set(true);
     this.cancelled = true;
     const revision = ++this.accessRevision;
-    const status = await native.disable();
-    if (revision === this.accessRevision) {
-      this.accessRevision++;
-      this.status.set(status);
+    try {
+      const status = await native.disable();
+      if (revision === this.accessRevision) {
+        this.accessRevision++;
+        this.status.set(status);
+      }
+    } finally {
+      this.changingSync.set(false);
     }
   }
   async cancel(): Promise<void> {
