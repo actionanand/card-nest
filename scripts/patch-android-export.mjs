@@ -124,6 +124,42 @@ public class CardNestExportPlugin extends Plugin {
     }
   }
 
+  @PluginMethod
+  public void shareBackup(PluginCall call) {
+    String content = call.getString("content");
+    File file = null;
+    try {
+      JSONObject backup = new JSONObject(content == null ? "" : content);
+      JSONObject cipher = backup.optJSONObject("cipher");
+      if (!"cardnest-encrypted-backup".equals(backup.optString("format")) ||
+          cipher == null || !"AES-GCM".equals(cipher.optString("algorithm")) ||
+          cipher.optString("data").isEmpty()) {
+        call.reject("Only an encrypted CardNest backup can be shared.");
+        return;
+      }
+      File directory = new File(getContext().getCacheDir(), "exports/backups");
+      if (!directory.exists() && !directory.mkdirs()) throw new Exception("Unable to prepare backup.");
+      // Keep files available while a selected app reads them; expire only this private cache.
+      File[] oldFiles = directory.listFiles();
+      long cutoff = System.currentTimeMillis() - 24L * 60 * 60 * 1000;
+      if (oldFiles != null) for (File old : oldFiles) {
+        if (old.isFile() && old.getName().endsWith(".cnbak") && old.lastModified() < cutoff) old.delete();
+      }
+      String name = call.getString("filename", "cardnest-backup").replaceAll("[^a-zA-Z0-9._-]", "_");
+      if (name.endsWith(".cnbak")) name = name.substring(0, name.length() - 6);
+      file = File.createTempFile((name.length() >= 3 ? name : "cardnest-backup") + "-", ".cnbak", directory);
+      try (FileOutputStream output = new FileOutputStream(file, false)) {
+        output.write(content.getBytes(StandardCharsets.UTF_8));
+      }
+      Uri uri = FileProvider.getUriForFile(getContext(), getContext().getPackageName() + ".exports.fileprovider", file);
+      share(uri, "application/octet-stream", "Share CardNest encrypted backup");
+      call.resolve();
+    } catch (Exception error) {
+      if (file != null) file.delete();
+      call.reject("Unable to open backup sharing. You can save locally instead.");
+    }
+  }
+
   private File outputFile(String filename, String extension) throws Exception {
     File directory = new File(getContext().getCacheDir(), "exports");
     if (!directory.exists() && !directory.mkdirs()) {

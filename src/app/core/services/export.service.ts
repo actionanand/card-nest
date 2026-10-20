@@ -1,5 +1,6 @@
 import { Service, inject } from '@angular/core';
-import { Capacitor, registerPlugin } from '@capacitor/core';
+import { Capacitor } from '@capacitor/core';
+import { NativeExport } from './native-export';
 import { CardTransaction, TransactionType } from '../models/domain';
 import {
   ExportDocument,
@@ -12,19 +13,6 @@ import { CardNestStore } from './card-nest-store';
 import { formatMoney } from './money';
 import { SnackbarService } from './snackbar.service';
 
-interface CardNestExportPlugin {
-  exportPdf(options: {
-    filename: string;
-    content: string;
-    title: string;
-  }): Promise<{ path: string }>;
-  exportCsv(options: {
-    filename: string;
-    content: string;
-    title: string;
-  }): Promise<{ path: string }>;
-}
-
 interface StatisticsCycleRange {
   readonly key: string;
   readonly label: string;
@@ -33,7 +21,6 @@ interface StatisticsCycleRange {
   readonly offset: number;
 }
 
-const NativeExport = registerPlugin<CardNestExportPlugin>('CardNestExport');
 const EXPENSE_TYPES: readonly TransactionType[] = ['PURCHASE', 'FEE', 'INTEREST'];
 const CREDIT_TYPES: readonly TransactionType[] = ['PAYMENT', 'REFUND', 'CASHBACK', 'CREDIT'];
 

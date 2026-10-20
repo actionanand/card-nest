@@ -1,6 +1,8 @@
 import { DOCUMENT } from '@angular/common';
 import { inject, Service } from '@angular/core';
 import { SqliteDatabase } from '../data/sqlite-database';
+import { Capacitor } from '@capacitor/core';
+import { NATIVE_EXPORT } from './native-export';
 
 interface NativeBackupBridge {
   openBackup(): void;
@@ -30,6 +32,7 @@ const BACKUP_ITERATIONS = 310_000;
 export class BackupService {
   private readonly document = inject(DOCUMENT);
   private readonly database = inject(SqliteDatabase);
+  private readonly nativeShare = inject(NATIVE_EXPORT);
 
   async create(passphrase: string): Promise<{ fileName: string; contents: string }> {
     this.validatePassphrase(passphrase);
@@ -72,18 +75,6 @@ export class BackupService {
       return;
     }
     const file = new File([contents], fileName, { type: 'application/json' });
-    const navigatorWithShare = this.document.defaultView?.navigator as Navigator & {
-      canShare?: (data: ShareData) => boolean;
-    };
-    if (navigatorWithShare?.share && navigatorWithShare.canShare?.({ files: [file] })) {
-      try {
-        await navigatorWithShare.share({ files: [file], title: 'CardNest encrypted backup' });
-        return;
-      } catch {
-        // Browsers can expose file sharing but reject it because of permissions or policy.
-        // Continue to the normal download path so web backup remains available.
-      }
-    }
     const url = URL.createObjectURL(file);
     const anchor = this.document.createElement('a');
     anchor.href = url;
@@ -92,6 +83,41 @@ export class BackupService {
     anchor.click();
     anchor.remove();
     globalThis.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+  }
+
+  canShare(): boolean {
+    if (Capacitor.getPlatform() === 'android') return Capacitor.isPluginAvailable('CardNestExport');
+    const navigator = this.document.defaultView?.navigator;
+    try {
+      return (
+        !!navigator?.share &&
+        !!navigator.canShare?.({
+          files: [new File([''], 'cardnest-backup.cnbak', { type: 'application/octet-stream' })],
+        })
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  /** Opens a chooser; returning does not establish that a cloud provider saved the file. */
+  async share(fileName: string, contents: string): Promise<boolean> {
+    if (Capacitor.getPlatform() === 'android') {
+      await this.nativeShare.shareBackup({ filename: fileName, content: contents });
+      return true;
+    }
+    const navigator = this.document.defaultView?.navigator;
+    const file = new File([contents], fileName, { type: 'application/octet-stream' });
+    if (!navigator?.share || !navigator.canShare?.({ files: [file] }))
+      throw new Error('File sharing is unavailable. Save locally instead.');
+    try {
+      await navigator.share({ files: [file], title: 'CardNest encrypted backup' });
+      return true;
+    } catch (error: unknown) {
+      if (error && typeof error === 'object' && 'name' in error && error.name === 'AbortError')
+        return false;
+      throw error;
+    }
   }
 
   async chooseBackup(): Promise<string> {

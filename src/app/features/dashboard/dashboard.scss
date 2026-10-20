@@ -210,8 +210,9 @@ button.hero-metric:focus-visible {
   font-size: 0.82rem;
 }
 .budget-panel {
+  container-type: inline-size;
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: center;
 }
 .budget-panel .section-heading {
@@ -219,7 +220,7 @@ button.hero-metric:focus-visible {
 }
 .budget-ring {
   display: grid;
-  width: 7.3rem;
+  width: min(7.3rem, 100%);
   aspect-ratio: 1;
   place-items: center;
   margin: 1rem auto 0;
@@ -229,7 +230,7 @@ button.hero-metric:focus-visible {
 .budget-ring::before {
   content: '';
   grid-area: 1/1;
-  width: 5.55rem;
+  width: 76%;
   aspect-ratio: 1;
   border-radius: 50%;
   background: var(--surface);
@@ -249,8 +250,20 @@ button.hero-metric:focus-visible {
   font-size: 0.65rem;
 }
 .budget-copy {
+  min-width: 0;
+  overflow-wrap: anywhere;
   display: grid;
   gap: 0.2rem;
+}
+@container (max-width: 13rem) {
+  .budget-ring,
+  .budget-copy {
+    grid-column: 1 / -1;
+  }
+  .budget-copy {
+    text-align: center;
+    margin-top: 0.6rem;
+  }
 }
 .budget-copy > strong {
   font-size: 1.1rem;
@@ -393,7 +406,7 @@ button.hero-metric:focus-visible {
     display: none;
   }
   .budget-panel {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .quick-actions > div {
     grid-template-columns: 1fr 1fr;

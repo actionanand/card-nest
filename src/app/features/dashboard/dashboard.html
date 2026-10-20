@@ -87,16 +87,27 @@
         class="budget-ring"
         [style.--progress]="budgetPercent() + '%'"
         role="img"
-        [attr.aria-label]="budgetPercent() + '% of monthly budget used'"
+        [attr.aria-label]="
+          hasBudget() ? budgetPercent() + '% of monthly budget used' : 'Monthly budget not set'
+        "
       >
         <div>
-          <strong>{{ budgetPercent() }}%</strong><small>used</small>
+          <strong>{{ hasBudget() ? budgetPercent() + '%' : 'Not set' }}</strong
+          ><small>{{ hasBudget() ? 'used' : 'monthly budget' }}</small>
         </div>
       </div>
       <div class="budget-copy">
         <strong>{{ money(snapshot().monthlySpendMinor) }}</strong
-        ><span>of {{ money(store.monthlyBudgetMinor()) }}</span>
-        <p><span class="dot"></span>{{ money(snapshot().remainingBudgetMinor ?? 0) }} remaining</p>
+        ><span>{{
+          hasBudget() ? 'of ' + money(store.monthlyBudgetMinor()) : 'No monthly budget set'
+        }}</span>
+        @if (hasBudget()) {
+          <p>
+            <span class="dot"></span>{{ money(snapshot().remainingBudgetMinor ?? 0) }} remaining
+          </p>
+        } @else {
+          <p>Set a monthly budget in Settings.</p>
+        }
       </div>
     </section>
   </div>

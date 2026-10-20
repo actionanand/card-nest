@@ -113,10 +113,13 @@ import { AppIcon } from './app-icon';
     :host,
     .picker-field {
       display: grid;
+      grid-template-columns: minmax(0, 1fr);
       min-width: 0;
       gap: 0.35rem;
     }
     .field-label {
+      min-width: 0;
+      overflow-wrap: anywhere;
       color: var(--muted);
       font-size: 0.75rem;
       font-weight: 700;

@@ -43,12 +43,14 @@ export class DashboardPage {
       .filter((payment) => payment.amount > 0)
       .sort((left, right) => left.days - right.days),
   );
-  readonly budgetPercent = computed(() =>
-    Math.min(
-      100,
-      Math.round((this.snapshot().monthlySpendMinor / this.store.monthlyBudgetMinor()) * 100),
-    ),
+  readonly hasBudget = computed(
+    () => Number.isFinite(this.store.monthlyBudgetMinor()) && this.store.monthlyBudgetMinor() > 0,
   );
+  readonly budgetPercent = computed(() => {
+    const spend = this.snapshot().monthlySpendMinor;
+    if (!this.hasBudget() || !Number.isFinite(spend)) return 0;
+    return Math.max(0, Math.min(100, Math.round((spend / this.store.monthlyBudgetMinor()) * 100)));
+  });
 
   readonly breakdownView = signal<BreakdownView | null>(null);
   readonly ignorePaidDues = signal(true);

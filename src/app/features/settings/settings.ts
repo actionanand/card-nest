@@ -1,4 +1,14 @@
-import { Component, ElementRef, computed, inject, signal, viewChild } from '@angular/core';
+import {
+  Component,
+  DestroyRef,
+  ElementRef,
+  computed,
+  effect,
+  inject,
+  signal,
+  viewChild,
+} from '@angular/core';
+import { BackupDeliveryDialog } from '../../shared/backup-delivery-dialog';
 import { PlatformTools } from '../../shared/platform-tools';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { SqliteDatabase } from '../../core/data/sqlite-database';
@@ -40,6 +50,7 @@ type ProtectedDataAction = 'DELETE_ALL' | 'RETENTION';
     PaymentSourcePicker,
     AppSelectPicker,
     PlatformTools,
+    BackupDeliveryDialog,
   ],
   templateUrl: './settings.html',
   styleUrl: './settings.scss',
@@ -81,6 +92,10 @@ export class SettingsPage {
   readonly backupConfirmation = signal('');
   readonly backupError = signal<string | null>(null);
   readonly processingBackup = signal(false);
+  readonly pendingBackup = signal<{ fileName: string; contents: string } | null>(null);
+  readonly deliveringBackup = signal(false);
+  readonly deliveryError = signal<string | null>(null);
+  readonly canShareBackup = () => this.backups.canShare();
   readonly revealBackupPassphrase = signal(false);
   readonly revealBackupConfirmation = signal(false);
   readonly restoreConfirmationOpen = signal(false);
@@ -145,6 +160,7 @@ export class SettingsPage {
   readonly pinButton = viewChild<ElementRef<HTMLButtonElement>>('pinButton');
   readonly currentPinInput = viewChild<ElementRef<HTMLInputElement>>('currentPinInput');
   readonly newPinInput = viewChild<ElementRef<HTMLInputElement>>('newPinInput');
+  readonly createBackupButton = viewChild<ElementRef<HTMLButtonElement>>('createBackupButton');
   readonly pinForm = new FormGroup({
     currentPin: new FormControl('', { nonNullable: true }),
     newPin: new FormControl('', {
@@ -156,6 +172,65 @@ export class SettingsPage {
       validators: [Validators.required, Validators.pattern(/^\d{4,8}$/)],
     }),
   });
+
+  constructor() {
+    effect(() => {
+      if (this.appLock.locked()) {
+        this.pendingBackup.set(null);
+        this.clearBackupCredentials();
+        this.showBackupDialog.set(false);
+      }
+    });
+    inject(DestroyRef).onDestroy(() => {
+      this.pendingBackup.set(null);
+      this.clearBackupCredentials();
+    });
+  }
+
+  private clearBackupCredentials(): void {
+    this.backupPin.set('');
+    this.backupPassphrase.set('');
+    this.backupConfirmation.set('');
+    this.revealBackupPassphrase.set(false);
+    this.revealBackupConfirmation.set(false);
+    this.pendingRestorePassphrase = '';
+    this.selectedBackupContents = '';
+    this.restoreConfirmationOpen.set(false);
+  }
+
+  closeBackupDelivery(): void {
+    if (this.deliveringBackup()) return;
+    this.pendingBackup.set(null);
+    this.deliveryError.set(null);
+    if (!this.appLock.locked())
+      queueMicrotask(() => this.createBackupButton()?.nativeElement.focus());
+  }
+
+  async deliverBackup(action: 'SAVE' | 'SHARE'): Promise<void> {
+    const backup = this.pendingBackup();
+    if (!backup || this.deliveringBackup() || this.appLock.locked()) return;
+    this.deliveringBackup.set(true);
+    this.deliveryError.set(null);
+    try {
+      if (action === 'SAVE') {
+        await this.backups.save(backup.fileName, backup.contents);
+        this.snackbar.show('Encrypted backup saved.');
+      } else {
+        const opened = await this.backups.share(backup.fileName, backup.contents);
+        if (!opened) return;
+        this.snackbar.show('Backup sharing opened. Finish saving in the selected app.', 'INFO');
+      }
+      this.pendingBackup.set(null);
+    } catch (error: unknown) {
+      this.deliveryError.set(
+        error instanceof Error ? error.message : 'The backup could not be delivered. Try again.',
+      );
+    } finally {
+      this.deliveringBackup.set(false);
+      if (!this.pendingBackup() && !this.appLock.locked())
+        queueMicrotask(() => this.createBackupButton()?.nativeElement.focus());
+    }
+  }
 
   setTheme(theme: AppTheme): void {
     void this.themes.setTheme(theme);
@@ -438,33 +513,34 @@ export class SettingsPage {
     if (this.processingBackup()) return;
     this.showBackupDialog.set(false);
     this.backupError.set(null);
+    this.clearBackupCredentials();
   }
 
   async submitBackup(event: Event): Promise<void> {
     event.preventDefault();
-    if (this.processingBackup()) return;
-    const passphrase = this.backupPassphrase();
-    if (this.pin.hasPin() && !(await this.pin.verifyPin(this.backupPin()))) {
-      this.backupError.set('The application PIN is incorrect.');
-      return;
-    }
-    if (this.backupAction() === 'CREATE' && passphrase !== this.backupConfirmation()) {
-      this.backupError.set('The backup passphrases do not match.');
-      return;
-    }
-    if (this.backupAction() === 'RESTORE') {
-      this.pendingRestorePassphrase = passphrase;
-      this.restoreConfirmationOpen.set(true);
-      return;
-    }
+    if (this.processingBackup() || this.pendingBackup()) return;
     this.processingBackup.set(true);
     this.backupError.set(null);
     try {
+      const passphrase = this.backupPassphrase();
+      if (this.pin.hasPin() && !(await this.pin.verifyPin(this.backupPin()))) {
+        this.backupError.set('The application PIN is incorrect.');
+        return;
+      }
+      if (this.backupAction() === 'CREATE' && passphrase !== this.backupConfirmation()) {
+        this.backupError.set('The backup passphrases do not match.');
+        return;
+      }
+      if (this.backupAction() === 'RESTORE') {
+        this.pendingRestorePassphrase = passphrase;
+        this.restoreConfirmationOpen.set(true);
+        return;
+      }
       if (this.backupAction() === 'CREATE') {
         const backup = await this.backups.create(passphrase);
-        await this.backups.save(backup.fileName, backup.contents);
         this.showBackupDialog.set(false);
-        this.snackbar.show('Encrypted backup saved.');
+        this.clearBackupCredentials();
+        if (!this.appLock.locked()) this.pendingBackup.set(backup);
         return;
       }
     } catch (error: unknown) {
@@ -482,6 +558,7 @@ export class SettingsPage {
     this.backupError.set(null);
     try {
       await this.backups.restore(this.selectedBackupContents, this.pendingRestorePassphrase);
+      this.clearBackupCredentials();
       this.showBackupDialog.set(false);
       this.snackbar.show('Backup restored. CardNest will reload now.');
       globalThis.setTimeout(() => globalThis.location.reload(), 900);

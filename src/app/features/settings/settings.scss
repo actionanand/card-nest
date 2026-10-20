@@ -35,6 +35,10 @@
   align-self: start;
 }
 .settings-nav a {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.4rem 0.6rem;
+  border-radius: 0.5rem;
   min-height: 2.4rem;
   color: var(--muted);
   font-size: 0.78rem;
@@ -84,6 +88,10 @@
 .setting-heading h2 {
   margin: 0;
 }
+.setting-heading > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .setting-heading p {
   margin: 0.2rem 0 0;
   color: var(--muted);
@@ -119,6 +127,24 @@
   justify-content: flex-end;
   gap: 0.5rem;
 }
+.pin-manage-button {
+  padding: 0.5rem 0.65rem;
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+.pin-manage-button app-icon {
+  width: 1rem;
+  height: 1rem;
+}
+.pin-manage-button:enabled:hover {
+  background: var(--surface-2);
+}
+.pin-manage-button:enabled:active {
+  background: var(--surface);
+}
 .setting-row small {
   color: var(--muted);
 }
@@ -141,9 +167,54 @@
   grid-column: 1 / -1;
 }
 .toggle input {
-  width: 2.7rem;
-  height: 1.45rem;
-  accent-color: var(--accent);
+  appearance: none;
+  display: grid;
+  place-items: center;
+  flex: 0 0 44px;
+  width: 44px;
+  height: 44px;
+  min-height: 44px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0.4rem;
+  background: transparent;
+  cursor: pointer;
+}
+.toggle input::before {
+  content: '';
+  grid-area: 1 / 1;
+  box-sizing: border-box;
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--muted);
+  border-radius: 3px;
+}
+.toggle input:checked::before {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+.toggle input:checked::after {
+  content: '';
+  grid-area: 1 / 1;
+  width: 6px;
+  height: 11px;
+  border: solid var(--surface);
+  border-width: 0 2px 2px 0;
+  transform: translateY(-1px) rotate(45deg);
+}
+.toggle input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+@media (forced-colors: active) {
+  .toggle input {
+    appearance: auto;
+  }
+  .toggle input::before,
+  .toggle input::after {
+    display: none;
+  }
 }
 .theme-options {
   display: grid;
@@ -301,7 +372,14 @@ button:disabled {
 }
 .pin-dialog {
   width: min(100%, 26rem);
+  min-width: 0;
+  max-height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 5rem);
+  overflow-y: auto;
   padding: 1.25rem;
+}
+.pin-heading > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .pin-heading,
 .pin-actions {
@@ -329,8 +407,9 @@ button:disabled {
 }
 .pin-close {
   display: grid;
-  width: 2.5rem;
-  height: 2.5rem;
+  width: 44px;
+  height: 44px;
+  flex: 0 0 44px;
   place-items: center;
   border: 0;
   border-radius: 50%;
@@ -339,7 +418,16 @@ button:disabled {
 }
 .pin-dialog form {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 0.8rem;
+}
+.pin-dialog label {
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
+}
+.pin-dialog input {
+  min-width: 0;
+  max-width: 100%;
 }
 .pin-dialog label small {
   color: var(--muted);
@@ -347,18 +435,19 @@ button:disabled {
 .password-field {
   position: relative;
   display: block;
+  min-width: 0;
 }
 .password-field input {
-  padding-right: 3rem;
+  padding-right: calc(44px + 0.9rem);
 }
 .password-field button {
   position: absolute;
   top: 50%;
   right: 0.45rem;
   display: grid;
-  width: 2.2rem;
-  height: 2.2rem;
-  min-height: 0;
+  width: 44px;
+  height: 44px;
+  min-height: 44px;
   padding: 0;
   place-items: center;
   transform: translateY(-50%);
@@ -388,6 +477,7 @@ button:disabled {
     position: static;
     display: flex;
     flex-wrap: wrap;
+    gap: 0.25rem 0.35rem;
     max-width: 100%;
   }
   .settings-content section {

@@ -1,7 +1,11 @@
 <div
   class="page settings"
-  [attr.aria-hidden]="showPinForm() || showBackupDialog() || protectedAction() ? 'true' : null"
-  [attr.inert]="showPinForm() || showBackupDialog() || protectedAction() ? '' : null"
+  [attr.aria-hidden]="
+    showPinForm() || showBackupDialog() || protectedAction() || pendingBackup() ? 'true' : null
+  "
+  [attr.inert]="
+    showPinForm() || showBackupDialog() || protectedAction() || pendingBackup() ? '' : null
+  "
 >
   <header class="page-header">
     <div>
@@ -45,12 +49,12 @@
           <div class="pin-buttons">
             <button
               #pinButton
-              class="btn"
+              class="btn pin-manage-button"
               type="button"
               (click)="openPinForm()"
               [disabled]="!database.ready()"
             >
-              {{ pin.hasPin() ? 'Change PIN' : 'Set PIN' }}
+              <app-icon name="privacy" />{{ pin.hasPin() ? 'Change PIN' : 'Set PIN' }}
             </button>
             @if (pin.hasPin()) {
               <button class="btn danger" type="button" (click)="openPinForm('DISABLE')">
@@ -330,7 +334,7 @@
           <span aria-hidden="true"><app-icon name="backup" /></span>
           <div>
             <h2>Backup & data</h2>
-            <p>Encrypted local files protected by a separate passphrase.</p>
+            <p>Encrypted backups protected by a separate passphrase.</p>
           </div>
         </div>
         <div class="data-actions">
@@ -339,6 +343,7 @@
             type="button"
             [disabled]="!database.ready()"
             (click)="openCreateBackup()"
+            #createBackupButton
           >
             <app-icon name="cloud_backup" /> Create encrypted backup</button
           ><button
@@ -353,8 +358,9 @@
           </button>
         </div>
         <p class="fine-print">
-          Save to or restore from local storage, Google Drive, OneDrive, Dropbox, ownCloud, or any
-          Android document provider. Backup passphrases are never stored in the file.
+          Save locally or share the encrypted file to an installed cloud-storage app. You can
+          restore from local storage or an Android document provider. Keep your backup passphrase
+          separately.
         </p>
         <div class="cleanup-zone">
           <div>
@@ -494,7 +500,7 @@
               processingBackup()
                 ? 'Working…'
                 : backupAction() === 'CREATE'
-                  ? 'Choose save location'
+                  ? 'Create backup'
                   : 'Restore data'
             }}
           </button>
@@ -502,6 +508,18 @@
       </form>
     </section>
   </div>
+}
+
+@if (pendingBackup(); as backup) {
+  <app-backup-delivery-dialog
+    [filename]="backup.fileName"
+    [busy]="deliveringBackup()"
+    [canShare]="canShareBackup()"
+    [error]="deliveryError()"
+    (save)="deliverBackup('SAVE')"
+    (share)="deliverBackup('SHARE')"
+    (dismissed)="closeBackupDelivery()"
+  />
 }
 
 @if (showPinForm()) {
