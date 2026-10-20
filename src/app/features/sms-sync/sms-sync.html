@@ -13,13 +13,23 @@
         Inbox permissions are restricted by Android and Google Play. Distribution approval is
         separate. You can paste a message when inbox access is unavailable.
       </p>
-      <p role="status">
-        Permission: {{ sync.status()?.permission ?? 'Checking' }} ·
-        {{ sync.status()?.enabled ? 'Enabled' : 'Disabled' }}
+      <p role="status" aria-live="polite">
+        {{ accessTitle() }}
+      </p>
+      <p>
+        {{
+          sync.requestingPermission()
+            ? "Waiting for Android's SMS permission response."
+            : sync.status()?.permissionMessage
+        }}
       </p>
       <label
         >First scan history
-        <select [value]="range()" (change)="setRange($event)">
+        <select
+          [value]="range()"
+          (change)="setRange($event)"
+          [disabled]="sync.busy() || sync.requestingPermission()"
+        >
           <option value="30">Last 30 days</option>
           <option value="90">Last 90 days</option>
           <option value="0">All available (may take many pages)</option>
@@ -30,15 +40,39 @@
         several scans.
       </p>
       <div class="actions">
-        <button type="button" class="btn" (click)="enable()" [disabled]="sync.busy()">
-          Enable SMS access
+        <button
+          type="button"
+          class="btn"
+          (click)="enable()"
+          [disabled]="
+            sync.busy() || sync.requestingPermission() || sync.status()?.canRequest === false
+          "
+        >
+          {{ sync.requestingPermission() ? 'Requesting permission…' : 'Enable SMS access' }}
         </button>
-        <button type="button" class="btn" (click)="disable()">Disable</button>
+        <button
+          type="button"
+          class="btn"
+          (click)="disable()"
+          [disabled]="sync.requestingPermission() || !sync.status()?.enabled"
+        >
+          Disable
+        </button>
+        @if (sync.status()?.settingsRecommended) {
+          <button
+            type="button"
+            class="btn"
+            (click)="openSettings()"
+            [disabled]="sync.requestingPermission()"
+          >
+            Open app settings
+          </button>
+        }
         <button
           type="button"
           class="btn btn-primary"
           (click)="scan()"
-          [disabled]="sync.busy() || !sync.status()?.enabled"
+          [disabled]="sync.busy() || !sync.canScan()"
         >
           Scan now / retry
         </button>
@@ -47,15 +81,16 @@
         </button>
       </div>
       <p aria-live="polite">
-        {{ sync.busy() ? 'Scanning…' : 'Ready' }} · Pages {{ sync.status()?.pages ?? 0 }} · Scanned
-        {{ sync.status()?.scanned ?? 0 }} · Found {{ sync.status()?.found ?? 0 }} · Replays ignored
+        {{ sync.busy() ? 'Scanning…' : sync.canScan() ? 'Ready' : 'Scanning paused' }} · Pages
+        {{ sync.status()?.pages ?? 0 }} · Scanned {{ sync.status()?.scanned ?? 0 }} · Found
+        {{ sync.status()?.found ?? 0 }} · Replays ignored
         {{ sync.duplicates() }}
       </p>
       <p>
         Last complete scan: {{ date(sync.status()?.completedAt ?? 0) }}<br />Durable cursor:
         {{ date(sync.status()?.cursorDate ?? 0) }} / {{ sync.status()?.cursorId ?? '—' }}
       </p>
-      @if (sync.status()?.more) {
+      @if (sync.canScan() && sync.status()?.backgroundPending) {
         <p>Background catch-up is pending. Scan now resumes it.</p>
       }
       @if (sync.status()?.error) {

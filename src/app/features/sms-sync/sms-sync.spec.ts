@@ -1,19 +1,26 @@
 import { TestBed } from '@angular/core/testing';
-import { signal } from '@angular/core';
+import { computed, signal } from '@angular/core';
 import { SmsSyncPage } from './sms-sync';
 import { SmsReviewService } from './sms-review.service';
 import { CardNestStore } from '../../core/services/card-nest-store';
-import { SmsCandidate } from './sms-model';
+import { ScanStatus, SmsCandidate } from './sms-model';
 import axe from 'axe-core';
 
 describe('SMS review privacy and explicit approval UI', () => {
   const locked = signal(false);
   const foreground = signal(true);
   const candidates = signal<readonly SmsCandidate[]>([]);
+  const status = signal<ScanStatus | null>(null);
+  const requestingPermission = signal(false);
   const sync = {
     lock: { locked, foreground },
     candidates,
-    status: signal(null),
+    status,
+    requestingPermission,
+    canScan: computed(
+      () =>
+        status()?.permission === 'granted' && status()?.enabled === true && !requestingPermission(),
+    ),
     busy: signal(false),
     error: signal(''),
     duplicates: signal(0),
@@ -23,11 +30,15 @@ describe('SMS review privacy and explicit approval UI', () => {
     approve: vi.fn(),
     relatedFor: vi.fn().mockResolvedValue([]),
     enable: vi.fn(),
+    refreshAccess: vi.fn().mockResolvedValue(undefined),
+    openSettings: vi.fn().mockResolvedValue(undefined),
   };
   beforeEach(() => {
     locked.set(false);
     foreground.set(true);
     candidates.set([]);
+    status.set(null);
+    requestingPermission.set(false);
     vi.clearAllMocks();
     TestBed.configureTestingModule({
       imports: [SmsSyncPage],
@@ -54,6 +65,48 @@ describe('SMS review privacy and explicit approval UI', () => {
     expect(sync.enable).not.toHaveBeenCalled();
     expect(sync.approve).not.toHaveBeenCalled();
     expect(fixture.nativeElement.textContent).toContain('Nothing changes your transactions');
+  });
+  it('hides pending work and disables Scan for denied access even with legacy pending fields', () => {
+    status.set({
+      permission: 'denied',
+      enabled: true,
+      more: true,
+      backgroundPending: true,
+      cursorDate: 42,
+      cursorId: 17,
+      completedAt: 0,
+      pages: 0,
+      scanned: 0,
+      found: 0,
+      error: '',
+      settingsRecommended: true,
+    });
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    expect(fixture.nativeElement.textContent).not.toContain('Background catch-up is pending');
+    const buttons = [...fixture.nativeElement.querySelectorAll('button')] as HTMLButtonElement[];
+    expect(buttons.find((b) => b.textContent?.includes('Scan now'))?.disabled).toBe(true);
+    buttons.find((b) => b.textContent?.includes('Open app settings'))?.click();
+    expect(sync.openSettings).toHaveBeenCalledOnce();
+  });
+  it('disables repeated Enable taps while requesting and shows the actual request state', () => {
+    requestingPermission.set(true);
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    const buttons = [...fixture.nativeElement.querySelectorAll('button')] as HTMLButtonElement[];
+    expect(buttons.find((b) => b.textContent?.includes('Requesting permission'))?.disabled).toBe(
+      true,
+    );
+    expect(fixture.nativeElement.textContent).toContain(
+      "Waiting for Android's SMS permission response.",
+    );
+  });
+  it('refreshes permission on settings return without requesting or enabling', () => {
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    fixture.componentInstance.refreshAccess();
+    expect(sync.refreshAccess).toHaveBeenCalledOnce();
+    expect(sync.enable).not.toHaveBeenCalled();
   });
   it('removes all sensitive review content when locked or backgrounded', () => {
     const fixture = TestBed.createComponent(SmsSyncPage);

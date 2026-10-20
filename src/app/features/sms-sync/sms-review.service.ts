@@ -1,4 +1,4 @@
-import { Service, inject, signal } from '@angular/core';
+import { Service, computed, inject, signal } from '@angular/core';
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import { SqliteDatabase } from '../../core/data/sqlite-database';
 import { CardNestStore } from '../../core/services/card-nest-store';
@@ -26,6 +26,7 @@ import {
 interface NativeSms {
   status(): Promise<ScanStatus>;
   enable(options: { since: number; batch: number }): Promise<ScanStatus>;
+  openSettings(): Promise<void>;
   disable(): Promise<ScanStatus>;
   cancel(): Promise<ScanStatus>;
   scanPage(): Promise<ScanStatus>;
@@ -46,10 +47,16 @@ export class SmsReviewService {
   readonly status = signal<ScanStatus | null>(null);
   readonly candidates = signal<readonly SmsCandidate[]>([]);
   readonly busy = signal(false);
+  readonly requestingPermission = signal(false);
+  readonly canScan = computed(() => {
+    const status = this.status();
+    return status?.permission === 'granted' && status.enabled && !this.requestingPermission();
+  });
   readonly error = signal('');
   readonly duplicates = signal(0);
   readonly reviewPage = signal(0);
   readonly total = signal(0);
+  private accessRevision = 0;
   private filters = { state: 'PENDING', kind: 'ALL', search: '', source: '' };
   async filterReview(filters: typeof this.filters): Promise<void> {
     this.filters = filters;
@@ -111,7 +118,7 @@ export class SmsReviewService {
   }
   async refresh(): Promise<void> {
     this.assertUnlocked();
-    this.status.set(await native.status());
+    await this.refreshAccess();
     await this.handoff();
     const filters = this.filters;
     const where = `WHERE (? = 'ALL' OR state = ?) AND (? = 'ALL' OR kind = ?)
@@ -155,19 +162,75 @@ export class SmsReviewService {
   }
   async enable(days: number): Promise<void> {
     this.assertUnlocked();
-    this.status.set(
-      await native.enable({
+    if (this.requestingPermission() || this.busy()) return;
+    this.requestingPermission.set(true);
+    this.error.set('');
+    const revision = ++this.accessRevision;
+    try {
+      const status = await native.enable({
         since: days === 0 ? 0 : Date.now() - days * 86400000,
         batch: environment.smsPageSize,
-      }),
-    );
+      });
+      if (revision !== this.accessRevision) return;
+      this.accessRevision++;
+      this.status.set(status);
+      if (status.permission !== 'granted' || !status.enabled)
+        this.error.set(
+          status.permissionMessage ??
+            'Android did not grant both SMS permissions. Check app settings or paste a message.',
+        );
+    } catch (error: unknown) {
+      if (revision !== this.accessRevision) return;
+      this.accessRevision++;
+      this.error.set(
+        error instanceof Error
+          ? error.message
+          : 'Android could not request SMS access. Check app settings or paste a message.',
+      );
+      try {
+        await this.refreshAccess();
+      } catch {
+        /* Preserve the request error if the bridge is unavailable. */
+      }
+    } finally {
+      this.requestingPermission.set(false);
+    }
+  }
+  async refreshAccess(): Promise<void> {
+    this.assertUnlocked();
+    const revision = this.accessRevision;
+    const status = await native.status();
+    if (revision === this.accessRevision) {
+      if (
+        !this.requestingPermission() &&
+        status.permission === 'granted' &&
+        this.status()?.permission !== 'granted'
+      )
+        this.error.set('');
+      this.status.set(status);
+    }
+  }
+  async openSettings(): Promise<void> {
+    this.assertUnlocked();
+    await native.openSettings();
   }
   async disable(): Promise<void> {
-    this.status.set(await native.disable());
+    this.cancelled = true;
+    const revision = ++this.accessRevision;
+    const status = await native.disable();
+    if (revision === this.accessRevision) {
+      this.accessRevision++;
+      this.status.set(status);
+    }
   }
   async cancel(): Promise<void> {
     this.cancelled = true;
-    this.status.set(await native.cancel());
+    const revision = ++this.accessRevision;
+    const status = await native.cancel();
+    if (revision === this.accessRevision) {
+      this.accessRevision++;
+      this.status.set(status);
+    }
   }
   async scan(): Promise<void> {
     if (this.busy()) return;
@@ -176,6 +239,13 @@ export class SmsReviewService {
     this.cancelled = false;
     this.error.set('');
     try {
+      await this.refreshAccess();
+      if (!this.canScan()) {
+        this.error.set(
+          this.status()?.permissionMessage ?? 'Enable both SMS permissions before scanning.',
+        );
+        return;
+      }
       await native.beginScan();
       let more = true;
       while (more && !this.cancelled && !this.lock.locked() && this.lock.foreground()) {
@@ -187,9 +257,21 @@ export class SmsReviewService {
       await this.refresh();
     } catch (error: unknown) {
       this.error.set(error instanceof Error ? error.message : 'Scan failed. Retry is safe.');
+      if (!this.lock.locked() && this.lock.foreground()) {
+        try {
+          await this.refreshAccess();
+        } catch {
+          /* Keep the original scan failure. */
+        }
+      }
     } finally {
       this.busy.set(false);
-      if (!this.cancelled && this.status()?.more && (!this.lock.foreground() || this.lock.locked()))
+      if (
+        !this.cancelled &&
+        this.canScan() &&
+        this.status()?.backgroundPending &&
+        (!this.lock.foreground() || this.lock.locked())
+      )
         await native.catchUp();
     }
   }

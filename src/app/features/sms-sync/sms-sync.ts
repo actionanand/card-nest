@@ -17,7 +17,7 @@ import {
   imports: [ReactiveFormsModule],
   templateUrl: './sms-sync.html',
   styleUrl: './sms-sync.scss',
-  host: { '(document:keydown.escape)': 'closeEditor()' },
+  host: { '(document:keydown.escape)': 'closeEditor()', '(window:focus)': 'refreshAccess()' },
 })
 export class SmsSyncPage {
   readonly sync = inject(SmsReviewService);
@@ -107,6 +107,21 @@ export class SmsSyncPage {
     const item = this.selected()?.item;
     return !!item && !!ledgerType(item);
   });
+  readonly accessTitle = computed(() => {
+    if (this.sync.requestingPermission()) return 'Requesting permission';
+    const status = this.sync.status();
+    if (!status) return 'Checking SMS access';
+    if (status.permission === 'granted')
+      return status.enabled ? 'Granted and enabled' : 'Granted · Temporarily disabled by you';
+    const labels: Record<string, string> = {
+      'not requested': 'Not requested',
+      denied: 'Denied',
+      unavailable: 'Permission unavailable or restricted',
+      revoked: 'Revoked after a previous grant',
+      requesting: 'Requesting permission',
+    };
+    return labels[status.permission] ?? 'SMS access unavailable';
+  });
   constructor() {
     effect(() => {
       const available = !this.sync.lock.locked() && this.sync.lock.foreground();
@@ -148,6 +163,13 @@ export class SmsSyncPage {
   }
   enable(): void {
     void this.run(() => this.sync.enable(this.range()));
+  }
+  refreshAccess(): void {
+    if (!this.sync.lock.locked() && this.sync.lock.foreground())
+      void this.run(() => this.sync.refreshAccess());
+  }
+  openSettings(): void {
+    void this.run(() => this.sync.openSettings());
   }
   scan(): void {
     void this.run(() => this.sync.scan());

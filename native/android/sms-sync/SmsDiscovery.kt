@@ -15,6 +15,7 @@ object SmsDiscovery {
   private val lock = Any()
   fun begin(context: Context) = synchronized(lock) {
     val prefs = settings(context)
+    if (!prefs.getBoolean("enabled",false) || !permitted(context)) throw SecurityException("SMS access unavailable")
     val edit = prefs.edit().putBoolean("cancelled", false)
     if (!prefs.getBoolean("more", false) && prefs.getLong("completedAt", 0) > 0) {
       edit.putLong("cursorDate", maxOf(prefs.getLong("since", 0), prefs.getLong("cursorDate", 0) - 2L * 86400000)).putLong("cursorId", -1)
@@ -52,12 +53,12 @@ object SmsDiscovery {
         ?.use { cursor ->
           val messages = sequence { while (cursor.moveToNext()) yield(SmsPageEngine.Message(cursor.getLong(0),cursor.getLong(1),cursor.getString(2) ?: "")) }
           progress = SmsPageEngine.consume(messages,batch,
-            { !prefs.getBoolean("enabled",false) || prefs.getBoolean("cancelled",false) },
+            { !prefs.getBoolean("enabled",false) || prefs.getBoolean("cancelled",false) || !permitted(context) },
             { parsed,providerId -> queue.stage(parsed,providerId.toString()) },
             { received,providerId -> if (!prefs.edit().putLong("cursorDate",received).putLong("cursorId",providerId).commit()) error("Cursor could not be saved") })
         } ?: throw IllegalStateException("SMS provider query unavailable")
     }
-    val more = progress.more
+    val more = if (progress.cancelled) prefs.getBoolean("more",true) else progress.more
     prefs.edit().putInt("scanned", prefs.getInt("scanned", 0) + progress.scanned).putInt("found", prefs.getInt("found", 0) + progress.found)
       .putInt("pages", prefs.getInt("pages", 0) + 1).putBoolean("more", more)
       .putString("error", "").apply()
@@ -70,10 +71,10 @@ class SmsScanJob : JobService() {
   private val stopped = AtomicBoolean(false)
   override fun onStartJob(params: JobParameters): Boolean {
     stopped.set(false)
-    SmsDiscovery.begin(this)
     Executors.newSingleThreadExecutor().also { executor -> executor.execute {
       var retry = false
       try {
+        SmsDiscovery.begin(this)
         // Bound a job invocation. Further work is rescheduled without an active WebView.
         var more = true
         repeat(10) { if (!stopped.get() && more) more = SmsDiscovery.page(this) }

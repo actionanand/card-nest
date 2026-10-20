@@ -74,6 +74,8 @@ test('plugin registration precedes Capacitor bridge initialization', () => {
     /!settings\(context\).getBoolean\("enabled", false\) \|\| !permitted\(context\)/,
   );
   assert.match(discovery, /repeat\(10\)/);
+  assert.match(discovery, /try \{\s+SmsDiscovery.begin\(this\)/);
+  assert.match(plugin, /Settings.ACTION_APPLICATION_DETAILS_SETTINGS/);
 });
 
 test('generated Kotlin production and test sources match tracked inputs exactly', () => {

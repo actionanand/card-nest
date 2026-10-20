@@ -70,6 +70,13 @@ export interface SmsCandidate {
 }
 export interface ScanStatus {
   permission: string;
+  permissionMessage?: string;
+  readGranted?: boolean;
+  receiveGranted?: boolean;
+  canRequest?: boolean;
+  settingsRecommended?: boolean;
+  requesting?: boolean;
+  backgroundPending?: boolean;
   enabled: boolean;
   cursorDate: number;
   cursorId: number;
