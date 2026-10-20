@@ -25,7 +25,7 @@ object SmsTransactionParser {
     val dueDate: String?, val fingerprint: String, val currency: String = "INR",
     val evidence: String = "Verify source, event date and amount before approval.",
     val eventTime: String, val timeZone: String, val cardNetwork: String?, val confidence: String,
-    val earnedForPeriod: String?, val statementDate: String?
+    val earnedForPeriod: String?, val statementDate: String?, val merchantEvidence: String? = null
   )
   private fun rx(s: String) = Regex(s, RegexOption.IGNORE_CASE)
   private const val NUMBER = "([0-9][0-9,]*(?:\\.[0-9]{1,2})?)(?![0-9]|\\.[0-9])"
@@ -110,7 +110,9 @@ object SmsTransactionParser {
     val event = event(safe, receivedAtMillis, zone) ?: return null
     val dueText = rx("(?:due on|due by|payable by|\\bby)[: ]+(.+)").find(safe)?.groupValues?.get(1)
     val parsedDue = dueText?.let { event(it, receivedAtMillis, zone) }?.takeIf { !it.second }?.first?.toLocalDate()?.toString()
-    return Result(kind, amount, event.first.toLocalDate().toString(), merchant?.trim()?.trimEnd('.')?.take(100),
+    val cleanMerchant = merchant?.split(rx("\\b(?:ref(?:erence)?|utr|rrn|visit|click|not you|if not you|to dispute|call|sms block)\\b"))?.firstOrNull()
+      ?.trim()?.trimEnd('.', ',', ';')?.takeIf { it.isNotBlank() && !rx("^(?:[0-9\\W]+|(?:[a-z0-9-]+\\.)+[a-z]{2,}(?:/.*)?|[a-z0-9]{18,})$").matches(it) }?.take(100)
+    return Result(kind, amount, event.first.toLocalDate().toString(), cleanMerchant,
       digits, account, issuer, ref, value(flat, "current meal wallet balance is|current balance|(?:avl|available|wallet) bal(?:ance)?"),
       if (tag) rx("\\b[A-Z]{2}\\s?[0-9]{1,2}\\s?[A-Z]{1,3}\\s?[0-9]{4}\\b").find(flat)?.value?.replace(" ", "")?.uppercase(Locale.ROOT) else null,
       eventAt = event.first.toInstant().toString(), receivedAt = receivedAtMillis, dateFallback = event.second,
@@ -122,7 +124,8 @@ object SmsTransactionParser {
       confidence = if (digits != null && issuer != null) "SOURCE_EVIDENCE" else "SOURCE_SELECTION_REQUIRED",
       earnedForPeriod = if (kind == Kind.CASHBACK && has("last month")) "previous month" else null,
       statementDate = rx("statement\\s+dated\\s+(.+)").find(safe)?.groupValues?.get(1)
-        ?.let { event(it,receivedAtMillis,zone) }?.takeIf { !it.second }?.first?.toLocalDate()?.toString())
+        ?.let { event(it,receivedAtMillis,zone) }?.takeIf { !it.second }?.first?.toLocalDate()?.toString(),
+      merchantEvidence = merchant?.trim()?.take(300))
   }
 
   private fun event(text: String, receipt: Long, zone: ZoneId): Pair<ZonedDateTime, Boolean>? {

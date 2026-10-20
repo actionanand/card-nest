@@ -6,6 +6,24 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class SmsEdgeCaseTest {
+  @Test fun merchantTrailersAreEvidenceNotTitles() {
+    for (trailer in listOf("Ref SYNTHREF123456", "UTR SYNTHREF123456", "Visit example.invalid/help", "Click example.invalid")) {
+      val r = parse("Spent INR 12 on HDFC credit card XX4321 at DEMO STORE $trailer")
+      assertEquals("DEMO STORE", r.merchant)
+      assertTrue(r.merchantEvidence!!.contains(trailer))
+      assertEquals(SmsTransactionParser.Kind.PURCHASE, r.kind)
+    }
+  }
+  @Test fun urlsAndNumericReferencesCannotBecomeMerchants() {
+    for (merchant in listOf("https://example.invalid/pay", "example.invalid/help", "12345678901234567890")) {
+      val r = parse("Spent INR 12 on HDFC credit card XX4321 at $merchant")
+      assertNull(r.merchant)
+    }
+  }
+  @Test fun accountAndFooterDigitsCannotSupplyMissingCardSuffix() {
+    val r = parse("Spent INR 12 using HDFC credit card at DEMO STORE on 18/10/26. If not you SMS BLOCK card 4321 to 9000000000. Account XX9876")
+    assertNull(r.cardDigits)
+  }
   private val receipt = Instant.parse("2026-10-19T12:00:00Z").toEpochMilli()
   private fun parse(s: String) = requireNotNull(SmsTransactionParser.parse(s, receipt))
   @Test fun genericInftDebitIsNeverProofOfEcsOrLoan() {

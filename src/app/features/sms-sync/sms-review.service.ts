@@ -56,10 +56,15 @@ export class SmsReviewService {
   readonly duplicates = signal(0);
   readonly reviewPage = signal(0);
   readonly total = signal(0);
+  readonly pendingTotal = signal(0);
+  readonly savedTotal = signal(0);
+  readonly notice = signal('');
   private accessRevision = 0;
-  private filters = { state: 'PENDING', kind: 'ALL', search: '', source: '' };
-  async filterReview(filters: typeof this.filters): Promise<void> {
-    this.filters = filters;
+  private filters = { state: 'PENDING', kind: 'ALL', search: '', source: '', from: '', to: '' };
+  async filterReview(
+    filters: Omit<typeof this.filters, 'from' | 'to'> & { from?: string; to?: string },
+  ): Promise<void> {
+    this.filters = { from: '', to: '', ...filters };
     this.reviewPage.set(0);
     await this.refresh();
   }
@@ -120,9 +125,17 @@ export class SmsReviewService {
     this.assertUnlocked();
     await this.refreshAccess();
     await this.handoff();
+    const [totals] = await this.database.query<{ saved: number; pending: number }>(
+      `SELECT COUNT(*) AS saved, COALESCE(SUM(CASE WHEN state='PENDING' THEN 1 ELSE 0 END),0) AS pending FROM sms_candidates`,
+    );
+    this.savedTotal.set(totals.saved);
+    this.pendingTotal.set(totals.pending);
     const filters = this.filters;
     const where = `WHERE (? = 'ALL' OR state = ?) AND (? = 'ALL' OR kind = ?)
-      AND (? = '' OR payload LIKE ?) AND (? = '' OR payload LIKE ?)`;
+      AND (? = '' OR (COALESCE(json_extract(payload,'$.merchant'),'') || ' ' || COALESCE(json_extract(payload,'$.reference'),'')) LIKE ?)
+      AND (? = '' OR (COALESCE(json_extract(payload,'$.cardDigits'),'') || ' ' || COALESCE(json_extract(payload,'$.vehicleNumber'),'') || ' ' || COALESCE(json_extract(payload,'$.issuer'),'')) LIKE ?)
+      AND (? = '' OR COALESCE(json_extract(payload,'$.eventDate'),substr(event_at,1,10)) >= ?)
+      AND (? = '' OR COALESCE(json_extract(payload,'$.eventDate'),substr(event_at,1,10)) <= ?)`;
     const values = [
       filters.state,
       filters.state,
@@ -132,12 +145,17 @@ export class SmsReviewService {
       `%${filters.search}%`,
       filters.source,
       `%${filters.source}%`,
+      filters.from,
+      filters.from,
+      filters.to,
+      filters.to,
     ];
     const [count] = await this.database.query<{ total: number }>(
       `SELECT COUNT(*) AS total FROM sms_candidates ${where}`,
       values,
     );
     this.total.set(count.total);
+    this.reviewPage.update((page) => Math.min(page, Math.max(0, Math.ceil(count.total / 200) - 1)));
     const rows = await this.database.query<{
       id: string;
       state: ReviewState;
@@ -406,6 +424,11 @@ export class SmsReviewService {
         new Date(transactionDate).toISOString().slice(0, 10) !== transactionDate
       )
         throw new Error('Enter a valid event date.');
+      if (
+        edits.categoryId &&
+        !(await tx.query('SELECT id FROM categories WHERE id=?', [edits.categoryId])).length
+      )
+        throw new Error('Choose an existing category.');
       let statement: CardStatement | null = null;
       let balanceAdjustment: CardTransaction | null = null;
       let transaction: CardTransaction | null = null;
@@ -423,11 +446,20 @@ export class SmsReviewService {
             ...existing,
             amountMinor,
             merchant: merchant.trim().slice(0, 100),
+            transactionDate,
+            categoryId: edits.categoryId ?? existing.categoryId,
             updatedAt: now,
           };
           await tx.run(
-            'UPDATE card_transactions SET amount_minor=?,payload=?,updated_at=? WHERE id=?',
-            [amountMinor, JSON.stringify(transaction), now, existingId],
+            'UPDATE card_transactions SET amount_minor=?,transaction_date=?,category_id=?,payload=?,updated_at=? WHERE id=?',
+            [
+              amountMinor,
+              transactionDate,
+              transaction.categoryId,
+              JSON.stringify(transaction),
+              now,
+              existingId,
+            ],
           );
           if (existing.sourceBalanceApplied !== false && !source.noLimit) {
             source.balanceMinor = (source.balanceMinor ?? 0) + amountMinor - existing.amountMinor;
@@ -442,7 +474,15 @@ export class SmsReviewService {
       } else {
         if (reconciliation === 'REPAIR_EXISTING')
           throw new Error('Select the existing top-up to repair.');
-        if (!allowSeparate && existingSuggestions(item, sourceId, ledger).length)
+        if (
+          !allowSeparate &&
+          (existingSuggestions(item, sourceId, ledger).length ||
+            existingSuggestions(
+              { ...item, amountMinor, eventDate: transactionDate },
+              sourceId,
+              ledger,
+            ).length)
+        )
           throw new Error(
             'Possible existing transaction. Match it or explicitly confirm a separate event.',
           );
@@ -466,7 +506,8 @@ export class SmsReviewService {
         }
         const beforeCutover =
           !!source?.balanceCutoverAt &&
-          Date.parse(item.eventAt) < Date.parse(source.balanceCutoverAt);
+          (Date.parse(item.eventAt) < Date.parse(source.balanceCutoverAt) ||
+            transactionDate < source.balanceCutoverAt.slice(0, 10));
         if (beforeCutover && reconciliation !== 'RETAIN_BALANCE')
           throw new Error(
             'Historical wallet event precedes the balance snapshot. Choose retain balance to avoid double-counting.',
@@ -493,7 +534,7 @@ export class SmsReviewService {
           updatedAt: now,
         };
         transaction.sourceBalanceApplied = !beforeCutover;
-        if (edits.categoryId && type !== 'CASHBACK') transaction.categoryId = edits.categoryId;
+        if (edits.categoryId) transaction.categoryId = edits.categoryId;
         if (edits.relatedTransactionId) {
           const original = ledger.find((t) => t.id === edits.relatedTransactionId);
           if (
@@ -514,7 +555,7 @@ export class SmsReviewService {
             type,
             amountMinor,
             'INR',
-            item.eventDate,
+            transactionDate,
             JSON.stringify(transaction),
             now,
             now,
@@ -664,7 +705,25 @@ export class SmsReviewService {
         this.store.acceptCommittedImport(result.balanceAdjustment, result.sources);
       if (result.statement) this.store.acceptCommittedStatement(result.statement);
     }
-    await this.refresh();
+    this.notice.set(
+      existingId
+        ? 'Matched existing transaction. Its recorded details are retained.'
+        : 'Transaction approved and saved.',
+    );
+    // The ledger is already durable. A bridge/permission/inbox refresh error must not
+    // tell the user the financial write failed or encourage a second manual entry.
+    if (this.candidates().some((item) => item.id === candidate.id))
+      this.total.update((total) => Math.max(0, total - 1));
+    if (result && candidate.state === 'PENDING')
+      this.pendingTotal.update((total) => Math.max(0, total - 1));
+    this.candidates.update((items) => items.filter((item) => item.id !== candidate.id));
+    try {
+      await this.refresh();
+    } catch {
+      this.notice.set(
+        'Transaction approved and saved. Review inbox could not refresh; retry refresh safely.',
+      );
+    }
   }
 
   /** Bank/aggregator/loan notices can bind to existing records, never create money or schedules. */

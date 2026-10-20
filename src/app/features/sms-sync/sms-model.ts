@@ -43,6 +43,7 @@ export interface SmsEvidence {
   receivedAt: number;
   dateFallback: boolean;
   merchant?: string;
+  merchantEvidence?: string;
   cardDigits?: string;
   accountDigits?: string;
   issuer?: string;
@@ -147,33 +148,102 @@ export function eligibleSources(
       .filter(
         (s) =>
           s.kind === 'MEAL' &&
-          (!item.cardDigits || !s.lastDigits || s.lastDigits === item.cardDigits),
+          !!item.cardDigits &&
+          /^\d{4,5}$/.test(item.cardDigits) &&
+          s.lastDigits === item.cardDigits &&
+          !s.archived,
       )
       .map((s) => s.id);
   if (item.kind.startsWith('FASTAG'))
     return sources
       .filter(
         (s) =>
-          s.kind === 'FASTAG' && (!item.vehicleNumber || s.vehicleNumber === item.vehicleNumber),
+          s.kind === 'FASTAG' &&
+          !!item.vehicleNumber &&
+          s.vehicleNumber === item.vehicleNumber &&
+          !s.archived,
       )
       .map((s) => s.id);
   if (!ledgerType(item)) return [];
   return cards
     .filter((card) => {
-      const issuer = item.issuer?.toLowerCase();
+      const issuer = normalizedIssuer(item.issuer);
       const issuerMatches =
-        !!issuer &&
-        (card.issuerName.toLowerCase().includes(issuer) ||
-          (issuer === 'amex' && card.network === 'AMERICAN_EXPRESS'));
+        !issuer ||
+        normalizedIssuer(card.issuerName) === issuer ||
+        (issuer === 'amex' && card.network === 'AMERICAN_EXPRESS');
       const suffixMatches =
         !!item.cardDigits &&
+        /^\d{4,5}$/.test(item.cardDigits) &&
+        (card.network === 'AMERICAN_EXPRESS' ? /^\d{4,5}$/ : /^\d{4}$/).test(card.lastDigits) &&
         (card.lastDigits === item.cardDigits ||
           (card.network === 'AMERICAN_EXPRESS' &&
             item.cardDigits.length === 4 &&
             card.lastDigits.endsWith(item.cardDigits)));
-      return issuerMatches && suffixMatches && !card.deletedAt;
+      const historical =
+        !card.archived || (!!card.archivedAt && item.eventDate <= card.archivedAt.slice(0, 10));
+      return (
+        issuerMatches &&
+        suffixMatches &&
+        !card.deletedAt &&
+        historical &&
+        card.currencyCode === item.currency
+      );
     })
     .map((card) => card.id);
+}
+
+/** Aliases identify issuers; only cardDigits (never accountDigits) identifies a card. */
+export function normalizedIssuer(value: string | undefined): string {
+  const compact = (value ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const aliases: readonly [RegExp, string][] = [
+    [/amex|americanexpress/, 'amex'],
+    [/standardchartered|stanchart|^scb$/, 'scb'],
+    [/bankofbaroda|bobcard|^bob$/, 'bob'],
+    [/statebankofindia|sbicard|^sbi$/, 'sbi'],
+    [/hdfc/, 'hdfc'],
+    [/icici/, 'icici'],
+    [/axis/, 'axis'],
+    [/idfc/, 'idfc'],
+    [/punjabnational|^pnb/, 'pnb'],
+    [/aubank|ausmallfinance/, 'au'],
+    [/federal/, 'federal'],
+    [/kotak/, 'kotak'],
+    [/rbl|ratnakar/, 'rbl'],
+    [/sodexo|pluxee/, 'pluxee'],
+  ];
+  return (
+    aliases.find(([pattern]) => pattern.test(compact))?.[1] ??
+    compact.replace(/bank|limited|ltd|creditcards?|cards?/g, '')
+  );
+}
+
+/** Also protects older staged evidence produced before merchant extraction was tightened. */
+export function merchantTitle(item: SmsEvidence | null, kind: SmsKind): string {
+  const merchant = item?.merchant
+    ?.split(
+      /https?:\/\/|www\.|\b(?:ref(?:erence)?|utr|rrn|visit|click|not you|if not you|to dispute|call|sms block|available limit|avl limit)\b/i,
+    )[0]
+    .replace(/^\s*\d{9,30}\s+/, '')
+    .trim()
+    .replace(/[.;,\s]+$/, '');
+  if (
+    merchant &&
+    !/^(?:[\d\W]+|(?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/.*)?|[a-z0-9]{18,})$/i.test(merchant)
+  )
+    return merchant;
+  const titles: Partial<Record<SmsKind, string>> = {
+    PURCHASE: 'Card purchase',
+    CARD_PAYMENT_RECEIVED: 'Payment received',
+    STATEMENT: 'Credit card statement',
+    PAYMENT_REMINDER: 'Payment reminder',
+    PAYMENT_INITIATED: 'Payment initiated',
+    PLUXEE_PURCHASE: 'Meal wallet purchase',
+    PLUXEE_TOPUP: 'Meal wallet top-up',
+    FASTAG_TOLL: 'Toll payment',
+    FASTAG_TOPUP: 'FASTag top-up',
+  };
+  return titles[kind] ?? kind.toLowerCase().replaceAll('_', ' ');
 }
 export function existingSuggestions(
   item: SmsEvidence,
