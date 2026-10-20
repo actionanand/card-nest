@@ -1,4 +1,13 @@
 import { TestBed } from '@angular/core/testing';
+import { vi } from 'vitest';
+
+// Angular's test setup may pre-import the SQLite plugin before this spec's
+// hoisted mock is registered (observed in clean GitHub Actions builds).
+// Clear preloaded modules *before* static imports so this spec and SqliteDatabase
+// both receive the same mocked CapacitorSQLite implementation.
+vi.hoisted(() => {
+  vi.resetModules();
+});
 import { Capacitor } from '@capacitor/core';
 import { CapacitorSQLite } from '@capacitor-community/sqlite';
 import { SqliteDatabase } from './sqlite-database';
