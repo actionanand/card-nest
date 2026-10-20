@@ -18,7 +18,7 @@ Tracked Kotlin sources live in `native/android/sms-sync`. `scripts/patch-android
 
 ## Discovery, permissions and privacy
 
-The user chooses a 30-day, 90-day or all-history range and explicitly enables access. `READ_SMS` and `RECEIVE_SMS` must both be granted. No launch-time SMS prompt exists. Enabling again deliberately starts the selected history range; Scan/retry resumes the cursor. The page size comes from both environment files (default 200), is passed to native code and validated between 1 and 500. It is not a lifetime inbox limit.
+The user chooses a 30-day, 90-day or all-history range and explicitly enables access. `READ_SMS` and `RECEIVE_SMS` must both be granted. No launch-time SMS prompt exists. Only confirmed access initializes the first scan; re-enabling and Scan/retry preserve the saved cursor. Denied requests cannot initialize pending scans or reset progress. See [SMS_PERMISSION_DIAGNOSIS.md](./SMS_PERMISSION_DIAGNOSIS.md) for live permission states, app-settings navigation, installer restrictions and physical-device diagnostic commands. The page size comes from both environment files (default 200), is passed to native code and validated between 1 and 500. It is not a lifetime inbox limit.
 
 Kotlin queries the SMS inbox using ascending `(date, _id)` keyset pages. Each financial result is durably staged before that record's cursor advances. Query/staging failures leave unread records eligible for retry. Completed scans replay a two-day overlap. A streaming engine bounds allocations; tests cover 0/1/199/200/201/400/1001 records, cancellation, backpressure and crash replay. Queue capacity is 5,000 outstanding suggestions: reaching capacity stops cursor advancement until the app drains the queue. There is no inbox-wide in-memory list.
 
