@@ -688,6 +688,7 @@ describe('SMS approved import integrity', () => {
     expect(count('card_transactions')).toBe(1);
     expect(transactions()).toHaveLength(1);
     expect(transactions()[0].amountMinor).toBe(3000);
+    expect(service.notice()).toBe('Existing wallet top-up repaired and matched.');
     expect(transactions()[0].transactionDate).toBe('2026-10-16');
     expect(
       rows<{ transaction_date: string; category_id: string }>(

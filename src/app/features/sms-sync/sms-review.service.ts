@@ -707,7 +707,9 @@ export class SmsReviewService {
     }
     this.notice.set(
       existingId
-        ? 'Matched existing transaction. Its recorded details are retained.'
+        ? reconciliation === 'REPAIR_EXISTING'
+          ? 'Existing wallet top-up repaired and matched.'
+          : 'Matched existing transaction. Its recorded details are retained.'
         : 'Transaction approved and saved.',
     );
     // The ledger is already durable. A bridge/permission/inbox refresh error must not
