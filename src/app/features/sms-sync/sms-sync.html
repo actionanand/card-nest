@@ -71,7 +71,7 @@
         <p role="status">Background catch-up is pending. Scan now resumes it.</p>
       }
       <details>
-        <summary>Access and scan details</summary>
+        <summary><span>Access and scan details</span><app-icon name="chevron_down" /></summary>
         <label class="sync-switch-row" for="sms-sync-toggle">
           <span class="switch-copy"
             ><strong>SMS sync</strong
@@ -141,7 +141,7 @@
         <p role="alert">{{ sync.status()?.error }}</p>
       }
       <details class="paste">
-        <summary>Paste a financial SMS</summary>
+        <summary><span>Paste a financial SMS</span><app-icon name="chevron_down" /></summary>
         <label
           >Message (processed locally, raw text is not saved)<textarea
             [formControl]="text"
@@ -169,20 +169,23 @@
       aria-labelledby="sms-inbox-title"
       [attr.aria-busy]="loading()"
     >
-      <div class="section-heading">
-        <h2 id="sms-inbox-title" tabindex="-1">
-          SMS Review <span class="badge">{{ sync.unreadTotal() }} unread</span>
-        </h2>
+      <div class="review-heading">
+        <div class="review-heading-copy">
+          <h2 id="sms-inbox-title" tabindex="-1">SMS Review</h2>
+          <span class="unread-count">{{ sync.unreadTotal() }} unread</span>
+        </div>
+        <button
+          id="mark-all-read"
+          class="btn mark-all-button"
+          type="button"
+          (click)="requestMarkAllRead()"
+          [disabled]="loading() || sync.markingRead() || !sync.unreadTotal()"
+        >
+          <app-icon name="success" /><span>{{
+            sync.markingRead() ? 'Marking read…' : 'Mark all as read'
+          }}</span>
+        </button>
       </div>
-      <button
-        id="mark-all-read"
-        class="btn clear"
-        type="button"
-        (click)="requestMarkAllRead()"
-        [disabled]="loading() || sync.markingRead() || !sync.unreadTotal()"
-      >
-        <app-icon name="success" /> {{ sync.markingRead() ? 'Marking read…' : 'Mark all as read' }}
-      </button>
       <app-select-picker
         label="Inbox"
         [options]="readOptions"
@@ -252,8 +255,10 @@
             (click)="removeFilter(chip.key)"
             [attr.aria-label]="'Remove ' + chip.label + ' filter'"
           >
-            <span>{{ chip.label }}</span
-            ><app-icon name="close" />
+            <span class="chip-body"
+              ><span class="chip-label">{{ chip.label }}</span
+              ><app-icon name="close"
+            /></span>
           </button>
         }
         <button class="btn clear" type="button" (click)="clearFilters()">Clear filters</button>
@@ -333,12 +338,16 @@
         aria-labelledby="read-confirm-title"
         (cancel)="$event.preventDefault(); confirmReadCount.set(null)"
       >
-        <h2 id="read-confirm-title">Mark all as read?</h2>
+        <div class="confirmation-heading">
+          <app-icon name="success" />
+          <h2 id="read-confirm-title">Mark all as read?</h2>
+        </div>
         <p>
-          Mark {{ count }} saved SMS suggestions as read? This hides them from your unread inbox but
-          does not approve, reject or delete any transaction.
+          Mark <strong>{{ count }} saved SMS suggestions</strong> as read? They will move out of
+          your unread inbox.
         </p>
-        <div class="actions">
+        <p class="confirmation-note">This does not approve, reject or delete any transaction.</p>
+        <div class="actions confirmation-actions">
           <button type="button" class="btn" (click)="confirmReadCount.set(null)">Cancel</button>
           <button
             type="button"
@@ -381,14 +390,26 @@
         @if (candidate.item; as item) {
           @if (importable() && (candidate.state === 'PENDING' || candidate.state === 'DEFERRED')) {
             <form [formGroup]="editor" (submit)="approve($event)">
-              <p class="match-note">
-                {{ sourceLabel(candidate) }}. Verify the source before approval.
-              </p>
               @if (!sources().length) {
-                <p>
-                  No saved source is available. Add a card or wallet in CardNest, then return here.
-                  The SMS Test app has separate storage from the production app.
-                </p>
+                <aside class="review-notice source-notice" aria-label="Source needed">
+                  <app-icon name="cards" />
+                  <div>
+                    <strong>Add a source first</strong>
+                    <p>
+                      No saved source is available for this event. Add a card or wallet in CardNest,
+                      then return here.
+                    </p>
+                    <small>Use sources saved in this installed app.</small>
+                  </div>
+                </aside>
+              } @else {
+                <aside class="review-notice" aria-label="Verify source">
+                  <app-icon name="help" />
+                  <div>
+                    <strong>Confirm the source</strong>
+                    <p>{{ sourceLabel(candidate) }}. Verify before approval.</p>
+                  </div>
+                </aside>
               }
               <app-select-picker
                 label="Choose source (required)"
@@ -432,7 +453,9 @@
                 [searchable]="true"
               />
               <details class="reconciliation">
-                <summary>Reconciliation and duplicate controls</summary>
+                <summary>
+                  <span>Reconciliation and duplicate controls</span><app-icon name="chevron_down" />
+                </summary>
                 <app-select-picker
                   label="Reconciliation"
                   formControlName="reconciliation"
@@ -476,15 +499,27 @@
             </form>
           } @else {
             @if (importable()) {
-              <p>
-                This event has already been reviewed. Its financial binding prevents another import.
-                Reopen rejected items using the review controls below.
-              </p>
+              <aside class="review-notice" aria-label="Review history">
+                <app-icon name="success" />
+                <div>
+                  <strong>Review history</strong>
+                  <p>
+                    This event has already been reviewed. Its financial binding prevents another
+                    import. Reopen rejected items using the review controls below.
+                  </p>
+                </div>
+              </aside>
             } @else {
-              <p>
-                This bank, loan, statement or initiation message is evidence only. It cannot create
-                spending, income or a loan schedule.
-              </p>
+              <aside class="review-notice" aria-label="Evidence only">
+                <app-icon name="help" />
+                <div>
+                  <strong>Evidence only</strong>
+                  <p>
+                    This message is evidence only. It cannot create spending, income or a loan
+                    schedule.
+                  </p>
+                </div>
+              </aside>
               @if (
                 [
                   'BANK_DEBIT',
@@ -508,7 +543,7 @@
                 >
                   Confirm Payment / EMI match
                 </button>
-                <p>
+                <p class="muted">
                   Confirm only after checking the source, lender, amount and date. A bank debit is
                   not issuer confirmation.
                 </p>
@@ -516,7 +551,7 @@
             }
           }
           <details class="evidence">
-            <summary>Message evidence</summary>
+            <summary><span>Message evidence</span><app-icon name="chevron_down" /></summary>
             @if (related().length) {
               <p>
                 Related evidence with the same reference and amount. Review as one logical event;
@@ -581,10 +616,16 @@
             </dl>
           </details>
         } @else {
-          <p>
-            Only a processing tombstone remains after backup restore or retention. It continues to
-            prevent duplicate imports.
-          </p>
+          <aside class="review-notice" aria-label="Retained history">
+            <app-icon name="archive" />
+            <div>
+              <strong>History retained</strong>
+              <p>
+                Only a processing tombstone remains after backup restore or retention. It continues
+                to prevent duplicate imports.
+              </p>
+            </div>
+          </aside>
         }
         <footer class="actions dialog-actions">
           @if (candidate.state !== 'IMPORTED' && candidate.state !== 'MATCHED_EXISTING') {

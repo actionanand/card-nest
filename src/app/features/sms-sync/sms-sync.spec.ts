@@ -532,6 +532,66 @@ describe('SMS review privacy and explicit approval UI', () => {
     expect(document.activeElement?.id).toBe('sms-inbox-title');
     element.remove();
   });
+  it('keeps bulk read in the review header and disables its button for empty/read or busy inboxes', async () => {
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    await vi.waitFor(() => expect(fixture.componentInstance.loading()).toBe(false));
+    fixture.detectChanges();
+    const button = fixture.nativeElement.querySelector(
+      '.review-heading #mark-all-read',
+    ) as HTMLButtonElement;
+    expect(button).not.toBeNull();
+    expect(button.disabled).toBe(true);
+    const refreshes = sync.refresh.mock.calls.length;
+    button.click();
+    expect(sync.refresh).toHaveBeenCalledTimes(refreshes);
+    expect(fixture.componentInstance.confirmReadCount()).toBeNull();
+    sync.unreadTotal.set(3);
+    fixture.detectChanges();
+    expect(button.disabled).toBe(false);
+    sync.markingRead.set(true);
+    fixture.detectChanges();
+    expect(button.disabled).toBe(true);
+    expect(sync.markAllRead).not.toHaveBeenCalled();
+  });
+  it('renders compact filter bodies with icon-pack close controls and keeps filter removal functional', async () => {
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.componentInstance.kind.set('PURCHASE');
+    fixture.detectChanges();
+    const chip = fixture.nativeElement.querySelector(
+      'button[aria-label="Remove Purchase filter"]',
+    ) as HTMLButtonElement;
+    expect(chip.querySelector('.chip-body .chip-label')?.textContent).toBe('Purchase');
+    expect(chip.querySelector('app-icon svg')).not.toBeNull();
+    chip.click();
+    await fixture.whenStable();
+    expect(sync.filterReview).toHaveBeenLastCalledWith(expect.objectContaining({ kind: 'ALL' }));
+    expect(sync.approve).not.toHaveBeenCalled();
+  });
+  it('presents missing sources and evidence-only limitations as structured notices without bypassing approval', async () => {
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.componentInstance.open(demoCandidate());
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('.source-notice strong')?.textContent).toBe(
+      'Add a source first',
+    );
+    expect(fixture.nativeElement.querySelector('.source-notice app-icon svg')).not.toBeNull();
+    const statement = demoCandidate();
+    statement.kind = 'STATEMENT';
+    statement.item!.kind = 'STATEMENT';
+    fixture.componentInstance.open(statement);
+    fixture.detectChanges();
+    expect(
+      fixture.nativeElement.querySelector('aside[aria-label="Evidence only"] strong')?.textContent,
+    ).toBe('Evidence only');
+    expect(fixture.nativeElement.querySelector('dialog button[type=submit]')).toBeNull();
+    expect(sync.approve).not.toHaveBeenCalled();
+  });
   it('shows a warning snackbar on failed read persistence and does not show success', async () => {
     sync.markRead.mockRejectedValueOnce(new Error('Synthetic read write failed'));
     const snackbar = vi.spyOn(TestBed.inject(SnackbarService), 'show');
