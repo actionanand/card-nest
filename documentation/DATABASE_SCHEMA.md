@@ -1,5 +1,7 @@
 # CardNest SQLite schema and database inspection
 
+Migration 8 adds nullable `sms_candidates.read_at` and an index on read state/event time. This is CardNest inbox attention state, independent of financial review state and transaction bindings. Existing terminal decisions start read; pending, deferred and error items remain unread. Portable backups preserve the flag while excluding extracted SMS payloads. See [the refinement validation audit](./SMS_FINAL_REFINEMENT_VALIDATION.md) for migration, restore, restart and concurrency coverage.
+
 Migration 7 adds `sms_candidates` (unique processing identities, indexed state/event time and optional ledger binding), `sms_reconciliation` (explicit decisions and targets), and `sms_sync_state` (retention metadata). Portable backups omit extracted candidate payloads while retaining dedup tombstones and approved financial entries. Native staging is a separate Keystore-encrypted private queue and never opens the Capacitor database. See [SMS_SYNC.md](./SMS_SYNC.md) for recovery and privacy behavior.
 
 This document describes the current CardNest SQLite schema, its relationships, deletion behavior, storage locations, and safe ways to inspect tables during development. The executable source of truth is [`src/app/core/data/migrations.ts`](../src/app/core/data/migrations.ts); update this document whenever a new migration changes the schema.
