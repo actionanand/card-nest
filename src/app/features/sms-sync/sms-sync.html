@@ -1,176 +1,356 @@
-<div class="page">
-  <h1>SMS Sync</h1>
+<div class="page sms-page">
+  <header class="page-heading">
+    <div>
+      <p class="eyebrow">Private · Android</p>
+      <h1>SMS Sync</h1>
+    </div>
+  </header>
   @if (sync.lock.locked() || !sync.lock.foreground()) {
     <p>Unlock CardNest to review detected transactions.</p>
   } @else {
-    <p>
-      Offline Android discovery. Nothing changes your transactions or balances until you explicitly
-      approve it.
+    <p class="intro">
+      Nothing changes your transactions or balances until you explicitly approve it.
     </p>
-    <section class="panel" aria-labelledby="sms-access-title">
-      <h2 id="sms-access-title">SMS access</h2>
-      <p>
-        Inbox permissions are restricted by Android and Google Play. Distribution approval is
-        separate. You can paste a message when inbox access is unavailable.
-      </p>
-      <p role="status" aria-live="polite">
-        {{ accessTitle() }}
-      </p>
-      <p>
-        {{
-          sync.requestingPermission()
-            ? "Waiting for Android's SMS permission response."
-            : sync.status()?.permissionMessage
-        }}
-      </p>
-      <label
-        >First scan history
-        <select
-          [value]="range()"
-          (change)="setRange($event)"
-          [disabled]="sync.busy() || sync.requestingPermission()"
-        >
-          <option value="30">Last 30 days</option>
-          <option value="90">Last 90 days</option>
-          <option value="0">All available (may take many pages)</option>
-        </select>
-      </label>
-      <p>
-        Retries resume the saved cursor. Each page is bounded; all available history may require
-        several scans.
-      </p>
-      <div class="actions">
-        <button
-          type="button"
-          class="btn"
-          (click)="enable()"
-          [disabled]="
-            sync.busy() || sync.requestingPermission() || sync.status()?.canRequest === false
-          "
-        >
-          {{ sync.requestingPermission() ? 'Requesting permission…' : 'Enable SMS access' }}
-        </button>
-        <button
-          type="button"
-          class="btn"
-          (click)="disable()"
-          [disabled]="sync.requestingPermission() || !sync.status()?.enabled"
-        >
-          Disable
-        </button>
-        @if (sync.status()?.settingsRecommended) {
-          <button
-            type="button"
-            class="btn"
-            (click)="openSettings()"
-            [disabled]="sync.requestingPermission()"
+    <section class="panel sync-panel" aria-labelledby="sms-access-title">
+      <div class="section-heading">
+        <h2 id="sms-access-title">SMS synchronization</h2>
+        <span class="badge" role="status">{{ accessTitle() }}</span>
+      </div>
+      <div class="metrics" aria-live="polite">
+        <div>
+          <strong>{{ sync.status()?.scanned ?? 0 }}</strong
+          ><span>Messages scanned</span>
+        </div>
+        <div>
+          <strong>{{ sync.status()?.found ?? 0 }}</strong
+          ><span>Events detected</span>
+        </div>
+        <div>
+          <strong>{{ sync.savedTotal() }}</strong
+          ><span>Candidates saved</span>
+        </div>
+        <div>
+          <strong>{{ sync.pendingTotal() }}</strong
+          ><span>Pending review</span>
+        </div>
+      </div>
+      <div class="scan-controls">
+        <label
+          >Scan history<select
+            [value]="range()"
+            (change)="setRange($event)"
+            [disabled]="sync.busy() || sync.requestingPermission()"
           >
-            Open app settings
-          </button>
-        }
+            <option value="30">Last 30 days</option>
+            <option value="90">Last 90 days</option>
+            <option value="0">All available history</option>
+          </select></label
+        >
         <button
-          type="button"
           class="btn btn-primary"
+          type="button"
           (click)="scan()"
           [disabled]="sync.busy() || !sync.canScan()"
         >
-          Scan now / retry
+          {{ sync.busy() ? 'Scanning…' : 'Scan now / retry' }}
         </button>
-        <button type="button" class="btn" (click)="cancel()" [disabled]="!sync.busy()">
-          Cancel scan
-        </button>
+        @if (sync.busy()) {
+          <button class="btn" type="button" (click)="cancel()">Cancel scan</button>
+        }
       </div>
-      <p aria-live="polite">
-        {{ sync.busy() ? 'Scanning…' : sync.canScan() ? 'Ready' : 'Scanning paused' }} · Pages
-        {{ sync.status()?.pages ?? 0 }} · Scanned {{ sync.status()?.scanned ?? 0 }} · Found
-        {{ sync.status()?.found ?? 0 }} · Replays ignored
-        {{ sync.duplicates() }}
-      </p>
-      <p>
-        Last complete scan: {{ date(sync.status()?.completedAt ?? 0) }}<br />Durable cursor:
-        {{ date(sync.status()?.cursorDate ?? 0) }} / {{ sync.status()?.cursorId ?? '—' }}
-      </p>
+      <p class="muted">Last complete sync: {{ date(sync.status()?.completedAt ?? 0) }}</p>
       @if (sync.canScan() && sync.status()?.backgroundPending) {
-        <p>Background catch-up is pending. Scan now resumes it.</p>
+        <p role="status">Background catch-up is pending. Scan now resumes it.</p>
       }
+      <details>
+        <summary>Access and scan details</summary>
+        <p>
+          {{
+            sync.requestingPermission()
+              ? "Waiting for Android's SMS permission response."
+              : sync.status()?.permissionMessage
+          }}
+        </p>
+        <p>
+          Inbox access requires Android SMS permissions. Retries resume the saved cursor; scans use
+          bounded pages. Detected events can include repeats and previously reviewed items.
+        </p>
+        <div class="actions">
+          <button
+            class="btn"
+            type="button"
+            (click)="enable()"
+            [disabled]="
+              sync.busy() || sync.requestingPermission() || sync.status()?.canRequest === false
+            "
+          >
+            {{ sync.requestingPermission() ? 'Requesting permission…' : 'Enable SMS access' }}
+          </button>
+          <button
+            class="btn"
+            type="button"
+            (click)="disable()"
+            [disabled]="sync.requestingPermission() || !sync.status()?.enabled"
+          >
+            Disable
+          </button>
+          @if (sync.status()?.settingsRecommended) {
+            <button
+              class="btn"
+              type="button"
+              (click)="openSettings()"
+              [disabled]="sync.requestingPermission()"
+            >
+              Open app settings
+            </button>
+          }
+        </div>
+        <p>
+          Pages {{ sync.status()?.pages ?? 0 }} · Handoff replays ignored this session:
+          {{ sync.duplicates() }}
+        </p>
+        <p>
+          Durable cursor: {{ date(sync.status()?.cursorDate ?? 0) }} /
+          {{ sync.status()?.cursorId ?? '—' }}
+        </p>
+      </details>
       @if (sync.status()?.error) {
         <p role="alert">{{ sync.status()?.error }}</p>
       }
+      <details class="paste">
+        <summary>Paste a financial SMS</summary>
+        <label
+          >Message (processed locally, raw text is not saved)<textarea
+            [formControl]="text"
+            maxlength="16384"
+            rows="3"
+          ></textarea></label
+        ><button
+          class="btn"
+          type="button"
+          (click)="paste()"
+          [disabled]="!text.valid || !text.value"
+        >
+          Find suggestion
+        </button>
+      </details>
     </section>
-    <section class="panel" aria-labelledby="sms-paste-title">
-      <h2 id="sms-paste-title">Paste a financial SMS</h2>
-      <label
-        >Message (processed locally, raw text is not saved)<textarea
-          [formControl]="text"
-          maxlength="16384"
-          rows="3"
-        ></textarea>
-      </label>
-      <button type="button" class="btn" (click)="paste()" [disabled]="!text.valid || !text.value">
-        Find suggestion
-      </button>
-    </section>
-    @if (error() || sync.error()) {
-      <p role="alert">{{ error() || sync.error() }}</p>
+    @if (!selected() && (error() || sync.error())) {
+      <p class="feedback" role="alert">{{ error() || sync.error() }}</p>
     }
+    @if (notice()) {
+      <p class="feedback" role="status">{{ notice() }}</p>
+    }
+    <section
+      class="panel review-panel"
+      aria-labelledby="sms-inbox-title"
+      [attr.aria-busy]="loading()"
+    >
+      <div class="section-heading">
+        <h2 id="sms-inbox-title" tabindex="-1">
+          Transactions to review <span class="badge">{{ sync.pendingTotal() }}</span>
+        </h2>
+      </div>
+      <div class="search-bar">
+        <label
+          >Search merchant or reference<input
+            type="search"
+            [value]="search()"
+            (input)="search.set(value($event))"
+            (keydown.enter)="applyFilters()" /></label
+        ><button class="btn" type="button" (click)="applyFilters()">Search</button
+        ><button
+          class="btn"
+          type="button"
+          [attr.aria-expanded]="advanced()"
+          aria-controls="sms-filters"
+          (click)="advanced.set(!advanced())"
+        >
+          Filters
+        </button>
+      </div>
+      <div id="sms-filters" [hidden]="!advanced()">
+        <div class="filters">
+          <label
+            >Card / wallet suffix or vehicle<input
+              [value]="sourceFilter()"
+              (input)="sourceFilter.set(value($event))"
+              list="sms-source-options"
+            /><datalist id="sms-source-options">
+              @for (card of store.cards(); track card.id) {
+                @if (!card.deletedAt) {
+                  <option [value]="card.lastDigits">
+                    {{ card.nickname }} · ••{{ card.lastDigits }}
+                  </option>
+                }
+              }
+              @for (wallet of store.paymentSources(); track wallet.id) {
+                @if (wallet.kind === 'MEAL' || wallet.kind === 'FASTAG') {
+                  <option
+                    [value]="
+                      wallet.vehicleNumber ||
+                      wallet.lastDigits ||
+                      wallet.institution ||
+                      wallet.nickname
+                    "
+                  >
+                    {{ wallet.nickname }}
+                  </option>
+                }
+              }
+            </datalist></label
+          >
+          <label
+            >Type<select [value]="kind()" (change)="kind.set(value($event))">
+              <option value="ALL">All types</option>
+              @for (type of kinds; track type) {
+                <option [value]="type">{{ label(type) }}</option>
+              }
+            </select></label
+          >
+          <label
+            >Review status<select [value]="state()" (change)="state.set(value($event))">
+              @for (
+                status of [
+                  'ALL',
+                  'PENDING',
+                  'DEFERRED',
+                  'REJECTED',
+                  'IGNORED',
+                  'IMPORTED',
+                  'MATCHED_EXISTING',
+                  'ERROR',
+                ];
+                track status
+              ) {
+                <option [value]="status" [selected]="status === state()">
+                  {{ label(status) }}
+                </option>
+              }
+            </select></label
+          >
+          <label
+            >From date<input
+              type="date"
+              [value]="from()"
+              (change)="from.set(value($event))" /></label
+          ><label
+            >Through date<input type="date" [value]="to()" (change)="to.set(value($event))"
+          /></label>
+        </div>
+        <p class="muted">
+          Dates filter the original event date. Source searches extracted suffix / vehicle evidence;
+          cards sharing a suffix may both appear.
+        </p>
+        <button class="btn" type="button" (click)="applyFilters()">Apply filters</button>
+      </div>
+      <div class="chips" aria-label="Review filters">
+        @for (chip of filterChips(); track chip.key) {
+          <button
+            class="chip"
+            type="button"
+            (click)="removeFilter(chip.key)"
+            [attr.aria-label]="'Remove filter ' + chip.label"
+          >
+            {{ chip.label }} ×
+          </button>
+        }
+        <button class="btn clear" type="button" (click)="clearFilters()">Clear filters</button>
+      </div>
+      <p class="muted" role="status">
+        {{ loading() ? 'Loading review…' : sync.total() + ' results for these filters' }}
+      </p>
+      @for (candidate of visible(); track candidate.id) {
+        <article class="candidate">
+          <div class="row-main">
+            <strong>{{ title(candidate.item, candidate.kind) }}</strong
+            ><span class="amount">{{ money(candidate.item?.amountMinor) }}</span>
+          </div>
+          <div class="row-meta">
+            <span class="badge">{{ label(candidate.kind) }}</span
+            ><span>{{ label(candidate.state) }}</span
+            ><time [attr.datetime]="candidate.eventAt">{{ dateTime(candidate.eventAt) }}</time>
+          </div>
+          <div class="row-source">
+            <span>{{ sourceLabel(candidate) }}</span
+            ><button
+              class="btn"
+              type="button"
+              [id]="'review-' + candidate.id"
+              aria-haspopup="dialog"
+              (click)="open(candidate)"
+            >
+              Review<span class="sr-only"> {{ title(candidate.item, candidate.kind) }}</span>
+            </button>
+          </div>
+        </article>
+      } @empty {
+        <p class="empty">
+          {{
+            loading()
+              ? 'Loading suggestions…'
+              : 'No suggestions match these filters. Try clearing filters, scanning or pasting a message.'
+          }}
+        </p>
+      }
+      <nav class="pagination" aria-label="Review pages">
+        <button
+          type="button"
+          class="btn"
+          (click)="page(-1)"
+          [disabled]="sync.reviewPage() === 0 || loading()"
+        >
+          Previous</button
+        ><span>Page {{ sync.reviewPage() + 1 }}</span
+        ><button
+          type="button"
+          class="btn"
+          (click)="page(1)"
+          [disabled]="(sync.reviewPage() + 1) * 200 >= sync.total() || loading()"
+        >
+          Next
+        </button>
+      </nav>
+    </section>
     @if (selected(); as candidate) {
-      <section class="panel editor" aria-labelledby="sms-review-heading">
-        <h2 id="sms-review-heading" tabindex="-1">Review {{ label(candidate.kind) }}</h2>
-        @if (related().length) {
-          <p>
-            Related evidence with the same reference and amount. Review as one logical event; bank
-            or aggregator evidence does not prove issuer receipt.
-          </p>
-          <ul>
-            @for (other of related(); track other.id) {
-              <li>
-                {{ label(other.kind) }} · {{ label(other.state) }} · {{ other.eventAt }}
-                <button type="button" class="btn" (click)="open(other)">
-                  Review related evidence
-                </button>
-              </li>
-            }
-          </ul>
+      <dialog
+        #reviewDialog
+        class="panel review-dialog"
+        aria-labelledby="sms-review-heading"
+        (cancel)="$event.preventDefault(); closeEditor()"
+      >
+        <header class="dialog-header">
+          <div>
+            <span class="badge">{{ label(candidate.kind) }} · {{ label(candidate.state) }}</span>
+            <h2 id="sms-review-heading" tabindex="-1">
+              {{ title(candidate.item, candidate.kind) }}
+            </h2>
+          </div>
+          <button
+            class="btn"
+            type="button"
+            aria-label="Close review"
+            (click)="closeEditor()"
+            [disabled]="saving()"
+          >
+            Close
+          </button>
+        </header>
+        @if (error() || sync.error()) {
+          <p class="feedback" role="alert">{{ error() || sync.error() }}</p>
         }
         @if (candidate.item; as item) {
-          <p>
-            {{ item.evidence }} Source suggestions require your confirmation. Missing or ambiguous
-            suffixes remain unmatched.
-          </p>
-          <dl>
-            <dt>Event</dt>
-            <dd>{{ item.eventDate }} · {{ item.eventAt }}</dd>
-            <dt>Received</dt>
-            <dd>{{ date(item.receivedAt) }}</dd>
-            <dt>Date confidence</dt>
-            <dd>
-              {{
-                item.dateFallback
-                  ? 'Receipt date fallback — verify before adding'
-                  : 'Explicit message date'
-              }}
-            </dd>
-            <dt>Source evidence</dt>
-            <dd>
-              {{ item.issuer || 'Unknown issuer' }} ·
-              {{ item.cardDigits || item.accountDigits || 'No suffix' }} ·
-              {{ item.vehicleNumber || '' }}
-            </dd>
-            <dt>Reference</dt>
-            <dd>{{ item.reference || 'Not provided' }}</dd>
-            <dt>Reported balance (evidence only)</dt>
-            <dd>
-              {{
-                item.reportedBalanceMinor === undefined
-                  ? 'Not provided'
-                  : money(item.reportedBalanceMinor)
-              }}
-            </dd>
-            <dt>Statement total / minimum</dt>
-            <dd>{{ money(item.statementTotalMinor) }} / {{ money(item.minimumDueMinor) }}</dd>
-          </dl>
-          @if (importable()) {
+          @if (importable() && (candidate.state === 'PENDING' || candidate.state === 'DEFERRED')) {
             <form [formGroup]="editor" (submit)="approve($event)">
+              <p class="match-note">
+                {{ sourceLabel(candidate) }}. Verify the source before approval.
+              </p>
+              @if (!sources().length) {
+                <p>
+                  No saved source is available. Add a card or wallet in CardNest, then return here.
+                  The SMS Test app has separate storage from the production app.
+                </p>
+              }
               <label
                 >Choose source (required)<select formControlName="source">
                   <option value="">Select a source</option>
@@ -215,6 +395,12 @@
                   </select></label
                 >
               }
+              @if (matches().length) {
+                <p class="match-note">
+                  Possible existing transaction found. Select a match below to avoid adding it
+                  twice, or confirm a separate event after checking.
+                </p>
+              }
               <label
                 >Match existing entry<select formControlName="existing">
                   <option value="">Create a new entry after approval</option>
@@ -223,200 +409,211 @@
                   }
                 </select></label
               >
-              <label
-                >Reconciliation<select formControlName="reconciliation">
-                  <option value="PENDING">
-                    Keep reconciliation pending; retain calculated balance
-                  </option>
-                  <option value="RETAIN_BALANCE">
-                    Historical wallet event: retain snapshot balance
-                  </option>
-                  @if (candidate.kind.startsWith('PLUXEE') || candidate.kind.startsWith('FASTAG')) {
-                    <option value="REPAIR_EXISTING">
-                      Repair the selected existing top-up amount
-                    </option>
-                    <option value="ADJUST_BALANCE">
-                      Apply a documented adjustment to this reported wallet balance
-                    </option>
-                  }
-                  @if (candidate.kind === 'CARD_PAYMENT_RECEIVED') {
-                    <option value="FULLY_PAID">
-                      Explicitly mark a chosen statement fully paid
-                    </option>
-                  }
-                </select></label
-              >
-              @if (editor.controls.reconciliation.value === 'FULLY_PAID') {
+              <details class="reconciliation">
+                <summary>Reconciliation and duplicate controls</summary>
                 <label
-                  >Statement date to settle<input
-                    type="date"
-                    formControlName="statementDate"
-                    required
-                /></label>
-                <label
-                  >Original statement total due (INR)<input
-                    inputmode="decimal"
-                    formControlName="statementDue"
-                    required
-                /></label>
+                  >Reconciliation<select formControlName="reconciliation">
+                    <option value="PENDING">
+                      Keep reconciliation pending; retain calculated balance
+                    </option>
+                    <option value="RETAIN_BALANCE">
+                      Historical wallet event: retain snapshot balance
+                    </option>
+                    @if (
+                      candidate.kind.startsWith('PLUXEE') || candidate.kind.startsWith('FASTAG')
+                    ) {
+                      <option value="REPAIR_EXISTING">
+                        Repair the selected existing top-up amount
+                      </option>
+                      <option value="ADJUST_BALANCE">
+                        Apply a documented adjustment to this reported wallet balance
+                      </option>
+                    }
+                    @if (candidate.kind === 'CARD_PAYMENT_RECEIVED') {
+                      <option value="FULLY_PAID">
+                        Explicitly mark a chosen statement fully paid
+                      </option>
+                    }
+                  </select></label
+                >
+                @if (editor.controls.reconciliation.value === 'FULLY_PAID') {
+                  <label
+                    >Statement date to settle<input
+                      type="date"
+                      formControlName="statementDate"
+                      required
+                  /></label>
+                  <label
+                    >Original statement total due (INR)<input
+                      inputmode="decimal"
+                      formControlName="statementDue"
+                      required
+                  /></label>
+                  <p>
+                    Only this statement is settled. The actual received amount remains unchanged in
+                    the ledger.
+                  </p>
+                }
                 <p>
-                  Only this statement is settled. The actual received amount remains unchanged in
-                  the ledger.
+                  Issuer payments keep the actual received amount, including partial payments or
+                  overpayments. Statement settlement is a separate decision. Reported wallet
+                  balances never overwrite calculated funds.
                 </p>
-              }
-              <p>
-                Issuer payments keep the actual received amount, including partial payments or
-                overpayments. Statement settlement is a separate decision. Reported wallet balances
-                never overwrite calculated funds.
-              </p>
-              <label class="check"
-                ><input type="checkbox" formControlName="separate" />I verified this is a separate
-                event from any suggested existing entry.</label
-              >
+                <label class="check"
+                  ><input type="checkbox" formControlName="separate" />I verified this is a separate
+                  event from any suggested existing entry.</label
+                >
+              </details>
               <button class="btn btn-primary" type="submit" [disabled]="saving() || !editor.valid">
                 {{
-                  editor.controls.existing.value ? 'Approve match existing' : 'Approve · Edit & Add'
+                  editor.controls.existing.value
+                    ? 'Approve match existing'
+                    : 'Approve and add transaction'
                 }}
               </button>
             </form>
           } @else {
-            <p>
-              This bank, loan, statement or initiation message is evidence only. It cannot create
-              spending, income or a loan schedule.
-            </p>
-            @if (
-              [
-                'BANK_DEBIT',
-                'BANK_CREDIT',
-                'BANK_TRANSFER',
-                'PAYMENT_INITIATED',
-                'LOAN_DEBIT',
-              ].includes(candidate.kind)
-            ) {
-              <label
-                >Existing payment, installment or loan<select [formControl]="evidenceTarget">
-                  <option value="">Select the verified existing record</option>
-                  @for (target of evidenceTargets(); track target.id) {
-                    <option [value]="target.id">{{ target.label }}</option>
-                  }
-                </select></label
-              >
-              <button
-                type="button"
-                class="btn"
-                (click)="confirmEvidence()"
-                [disabled]="!evidenceTarget.value"
-              >
-                Confirm Payment / EMI match
-              </button>
+            @if (importable()) {
               <p>
-                Confirm only after checking the source, lender, amount and date. A bank debit is not
-                issuer confirmation.
+                This event has already been reviewed. Its financial binding prevents another import.
+                Reopen rejected items using the review controls below.
               </p>
+            } @else {
+              <p>
+                This bank, loan, statement or initiation message is evidence only. It cannot create
+                spending, income or a loan schedule.
+              </p>
+              @if (
+                [
+                  'BANK_DEBIT',
+                  'BANK_CREDIT',
+                  'BANK_TRANSFER',
+                  'PAYMENT_INITIATED',
+                  'LOAN_DEBIT',
+                ].includes(candidate.kind)
+              ) {
+                <label
+                  >Existing payment, installment or loan<select [formControl]="evidenceTarget">
+                    <option value="">Select the verified existing record</option>
+                    @for (target of evidenceTargets(); track target.id) {
+                      <option [value]="target.id">{{ target.label }}</option>
+                    }
+                  </select></label
+                >
+                <button
+                  type="button"
+                  class="btn"
+                  (click)="confirmEvidence()"
+                  [disabled]="!evidenceTarget.value"
+                >
+                  Confirm Payment / EMI match
+                </button>
+                <p>
+                  Confirm only after checking the source, lender, amount and date. A bank debit is
+                  not issuer confirmation.
+                </p>
+              }
             }
           }
+          <details class="evidence">
+            <summary>Message evidence</summary>
+            @if (related().length) {
+              <p>
+                Related evidence with the same reference and amount. Review as one logical event;
+                bank or aggregator evidence does not prove issuer receipt.
+              </p>
+              <ul>
+                @for (other of related(); track other.id) {
+                  <li>
+                    {{ label(other.kind) }} · {{ label(other.state) }} ·
+                    {{ dateTime(other.eventAt) }}
+                    <button type="button" class="btn" (click)="open(other)">
+                      Review related evidence
+                    </button>
+                  </li>
+                }
+              </ul>
+            }
+
+            <p>
+              {{ item.evidence }} Source suggestions require your confirmation. Missing or ambiguous
+              suffixes remain unmatched.
+            </p>
+            <dl>
+              <dt>Event</dt>
+              <dd>{{ dateTime(item.eventAt) }}</dd>
+              <dt>Received</dt>
+              <dd>{{ date(item.receivedAt) }}</dd>
+              <dt>Date confidence</dt>
+              <dd>
+                {{
+                  item.dateFallback
+                    ? 'Receipt date fallback — verify before adding'
+                    : 'Explicit message date'
+                }}
+              </dd>
+              <dt>Source evidence</dt>
+              <dd>
+                {{ item.issuer || 'Unknown issuer' }} ·
+                {{ item.cardDigits || item.accountDigits || 'No suffix' }} ·
+                {{ item.vehicleNumber || '' }}
+              </dd>
+              <dt>Extracted description</dt>
+              <dd>{{ item.merchantEvidence || item.merchant || 'Not provided' }}</dd>
+              <dt>Confidence</dt>
+              <dd>{{ item.confidence || 'Verify manually' }}</dd>
+              <dt>Statement / due dates</dt>
+              <dd>
+                {{ item.statementDate || 'Not provided' }} / {{ item.dueDate || 'Not provided' }}
+              </dd>
+              <dt>Reference</dt>
+              <dd>{{ item.reference || 'Not provided' }}</dd>
+              <dt>Reported balance (evidence only)</dt>
+              <dd>
+                {{
+                  item.reportedBalanceMinor === undefined
+                    ? 'Not provided'
+                    : money(item.reportedBalanceMinor)
+                }}
+              </dd>
+              <dt>Statement total / minimum</dt>
+              <dd>{{ money(item.statementTotalMinor) }} / {{ money(item.minimumDueMinor) }}</dd>
+            </dl>
+          </details>
         } @else {
           <p>
-            Only a processing tombstone remains after backup restore or retention. It will continue
-            to prevent duplicate imports.
+            Only a processing tombstone remains after backup restore or retention. It continues to
+            prevent duplicate imports.
           </p>
         }
-        <div class="actions">
-          <button type="button" class="btn" (click)="decide(candidate, 'REJECTED')">Reject</button>
-          <button type="button" class="btn" (click)="decide(candidate, 'DEFERRED')">
-            Review later
-          </button>
-          <button type="button" class="btn" (click)="decide(candidate, 'PENDING')">
-            Reopen review
-          </button>
-          <button type="button" class="btn" (click)="closeEditor()">Close review</button>
-        </div>
-      </section>
-    }
-    <section class="panel" aria-labelledby="sms-inbox-title">
-      <h2 id="sms-inbox-title" tabindex="-1">Review inbox · {{ sync.total() }} results</h2>
-      <div class="filters">
-        <label
-          >Search merchant or reference<input
-            type="search"
-            [value]="search()"
-            (input)="search.set(value($event))"
-        /></label>
-        <label
-          >Source / suffix / vehicle<input
-            [value]="sourceFilter()"
-            (input)="sourceFilter.set(value($event))"
-        /></label>
-        <label
-          >Type<select [value]="kind()" (change)="kind.set(value($event))">
-            <option value="ALL">All types</option>
-            @for (type of kinds; track type) {
-              <option [value]="type">{{ label(type) }}</option>
-            }
-          </select></label
-        >
-        <label
-          >Status<select [value]="state()" (change)="state.set(value($event))">
-            @for (
-              status of [
-                'ALL',
-                'PENDING',
-                'DEFERRED',
-                'REJECTED',
-                'IGNORED',
-                'IMPORTED',
-                'MATCHED_EXISTING',
-                'ERROR',
-              ];
-              track status
-            ) {
-              <option [value]="status">{{ label(status) }}</option>
-            }
-          </select></label
-        >
-      </div>
-      <div class="actions">
-        <button type="button" class="btn" (click)="applyFilters()">Apply filters</button>
-        <button type="button" class="btn" (click)="rejectPage()" [disabled]="!visible().length">
-          Reject pending suggestions on this page
-        </button>
-        <button type="button" class="btn" (click)="page(-1)" [disabled]="sync.reviewPage() === 0">
-          Previous page
-        </button>
-        <span>Page {{ sync.reviewPage() + 1 }}</span>
-        <button
-          type="button"
-          class="btn"
-          (click)="page(1)"
-          [disabled]="(sync.reviewPage() + 1) * 200 >= sync.total()"
-        >
-          Next page
-        </button>
-      </div>
-      @for (candidate of visible(); track candidate.id) {
-        <article class="candidate">
-          <div>
-            <strong>{{ candidate.item?.merchant || label(candidate.kind) }}</strong>
-            <p>
-              {{ label(candidate.kind) }} · {{ candidate.eventAt }} · {{ label(candidate.state) }}
-            </p>
-            <span
-              >{{ candidate.item?.issuer || 'Unmatched source' }} ·
-              {{ money(candidate.item?.amountMinor) }}</span
+        <footer class="actions dialog-actions">
+          @if (candidate.state !== 'IMPORTED' && candidate.state !== 'MATCHED_EXISTING') {
+            <button
+              class="btn"
+              type="button"
+              (click)="decide(candidate, 'DEFERRED')"
+              [disabled]="saving()"
             >
-          </div>
-          <button
-            class="btn"
-            type="button"
-            [id]="'review-' + candidate.id"
-            (click)="open(candidate)"
-          >
-            Review details
+              Review later</button
+            ><button
+              class="btn"
+              type="button"
+              (click)="decide(candidate, 'REJECTED')"
+              [disabled]="saving()"
+            >
+              Reject
+            </button>
+            @if (candidate.state !== 'PENDING' && candidate.state !== 'DEFERRED') {
+              <button class="btn" type="button" (click)="decide(candidate, 'PENDING')">
+                Reopen review
+              </button>
+            }
+          }
+          <button class="btn" type="button" (click)="closeEditor()" [disabled]="saving()">
+            Cancel
           </button>
-        </article>
-      } @empty {
-        <p>No suggestions match these filters. Scan or paste a message to begin.</p>
-      }
-    </section>
+        </footer>
+      </dialog>
+    }
   }
 </div>

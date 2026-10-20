@@ -1,4 +1,13 @@
-import { Component, computed, effect, inject, signal, untracked } from '@angular/core';
+import {
+  Component,
+  ElementRef,
+  computed,
+  effect,
+  inject,
+  signal,
+  untracked,
+  viewChild,
+} from '@angular/core';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { parseMoneyToMinor } from '../../core/services/money';
@@ -10,6 +19,7 @@ import {
   eligibleSources,
   existingSuggestions,
   ledgerType,
+  merchantTitle,
 } from './sms-model';
 
 @Component({
@@ -17,7 +27,12 @@ import {
   imports: [ReactiveFormsModule],
   templateUrl: './sms-sync.html',
   styleUrl: './sms-sync.scss',
-  host: { '(document:keydown.escape)': 'closeEditor()', '(window:focus)': 'refreshAccess()' },
+  host: {
+    '(document:keydown.escape)': 'closeEditor()',
+    '(document:keydown)': 'trapFocus($event)',
+    '(window:focus)': 'refreshAccess()',
+    '(window:cardnest:back)': 'androidBack($event)',
+  },
 })
 export class SmsSyncPage {
   readonly sync = inject(SmsReviewService);
@@ -27,6 +42,44 @@ export class SmsSyncPage {
   readonly kind = signal('ALL');
   readonly state = signal('PENDING');
   readonly sourceFilter = signal('');
+  readonly from = signal('');
+  readonly to = signal('');
+  readonly advanced = signal(false);
+  readonly loading = signal(false);
+  readonly notice = signal('');
+  readonly dialog = viewChild<ElementRef<HTMLDialogElement>>('reviewDialog');
+  readonly title = merchantTitle;
+  readonly filterChips = computed(() =>
+    [
+      { key: 'search', label: this.search() && `Search: ${this.search()}` },
+      { key: 'source', label: this.sourceFilter() && `Source: ${this.sourceFilter()}` },
+      { key: 'kind', label: this.kind() !== 'ALL' && this.label(this.kind()) },
+      { key: 'state', label: this.state() !== 'ALL' && this.label(this.state()) },
+      { key: 'from', label: this.from() && `From ${this.from()}` },
+      { key: 'to', label: this.to() && `To ${this.to()}` },
+    ].filter((chip) => chip.label),
+  );
+  removeFilter(key: string): void {
+    const controls: Record<string, { set(value: string): void }> = {
+      search: this.search,
+      source: this.sourceFilter,
+      kind: this.kind,
+      state: this.state,
+      from: this.from,
+      to: this.to,
+    };
+    controls[key]?.set(key === 'kind' || key === 'state' ? 'ALL' : '');
+    this.applyFilters();
+  }
+  clearFilters(): void {
+    this.search.set('');
+    this.sourceFilter.set('');
+    this.kind.set('ALL');
+    this.state.set('ALL');
+    this.from.set('');
+    this.to.set('');
+    this.applyFilters();
+  }
   readonly selected = signal<SmsCandidate | null>(null);
   readonly related = signal<readonly SmsCandidate[]>([]);
   readonly error = signal('');
@@ -76,6 +129,8 @@ export class SmsSyncPage {
         kind: this.kind(),
         search: this.search(),
         source: this.sourceFilter(),
+        from: this.from(),
+        to: this.to(),
       }),
     );
   }
@@ -103,6 +158,19 @@ export class SmsSyncPage {
       suggested: suggested.includes(s.id),
     }));
   });
+  sourceLabel(candidate: SmsCandidate): string {
+    const ids = candidate.item
+      ? eligibleSources(candidate.item, this.store.cards(), this.store.paymentSources())
+      : [];
+    if (ids.length === 1) {
+      const card = this.store.cards().find((card) => card.id === ids[0]);
+      const wallet = this.store.paymentSources().find((source) => source.id === ids[0]);
+      return `${card?.nickname ?? wallet?.nickname} ${card?.lastDigits || wallet?.lastDigits ? `••${card?.lastDigits ?? wallet?.lastDigits}` : ''}${card?.archived ? ' · archived' : ''}`;
+    }
+    return ids.length > 1
+      ? `Ambiguous · ${ids.length} matching sources; choose one`
+      : 'Unmatched · select a source';
+  }
   readonly importable = computed(() => {
     const item = this.selected()?.item;
     return !!item && !!ledgerType(item);
@@ -123,6 +191,24 @@ export class SmsSyncPage {
     return labels[status.permission] ?? 'SMS access unavailable';
   });
   constructor() {
+    effect((cleanup) => {
+      const dialog = this.dialog()?.nativeElement;
+      if (!dialog || !this.selected()) return;
+      const overflow = document.body.style.overflow;
+      const rootOverflow = document.documentElement.style.overflow;
+      document.body.style.overflow = 'hidden';
+      document.documentElement.style.overflow = 'hidden';
+      if (typeof dialog.showModal === 'function') dialog.showModal();
+      else dialog.setAttribute('open', '');
+      queueMicrotask(() => {
+        if (dialog.isConnected) dialog.querySelector<HTMLElement>('h2')?.focus();
+      });
+      cleanup(() => {
+        document.body.style.overflow = overflow;
+        document.documentElement.style.overflow = rootOverflow;
+        if (typeof dialog.close === 'function') dialog.close();
+      });
+    });
     effect(() => {
       const available = !this.sync.lock.locked() && this.sync.lock.foreground();
       if (available)
@@ -135,6 +221,35 @@ export class SmsSyncPage {
         this.text.reset();
       }
     });
+  }
+  androidBack(event: Event): void {
+    if (this.selected()) {
+      event.preventDefault();
+      this.closeEditor();
+    }
+  }
+  trapFocus(event: KeyboardEvent): void {
+    if (event.key !== 'Tab') return;
+    const dialog = this.dialog()?.nativeElement;
+    if (!dialog) return;
+    const controls = [
+      ...dialog.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, a[href], [tabindex="0"]',
+      ),
+    ].filter((control) => control.getClientRects().length > 0);
+    const first = controls[0];
+    const last = controls.at(-1);
+    if (!first || !last) return;
+    if (
+      event.shiftKey &&
+      (document.activeElement === first || document.activeElement?.id === 'sms-review-heading')
+    ) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
   }
   value(event: Event): string {
     return (event.target as HTMLInputElement).value;
@@ -150,15 +265,26 @@ export class SmsSyncPage {
   date(value: number): string {
     return value ? new Date(value).toLocaleString() : 'Not completed';
   }
+  dateTime(value: string): string {
+    return Number.isFinite(Date.parse(value))
+      ? new Date(value).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+      : 'Date unavailable';
+  }
   label(value: string): string {
-    return value.replaceAll('_', ' ');
+    return value
+      .toLowerCase()
+      .replaceAll('_', ' ')
+      .replace(/^./, (letter) => letter.toUpperCase());
   }
   async run(work: () => Promise<void>): Promise<void> {
     this.error.set('');
+    this.loading.set(true);
     try {
       await work();
     } catch (error: unknown) {
       this.error.set(error instanceof Error ? error.message : 'Operation failed. Retry is safe.');
+    } finally {
+      this.loading.set(false);
     }
   }
   enable(): void {
@@ -187,6 +313,8 @@ export class SmsSyncPage {
     });
   }
   open(candidate: SmsCandidate): void {
+    this.error.set('');
+    this.notice.set('');
     this.selected.set(candidate);
     this.related.set([]);
     void this.run(async () => {
@@ -195,9 +323,18 @@ export class SmsSyncPage {
     });
     this.evidenceTarget.reset();
     this.editor.reset({
-      source: '',
+      source: candidate.item
+        ? (() => {
+            const ids = eligibleSources(
+              candidate.item,
+              this.store.cards(),
+              this.store.paymentSources(),
+            );
+            return ids.length === 1 ? ids[0] : '';
+          })()
+        : '',
       amount: String((candidate.item?.amountMinor ?? 0) / 100),
-      merchant: candidate.item?.merchant ?? '',
+      merchant: merchantTitle(candidate.item, candidate.kind),
       existing: '',
       reconciliation: 'PENDING',
       separate: false,
@@ -215,6 +352,7 @@ export class SmsSyncPage {
     queueMicrotask(() => document.getElementById('sms-review-heading')?.focus());
   }
   closeEditor(): void {
+    if (this.saving()) return;
     const id = this.selected()?.id;
     if (!id) return;
     this.selected.set(null);
@@ -235,12 +373,30 @@ export class SmsSyncPage {
           label: `${t.transactionDate} · ${t.merchant ?? t.type} · ${this.money(t.amountMinor)}`,
         }));
     return item
-      ? existingSuggestions(item, this.editor.controls.source.value, this.store.transactions()).map(
-          (t) => ({
-            id: t.id,
-            label: `${t.transactionDate} · ${t.merchant ?? t.type} · ${this.money(t.amountMinor)}`,
-          }),
-        )
+      ? [
+          ...new Map(
+            [
+              ...existingSuggestions(
+                item,
+                this.editor.controls.source.value,
+                this.store.transactions(),
+              ),
+              ...existingSuggestions(
+                {
+                  ...item,
+                  amountMinor:
+                    parseMoneyToMinor(this.editor.controls.amount.value) ?? item.amountMinor,
+                  eventDate: this.editor.controls.transactionDate.value,
+                },
+                this.editor.controls.source.value,
+                this.store.transactions(),
+              ),
+            ].map((transaction) => [transaction.id, transaction]),
+          ).values(),
+        ].map((t) => ({
+          id: t.id,
+          label: `${t.transactionDate} · ${t.merchant ?? t.type} · ${this.money(t.amountMinor)}`,
+        }))
       : [];
   }
   decide(candidate: SmsCandidate, state: 'REJECTED' | 'DEFERRED' | 'IGNORED' | 'PENDING'): void {
@@ -283,6 +439,8 @@ export class SmsSyncPage {
             relatedTransactionId: value.relatedPurchase || undefined,
           },
         );
+        this.notice.set(this.sync.notice() || 'Transaction approved and saved.');
+        this.saving.set(false);
         this.closeEditor();
       } finally {
         this.saving.set(false);

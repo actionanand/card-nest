@@ -719,6 +719,17 @@ public class MainActivity extends BridgeActivity {
   }
 
   private void handleCardNestBack() {
+    if (getBridge() != null && getBridge().getWebView() != null) {
+      getBridge().getWebView().evaluateJavascript(
+        "!window.dispatchEvent(new Event('cardnest:back', {cancelable:true}))",
+        handled -> { if (!"true".equals(handled)) handleCardNestNavigationBack(); }
+      );
+      return;
+    }
+    handleCardNestNavigationBack();
+  }
+
+  private void handleCardNestNavigationBack() {
     if (waitingForExitBackPress) {
       finishAffinity();
       return;

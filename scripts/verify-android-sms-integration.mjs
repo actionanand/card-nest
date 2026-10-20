@@ -116,6 +116,8 @@ test('API-36 Back dispatcher and API-qualified navigation themes survive generat
     /getOnBackPressedDispatcher\(\)\.addCallback\(this, new OnBackPressedCallback\(true\)/,
   );
   assert.ok(!activity.includes('public void onBackPressed()'));
+  assert.ok(activity.includes("new Event('cardnest:back', {cancelable:true})"));
+  assert.ok(activity.includes('if (!"true".equals(handled)) handleCardNestNavigationBack();'));
   for (const qualifier of ['values', 'values-night'])
     assert.ok(
       !read(`${root}/main/res/${qualifier}/styles.xml`).includes(
