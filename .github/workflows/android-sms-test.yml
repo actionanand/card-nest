@@ -160,6 +160,30 @@ jobs:
           grep -Fq 'CardNest SMS Test' android/app/src/debug/AndroidManifest.xml
           echo "Isolated test app identity configured; production applicationId remains unchanged."
 
+      - name: Generate branded Android launcher icons
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s public/card-nest.png
+          sudo apt-get update -qq
+          sudo apt-get install -y imagemagick
+          # The generated Capacitor template contains default launcher icons.
+          # Replace them with the same CardNest brand artwork used by the
+          # production Android workflow (debug only, no source asset changes).
+          rm -rf android/app/src/main/res/mipmap-anydpi-v26
+          declare -A SIZES=([mipmap-mdpi]=48 [mipmap-hdpi]=72 [mipmap-xhdpi]=96 [mipmap-xxhdpi]=144 [mipmap-xxxhdpi]=192)
+          for DIR in "${!SIZES[@]}"; do
+            SIZE="${SIZES[$DIR]}"
+            mkdir -p "android/app/src/main/res/$DIR"
+            for ICON in ic_launcher ic_launcher_round ic_launcher_foreground; do
+              convert public/card-nest.png -resize "${SIZE}x${SIZE}" \
+                "android/app/src/main/res/$DIR/$ICON.png"
+            done
+          done
+          test -s android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+          grep -Fq 'android:icon="@mipmap/ic_launcher"' android/app/src/main/AndroidManifest.xml
+          echo "CardNest branded debug launcher icons generated."
+
       - name: Run native tests and build debug APK
         working-directory: android
         run: |
