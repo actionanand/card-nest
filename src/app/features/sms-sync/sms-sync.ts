@@ -350,6 +350,14 @@ export class SmsSyncPage {
       if (available)
         untracked(() => {
           void this.run(async () => {
+            const filters = await this.sync.loadReviewFilters();
+            this.search.set(filters.search);
+            this.sourceFilter.set(filters.source);
+            this.kind.set(filters.kind);
+            this.state.set(filters.state);
+            this.from.set(filters.from);
+            this.to.set(filters.to);
+            this.readFilter.set(filters.read);
             if (this.entryPermissionPending) {
               this.entryPermissionPending = false;
               await this.sync.enterFromReview(this.range());

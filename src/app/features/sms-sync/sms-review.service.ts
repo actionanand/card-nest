@@ -11,6 +11,12 @@ import {
 } from '../../core/models/domain';
 import { environment } from '../../../environments/environment';
 import {
+  defaultReviewFilters,
+  reviewFilters,
+  SMS_REVIEW_FILTERS_KEY,
+  SmsReviewFilters,
+} from './sms-review-filters';
+import {
   SmsCandidate,
   SmsEvidence,
   ScanStatus,
@@ -85,15 +91,23 @@ export class SmsReviewService {
     this.reviewEntryAttempted = true;
     await this.enable(days);
   }
-  private filters = {
-    state: 'PENDING',
-    kind: 'ALL',
-    search: '',
-    source: '',
-    from: '',
-    to: '',
-    read: 'UNREAD',
-  };
+  private filters = defaultReviewFilters();
+  async loadReviewFilters(): Promise<SmsReviewFilters> {
+    this.assertUnlocked();
+    const [row] = await this.database.query<{ encrypted_value: string }>(
+      'SELECT encrypted_value FROM app_preferences WHERE key=?',
+      [SMS_REVIEW_FILTERS_KEY],
+    );
+    let saved: unknown;
+    try {
+      saved = row ? JSON.parse(row.encrypted_value) : undefined;
+    } catch {
+      saved = undefined;
+    }
+    this.filters = reviewFilters(saved);
+    this.reviewPage.set(0);
+    return { ...this.filters };
+  }
   async filterReview(
     filters: Omit<typeof this.filters, 'from' | 'to' | 'read'> & {
       from?: string;
@@ -101,7 +115,13 @@ export class SmsReviewService {
       read?: string;
     },
   ): Promise<void> {
-    this.filters = { from: '', to: '', read: 'UNREAD', ...filters };
+    this.assertUnlocked();
+    const applied = reviewFilters(filters);
+    await this.database.run(
+      'INSERT INTO app_preferences(key,encrypted_value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET encrypted_value=excluded.encrypted_value',
+      [SMS_REVIEW_FILTERS_KEY, JSON.stringify(applied)],
+    );
+    this.filters = applied;
     this.reviewPage.set(0);
     await this.refresh();
   }

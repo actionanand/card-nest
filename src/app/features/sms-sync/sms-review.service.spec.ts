@@ -11,6 +11,7 @@ import { CardNestStore } from '../../core/services/card-nest-store';
 import { AppLockService } from '../../core/services/app-lock.service';
 import { CardTransaction, CreditCard, PaymentSource } from '../../core/models/domain';
 import { SmsReviewService } from './sms-review.service';
+import { defaultReviewFilters, SMS_REVIEW_FILTERS_KEY } from './sms-review-filters';
 import {
   SmsCandidate,
   SmsEvidence,
@@ -167,6 +168,85 @@ describe('SMS approved import integrity', () => {
     vi.restoreAllMocks();
   });
   const count = (table: string) => rows<{ n: number }>(`SELECT COUNT(*) AS n FROM ${table}`)[0].n;
+  it('keeps old-installation defaults without creating preferences on load', async () => {
+    expect(await service.loadReviewFilters()).toEqual(defaultReviewFilters());
+    expect(count('app_preferences')).toBe(0);
+  });
+  it('persists all applied filters in SQLite and re-applies them through a recreated service', async () => {
+    realRefresh();
+    stage(evidence({ merchant: 'Synthetic shop', cardDigits: '54321' }));
+    stage(evidence({ id: 'b'.repeat(64), providerId: '13', merchant: 'Synthetic other' }));
+    const filters = {
+      state: 'PENDING',
+      kind: 'PURCHASE',
+      search: 'Synthetic shop',
+      source: '54321',
+      from: '2026-10-01',
+      to: '2026-10-31',
+      read: 'UNREAD',
+    };
+    await service.filterReview(filters);
+    expect(service.total()).toBe(1);
+    expect(
+      JSON.parse(
+        rows<{ encrypted_value: string }>(
+          'SELECT encrypted_value FROM app_preferences WHERE key=?',
+          [SMS_REVIEW_FILTERS_KEY],
+        )[0].encrypted_value,
+      ),
+    ).toEqual(filters);
+    const recreated = runInInjectionContext(
+      TestBed.inject(EnvironmentInjector),
+      () => new SmsReviewService(),
+    );
+    vi.spyOn(recreated, 'refreshAccess').mockResolvedValue();
+    vi.spyOn(recreated as unknown as { handoff(): Promise<void> }, 'handoff').mockResolvedValue();
+    expect(await recreated.loadReviewFilters()).toEqual(filters);
+    await recreated.refresh();
+    expect(recreated.total()).toBe(1);
+    expect(recreated.candidates()[0].id).toBe('a'.repeat(64));
+    expect(count('card_transactions')).toBe(0);
+    await recreated.filterReview({
+      state: 'ALL',
+      kind: 'ALL',
+      search: '',
+      source: '',
+      read: 'ALL',
+    });
+    expect(await recreated.loadReviewFilters()).toEqual({
+      ...defaultReviewFilters(),
+      state: 'ALL',
+      read: 'ALL',
+    });
+  });
+  it('falls back safely for malformed or invalid restored filter values', async () => {
+    run('INSERT INTO app_preferences VALUES(?,?)', [SMS_REVIEW_FILTERS_KEY, 'broken JSON']);
+    expect(await service.loadReviewFilters()).toEqual(defaultReviewFilters());
+    run('UPDATE app_preferences SET encrypted_value=? WHERE key=?', [
+      JSON.stringify({
+        state: 'unknown',
+        kind: {},
+        read: 'unknown',
+        search: 9,
+        source: ['bad'],
+        from: '2026-02-30',
+        to: 'injected',
+      }),
+      SMS_REVIEW_FILTERS_KEY,
+    ]);
+    expect(await service.loadReviewFilters()).toEqual(defaultReviewFilters());
+  });
+  it('preserves the last saved filters when a preference write fails', async () => {
+    const original = { ...defaultReviewFilters(), search: 'Synthetic saved' };
+    await service.filterReview(original);
+    sql.exec(
+      `CREATE TRIGGER fail_filter_save BEFORE UPDATE ON app_preferences BEGIN SELECT RAISE(ABORT,'Synthetic save failure'); END`,
+    );
+    await expect(service.filterReview({ ...original, search: 'Not saved' })).rejects.toThrow(
+      'Synthetic save failure',
+    );
+    expect(await service.loadReviewFilters()).toEqual(original);
+  });
   function realRefresh(): void {
     vi.mocked(service.refresh).mockRestore();
     vi.spyOn(service, 'refreshAccess').mockResolvedValue();

@@ -193,6 +193,7 @@
         <label
           >Search merchant or reference<input
             type="search"
+            maxlength="1000"
             [value]="search()"
             (input)="search.set(value($event))"
             (keydown.enter)="applyFilters()" /></label
@@ -211,6 +212,7 @@
         <div class="filters">
           <label
             >Card / wallet suffix or vehicle<input
+              maxlength="1000"
               [value]="sourceFilter()"
               (input)="sourceFilter.set(value($event))"
           /></label>

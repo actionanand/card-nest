@@ -41,6 +41,32 @@ describe('Durable first-run data, additive read migration and private portable b
     rows("SELECT encrypted_value FROM app_preferences WHERE key='initial_data_state'")[0]?.[
       'encrypted_value'
     ];
+  it('backs up and restores applied SMS filters, including search, with normal preferences', async () => {
+    await database.initialise();
+    const filters = JSON.stringify({
+      state: 'DEFERRED',
+      kind: 'REFUND',
+      search: 'Synthetic shop',
+      source: '54321',
+      from: '2026-01-01',
+      to: '2026-02-28',
+      read: 'READ',
+    });
+    await database.run('INSERT INTO app_preferences VALUES(?,?)', ['sms_review_filters', filters]);
+    const backup = await database.exportBackupJson();
+    await database.run('UPDATE app_preferences SET encrypted_value=? WHERE key=?', [
+      '{}',
+      'sms_review_filters',
+    ]);
+    await database.restoreBackupJson(backup);
+    expect(
+      rows("SELECT encrypted_value FROM app_preferences WHERE key='sms_review_filters'"),
+    ).toEqual([{ encrypted_value: filters }]);
+    await database.deleteAllData();
+    expect(
+      rows("SELECT encrypted_value FROM app_preferences WHERE key='sms_review_filters'"),
+    ).toEqual([]);
+  });
   function schema(version: number): void {
     for (const migration of DATABASE_MIGRATIONS.filter((item) => item.version <= version))
       for (const statement of migration.statements) sql.exec(statement);
@@ -303,6 +329,10 @@ describe('Durable first-run data, additive read migration and private portable b
       "UPDATE sms_candidates SET read_at='synthetic-seen' WHERE id='synthetic-pending'",
     );
     const file = resolve('tmp', `synthetic-read-restart-${randomUUID()}.sqlite`);
+    await database.run('INSERT INTO app_preferences VALUES(?,?)', [
+      'sms_review_filters',
+      JSON.stringify({ search: 'Synthetic saved query', read: 'ALL' }),
+    ]);
     try {
       sql.prepare('VACUUM INTO ?').run(file);
       sql.close();
@@ -312,6 +342,15 @@ describe('Durable first-run data, additive read migration and private portable b
         [{ read_at: 'synthetic-seen', state: 'PENDING' }],
       );
       expect(count('card_transactions')).toBe(1);
+      expect(
+        JSON.parse(
+          String(
+            rows("SELECT encrypted_value FROM app_preferences WHERE key='sms_review_filters'")[0][
+              'encrypted_value'
+            ],
+          ),
+        ),
+      ).toEqual({ search: 'Synthetic saved query', read: 'ALL' });
     } finally {
       sql.close();
       sql = new DatabaseSync(':memory:');

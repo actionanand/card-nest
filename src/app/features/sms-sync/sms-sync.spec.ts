@@ -10,6 +10,7 @@ import { Router } from '@angular/router';
 import { By } from '@angular/platform-browser';
 import { AppSelectPicker } from '../../shared/app-select-picker';
 import { SnackbarService } from '../../core/services/snackbar.service';
+import { defaultReviewFilters } from './sms-review-filters';
 
 const demoCard: CreditCard = {
   id: 'demo-card',
@@ -92,6 +93,7 @@ describe('SMS review privacy and explicit approval UI', () => {
     refreshAccess: vi.fn().mockResolvedValue(undefined),
     openSettings: vi.fn().mockResolvedValue(undefined),
     filterReview: vi.fn().mockResolvedValue(undefined),
+    loadReviewFilters: vi.fn().mockImplementation(async () => defaultReviewFilters()),
     enterFromReview: vi.fn().mockResolvedValue(undefined),
     disable: vi.fn().mockResolvedValue(undefined),
     cancel: vi.fn().mockResolvedValue(undefined),
@@ -112,6 +114,7 @@ describe('SMS review privacy and explicit approval UI', () => {
     sync.unreadTotal.set(0);
     sync.markingRead.set(false);
     vi.clearAllMocks();
+    sync.loadReviewFilters.mockImplementation(async () => defaultReviewFilters());
     TestBed.configureTestingModule({
       imports: [SmsSyncPage],
       providers: [
@@ -131,6 +134,36 @@ describe('SMS review privacy and explicit approval UI', () => {
         },
       ],
     });
+  });
+  it('restores applied SQLite filters into the controls without saving them again or approving', async () => {
+    sync.loadReviewFilters.mockResolvedValueOnce({
+      state: 'DEFERRED',
+      kind: 'REFUND',
+      search: 'Synthetic shop',
+      source: '54321',
+      from: '2026-01-01',
+      to: '2026-02-28',
+      read: 'READ',
+    });
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(fixture.componentInstance.search()).toBe('Synthetic shop');
+    expect(fixture.componentInstance.sourceFilter()).toBe('54321');
+    expect(fixture.componentInstance.kind()).toBe('REFUND');
+    expect(fixture.componentInstance.state()).toBe('DEFERRED');
+    expect(fixture.componentInstance.readFilter()).toBe('READ');
+    expect(fixture.componentInstance.from()).toBe('2026-01-01');
+    expect(fixture.componentInstance.to()).toBe('2026-02-28');
+    expect(sync.filterReview).not.toHaveBeenCalled();
+    expect(sync.approve).not.toHaveBeenCalled();
+    fixture.componentInstance.search.set('Unapplied edit');
+    expect(sync.filterReview).not.toHaveBeenCalled();
+    fixture.componentInstance.applyFilters();
+    await fixture.whenStable();
+    expect(sync.filterReview).toHaveBeenLastCalledWith(
+      expect.objectContaining({ search: 'Unapplied edit' }),
+    );
   });
   it('does not request permission or approve money when the page opens', () => {
     const fixture = TestBed.createComponent(SmsSyncPage);

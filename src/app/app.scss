@@ -282,32 +282,43 @@ main {
 }
 
 .app-snackbar {
+  --snackbar-tone: var(--success);
+  --snackbar-surface: var(--success-soft);
   position: fixed;
   z-index: 1200;
   right: max(1rem, env(safe-area-inset-right));
   bottom: max(1rem, env(safe-area-inset-bottom));
   display: grid;
   width: min(24rem, calc(100vw - 2rem));
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  box-sizing: border-box;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 0.65rem;
   padding: 0.75rem 0.8rem;
-  border: 1px solid color-mix(in srgb, var(--success) 55%, transparent);
+  border: 1px solid var(--snackbar-tone);
   border-radius: 0.8rem;
-  color: #fff;
-  background: #173c2d;
-  box-shadow: 0 1rem 2.5rem rgb(8 26 18 / 28%);
+  color: var(--ink);
+  background: var(--snackbar-surface);
+  box-shadow: var(--shadow);
+  max-height: calc(100dvh - 2rem);
+  overflow-y: auto;
 }
 .app-snackbar.info {
-  background: #254e65;
+  --snackbar-tone: var(--accent);
+  --snackbar-surface: var(--accent-soft);
 }
 .app-snackbar.warning {
-  background: #704c18;
+  --snackbar-tone: var(--warning);
+  --snackbar-surface: var(--warning-soft);
+}
+.snackbar-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .app-snackbar > app-icon {
   width: 1.15rem;
   height: 1.15rem;
-  color: #fff;
+  color: var(--snackbar-tone);
   stroke: currentColor;
 }
 .app-snackbar button {
@@ -318,13 +329,24 @@ main {
   border: 0;
   border-radius: 50%;
   color: inherit;
-  background: rgb(255 255 255 / 12%);
+  background: color-mix(in srgb, var(--snackbar-tone) 12%, transparent);
+}
+.app-snackbar > button:last-child {
+  grid-column: 3;
+  grid-row: 1;
 }
 .app-snackbar button app-icon {
   width: 0.9rem;
   height: 0.9rem;
 }
 .app-snackbar .snackbar-action {
+  grid-column: 2;
+  grid-row: 2;
+  justify-self: start;
+  max-width: 100%;
+  height: auto;
+  min-height: 2.75rem;
+  overflow-wrap: anywhere;
   width: auto;
   padding: 0 0.65rem;
   border-radius: 0.55rem;
@@ -587,8 +609,10 @@ main {
     width: 100%;
   }
   .app-snackbar {
-    right: 0.75rem;
-    bottom: calc(5.25rem + env(safe-area-inset-bottom));
-    width: calc(100vw - 1.5rem);
+    left: max(0.75rem, env(safe-area-inset-left));
+    right: max(0.75rem, env(safe-area-inset-right));
+    bottom: calc(6.5rem + env(safe-area-inset-bottom));
+    width: auto;
+    max-height: calc(100dvh - 7.5rem - env(safe-area-inset-bottom));
   }
 }
