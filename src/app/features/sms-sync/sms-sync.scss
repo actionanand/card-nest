@@ -1,6 +1,31 @@
 :host {
   display: block;
 }
+.read-confirmation {
+  width: min(30rem, calc(100% - 2rem));
+  max-height: calc(100dvh - 2rem);
+  overflow-y: auto;
+  color: var(--ink);
+  margin: auto;
+}
+.read-confirmation::backdrop {
+  background: rgb(10 25 18 / 68%);
+}
+.read-confirmation p {
+  margin-block: 1rem;
+  line-height: 1.5;
+}
+.filters app-select-picker,
+form app-select-picker {
+  margin-block: 0.7rem;
+}
+#mark-all-read {
+  margin-block: 0.5rem;
+}
+#mark-all-read app-icon {
+  width: 1rem;
+  height: 1rem;
+}
 .sms-page {
   padding-bottom: calc(8rem + env(safe-area-inset-bottom));
 }

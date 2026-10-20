@@ -11,6 +11,9 @@ import {
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { Router } from '@angular/router';
 import { AppIcon } from '../../shared/app-icon';
+import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
+import { SnackbarService } from '../../core/services/snackbar.service';
+import { lockDocumentScroll } from '../../shared/document-scroll-lock';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { parseMoneyToMinor } from '../../core/services/money';
 import { SmsReviewService } from './sms-review.service';
@@ -35,11 +38,11 @@ function isReviewEntry(info: unknown): boolean {
 
 @Component({
   selector: 'app-sms-sync',
-  imports: [ReactiveFormsModule, AppIcon],
+  imports: [ReactiveFormsModule, AppIcon, AppSelectPicker],
   templateUrl: './sms-sync.html',
   styleUrl: './sms-sync.scss',
   host: {
-    '(document:keydown.escape)': 'closeEditor()',
+    '(document:keydown.escape)': 'escape()',
     '(document:keydown)': 'trapFocus($event)',
     '(window:focus)': 'refreshAccess()',
     '(window:cardnest:back)': 'androidBack($event)',
@@ -48,6 +51,100 @@ function isReviewEntry(info: unknown): boolean {
 export class SmsSyncPage {
   readonly sync = inject(SmsReviewService);
   readonly store = inject(CardNestStore);
+  private readonly snackbar = inject(SnackbarService);
+  readonly readFilter = signal('UNREAD');
+  readonly confirmReadCount = signal<number | null>(null);
+  readonly readDialog = viewChild<ElementRef<HTMLDialogElement>>('readDialog');
+  readonly historyOptions: readonly AppSelectOption[] = [
+    { value: '30', label: 'Last 30 days' },
+    { value: '90', label: 'Last 90 days' },
+    { value: '0', label: 'All available history' },
+  ];
+  readonly readOptions: readonly AppSelectOption[] = ['UNREAD', 'ALL', 'READ'].map((value) => ({
+    value,
+    label: value === 'ALL' ? 'All suggestions' : this.label(value),
+  }));
+  readonly kindOptions = computed<readonly AppSelectOption[]>(() => [
+    { value: 'ALL', label: 'All types' },
+    ...this.kinds.map((value) => ({ value, label: this.label(value) })),
+  ]);
+  readonly stateOptions: readonly AppSelectOption[] = [
+    'ALL',
+    'PENDING',
+    'DEFERRED',
+    'REJECTED',
+    'IGNORED',
+    'IMPORTED',
+    'MATCHED_EXISTING',
+    'ERROR',
+  ].map((value) => ({ value, label: this.label(value) }));
+  readonly categoryOptions = computed<readonly AppSelectOption[]>(() =>
+    this.store.categories().map((category) => ({ value: category.id, label: category.name })),
+  );
+  sourceOptions(): readonly AppSelectOption[] {
+    return [
+      { value: '', label: 'Select a source' },
+      ...this.sources().map((source) => ({
+        value: source.id,
+        label: source.label,
+        detail: source.suggested ? 'Suggested — verify before approval' : undefined,
+      })),
+    ];
+  }
+  matchOptions(): readonly AppSelectOption[] {
+    return [
+      { value: '', label: 'Create a new entry after approval' },
+      ...this.matches().map((match) => ({ value: match.id, label: match.label })),
+    ];
+  }
+  purchaseOptions(): readonly AppSelectOption[] {
+    return [
+      { value: '', label: 'No confirmed original purchase' },
+      ...this.store
+        .transactions()
+        .filter(
+          (item) => item.type === 'PURCHASE' && item.cardId === this.editor.controls.source.value,
+        )
+        .map((item) => ({
+          value: item.id,
+          label: item.merchant ?? 'Purchase',
+          detail: `${item.transactionDate} · ${this.money(item.amountMinor)}`,
+        })),
+    ];
+  }
+  evidenceOptions(): readonly AppSelectOption[] {
+    return [
+      { value: '', label: 'Select the verified existing record' },
+      ...this.evidenceTargets().map((item) => ({ value: item.id, label: item.label })),
+    ];
+  }
+  reconciliationOptions(): readonly AppSelectOption[] {
+    const kind = this.selected()?.kind ?? '';
+    return [
+      {
+        value: 'PENDING',
+        label: 'Keep reconciliation pending',
+        detail: 'Retain calculated balance',
+      },
+      {
+        value: 'RETAIN_BALANCE',
+        label: 'Historical wallet event',
+        detail: 'Retain snapshot balance',
+      },
+      ...(kind.startsWith('PLUXEE') || kind.startsWith('FASTAG')
+        ? [
+            { value: 'REPAIR_EXISTING', label: 'Repair existing top-up amount' },
+            { value: 'ADJUST_BALANCE', label: 'Apply documented wallet balance adjustment' },
+          ]
+        : []),
+      ...(kind === 'CARD_PAYMENT_RECEIVED'
+        ? [{ value: 'FULLY_PAID', label: 'Explicitly settle a chosen statement' }]
+        : []),
+    ];
+  }
+  selectHistory(value: string): void {
+    this.range.set(Number(value));
+  }
   // Router `info` is transient: refresh, restored history and ordinary app launch
   // cannot replay the explicit link action and request permission on startup.
   private entryPermissionPending = isReviewEntry(inject(Router).currentNavigation()?.extras.info);
@@ -79,6 +176,7 @@ export class SmsSyncPage {
       { key: 'state', label: this.state() !== 'ALL' && this.label(this.state()) },
       { key: 'from', label: this.from() && `From ${this.from()}` },
       { key: 'to', label: this.to() && `To ${this.to()}` },
+      { key: 'read', label: this.readFilter() !== 'ALL' && this.label(this.readFilter()) },
     ].filter((chip) => chip.label),
   );
   removeFilter(key: string): void {
@@ -89,8 +187,9 @@ export class SmsSyncPage {
       state: this.state,
       from: this.from,
       to: this.to,
+      read: this.readFilter,
     };
-    controls[key]?.set(key === 'kind' || key === 'state' ? 'ALL' : '');
+    controls[key]?.set(key === 'kind' || key === 'state' || key === 'read' ? 'ALL' : '');
     this.applyFilters();
   }
   clearFilters(): void {
@@ -100,6 +199,7 @@ export class SmsSyncPage {
     this.state.set('ALL');
     this.from.set('');
     this.to.set('');
+    this.readFilter.set('ALL');
     this.applyFilters();
   }
   readonly selected = signal<SmsCandidate | null>(null);
@@ -153,6 +253,7 @@ export class SmsSyncPage {
         source: this.sourceFilter(),
         from: this.from(),
         to: this.to(),
+        read: this.readFilter(),
       }),
     );
   }
@@ -160,7 +261,10 @@ export class SmsSyncPage {
     void this.run(() => this.sync.turnPage(direction));
   }
   rejectPage(): void {
-    void this.run(() => this.sync.rejectBatch(this.visible()));
+    void this.run(async () => {
+      await this.sync.rejectBatch(this.visible());
+      this.snackbar.show('Selected suggestions rejected.', 'INFO');
+    });
   }
   readonly sources = computed(() => {
     const item = this.selected()?.item;
@@ -214,20 +318,30 @@ export class SmsSyncPage {
   });
   constructor() {
     effect((cleanup) => {
+      const dialog = this.readDialog()?.nativeElement;
+      if (!dialog) return;
+      const releaseScroll = lockDocumentScroll();
+      if (typeof dialog.showModal === 'function') dialog.showModal();
+      else dialog.setAttribute('open', '');
+      cleanup(() => {
+        releaseScroll();
+        if (typeof dialog.close === 'function') dialog.close();
+        const trigger = document.getElementById('mark-all-read') as HTMLButtonElement | null;
+        if (trigger && !trigger.disabled) trigger.focus();
+        else document.getElementById('sms-inbox-title')?.focus();
+      });
+    });
+    effect((cleanup) => {
       const dialog = this.dialog()?.nativeElement;
       if (!dialog || !this.selected()) return;
-      const overflow = document.body.style.overflow;
-      const rootOverflow = document.documentElement.style.overflow;
-      document.body.style.overflow = 'hidden';
-      document.documentElement.style.overflow = 'hidden';
+      const releaseScroll = lockDocumentScroll();
       if (typeof dialog.showModal === 'function') dialog.showModal();
       else dialog.setAttribute('open', '');
       queueMicrotask(() => {
         if (dialog.isConnected) dialog.querySelector<HTMLElement>('h2')?.focus();
       });
       cleanup(() => {
-        document.body.style.overflow = overflow;
-        document.documentElement.style.overflow = rootOverflow;
+        releaseScroll();
         if (typeof dialog.close === 'function') dialog.close();
       });
     });
@@ -245,18 +359,26 @@ export class SmsSyncPage {
         });
       else {
         this.selected.set(null);
+        this.confirmReadCount.set(null);
         this.sync.candidates.set([]);
         this.text.reset();
       }
     });
   }
   androidBack(event: Event): void {
+    if (document.querySelector('app-select-picker dialog[open]')) return;
+    if (this.confirmReadCount() !== null) {
+      event.preventDefault();
+      this.confirmReadCount.set(null);
+      return;
+    }
     if (this.selected()) {
       event.preventDefault();
       this.closeEditor();
     }
   }
   trapFocus(event: KeyboardEvent): void {
+    if (document.querySelector('app-select-picker dialog[open]')) return;
     if (event.key !== 'Tab') return;
     const dialog = this.dialog()?.nativeElement;
     if (!dialog) return;
@@ -311,6 +433,7 @@ export class SmsSyncPage {
       await work();
     } catch (error: unknown) {
       this.error.set(error instanceof Error ? error.message : 'Operation failed. Retry is safe.');
+      this.snackbar.show(this.error(), 'WARNING');
     } finally {
       this.loading.set(false);
     }
@@ -439,6 +562,10 @@ export class SmsSyncPage {
     void this.run(async () => {
       await this.sync.decide(candidate, state);
       this.closeEditor();
+      this.snackbar.show(
+        `Suggestion ${state === 'DEFERRED' ? 'saved for later' : state === 'PENDING' ? 'reopened' : this.label(state).toLowerCase()}.`,
+        'INFO',
+      );
     });
   }
   approve(event: Event): void {
@@ -478,12 +605,47 @@ export class SmsSyncPage {
         this.notice.set(this.sync.notice() || 'Transaction approved and saved.');
         this.saving.set(false);
         this.closeEditor();
+        this.snackbar.show(this.notice());
       } finally {
         this.saving.set(false);
       }
     });
   }
   readonly evidenceTarget = new FormControl('', { nonNullable: true });
+  escape(): void {
+    if (document.querySelector('app-select-picker dialog[open]')) return;
+    if (this.confirmReadCount() !== null) this.confirmReadCount.set(null);
+    else this.closeEditor();
+  }
+  markRead(candidate: SmsCandidate): void {
+    void this.run(async () => {
+      await this.sync.markRead(candidate.id, !candidate.readAt);
+      this.snackbar.show(
+        candidate.readAt ? 'Suggestion marked unread.' : 'Suggestion marked read.',
+        'INFO',
+      );
+    });
+  }
+  requestMarkAllRead(): void {
+    if (this.loading() || this.sync.markingRead()) return;
+    void this.run(async () => {
+      await this.sync.refresh();
+      const count = this.sync.unreadTotal();
+      if (!count) this.snackbar.show('No unread suggestions.', 'INFO');
+      else this.confirmReadCount.set(count);
+    });
+  }
+  confirmMarkAllRead(): void {
+    if (this.confirmReadCount() === null || this.sync.markingRead()) return;
+    this.confirmReadCount.set(null);
+    void this.run(async () => {
+      const count = await this.sync.markAllRead();
+      this.snackbar.show(
+        `${count} saved SMS suggestion${count === 1 ? '' : 's'} marked as read.`,
+        'INFO',
+      );
+    });
+  }
   evidenceTargets(): readonly { id: string; label: string }[] {
     return [
       ...this.store
@@ -517,6 +679,7 @@ export class SmsSyncPage {
         kind as 'TRANSACTION' | 'INSTALLMENT' | 'LOAN',
       );
       this.closeEditor();
+      this.snackbar.show('Existing payment or EMI match confirmed.');
     });
   }
 }

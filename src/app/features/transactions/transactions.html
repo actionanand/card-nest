@@ -1,5 +1,4 @@
 <div class="page transactions-page">
-  <app-platform-tools />
   <header class="page-header">
     <div>
       <p class="eyebrow">Ledger</p>
@@ -17,14 +16,17 @@
         Every purchase, refund and payment—clearly accounted for.
       </p>
     </div>
-    <button
-      class="btn btn-primary add-transaction"
-      type="button"
-      (click)="openAdd()"
-      aria-label="Add transaction"
-    >
-      <app-icon name="plus" /><span>Add transaction</span>
-    </button>
+    <div class="header-actions">
+      <app-platform-tools />
+      <button
+        class="btn btn-primary add-transaction"
+        type="button"
+        (click)="openAdd()"
+        aria-label="Add transaction"
+      >
+        <app-icon name="plus" /><span>Add transaction</span>
+      </button>
+    </div>
   </header>
 
   @if (showForm()) {

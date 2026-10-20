@@ -9,20 +9,33 @@
       <app-icon name="plus" /><span>Add transaction</span>
     </a>
   </header>
-  <details class="panel">
-    <summary>Add a vehicle FASTag wallet</summary>
-    <p>
-      Choose your own vehicle and provider. A detected registration does not establish ownership.
-    </p>
-    <form [formGroup]="walletForm" (submit)="addFastag($event)">
-      <label>Wallet name<input formControlName="name" maxlength="80" required /></label>
-      <label>Provider<input formControlName="provider" maxlength="80" /></label>
-      <label>Vehicle registration<input formControlName="plate" maxlength="16" required /></label>
-      @if (walletError()) {
-        <p role="alert">{{ walletError() }}</p>
-      }
-      <button type="submit" class="btn" [disabled]="!walletForm.valid">Create wallet</button>
-    </form>
+  <details class="panel fastag-create" [open]="walletOpen()" (toggle)="walletToggled($event)">
+    <summary #walletSummary>
+      <app-icon name="car" /><span
+        ><strong>Add FASTag wallet</strong
+        ><small>Track tolls and top-ups separately for each vehicle.</small></span
+      ><app-icon class="wallet-chevron" name="chevron_down" />
+    </summary>
+    <div class="wallet-body">
+      <p>
+        Choose your own vehicle and provider. A detected registration does not establish ownership.
+      </p>
+      <form [formGroup]="walletForm" (submit)="addFastag($event)">
+        <label>Wallet name<input formControlName="name" maxlength="80" required /></label>
+        <label>Provider<input formControlName="provider" maxlength="80" /></label>
+        <label>Vehicle registration<input formControlName="plate" maxlength="16" required /></label>
+        @if (walletError()) {
+          <p role="alert">{{ walletError() }}</p>
+        }
+        <button
+          type="submit"
+          class="btn btn-primary"
+          [disabled]="!walletForm.valid || walletSaving()"
+        >
+          {{ walletSaving() ? 'Creating…' : 'Create wallet' }}
+        </button>
+      </form>
+    </div>
   </details>
 
   <div class="source-tabs" role="tablist" aria-label="Money source views">

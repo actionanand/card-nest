@@ -7,6 +7,7 @@ import { SnackbarService } from '../../core/services/snackbar.service';
 import { AppIcon } from '../../shared/app-icon';
 import { AppDatePipe } from '../../core/services/date-format.service';
 import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
+import { lockDocumentScroll } from '../../shared/document-scroll-lock';
 
 interface SpendingPeriod {
   readonly offset: number;
@@ -35,18 +36,18 @@ export class CategorySpendingPage {
     effect((cleanup) => {
       const dialog = this.limitDialog()?.nativeElement;
       if (!dialog) return;
-      const previousOverflow = document.body.style.overflow;
-      document.body.style.overflow = 'hidden';
+      const releaseScroll = lockDocumentScroll();
       if (typeof dialog.showModal === 'function') dialog.showModal();
       else dialog.setAttribute('open', '');
       cleanup(() => {
-        document.body.style.overflow = previousOverflow;
+        releaseScroll();
         if (typeof dialog.close === 'function') dialog.close();
         if (this.limitTrigger?.isConnected) this.limitTrigger.focus();
       });
     });
   }
   dismissLimit(event: Event): void {
+    if (document.querySelector('app-select-picker dialog[open]')) return;
     if (!this.limitCategoryId()) return;
     event.preventDefault();
     this.closeLimit();

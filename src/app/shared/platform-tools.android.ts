@@ -6,7 +6,11 @@ import { AppIcon } from './app-icon';
   selector: 'app-platform-tools',
   imports: [RouterLink, AppIcon],
   template: `@if (android) {
-    <a class="btn sms-review-link" routerLink="/sms-sync" [info]="{ smsReviewEntry: true }">
+    <a
+      class="btn btn-primary sms-review-link"
+      routerLink="/sms-sync"
+      [info]="{ smsReviewEntry: true }"
+    >
       <app-icon name="message" /> SMS Review
     </a>
   }`,
@@ -16,12 +20,22 @@ import { AppIcon } from './app-icon';
       min-width: 0;
     }
     :host:has(.sms-review-link) {
-      margin-block: 0 1.25rem;
+      margin: 0;
     }
     .sms-review-link {
       min-height: 2.75rem;
-      padding: 0.7rem 1rem;
+      padding: 0.6rem 0.8rem;
       max-width: 100%;
+      font-size: 0.8rem;
+    }
+    .sms-review-link:hover {
+      background: var(--accent-strong);
+    }
+    .sms-review-link:active {
+      transform: translateY(1px);
+    }
+    .sms-review-link:focus-visible {
+      outline-offset: 3px;
     }
     app-icon {
       width: 1.1rem;

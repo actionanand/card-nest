@@ -7,6 +7,9 @@ import { ScanStatus, SmsCandidate } from './sms-model';
 import axe from 'axe-core';
 import { CreditCard } from '../../core/models/domain';
 import { Router } from '@angular/router';
+import { By } from '@angular/platform-browser';
+import { AppSelectPicker } from '../../shared/app-select-picker';
+import { SnackbarService } from '../../core/services/snackbar.service';
 
 const demoCard: CreditCard = {
   id: 'demo-card',
@@ -76,6 +79,10 @@ describe('SMS review privacy and explicit approval UI', () => {
     total: signal(0),
     savedTotal: signal(0),
     pendingTotal: signal(0),
+    unreadTotal: signal(0),
+    markingRead: signal(false),
+    markRead: vi.fn().mockResolvedValue(undefined),
+    markAllRead: vi.fn().mockResolvedValue(401),
     notice: signal(''),
     reviewPage: signal(0),
     refresh: vi.fn().mockResolvedValue(undefined),
@@ -102,6 +109,8 @@ describe('SMS review privacy and explicit approval UI', () => {
     sync.busy.set(false);
     sync.total.set(0);
     sync.reviewPage.set(0);
+    sync.unreadTotal.set(0);
+    sync.markingRead.set(false);
     vi.clearAllMocks();
     TestBed.configureTestingModule({
       imports: [SmsSyncPage],
@@ -361,7 +370,7 @@ describe('SMS review privacy and explicit approval UI', () => {
     fixture.detectChanges();
     const element = fixture.nativeElement as HTMLElement;
     document.body.appendChild(element);
-    const trigger = element.querySelector<HTMLButtonElement>('button[aria-haspopup=dialog]')!;
+    const trigger = element.querySelector<HTMLButtonElement>('button[id^="review-"]')!;
     trigger.focus();
     trigger.click();
     fixture.detectChanges();
@@ -433,12 +442,11 @@ describe('SMS review privacy and explicit approval UI', () => {
   it('applies and clears filter chips including the original event-date range', () => {
     const fixture = TestBed.createComponent(SmsSyncPage);
     fixture.detectChanges();
-    const reviewState = [
-      ...(fixture.nativeElement as HTMLElement).querySelectorAll<HTMLSelectElement>(
-        '#sms-filters select',
-      ),
-    ].find((select) => select.closest('label')?.textContent?.includes('Review status'));
-    expect(reviewState?.value).toBe('PENDING');
+    const reviewState = fixture.debugElement
+      .queryAll(By.directive(AppSelectPicker))
+      .map((element) => element.componentInstance as AppSelectPicker)
+      .find((picker) => picker.label() === 'Review status');
+    expect(reviewState?.currentValue()).toBe('PENDING');
     const page = fixture.componentInstance;
     page.from.set('2026-10-01');
     page.search.set('DEMO');
@@ -448,6 +456,8 @@ describe('SMS review privacy and explicit approval UI', () => {
     );
     page.removeFilter('from');
     expect(page.from()).toBe('');
+    page.removeFilter('read');
+    expect(page.readFilter()).toBe('ALL');
     page.clearFilters();
     expect(page.filterChips()).toEqual([]);
     expect(sync.filterReview).toHaveBeenLastCalledWith({
@@ -457,7 +467,76 @@ describe('SMS review privacy and explicit approval UI', () => {
       kind: 'ALL',
       source: '',
       search: '',
+      read: 'ALL',
     });
+  });
+  it('confirms the actual unread count before bulk marking and shows success only after persistence', async () => {
+    sync.unreadTotal.set(401);
+    sync.markAllRead.mockImplementationOnce(async () => {
+      sync.unreadTotal.set(0);
+      return 401;
+    });
+    const snackbar = vi.spyOn(TestBed.inject(SnackbarService), 'show');
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    const element = fixture.nativeElement as HTMLElement;
+    document.body.append(element);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    await vi.waitFor(() => expect(fixture.componentInstance.loading()).toBe(false));
+    fixture.componentInstance.requestMarkAllRead();
+    await vi.waitFor(() => expect(fixture.componentInstance.confirmReadCount()).toBe(401));
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('.read-confirmation').textContent).toContain(
+      '401 saved SMS suggestions',
+    );
+    expect(sync.markAllRead).not.toHaveBeenCalled();
+    fixture.componentInstance.confirmMarkAllRead();
+    await fixture.whenStable();
+    expect(sync.markAllRead).toHaveBeenCalledOnce();
+    expect(sync.approve).not.toHaveBeenCalled();
+    expect(snackbar).toHaveBeenCalledWith('401 saved SMS suggestions marked as read.', 'INFO');
+    fixture.detectChanges();
+    expect(document.activeElement?.id).toBe('sms-inbox-title');
+    element.remove();
+  });
+  it('shows a warning snackbar on failed read persistence and does not show success', async () => {
+    sync.markRead.mockRejectedValueOnce(new Error('Synthetic read write failed'));
+    const snackbar = vi.spyOn(TestBed.inject(SnackbarService), 'show');
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    fixture.componentInstance.markRead(demoCandidate());
+    await fixture.whenStable();
+    await vi.waitFor(() =>
+      expect(snackbar).toHaveBeenCalledWith('Synthetic read write failed', 'WARNING'),
+    );
+    expect(sync.approve).not.toHaveBeenCalled();
+  });
+  it('uses reactive custom pickers for SMS editors and leaves the review open when a nested picker handles Back', async () => {
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    TestBed.inject(CardNestStore).cards.set([demoCard]);
+    TestBed.inject(CardNestStore).categories.set([
+      { id: 'other', name: 'Other', icon: 'category', appliesTo: 'BOTH', archived: false },
+    ]);
+    fixture.detectChanges();
+    fixture.componentInstance.open(demoCandidate());
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('select,datalist')).toBeNull();
+    const source = fixture.debugElement
+      .queryAll(By.directive(AppSelectPicker))
+      .map((element) => element.componentInstance as AppSelectPicker)
+      .find((picker) => picker.label() === 'Choose source (required)')!;
+    source.show();
+    fixture.detectChanges();
+    const event = new Event('cardnest:back', { cancelable: true });
+    window.dispatchEvent(event);
+    fixture.detectChanges();
+    expect(event.defaultPrevented).toBe(true);
+    expect(source.open()).toBe(false);
+    expect(fixture.componentInstance.selected()?.id).toBe(demoCandidate().id);
+    source.select(demoCard.id);
+    fixture.detectChanges();
+    expect(fixture.componentInstance.editor.controls.source.value).toBe(demoCard.id);
+    expect(fixture.componentInstance.editor.controls.source.touched).toBe(true);
   });
   it.each(['light', 'dark'])(
     'passes AXE WCAG rules available in jsdom in %s mode',

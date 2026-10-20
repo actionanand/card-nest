@@ -8,6 +8,7 @@
   </header>
 
   <section class="period-picker" aria-label="Choose budget period">
+    <span class="period-label">Budget period</span>
     <button
       type="button"
       (click)="movePeriod(1)"
@@ -18,6 +19,7 @@
     </button>
     <app-select-picker
       label="Budget period"
+      [hideLabel]="true"
       [options]="periodOptions()"
       [value]="periodOffset().toString()"
       (valueChange)="selectPeriod($event)"
@@ -74,19 +76,43 @@
         class="panel category-spend"
         [class.over-limit]="row.remaining !== undefined && row.remaining < 0"
       >
-        <button
-          class="category-summary"
-          type="button"
-          (click)="toggleCategory(row.category.id)"
-          [attr.aria-expanded]="selectedCategoryId() === row.category.id"
-        >
-          <span class="category-symbol" [style.background]="row.category.colour"
-            ><app-icon [name]="row.category.icon"
-          /></span>
-          <span
-            ><strong>{{ row.category.name }}</strong
-            ><small>{{ row.transactions.length }} transactions</small></span
+        <div class="category-compact">
+          <button
+            class="category-summary"
+            type="button"
+            (click)="toggleCategory(row.category.id)"
+            [attr.aria-expanded]="selectedCategoryId() === row.category.id"
           >
+            <span class="category-symbol" [style.background]="row.category.colour"
+              ><app-icon [name]="row.category.icon"
+            /></span>
+            <span
+              ><strong>{{ row.category.name }}</strong
+              ><small>{{ row.transactions.length }} transactions</small></span
+            >
+          </button>
+          <div class="category-actions">
+            <button class="limit-button" type="button" (click)="openLimit(row.category, $event)">
+              <app-icon name="settings" /><span>{{
+                row.configuredLimit === undefined ? 'Set limit' : 'Edit limit'
+              }}</span>
+            </button>
+          </div>
+          <button
+            class="category-expand"
+            type="button"
+            (click)="toggleCategory(row.category.id)"
+            [attr.aria-expanded]="selectedCategoryId() === row.category.id"
+            [attr.aria-label]="
+              (selectedCategoryId() === row.category.id ? 'Collapse ' : 'Expand ') +
+              row.category.name
+            "
+          >
+            <app-icon
+              name="chevron_down"
+              [class.expanded]="selectedCategoryId() === row.category.id"
+            />
+          </button>
           <span class="category-total">
             <strong
               >{{ money(row.spent) }}
@@ -102,11 +128,7 @@
               }}</small>
             }
           </span>
-          <app-icon
-            name="chevron_down"
-            [class.expanded]="selectedCategoryId() === row.category.id"
-          />
-        </button>
+        </div>
         @if (row.limit !== undefined) {
           <progress
             [class.usage-low]="row.percent < 30"
@@ -118,16 +140,6 @@
             [max]="row.limit || 1"
           ></progress>
         }
-        <div class="category-actions">
-          <button
-            class="limit-button"
-            type="button"
-            (click)="openLimit(row.category, $event); $event.stopPropagation()"
-          >
-            <app-icon name="settings" />
-            {{ row.configuredLimit === undefined ? 'Set limit' : 'Edit limit' }}
-          </button>
-        </div>
         @if (selectedCategoryId() === row.category.id) {
           <div class="category-transactions">
             @for (transaction of row.transactions; track transaction.id) {

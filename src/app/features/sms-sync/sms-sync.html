@@ -41,17 +41,14 @@
         </div>
       </div>
       <div class="scan-controls">
-        <label class="scan-history"
-          >Scan history<select
-            [value]="range()"
-            (change)="setRange($event)"
-            [disabled]="sync.busy() || sync.requestingPermission()"
-          >
-            <option value="30">Last 30 days</option>
-            <option value="90">Last 90 days</option>
-            <option value="0">All available history</option>
-          </select></label
-        >
+        <app-select-picker
+          class="scan-history"
+          label="Scan history"
+          [options]="historyOptions"
+          [value]="range().toString()"
+          (valueChange)="selectHistory($event)"
+          [disabled]="sync.busy() || sync.requestingPermission()"
+        />
         <div class="scan-actions" role="group" aria-label="Scan controls">
           <button
             class="btn btn-primary"
@@ -174,9 +171,24 @@
     >
       <div class="section-heading">
         <h2 id="sms-inbox-title" tabindex="-1">
-          Transactions to review <span class="badge">{{ sync.pendingTotal() }}</span>
+          SMS Review <span class="badge">{{ sync.unreadTotal() }} unread</span>
         </h2>
       </div>
+      <button
+        id="mark-all-read"
+        class="btn clear"
+        type="button"
+        (click)="requestMarkAllRead()"
+        [disabled]="loading() || sync.markingRead() || !sync.unreadTotal()"
+      >
+        <app-icon name="success" /> {{ sync.markingRead() ? 'Marking read…' : 'Mark all as read' }}
+      </button>
+      <app-select-picker
+        label="Inbox"
+        [options]="readOptions"
+        [value]="readFilter()"
+        (valueChange)="readFilter.set($event); applyFilters()"
+      />
       <div class="search-bar">
         <label
           >Search merchant or reference<input
@@ -201,60 +213,20 @@
             >Card / wallet suffix or vehicle<input
               [value]="sourceFilter()"
               (input)="sourceFilter.set(value($event))"
-              list="sms-source-options"
-            /><datalist id="sms-source-options">
-              @for (card of store.cards(); track card.id) {
-                @if (!card.deletedAt) {
-                  <option [value]="card.lastDigits">
-                    {{ card.nickname }} · ••{{ card.lastDigits }}
-                  </option>
-                }
-              }
-              @for (wallet of store.paymentSources(); track wallet.id) {
-                @if (wallet.kind === 'MEAL' || wallet.kind === 'FASTAG') {
-                  <option
-                    [value]="
-                      wallet.vehicleNumber ||
-                      wallet.lastDigits ||
-                      wallet.institution ||
-                      wallet.nickname
-                    "
-                  >
-                    {{ wallet.nickname }}
-                  </option>
-                }
-              }
-            </datalist></label
-          >
-          <label
-            >Type<select [value]="kind()" (change)="kind.set(value($event))">
-              <option value="ALL">All types</option>
-              @for (type of kinds; track type) {
-                <option [value]="type">{{ label(type) }}</option>
-              }
-            </select></label
-          >
-          <label
-            >Review status<select [value]="state()" (change)="state.set(value($event))">
-              @for (
-                status of [
-                  'ALL',
-                  'PENDING',
-                  'DEFERRED',
-                  'REJECTED',
-                  'IGNORED',
-                  'IMPORTED',
-                  'MATCHED_EXISTING',
-                  'ERROR',
-                ];
-                track status
-              ) {
-                <option [value]="status" [selected]="status === state()">
-                  {{ label(status) }}
-                </option>
-              }
-            </select></label
-          >
+          /></label>
+          <app-select-picker
+            label="Type"
+            [options]="kindOptions()"
+            [value]="kind()"
+            (valueChange)="kind.set($event)"
+            [searchable]="true"
+          />
+          <app-select-picker
+            label="Review status"
+            [options]="stateOptions"
+            [value]="state()"
+            (valueChange)="state.set($event)"
+          />
           <label
             >From date<input
               type="date"
@@ -294,6 +266,7 @@
             ><span class="amount">{{ money(candidate.item?.amountMinor) }}</span>
           </div>
           <div class="row-meta">
+            <span class="badge">{{ candidate.readAt ? 'Read' : 'Unread' }}</span>
             <span class="badge">{{ label(candidate.kind) }}</span
             ><span>{{ label(candidate.state) }}</span
             ><time [attr.datetime]="candidate.eventAt">{{ dateTime(candidate.eventAt) }}</time>
@@ -310,6 +283,14 @@
               Review<span class="sr-only"> {{ title(candidate.item, candidate.kind) }}</span>
             </button>
           </div>
+          <button
+            class="btn clear"
+            type="button"
+            (click)="markRead(candidate)"
+            [disabled]="loading()"
+          >
+            {{ candidate.readAt ? 'Mark unread' : 'Mark read' }}
+          </button>
         </article>
       } @empty {
         <p class="empty">
@@ -343,6 +324,31 @@
         </nav>
       }
     </section>
+    @if (confirmReadCount(); as count) {
+      <dialog
+        #readDialog
+        class="panel read-confirmation"
+        aria-labelledby="read-confirm-title"
+        (cancel)="$event.preventDefault(); confirmReadCount.set(null)"
+      >
+        <h2 id="read-confirm-title">Mark all as read?</h2>
+        <p>
+          Mark {{ count }} saved SMS suggestions as read? This hides them from your unread inbox but
+          does not approve, reject or delete any transaction.
+        </p>
+        <div class="actions">
+          <button type="button" class="btn" (click)="confirmReadCount.set(null)">Cancel</button>
+          <button
+            type="button"
+            class="btn btn-primary"
+            (click)="confirmMarkAllRead()"
+            [disabled]="sync.markingRead()"
+          >
+            Mark all as read
+          </button>
+        </div>
+      </dialog>
+    }
     @if (selected(); as candidate) {
       <dialog
         #reviewDialog
@@ -382,16 +388,12 @@
                   The SMS Test app has separate storage from the production app.
                 </p>
               }
-              <label
-                >Choose source (required)<select formControlName="source">
-                  <option value="">Select a source</option>
-                  @for (source of sources(); track source.id) {
-                    <option [value]="source.id">
-                      {{ source.label }}{{ source.suggested ? ' · suggested' : '' }}
-                    </option>
-                  }
-                </select></label
-              >
+              <app-select-picker
+                label="Choose source (required)"
+                formControlName="source"
+                [options]="sourceOptions()"
+                [searchable]="true"
+              />
               <label
                 >Amount (INR)<input formControlName="amount" inputmode="decimal" required
               /></label>
@@ -401,30 +403,19 @@
               <label
                 >Event date to record<input type="date" formControlName="transactionDate" required
               /></label>
-              <label
-                >Category<select formControlName="category">
-                  @for (category of store.categories(); track category.id) {
-                    <option [value]="category.id">{{ category.name }}</option>
-                  }
-                </select></label
-              >
+              <app-select-picker
+                label="Category"
+                formControlName="category"
+                [options]="categoryOptions()"
+                [searchable]="true"
+              />
               @if (candidate.kind === 'REFUND') {
-                <label
-                  >Original purchase (optional)<select formControlName="relatedPurchase">
-                    <option value="">No confirmed original purchase</option>
-                    @for (purchase of store.transactions(); track purchase.id) {
-                      @if (
-                        purchase.type === 'PURCHASE' &&
-                        purchase.cardId === editor.controls.source.value
-                      ) {
-                        <option [value]="purchase.id">
-                          {{ purchase.transactionDate }} · {{ purchase.merchant }} ·
-                          {{ money(purchase.amountMinor) }}
-                        </option>
-                      }
-                    }
-                  </select></label
-                >
+                <app-select-picker
+                  label="Original purchase (optional)"
+                  formControlName="relatedPurchase"
+                  [options]="purchaseOptions()"
+                  [searchable]="true"
+                />
               }
               @if (matches().length) {
                 <p class="match-note">
@@ -432,41 +423,19 @@
                   twice, or confirm a separate event after checking.
                 </p>
               }
-              <label
-                >Match existing entry<select formControlName="existing">
-                  <option value="">Create a new entry after approval</option>
-                  @for (match of matches(); track match.id) {
-                    <option [value]="match.id">{{ match.label }}</option>
-                  }
-                </select></label
-              >
+              <app-select-picker
+                label="Match existing entry"
+                formControlName="existing"
+                [options]="matchOptions()"
+                [searchable]="true"
+              />
               <details class="reconciliation">
                 <summary>Reconciliation and duplicate controls</summary>
-                <label
-                  >Reconciliation<select formControlName="reconciliation">
-                    <option value="PENDING">
-                      Keep reconciliation pending; retain calculated balance
-                    </option>
-                    <option value="RETAIN_BALANCE">
-                      Historical wallet event: retain snapshot balance
-                    </option>
-                    @if (
-                      candidate.kind.startsWith('PLUXEE') || candidate.kind.startsWith('FASTAG')
-                    ) {
-                      <option value="REPAIR_EXISTING">
-                        Repair the selected existing top-up amount
-                      </option>
-                      <option value="ADJUST_BALANCE">
-                        Apply a documented adjustment to this reported wallet balance
-                      </option>
-                    }
-                    @if (candidate.kind === 'CARD_PAYMENT_RECEIVED') {
-                      <option value="FULLY_PAID">
-                        Explicitly mark a chosen statement fully paid
-                      </option>
-                    }
-                  </select></label
-                >
+                <app-select-picker
+                  label="Reconciliation"
+                  formControlName="reconciliation"
+                  [options]="reconciliationOptions()"
+                />
                 @if (editor.controls.reconciliation.value === 'FULLY_PAID') {
                   <label
                     >Statement date to settle<input
@@ -523,14 +492,12 @@
                   'LOAN_DEBIT',
                 ].includes(candidate.kind)
               ) {
-                <label
-                  >Existing payment, installment or loan<select [formControl]="evidenceTarget">
-                    <option value="">Select the verified existing record</option>
-                    @for (target of evidenceTargets(); track target.id) {
-                      <option [value]="target.id">{{ target.label }}</option>
-                    }
-                  </select></label
-                >
+                <app-select-picker
+                  label="Existing payment, installment or loan"
+                  [formControl]="evidenceTarget"
+                  [options]="evidenceOptions()"
+                  [searchable]="true"
+                />
                 <button
                   type="button"
                   class="btn"

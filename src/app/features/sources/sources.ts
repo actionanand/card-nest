@@ -1,4 +1,4 @@
-import { Component, computed, inject, signal } from '@angular/core';
+import { Component, ElementRef, computed, inject, signal, viewChild } from '@angular/core';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 import { CardTransaction, PaymentSource, TransactionType } from '../../core/models/domain';
 import { CardNestStore } from '../../core/services/card-nest-store';
@@ -33,6 +33,12 @@ interface SourceCycleGroup {
   styleUrl: './sources.scss',
 })
 export class SourcesPage {
+  readonly walletOpen = signal(false);
+  readonly walletSaving = signal(false);
+  readonly walletSummary = viewChild<ElementRef<HTMLElement>>('walletSummary');
+  walletToggled(event: Event): void {
+    this.walletOpen.set((event.target as HTMLDetailsElement).open);
+  }
   readonly walletError = signal('');
   readonly walletForm = new FormGroup({
     name: new FormControl('', {
@@ -47,9 +53,17 @@ export class SourcesPage {
   });
   async addFastag(event: Event): Promise<void> {
     event.preventDefault();
-    if (!this.walletForm.valid) return;
+    if (!this.walletForm.valid || this.walletSaving()) {
+      this.walletForm.markAllAsTouched();
+      return;
+    }
     this.walletError.set('');
     const value = this.walletForm.getRawValue();
+    if (!value.name.trim()) {
+      this.walletError.set('Enter a wallet name.');
+      return;
+    }
+    this.walletSaving.set(true);
     try {
       await this.store.addWallet({
         id: crypto.randomUUID(),
@@ -63,8 +77,14 @@ export class SourcesPage {
         archived: false,
       });
       this.walletForm.reset();
+      this.walletOpen.set(false);
+      queueMicrotask(() => this.walletSummary()?.nativeElement.focus());
+      this.snackbar.show('FASTag wallet created.');
     } catch (error: unknown) {
       this.walletError.set(error instanceof Error ? error.message : 'Wallet could not be saved.');
+      this.snackbar.show(this.walletError(), 'WARNING');
+    } finally {
+      this.walletSaving.set(false);
     }
   }
   readonly store = inject(CardNestStore);

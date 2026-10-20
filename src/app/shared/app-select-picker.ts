@@ -1,5 +1,17 @@
-import { Component, ElementRef, computed, input, output, signal, viewChild } from '@angular/core';
+import {
+  Component,
+  ElementRef,
+  computed,
+  effect,
+  forwardRef,
+  input,
+  output,
+  signal,
+  viewChild,
+} from '@angular/core';
+import { ControlValueAccessor, NG_VALUE_ACCESSOR } from '@angular/forms';
 import { AppIcon } from './app-icon';
+import { lockDocumentScroll } from './document-scroll-lock';
 
 export interface AppSelectOption {
   readonly value: string;
@@ -14,12 +26,20 @@ export interface AppSelectOption {
 @Component({
   selector: 'app-select-picker',
   imports: [AppIcon],
+  providers: [
+    { provide: NG_VALUE_ACCESSOR, useExisting: forwardRef(() => AppSelectPicker), multi: true },
+  ],
+  host: { '(window:cardnest:back)': 'androidBack($event)' },
   template: `
-    <span class="field-label">{{ label() }}</span>
+    @if (!hideLabel()) {
+      <span class="field-label">{{ label() }}</span>
+    }
     <button
       type="button"
+      #trigger
       class="picker-trigger"
-      [disabled]="disabled()"
+      [disabled]="isDisabled()"
+      [attr.aria-label]="label() + ': ' + selectedLabel()"
       [attr.aria-expanded]="open()"
       aria-haspopup="dialog"
       (click)="show()"
@@ -44,14 +64,15 @@ export interface AppSelectOption {
     }
 
     @if (open()) {
-      <div
+      <dialog
+        #pickerDialog
         class="picker-backdrop"
-        role="dialog"
         aria-modal="true"
         [attr.aria-label]="sheetTitle() || label()"
         tabindex="-1"
-        (click)="open.set(false)"
-        (keydown.escape)="open.set(false)"
+        (click)="close()"
+        (cancel)="$event.preventDefault(); close()"
+        (keydown.escape)="$event.stopPropagation()"
       >
         <div
           class="picker-sheet"
@@ -62,7 +83,7 @@ export interface AppSelectOption {
           <div class="picker-top">
             <header>
               <strong>{{ sheetTitle() || label() }}</strong>
-              <button type="button" aria-label="Close options" (click)="open.set(false)">
+              <button type="button" aria-label="Close options" (click)="close()">
                 <app-icon name="close" />
               </button>
             </header>
@@ -81,15 +102,21 @@ export interface AppSelectOption {
               </label>
             }
           </div>
-          <div class="picker-options" role="listbox" [attr.aria-label]="label()">
+          <div
+            class="picker-options"
+            role="listbox"
+            tabindex="0"
+            [attr.aria-label]="label()"
+            (keydown)="navigateOptions($event)"
+          >
             @for (option of filteredOptions(); track option.value) {
               <button
                 type="button"
                 class="picker-option"
-                [class.selected]="option.value === value()"
+                [class.selected]="option.value === currentValue()"
                 [disabled]="option.disabled"
                 role="option"
-                [attr.aria-selected]="option.value === value()"
+                [attr.aria-selected]="option.value === currentValue()"
                 (click)="select(option.value)"
               >
                 @if (option.icon) {
@@ -110,7 +137,7 @@ export interface AppSelectOption {
                     <small>{{ option.detail }}</small>
                   }
                 </span>
-                @if (option.value === value()) {
+                @if (option.value === currentValue()) {
                   <app-icon class="option-check" name="success" />
                 }
               </button>
@@ -119,18 +146,85 @@ export interface AppSelectOption {
             }
           </div>
         </div>
-      </div>
+      </dialog>
     }
   `,
   styleUrl: './app-select-picker.scss',
 })
-export class AppSelectPicker {
+export class AppSelectPicker implements ControlValueAccessor {
   readonly label = input.required<string>();
   readonly sheetTitle = input('');
   readonly value = input('');
   readonly placeholder = input('Choose an option');
   readonly hint = input('');
   readonly disabled = input(false);
+  readonly hideLabel = input(false);
+  private readonly formValue = signal<string | null>(null);
+  private readonly formDisabled = signal(false);
+  readonly currentValue = computed(() => this.formValue() ?? this.value());
+  readonly isDisabled = computed(() => this.disabled() || this.formDisabled());
+  private changed: (value: string) => void = () => undefined;
+  private touched: () => void = () => undefined;
+  readonly trigger = viewChild<ElementRef<HTMLButtonElement>>('trigger');
+  readonly pickerDialog = viewChild<ElementRef<HTMLDialogElement>>('pickerDialog');
+  constructor() {
+    effect((cleanup) => {
+      const dialog = this.pickerDialog()?.nativeElement;
+      if (!dialog) return;
+      const releaseScroll = lockDocumentScroll();
+      if (typeof dialog.showModal === 'function') dialog.showModal();
+      else dialog.setAttribute('open', '');
+      if (this.searchable()) queueMicrotask(() => this.searchInput()?.nativeElement.focus());
+      cleanup(() => {
+        releaseScroll();
+        if (typeof dialog.close === 'function') dialog.close();
+        this.trigger()?.nativeElement.focus();
+      });
+    });
+  }
+  writeValue(value: unknown): void {
+    this.formValue.set(typeof value === 'string' ? value : '');
+  }
+  registerOnChange(fn: (value: string) => void): void {
+    this.changed = fn;
+  }
+  registerOnTouched(fn: () => void): void {
+    this.touched = fn;
+  }
+  setDisabledState(value: boolean): void {
+    this.formDisabled.set(value);
+  }
+  close(): void {
+    this.open.set(false);
+    this.touched();
+  }
+  androidBack(event: Event): void {
+    if (!this.open()) return;
+    event.preventDefault();
+    this.close();
+  }
+  navigateOptions(event: KeyboardEvent): void {
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+    const buttons = [
+      ...(this.pickerDialog()?.nativeElement.querySelectorAll<HTMLButtonElement>(
+        '.picker-option:not(:disabled)',
+      ) ?? []),
+    ];
+    if (!buttons.length) return;
+    event.preventDefault();
+    const index = buttons.findIndex((button) => button === document.activeElement);
+    const next =
+      event.key === 'Home'
+        ? 0
+        : event.key === 'End'
+          ? buttons.length - 1
+          : index < 0
+            ? event.key === 'ArrowDown'
+              ? 0
+              : buttons.length - 1
+            : (index + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length;
+    buttons[next].focus();
+  }
   readonly searchable = input(false);
   readonly searchPlaceholder = input('Search options');
   readonly options = input.required<readonly AppSelectOption[]>();
@@ -141,7 +235,7 @@ export class AppSelectPicker {
   readonly searchInput = viewChild<ElementRef<HTMLInputElement>>('searchInput');
 
   readonly selectedOption = computed(() =>
-    this.options().find((option) => option.value === this.value()),
+    this.options().find((option) => option.value === this.currentValue()),
   );
   readonly selectedLabel = computed(() => this.selectedOption()?.label ?? this.placeholder());
   readonly filteredOptions = computed(() => {
@@ -153,11 +247,10 @@ export class AppSelectPicker {
   });
 
   show(): void {
-    if (this.disabled()) return;
+    if (this.isDisabled()) return;
     this.searchQuery.set('');
     this.open.set(true);
     this.opened.emit();
-    if (this.searchable()) queueMicrotask(() => this.searchInput()?.nativeElement.focus());
   }
 
   updateSearch(event: Event): void {
@@ -165,8 +258,15 @@ export class AppSelectPicker {
   }
 
   select(value: string): void {
+    if (
+      this.isDisabled() ||
+      !this.options().some((option) => option.value === value && !option.disabled)
+    )
+      return;
+    if (this.formValue() !== null) this.formValue.set(value);
+    this.changed(value);
     this.valueChange.emit(value);
-    this.open.set(false);
+    this.close();
   }
 }
 
