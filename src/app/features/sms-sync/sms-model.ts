@@ -68,6 +68,7 @@ export interface SmsCandidate {
   kind: SmsKind;
   eventAt: string;
   transactionId?: string;
+  readAt?: string | null;
 }
 export interface ScanStatus {
   permission: string;

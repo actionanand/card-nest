@@ -66,6 +66,8 @@ export class SmsReviewService {
   readonly reviewPage = signal(0);
   readonly total = signal(0);
   readonly pendingTotal = signal(0);
+  readonly unreadTotal = signal(0);
+  readonly markingRead = signal(false);
   readonly savedTotal = signal(0);
   readonly notice = signal('');
   private accessRevision = 0;
@@ -83,11 +85,23 @@ export class SmsReviewService {
     this.reviewEntryAttempted = true;
     await this.enable(days);
   }
-  private filters = { state: 'PENDING', kind: 'ALL', search: '', source: '', from: '', to: '' };
+  private filters = {
+    state: 'PENDING',
+    kind: 'ALL',
+    search: '',
+    source: '',
+    from: '',
+    to: '',
+    read: 'UNREAD',
+  };
   async filterReview(
-    filters: Omit<typeof this.filters, 'from' | 'to'> & { from?: string; to?: string },
+    filters: Omit<typeof this.filters, 'from' | 'to' | 'read'> & {
+      from?: string;
+      to?: string;
+      read?: string;
+    },
   ): Promise<void> {
-    this.filters = { from: '', to: '', ...filters };
+    this.filters = { from: '', to: '', read: 'UNREAD', ...filters };
     this.reviewPage.set(0);
     await this.refresh();
   }
@@ -148,17 +162,19 @@ export class SmsReviewService {
     this.assertUnlocked();
     await this.refreshAccess();
     await this.handoff();
-    const [totals] = await this.database.query<{ saved: number; pending: number }>(
-      `SELECT COUNT(*) AS saved, COALESCE(SUM(CASE WHEN state='PENDING' THEN 1 ELSE 0 END),0) AS pending FROM sms_candidates`,
+    const [totals] = await this.database.query<{ saved: number; pending: number; unread: number }>(
+      `SELECT COUNT(*) AS saved, COALESCE(SUM(CASE WHEN state='PENDING' THEN 1 ELSE 0 END),0) AS pending, COALESCE(SUM(CASE WHEN read_at IS NULL THEN 1 ELSE 0 END),0) AS unread FROM sms_candidates`,
     );
     this.savedTotal.set(totals.saved);
     this.pendingTotal.set(totals.pending);
+    this.unreadTotal.set(totals.unread);
     const filters = this.filters;
     const where = `WHERE (? = 'ALL' OR state = ?) AND (? = 'ALL' OR kind = ?)
       AND (? = '' OR (COALESCE(json_extract(payload,'$.merchant'),'') || ' ' || COALESCE(json_extract(payload,'$.reference'),'')) LIKE ?)
       AND (? = '' OR (COALESCE(json_extract(payload,'$.cardDigits'),'') || ' ' || COALESCE(json_extract(payload,'$.vehicleNumber'),'') || ' ' || COALESCE(json_extract(payload,'$.issuer'),'')) LIKE ?)
       AND (? = '' OR COALESCE(json_extract(payload,'$.eventDate'),substr(event_at,1,10)) >= ?)
-      AND (? = '' OR COALESCE(json_extract(payload,'$.eventDate'),substr(event_at,1,10)) <= ?)`;
+      AND (? = '' OR COALESCE(json_extract(payload,'$.eventDate'),substr(event_at,1,10)) <= ?)
+      AND (? = 'ALL' OR (? = 'UNREAD' AND read_at IS NULL) OR (? = 'READ' AND read_at IS NOT NULL))`;
     const values = [
       filters.state,
       filters.state,
@@ -172,6 +188,9 @@ export class SmsReviewService {
       filters.from,
       filters.to,
       filters.to,
+      filters.read,
+      filters.read,
+      filters.read,
     ];
     const [count] = await this.database.query<{ total: number }>(
       `SELECT COUNT(*) AS total FROM sms_candidates ${where}`,
@@ -186,6 +205,7 @@ export class SmsReviewService {
       event_at: string;
       payload: string | null;
       transaction_id: string;
+      read_at: string | null;
     }>(`SELECT * FROM sms_candidates ${where} ORDER BY event_at DESC, id LIMIT 200 OFFSET ?`, [
       ...values,
       this.reviewPage() * 200,
@@ -198,8 +218,33 @@ export class SmsReviewService {
         eventAt: r.event_at,
         item: r.payload ? (JSON.parse(r.payload) as SmsEvidence) : null,
         transactionId: r.transaction_id,
+        readAt: r.read_at,
       })),
     );
+  }
+  async markRead(id: string, read: boolean): Promise<void> {
+    this.assertUnlocked();
+    await this.database.run('UPDATE sms_candidates SET read_at=? WHERE id=?', [
+      read ? new Date().toISOString() : null,
+      id,
+    ]);
+    await this.refresh();
+  }
+  async markAllRead(): Promise<number> {
+    this.assertUnlocked();
+    if (this.markingRead()) return 0;
+    this.markingRead.set(true);
+    try {
+      const count = await this.database.atomic((tx) =>
+        tx.run('UPDATE sms_candidates SET read_at=? WHERE read_at IS NULL', [
+          new Date().toISOString(),
+        ]),
+      );
+      await this.refresh();
+      return count;
+    } finally {
+      this.markingRead.set(false);
+    }
   }
   async enable(days: number): Promise<void> {
     this.assertUnlocked();

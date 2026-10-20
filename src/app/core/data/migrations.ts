@@ -73,4 +73,12 @@ export const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
       `CREATE TABLE IF NOT EXISTS sms_sync_state (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL)`,
     ],
   },
+  {
+    version: 8,
+    statements: [
+      `ALTER TABLE sms_candidates ADD COLUMN read_at TEXT`,
+      `UPDATE sms_candidates SET read_at=updated_at WHERE state IN ('IMPORTED','MATCHED_EXISTING','REJECTED','IGNORED')`,
+      `CREATE INDEX idx_sms_read ON sms_candidates(read_at,event_at DESC)`,
+    ],
+  },
 ];

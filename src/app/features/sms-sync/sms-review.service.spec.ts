@@ -167,6 +167,137 @@ describe('SMS approved import integrity', () => {
     vi.restoreAllMocks();
   });
   const count = (table: string) => rows<{ n: number }>(`SELECT COUNT(*) AS n FROM ${table}`)[0].n;
+  function realRefresh(): void {
+    vi.mocked(service.refresh).mockRestore();
+    vi.spyOn(service, 'refreshAccess').mockResolvedValue();
+    vi.spyOn(service as unknown as { handoff(): Promise<void> }, 'handoff').mockResolvedValue();
+  }
+  const readCount = () =>
+    rows<{ n: number }>('SELECT COUNT(*) AS n FROM sms_candidates WHERE read_at IS NOT NULL')[0].n;
+  const readFilters = (read: string) => ({
+    state: 'ALL',
+    kind: 'ALL',
+    search: '',
+    source: '',
+    read,
+  });
+  it('marks one suggestion read and unread without changing its review decision or ledger', async () => {
+    const candidate = stage(evidence());
+    const before = rows('SELECT id,state,transaction_id,payload,updated_at FROM sms_candidates');
+    await service.markRead(candidate.id, true);
+    expect(readCount()).toBe(1);
+    expect(rows('SELECT id,state,transaction_id,payload,updated_at FROM sms_candidates')).toEqual(
+      before,
+    );
+    expect(count('card_transactions')).toBe(0);
+    await service.markRead(candidate.id, false);
+    expect(readCount()).toBe(0);
+  });
+  it('atomically marks all 451 saved candidates rather than just the page, then handles an empty inbox', async () => {
+    for (let index = 0; index < 451; index++)
+      stage(evidence({ id: index.toString(16).padStart(64, '0') }));
+    expect(await service.markAllRead()).toBe(451);
+    expect(readCount()).toBe(451);
+    expect(await service.markAllRead()).toBe(0);
+    expect(rows('SELECT DISTINCT state FROM sms_candidates')).toEqual([{ state: 'PENDING' }]);
+    expect(count('card_transactions')).toBe(0);
+  });
+  it('defaults to unread independently of financial state and exposes Read/All history', async () => {
+    const a = stage(evidence());
+    stage(evidence({ id: 'b'.repeat(64) }));
+    await service.markRead(a.id, true);
+    realRefresh();
+    await service.refresh();
+    expect(service.candidates().map((item) => item.id)).toEqual(['b'.repeat(64)]);
+    expect(service.unreadTotal()).toBe(1);
+    await service.filterReview(readFilters('READ'));
+    expect(service.candidates().map((item) => item.id)).toEqual([a.id]);
+    expect(service.candidates()[0].readAt).toBeTruthy();
+    await service.filterReview(readFilters('ALL'));
+    expect(service.total()).toBe(2);
+  });
+  it('a read pending candidate remains eligible for explicit later approval', async () => {
+    const candidate = stage(evidence());
+    await service.markRead(candidate.id, true);
+    await service.approve(candidate, card.id, 45000, 'Synthetic later approval');
+    expect(count('card_transactions')).toBe(1);
+    expect(rows('SELECT state FROM sms_candidates')).toEqual([{ state: 'IMPORTED' }]);
+    expect(readCount()).toBe(1);
+  });
+  it('marking imported and matched items read preserves their ledger and reconciliation bindings', async () => {
+    const candidate = stage(evidence());
+    await service.approve(candidate, card.id, 45000, 'Synthetic');
+    const other = stage(evidence({ id: 'b'.repeat(64) }));
+    await service.approve(other, card.id, 45000, 'Synthetic', transactions()[0].id);
+    const before = {
+      ledger: rows('SELECT * FROM card_transactions'),
+      bindings: rows('SELECT * FROM sms_reconciliation'),
+      states: rows('SELECT id,state,transaction_id FROM sms_candidates'),
+    };
+    await service.markAllRead();
+    expect({
+      ledger: rows('SELECT * FROM card_transactions'),
+      bindings: rows('SELECT * FROM sms_reconciliation'),
+      states: rows('SELECT id,state,transaction_id FROM sms_candidates'),
+    }).toEqual(before);
+    expect(readCount()).toBe(2);
+  });
+  it('real historical staging and duplicate handoffs preserve read state, while new old-dated evidence is unread', async () => {
+    const item = evidence();
+    stage(item);
+    await service.markAllRead();
+    const stageNative = service as unknown as {
+      stage(items: readonly SmsEvidence[]): Promise<void>;
+    };
+    await stageNative.stage([item, item]);
+    expect(readCount()).toBe(1);
+    await stageNative.stage([
+      evidence({ id: 'c'.repeat(64), eventAt: '2010-01-01T00:00:00Z', eventDate: '2010-01-01' }),
+    ]);
+    expect(count('sms_candidates')).toBe(2);
+    expect(rows('SELECT read_at FROM sms_candidates WHERE id=?', ['c'.repeat(64)])).toEqual([
+      { read_at: null },
+    ]);
+  });
+  it('a recreated service reads persisted flags instead of a session timestamp', async () => {
+    const candidate = stage(evidence());
+    await service.markRead(candidate.id, true);
+    service = TestBed.runInInjectionContext(() => new SmsReviewService());
+    vi.spyOn(service, 'refreshAccess').mockResolvedValue();
+    vi.spyOn(service as unknown as { handoff(): Promise<void> }, 'handoff').mockResolvedValue();
+    await service.filterReview(readFilters('READ'));
+    expect(service.candidates()[0].id).toBe(candidate.id);
+    expect(service.unreadTotal()).toBe(0);
+  });
+  it('a failed bulk write rolls back every flag and keeps the write queue and busy guard usable', async () => {
+    stage(evidence());
+    stage(evidence({ id: 'b'.repeat(64) }));
+    sql.exec(
+      `CREATE TRIGGER fail_read BEFORE UPDATE OF read_at ON sms_candidates WHEN OLD.id='${'b'.repeat(64)}' BEGIN SELECT RAISE(ABORT,'synthetic read failure'); END`,
+    );
+    await expect(service.markAllRead()).rejects.toThrow('synthetic read failure');
+    expect(readCount()).toBe(0);
+    expect(service.markingRead()).toBe(false);
+    sql.exec('DROP TRIGGER fail_read');
+    expect(await service.markAllRead()).toBe(2);
+  });
+  it('serializes scanning around the bulk boundary, keeps subsequent discovery unread, and blocks repeated taps', async () => {
+    stage(evidence());
+    const stageNative = service as unknown as {
+      stage(items: readonly SmsEvidence[]): Promise<void>;
+    };
+    const earlier = stageNative.stage([evidence({ id: 'b'.repeat(64) })]);
+    const bulk = service.markAllRead();
+    expect(service.markingRead()).toBe(true);
+    expect(await service.markAllRead()).toBe(0);
+    const later = stageNative.stage([evidence({ id: 'c'.repeat(64) })]);
+    await Promise.all([earlier, bulk, later]);
+    expect(await bulk).toBe(2);
+    expect(readCount()).toBe(2);
+    expect(rows('SELECT read_at FROM sms_candidates WHERE id=?', ['c'.repeat(64)])).toEqual([
+      { read_at: null },
+    ]);
+  });
 
   it('persists edited purchase fields in SQL, JSON, real store and Activity without a reload', async () => {
     const actual = TestBed.runInInjectionContext(() => new CardNestStore());

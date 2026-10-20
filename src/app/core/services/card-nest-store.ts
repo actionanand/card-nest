@@ -23,6 +23,8 @@ import {
 } from './billing-cycle';
 import { calculateNetSpending, calculateOutstanding, transactionEffect } from './money';
 import { indiaTodayIso } from './india-date';
+import { APP_ENVIRONMENT } from './app-environment';
+import { initialiseAppData } from '../data/app-initialization';
 import {
   configureMoneyDisplay,
   countryOption,
@@ -232,12 +234,11 @@ const PAYMENT_SOURCES: readonly PaymentSource[] = [
 @Service()
 export class CardNestStore {
   private readonly database = inject(SqliteDatabase);
+  private readonly environment = inject(APP_ENVIRONMENT);
   private dataWasCleared = false;
   private sourcesLoaded = false;
-  readonly cards = signal<readonly CreditCard[]>(SAMPLE_CARDS);
-  readonly transactions = signal<readonly CardTransaction[]>(
-    readCachedTransactions() ?? SAMPLE_TRANSACTIONS,
-  );
+  readonly cards = signal<readonly CreditCard[]>([]);
+  readonly transactions = signal<readonly CardTransaction[]>([]);
   readonly categories = signal<readonly Category[]>(CATEGORIES);
   readonly paymentSources = signal<readonly PaymentSource[]>(PAYMENT_SOURCES);
   readonly recurringRules = signal<readonly RecurringRule[]>([]);
@@ -245,8 +246,8 @@ export class CardNestStore {
   readonly emiPlans = signal<readonly EmiPlan[]>([]);
   readonly emiInstallments = signal<readonly EmiInstallment[]>([]);
   readonly reconciledStatements = signal<readonly CardStatement[]>([]);
-  readonly monthlyBudgetMinor = signal(6000000);
-  readonly monthlyIncomeMinor = signal(8000000);
+  readonly monthlyBudgetMinor = signal(0);
+  readonly monthlyIncomeMinor = signal(0);
   readonly budgetCycleStartDay = signal(1);
   readonly incomeHistory = signal<readonly MonthlyIncomeRecord[]>([]);
   readonly profileTitle = signal('');
@@ -314,6 +315,16 @@ export class CardNestStore {
 
   async initialisePreferences(): Promise<void> {
     if (!this.database.ready()) return;
+    await initialiseAppData(this.database, this.environment.seedDemoData, {
+      categories: CATEGORIES,
+      cards: SAMPLE_CARDS,
+      transactions: SAMPLE_TRANSACTIONS,
+      income: {
+        ...this.currentIncomePeriod(),
+        amountMinor: 8000000,
+        updatedAt: new Date().toISOString(),
+      },
+    });
     const preferences = await this.database.query<{ key: string; encrypted_value: string }>(
       `SELECT key, encrypted_value FROM app_preferences
        WHERE key IN ('budget_cycle_start_day', 'monthly_budget_minor', 'profile_title', 'profile_name', 'default_country_code', 'default_currency_code', 'emi_minimum_minor', 'spend_highlight_threshold_minor', 'highlight_dashboard_spending', 'flash_transaction_source_id', 'snoozed_reminder_card_ids', 'payment_sources', 'data_cleared')`,
@@ -326,7 +337,7 @@ export class CardNestStore {
       this.budgetCycleStartDay.set(cycleDay);
     }
     if (Number.isFinite(budget) && budget >= 0) this.monthlyBudgetMinor.set(budget);
-    else if (this.dataWasCleared) this.monthlyBudgetMinor.set(0);
+    else this.monthlyBudgetMinor.set(0);
     this.profileTitle.set(values.get('profile_title') ?? '');
     this.profileName.set(values.get('profile_name') ?? '');
     const savedCountry = countryOption(values.get('default_country_code') ?? 'IN');
@@ -369,9 +380,9 @@ export class CardNestStore {
     }
     try {
       const sources = JSON.parse(values.get(PAYMENT_SOURCES_PREFERENCE_KEY) ?? '[]') as unknown;
-      if (Array.isArray(sources) && sources.length) {
+      if (Array.isArray(sources) && values.has(PAYMENT_SOURCES_PREFERENCE_KEY)) {
         this.paymentSources.set(sources as PaymentSource[]);
-      }
+      } else this.paymentSources.set(PAYMENT_SOURCES);
     } catch {
       this.paymentSources.set(PAYMENT_SOURCES);
     }
@@ -661,8 +672,7 @@ export class CardNestStore {
   }
   addTransaction(transaction: CardTransaction): void {
     this.transactions.update((items) => {
-      const existingItems = hasOnlySampleTransactions(items) ? [] : items;
-      const updated = [transaction, ...existingItems];
+      const updated = [transaction, ...items];
       this.cacheTransactions(updated);
       return updated;
     });
@@ -1288,12 +1298,8 @@ export class CardNestStore {
   private async loadCurrentIncome(): Promise<void> {
     const income = await this.findIncome(this.currentIncomePeriod().periodKey);
     if (!income) {
-      if (this.dataWasCleared) {
-        this.monthlyIncomeMinor.set(0);
-        await this.refreshIncomeHistory();
-        return;
-      }
-      await this.setMonthlyIncome(this.monthlyIncomeMinor());
+      this.monthlyIncomeMinor.set(0);
+      await this.refreshIncomeHistory();
       return;
     }
     this.monthlyIncomeMinor.set(income.amountMinor);
@@ -1322,11 +1328,7 @@ export class CardNestStore {
       for (const card of legacyCards) await this.persistCard(card);
       return;
     }
-    if (this.dataWasCleared) {
-      this.cards.set([]);
-      return;
-    }
-    for (const card of this.cards()) await this.persistCard(card);
+    this.cards.set([]);
   }
 
   private async loadCategoryLimits(): Promise<void> {
@@ -1393,8 +1395,18 @@ export class CardNestStore {
       'SELECT payload FROM card_transactions ORDER BY transaction_date DESC, created_at DESC',
     );
     if (!rows.length) {
-      const cached = readCachedTransactions();
-      this.transactions.set(cached ?? []);
+      const [initialization] = await this.database.query<{ encrypted_value: string }>(
+        'SELECT encrypted_value FROM app_preferences WHERE key=?',
+        ['initial_data_state'],
+      );
+      // Preserve the old installed-cache fallback only for recognized legacy installations.
+      // Never resurrect cache records after a restore/clear, or invent their missing sources.
+      const sources = new Set([
+        ...this.cards().map((card) => card.id),
+        ...this.paymentSources().map((source) => source.id),
+      ]);
+      const cached = initialization?.encrypted_value === 'EXISTING' ? readCachedTransactions() : [];
+      this.transactions.set((cached ?? []).filter((item) => sources.has(item.cardId)));
       return;
     }
     const transactions = rows.flatMap((row) => {
@@ -1825,26 +1837,32 @@ export class CardNestStore {
   }
 }
 
-function hasOnlySampleTransactions(transactions: readonly CardTransaction[]): boolean {
-  return (
-    transactions.length === SAMPLE_TRANSACTIONS.length &&
-    transactions.every((transaction) =>
-      SAMPLE_TRANSACTIONS.some((sample) => sample.id === transaction.id),
-    )
-  );
-}
-
 function readCachedTransactions(): readonly CardTransaction[] | null {
   try {
     const value = globalThis.localStorage?.getItem(TRANSACTION_CACHE_KEY);
     if (!value) return null;
-    const parsed = JSON.parse(value) as unknown;
-    return Array.isArray(parsed) ? (parsed as CardTransaction[]) : null;
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed)
+      ? parsed.filter(
+          (item: unknown): item is CardTransaction =>
+            typeof item === 'object' &&
+            item !== null &&
+            'id' in item &&
+            typeof item.id === 'string' &&
+            'cardId' in item &&
+            typeof item.cardId === 'string' &&
+            'amountMinor' in item &&
+            Number.isSafeInteger(item.amountMinor) &&
+            'transactionDate' in item &&
+            typeof item.transactionDate === 'string' &&
+            'categoryId' in item &&
+            typeof item.categoryId === 'string',
+        )
+      : null;
   } catch {
     return null;
   }
 }
-
 function writeCachedTransactions(transactions: readonly CardTransaction[]): void {
   try {
     globalThis.localStorage?.setItem(TRANSACTION_CACHE_KEY, JSON.stringify(transactions));

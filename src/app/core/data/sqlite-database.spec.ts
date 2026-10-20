@@ -43,17 +43,18 @@ describe('SQLite shared write queue', () => {
     vi.mocked(CapacitorSQLite.query).mockResolvedValue({ values: [{ user_version: 6 }] });
     await database.initialise();
     expect(CapacitorSQLite.createConnection).toHaveBeenCalledWith(
-      expect.objectContaining({ database: 'cardnest', version: 7, readonly: false }),
+      expect.objectContaining({ database: 'cardnest', version: 8, readonly: false }),
     );
     expect(CapacitorSQLite.open).toHaveBeenCalledOnce();
     const migrations = vi
       .mocked(CapacitorSQLite.execute)
       .mock.calls.map(([options]) => options)
       .filter((options) => options.transaction);
-    expect(migrations).toHaveLength(1);
+    expect(migrations).toHaveLength(2);
     expect(migrations[0].statements).toContain('CREATE TABLE IF NOT EXISTS sms_candidates');
     expect(migrations[0].statements).toContain('PRAGMA user_version = 7');
     expect(migrations[0].statements).not.toContain('DROP TABLE');
+    expect(migrations[1].statements).toContain('ADD COLUMN read_at');
     expect(database.ready()).toBe(true);
   });
   it('does not expose a ready database after an SMS migration failure', async () => {

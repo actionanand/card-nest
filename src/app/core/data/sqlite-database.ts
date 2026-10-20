@@ -3,6 +3,7 @@ import { Capacitor } from '@capacitor/core';
 import { Service, signal } from '@angular/core';
 import { DATABASE_MIGRATIONS } from './migrations';
 import { clearPlatformDiscovery, prunePlatformDiscovery } from './platform-data';
+import { INITIAL_DATA_KEY } from './app-initialization';
 
 interface JeepSqliteElement extends HTMLElement {
   wasmPath: string;
@@ -134,6 +135,15 @@ export class SqliteDatabase {
         values: [],
       });
       const currentVersion = Number(result.values?.[0]?.['user_version'] ?? 0);
+      const existingSchema =
+        currentVersion === 0
+          ? await CapacitorSQLite.query({
+              database: this.databaseName,
+              statement: `SELECT COUNT(*) AS count FROM sqlite_master WHERE type='table' AND name IN (${BACKUP_TABLES.map((name) => `'${name}'`).join(',')})`,
+              values: [],
+            })
+          : null;
+      const noPreviousAppSchema = Number(existingSchema?.values?.[0]?.['count'] ?? -1) === 0;
       for (const migration of DATABASE_MIGRATIONS.filter((item) => item.version > currentVersion)) {
         await CapacitorSQLite.execute({
           database: this.databaseName,
@@ -143,6 +153,22 @@ export class SqliteDatabase {
           transaction: true,
         });
       }
+      // Versioned/partially populated installations are never eligible, even when cards are empty.
+      let pristine = false;
+      if (currentVersion === 0 && noPreviousAppSchema) {
+        const rows = await CapacitorSQLite.query({
+          database: this.databaseName,
+          statement: `SELECT ${BACKUP_TABLES.map((name) => `(SELECT COUNT(*) FROM ${name})`).join('+')} AS count`,
+          values: [],
+        });
+        pristine = Number(rows.values?.[0]?.['count'] ?? -1) === 0;
+      }
+      await CapacitorSQLite.run({
+        database: this.databaseName,
+        statement: 'INSERT OR IGNORE INTO app_preferences(key,encrypted_value) VALUES(?,?)',
+        values: [INITIAL_DATA_KEY, pristine ? 'PENDING' : 'EXISTING'],
+        transaction: false,
+      });
       this.ready.set(true);
       this.unavailableReason.set(null);
     } catch (error: unknown) {
@@ -287,9 +313,17 @@ export class SqliteDatabase {
     }
     this.ready.set(false);
     await CapacitorSQLite.importFromJson({ jsonstring });
-    // jeep-sqlite imports through a temporary Database and persists it while closing that
-    // database. There is no retained RW connection after import, so calling saveToStore()
-    // here fails with "No available connection for cardnest" even though import succeeded.
+    // The legacy importer closes its temporary connection. Reopen and migrate before
+    // persisting the restore marker or saving the web store.
+    await this.initialise();
+    if (!this.ready()) throw new Error('The restored database could not be opened.');
+    await CapacitorSQLite.run({
+      database: this.databaseName,
+      statement: `INSERT INTO app_preferences(key,encrypted_value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET encrypted_value=excluded.encrypted_value`,
+      values: [INITIAL_DATA_KEY, 'RESTORED'],
+      transaction: false,
+    });
+    if (this.isWeb) await CapacitorSQLite.saveToStore({ database: this.databaseName });
   }
 
   private repairLegacyPluginExport(value: Record<string, unknown>): void {
@@ -330,7 +364,10 @@ export class SqliteDatabase {
     await CapacitorSQLite.execute({
       database: this.databaseName,
       transaction: true,
-      statements: DELETE_TABLES.map((table) => `DELETE FROM ${table}`).join(';\n'),
+      statements: [
+        ...DELETE_TABLES.map((table) => `DELETE FROM ${table}`),
+        `INSERT INTO app_preferences VALUES ('${INITIAL_DATA_KEY}','CLEARED')`,
+      ].join(';\n'),
     });
     if (this.isWeb) await CapacitorSQLite.saveToStore({ database: this.databaseName });
   }
@@ -392,7 +429,7 @@ export class SqliteDatabase {
         database: this.databaseName,
         statement:
           name === 'sms_candidates'
-            ? `SELECT id, provider_id, event_at, kind, state, NULL AS payload, transaction_id, updated_at, decision FROM sms_candidates`
+            ? `SELECT id, provider_id, event_at, kind, state, NULL AS payload, transaction_id, updated_at, decision, read_at FROM sms_candidates`
             : `SELECT * FROM ${name}`,
         values: [],
       });
@@ -446,7 +483,18 @@ export class SqliteDatabase {
         pendingInserts = [];
       };
       for (const table of BACKUP_TABLES) {
-        for (const row of backupTables.get(table) ?? []) {
+        for (const original of backupTables.get(table) ?? []) {
+          const row =
+            table === 'sms_candidates' && !('read_at' in original)
+              ? {
+                  ...original,
+                  read_at: ['IMPORTED', 'MATCHED_EXISTING', 'REJECTED', 'IGNORED'].includes(
+                    String(original['state']),
+                  )
+                    ? original['updated_at']
+                    : null,
+                }
+              : original;
           const columns = Object.keys(row);
           if (!columns.length || columns.some((column) => !/^[a-z][a-z0-9_]*$/i.test(column))) {
             throw new Error('The backup database contains invalid columns.');
@@ -459,6 +507,12 @@ export class SqliteDatabase {
         }
       }
       await flushInserts();
+      await CapacitorSQLite.run({
+        database: this.databaseName,
+        statement: `INSERT INTO app_preferences(key,encrypted_value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET encrypted_value=excluded.encrypted_value`,
+        values: [INITIAL_DATA_KEY, 'RESTORED'],
+        transaction: false,
+      });
       await CapacitorSQLite.commitTransaction({ database: this.databaseName });
     } catch (error: unknown) {
       await CapacitorSQLite.rollbackTransaction({ database: this.databaseName });
