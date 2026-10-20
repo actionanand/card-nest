@@ -76,7 +76,7 @@
   padding: 0.08rem 0.32rem;
   border-radius: 999px;
   color: currentColor;
-  background: rgb(255 255 255 / 58%);
+  background: var(--surface-2);
   font-size: 0.62rem;
   line-height: 1.2;
   text-align: center;
@@ -1326,6 +1326,14 @@ label small.validation-error {
 .transaction-fab app-icon {
   width: 1.45rem;
   height: 1.45rem;
+}
+@media (min-width: 701px) and (max-width: 1050px) {
+  .card-toolbar {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .view-switch {
+    justify-self: start;
+  }
 }
 @media (max-width: 700px) {
   .cards-page {

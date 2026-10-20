@@ -9,14 +9,14 @@
   --surface: #ffffff;
   --surface-2: #eef1eb;
   --ink: #17251e;
-  --muted: #69766f;
+  --muted: #5f6c65;
   --line: #dde3dd;
   --accent: #28684e;
   --accent-strong: #17523b;
   --accent-soft: #e2efe8;
   --success: #28704f;
   --success-soft: #ddf1e6;
-  --warning: #986822;
+  --warning: #8a5b18;
   --warning-soft: #fff1d6;
   --danger: #a94440;
   --danger-soft: #fbe7e5;
@@ -34,8 +34,11 @@
   --accent: #65b890;
   --accent-strong: #8fd0ae;
   --accent-soft: #203b2f;
+  --success: #79c89e;
   --success-soft: #203a2e;
+  --warning: #e2b768;
   --warning-soft: #46371e;
+  --danger: #efaaa5;
   --danger-soft: #472927;
   --shadow: none;
 }
@@ -193,7 +196,7 @@ h3 {
 }
 .btn-primary {
   border-color: var(--accent);
-  color: white;
+  color: var(--surface);
   background: var(--accent);
 }
 .btn-quiet {

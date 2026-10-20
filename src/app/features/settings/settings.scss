@@ -152,11 +152,14 @@
   padding-top: 1rem;
 }
 .theme-options label {
+  position: relative;
   display: block;
 }
 .theme-options input {
   position: absolute;
   opacity: 0;
+  width: 1px;
+  height: 1px;
 }
 .theme-options span {
   display: grid;
@@ -377,7 +380,7 @@ button:disabled {
   justify-content: flex-end;
   margin-top: 0.4rem;
 }
-@media (max-width: 760px) {
+@media (max-width: 1050px) {
   .settings-grid {
     grid-template-columns: 1fr;
   }

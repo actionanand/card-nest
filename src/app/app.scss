@@ -346,7 +346,7 @@ main {
     inset: 0 0 auto;
     display: grid;
     height: calc(3.5rem + env(safe-area-inset-top));
-    grid-template-columns: 3rem 1fr 3rem;
+    grid-template-columns: 44px minmax(0, 1fr) 44px;
     align-items: end;
     padding: env(safe-area-inset-top) 0.45rem 0.45rem;
     border-bottom: 1px solid var(--line);
@@ -356,8 +356,8 @@ main {
   .mobile-app-bar button,
   .mobile-app-bar .mobile-stats {
     display: grid;
-    width: 2.6rem;
-    height: 2.6rem;
+    width: 44px;
+    height: 44px;
     place-items: center;
     border: 0;
     border-radius: 0.7rem;
@@ -374,8 +374,8 @@ main {
     text-decoration: none;
   }
   .mobile-app-bar app-icon {
-    width: 1.35rem;
-    height: 1.35rem;
+    width: min(1.35rem, 28px);
+    height: min(1.35rem, 28px);
     fill: none;
     stroke: currentColor;
     stroke-linecap: round;
@@ -457,7 +457,7 @@ main {
     inset: auto 0 0;
     z-index: 20;
     display: grid;
-    grid-template-columns: repeat(5, 1fr);
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     align-items: end;
     height: 4.7rem;
     padding: 0.45rem 0.55rem max(0.45rem, env(safe-area-inset-bottom));
@@ -466,6 +466,9 @@ main {
     box-shadow: 0 -8px 30px #17221d12;
   }
   .bottom-nav a {
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
     display: grid;
     min-height: 3.2rem;
     place-items: center;
@@ -475,28 +478,28 @@ main {
     font-size: 1.2rem;
   }
   .bottom-nav app-icon {
-    width: 1.2rem;
-    height: 1.2rem;
+    width: min(1.2rem, 24px);
+    height: min(1.2rem, 24px);
   }
   .bottom-nav small {
     font-size: 0.64rem;
   }
   .bottom-nav .add-action {
-    width: 3.45rem;
-    height: 3.45rem;
+    width: clamp(44px, 3.45rem, 56px);
+    height: clamp(44px, 3.45rem, 56px);
     min-height: 0;
     place-self: start center;
     margin-top: -1.45rem;
     border: 5px solid var(--surface);
     border-radius: 50%;
-    color: white;
+    color: var(--surface);
     background: var(--accent);
     box-shadow: 0 6px 18px #2f76594a;
     font-size: 1.8rem;
   }
   .bottom-nav .add-action app-icon {
-    width: 1.45rem;
-    height: 1.45rem;
+    width: min(1.45rem, 28px);
+    height: min(1.45rem, 28px);
   }
   .bottom-nav .add-action .material-symbols-outlined {
     font-size: 1.65rem;
@@ -509,18 +512,18 @@ main {
     right: max(1rem, env(safe-area-inset-right));
     bottom: calc(5.45rem + env(safe-area-inset-bottom));
     display: grid;
-    width: 3.45rem;
-    height: 3.45rem;
+    width: clamp(44px, 3.45rem, 56px);
+    height: clamp(44px, 3.45rem, 56px);
     place-items: center;
     border: 4px solid var(--surface);
     border-radius: 50%;
-    color: #fff;
+    color: var(--surface);
     background: var(--accent);
     box-shadow: 0 0.7rem 1.6rem rgb(20 60 43 / 32%);
   }
   .flash-transaction-fab app-icon {
-    width: 1.55rem;
-    height: 1.55rem;
+    width: min(1.55rem, 28px);
+    height: min(1.55rem, 28px);
   }
   .flash-backdrop {
     position: fixed;

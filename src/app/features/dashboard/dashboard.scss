@@ -3,7 +3,7 @@
 }
 .hero {
   display: grid;
-  grid-template-columns: minmax(15rem, 1fr) 2fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
   overflow: hidden;
   margin-bottom: 1.2rem;
   color: white;
@@ -11,6 +11,7 @@
   background: linear-gradient(115deg, #153f30, #28684e 60%, #347b5f);
 }
 .hero-total {
+  min-width: 0;
   display: grid;
   align-content: center;
   padding: 2rem;
@@ -64,11 +65,14 @@
   background: #86d0a9;
 }
 .hero-metrics {
+  min-width: 0;
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   align-items: center;
 }
 .hero-metric {
+  min-width: 0;
+  overflow-wrap: anywhere;
   display: grid;
   gap: 0.45rem;
   padding: 1.5rem 1.8rem;
@@ -371,6 +375,16 @@ button.hero-metric:focus-visible {
   }
   .hero-metric {
     padding: 1rem;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    border-right: 0;
+    border-bottom: 1px solid #ffffff18;
+  }
+  .hero-metrics {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .hero-metric b {
+    text-align: right;
   }
   .hero-metrics b {
     font-size: 1rem;

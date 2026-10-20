@@ -118,14 +118,16 @@
             [max]="row.limit || 1"
           ></progress>
         }
-        <button
-          class="limit-button"
-          type="button"
-          (click)="openLimit(row.category); $event.stopPropagation()"
-        >
-          <app-icon name="settings" />
-          {{ row.configuredLimit === undefined ? 'Set limit' : 'Edit limit' }}
-        </button>
+        <div class="category-actions">
+          <button
+            class="limit-button"
+            type="button"
+            (click)="openLimit(row.category, $event); $event.stopPropagation()"
+          >
+            <app-icon name="settings" />
+            {{ row.configuredLimit === undefined ? 'Set limit' : 'Edit limit' }}
+          </button>
+        </div>
         @if (selectedCategoryId() === row.category.id) {
           <div class="category-transactions">
             @for (transaction of row.transactions; track transaction.id) {
@@ -156,38 +158,38 @@
 </div>
 
 @if (limitCategoryId(); as categoryId) {
-  <div class="limit-backdrop">
-    <section
-      class="panel limit-dialog"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="limit-title"
-    >
-      <div class="limit-heading">
-        <div>
-          <p class="eyebrow">Category budget</p>
-          <h2 id="limit-title">{{ limitCategory()?.name }}</h2>
-        </div>
-        <button type="button" (click)="closeLimit()" aria-label="Close limit editor">
-          <app-icon name="close" />
-        </button>
+  <dialog
+    #limitDialog
+    class="panel limit-dialog"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="limit-title"
+    (cancel)="dismissLimit($event)"
+  >
+    <div class="limit-heading">
+      <div>
+        <p class="eyebrow">Category budget</p>
+        <h2 id="limit-title">{{ limitCategory()?.name }}</h2>
       </div>
-      <form [formGroup]="limitForm" (ngSubmit)="saveLimit()">
-        <label
-          >Monthly limit<input formControlName="amount" inputmode="decimal" placeholder="5000.00"
-        /></label>
-        <label class="show-limit"
-          ><input type="checkbox" formControlName="showLimit" /><span
-            ><strong>Show progress and remaining amount</strong
-            ><small>Turn off to keep the limit saved but hide visual warnings.</small></span
-          ></label
-        >
-        <div class="limit-actions">
-          <button class="btn danger" type="button" (click)="removeLimit()">Remove limit</button
-          ><button class="btn" type="button" (click)="closeLimit()">Cancel</button
-          ><button class="btn btn-primary" type="submit">Save limit</button>
-        </div>
-      </form>
-    </section>
-  </div>
+      <button type="button" (click)="closeLimit()" aria-label="Close limit editor">
+        <app-icon name="close" />
+      </button>
+    </div>
+    <form [formGroup]="limitForm" (ngSubmit)="saveLimit()">
+      <label
+        >Monthly limit<input formControlName="amount" inputmode="decimal" placeholder="5000.00"
+      /></label>
+      <label class="show-limit"
+        ><input type="checkbox" formControlName="showLimit" /><span
+          ><strong>Show progress and remaining amount</strong
+          ><small>Turn off to keep the limit saved but hide visual warnings.</small></span
+        ></label
+      >
+      <div class="limit-actions">
+        <button class="btn danger" type="button" (click)="removeLimit()">Remove limit</button
+        ><button class="btn" type="button" (click)="closeLimit()">Cancel</button
+        ><button class="btn btn-primary" type="submit">Save limit</button>
+      </div>
+    </form>
+  </dialog>
 }

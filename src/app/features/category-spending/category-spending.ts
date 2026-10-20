@@ -1,4 +1,4 @@
-import { Component, computed, inject, signal } from '@angular/core';
+import { Component, ElementRef, computed, effect, inject, signal, viewChild } from '@angular/core';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { Category } from '../../core/models/domain';
 import { CardNestStore } from '../../core/services/card-nest-store';
@@ -21,6 +21,7 @@ interface SpendingPeriod {
   imports: [ReactiveFormsModule, AppIcon, AppDatePipe, AppSelectPicker],
   templateUrl: './category-spending.html',
   styleUrl: './category-spending.scss',
+  host: { '(window:cardnest:back)': 'dismissLimit($event)' },
 })
 export class CategorySpendingPage {
   readonly store = inject(CardNestStore);
@@ -28,6 +29,28 @@ export class CategorySpendingPage {
   readonly periodOffset = signal(0);
   readonly selectedCategoryId = signal<string | null>(null);
   readonly limitCategoryId = signal<string | null>(null);
+  readonly limitDialog = viewChild<ElementRef<HTMLDialogElement>>('limitDialog');
+  private limitTrigger: HTMLElement | null = null;
+  constructor() {
+    effect((cleanup) => {
+      const dialog = this.limitDialog()?.nativeElement;
+      if (!dialog) return;
+      const previousOverflow = document.body.style.overflow;
+      document.body.style.overflow = 'hidden';
+      if (typeof dialog.showModal === 'function') dialog.showModal();
+      else dialog.setAttribute('open', '');
+      cleanup(() => {
+        document.body.style.overflow = previousOverflow;
+        if (typeof dialog.close === 'function') dialog.close();
+        if (this.limitTrigger?.isConnected) this.limitTrigger.focus();
+      });
+    });
+  }
+  dismissLimit(event: Event): void {
+    if (!this.limitCategoryId()) return;
+    event.preventDefault();
+    this.closeLimit();
+  }
   readonly limitCategory = computed(() =>
     this.store.categories().find((category) => category.id === this.limitCategoryId()),
   );
@@ -129,7 +152,13 @@ export class CategorySpendingPage {
     this.selectedCategoryId.set(this.selectedCategoryId() === categoryId ? null : categoryId);
   }
 
-  openLimit(category: Category): void {
+  openLimit(category: Category, event?: Event): void {
+    this.limitTrigger =
+      event?.currentTarget instanceof HTMLElement
+        ? event.currentTarget
+        : document.activeElement instanceof HTMLElement
+          ? document.activeElement
+          : null;
     this.limitCategoryId.set(category.id);
     this.limitForm.reset({
       amount:

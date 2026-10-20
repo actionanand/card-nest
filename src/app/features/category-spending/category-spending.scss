@@ -113,6 +113,10 @@
   align-items: baseline;
   justify-content: space-between;
   gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+.category-heading h2 {
+  margin: 0;
 }
 .category-breakdown {
   display: grid;
@@ -183,22 +187,28 @@
 .over-limit > progress {
   accent-color: var(--danger);
 }
+.category-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 1rem 0.85rem;
+}
 .limit-button {
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
-  margin: 0 1rem 0.75rem auto;
-  padding: 0.3rem 0.5rem;
+  min-height: 2.75rem;
+  max-width: 100%;
+  padding: 0.55rem 0.75rem;
   border: 0;
   border-radius: 0.45rem;
   color: var(--accent);
   background: var(--accent-soft);
-  font-size: 0.65rem;
+  font-size: 0.75rem;
   font-weight: 750;
 }
 .limit-button app-icon {
-  width: 0.8rem;
-  height: 0.8rem;
+  width: 1rem;
+  height: 1rem;
 }
 .category-transactions {
   border-top: 1px solid var(--line);
@@ -234,19 +244,17 @@
   padding: 3rem 1rem;
   text-align: center;
 }
-.limit-backdrop {
-  position: fixed;
-  z-index: 900;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  padding: 1rem;
+.limit-dialog::backdrop {
   background: rgb(10 25 18 / 68%);
   backdrop-filter: blur(4px);
 }
 .limit-dialog {
-  width: min(100%, 30rem);
+  color: var(--ink);
+  margin: auto;
+  width: min(calc(100% - 2rem), 30rem);
   padding: 1.2rem;
+  max-height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 2rem);
+  overflow-y: auto;
 }
 .limit-heading {
   display: flex;
@@ -255,8 +263,8 @@
 }
 .limit-heading button {
   display: grid;
-  width: 2.5rem;
-  height: 2.5rem;
+  width: 2.75rem;
+  height: 2.75rem;
   place-items: center;
   border: 0;
   border-radius: 50%;
@@ -304,6 +312,7 @@
   .category-heading {
     align-items: flex-start;
     flex-direction: column;
+    gap: 0.35rem;
   }
   .category-summary {
     grid-template-columns: auto minmax(0, 1fr) auto;
