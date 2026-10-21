@@ -41,7 +41,7 @@ class SmsQueue(context: Context) : SQLiteOpenHelper(context, "sms-discovery.db",
   fun stage(result: SmsTransactionParser.Result, providerId: String): Boolean {
     val db = writableDatabase
     db.rawQuery("SELECT COUNT(*) FROM queue", null).use { it.moveToFirst(); if (it.getInt(0) >= 5000) return false }
-    db.execSQL("INSERT OR IGNORE INTO queue(id,payload) VALUES (?,?)", arrayOf(result.fingerprint, encrypt(json(result, providerId).toString())))
+    db.execSQL("INSERT OR REPLACE INTO queue(id,payload) VALUES (?,?)", arrayOf(result.fingerprint, encrypt(json(result, providerId).toString())))
     return true
   }
   fun pending(limit: Int): List<JSONObject> = readableDatabase.rawQuery("SELECT payload FROM queue ORDER BY rowid LIMIT ?", arrayOf(limit.toString())).use { cursor ->
@@ -76,6 +76,7 @@ class SmsQueue(context: Context) : SQLiteOpenHelper(context, "sms-discovery.db",
       put("dueDate", r.dueDate); put("evidence", r.evidence)
       put("eventTime", r.eventTime); put("timeZone", r.timeZone); put("cardNetwork", r.cardNetwork)
       put("confidence", r.confidence); put("earnedForPeriod", r.earnedForPeriod); put("statementDate", r.statementDate)
+      put("balancePosition", r.balancePosition)
     }
   }
 }

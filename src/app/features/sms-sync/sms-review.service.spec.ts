@@ -168,6 +168,325 @@ describe('SMS approved import integrity', () => {
     vi.restoreAllMocks();
   });
   const count = (table: string) => rows<{ n: number }>(`SELECT COUNT(*) AS n FROM ${table}`)[0].n;
+  function manual(overrides: Partial<CardTransaction> = {}): CardTransaction {
+    const entry: CardTransaction = {
+      id: 'synthetic-manual',
+      cardId: card.id,
+      type: 'PURCHASE',
+      amountMinor: 45000,
+      currencyCode: 'INR',
+      transactionDate: '2026-10-18',
+      merchant: 'Synthetic Orchard via a payment app',
+      categoryId: 'groceries',
+      attachmentIds: [],
+      createdAt: 'before',
+      updatedAt: 'before',
+      ...overrides,
+    };
+    run(
+      'INSERT INTO card_transactions(id,card_id,category_id,type,amount_minor,currency_code,transaction_date,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)',
+      [
+        entry.id,
+        entry.cardId === card.id ? card.id : null,
+        entry.categoryId,
+        entry.type,
+        entry.amountMinor,
+        entry.currencyCode,
+        entry.transactionDate,
+        JSON.stringify(entry),
+        entry.createdAt,
+        entry.updatedAt,
+      ],
+    );
+    transactions.update((items) => [...items, entry]);
+    return entry;
+  }
+  const confident = (overrides: Partial<SmsEvidence> = {}) =>
+    evidence({ cardDigits: '54321', issuer: 'AMEX', merchant: 'ORCHARD MARKET', ...overrides });
+  it('automatically links a unique existing purchase atomically with zero financial writes and unchanged read flag', async () => {
+    manual();
+    stage(confident());
+    const before = rows('SELECT * FROM card_transactions');
+    sql.exec(
+      "CREATE TRIGGER forbid_financial_write BEFORE UPDATE ON card_transactions BEGIN SELECT RAISE(ABORT,'No financial writes allowed'); END",
+    );
+    expect(await service.reevaluatePending()).toBe(1);
+    expect(rows('SELECT state,transaction_id,read_at FROM sms_candidates')).toEqual([
+      { state: 'MATCHED_EXISTING', transaction_id: 'synthetic-manual', read_at: null },
+    ]);
+    expect(rows('SELECT * FROM card_transactions')).toEqual(before);
+    expect(count('sms_reconciliation')).toBe(1);
+    expect(await service.reevaluatePending()).toBe(0);
+    expect(rows('SELECT * FROM card_transactions')).toEqual(before);
+    const restarted = runInInjectionContext(
+      TestBed.inject(EnvironmentInjector),
+      () => new SmsReviewService(),
+    );
+    expect(await restarted.reevaluatePending()).toBe(0);
+    expect(rows('SELECT state FROM sms_candidates')[0]['state']).toBe('MATCHED_EXISTING');
+    expect(count('sms_reconciliation')).toBe(1);
+  });
+  it.each([
+    { merchant: undefined },
+    { cardDigits: undefined },
+    { dateFallback: true },
+    { kind: 'REFUND' as const },
+    { kind: 'CASHBACK' as const },
+    { kind: 'PAYMENT_INITIATED' as const },
+    { eventDate: '2026-10-19' },
+    { accountDigits: '54321', cardDigits: undefined },
+  ])('never automatically links insufficient or conflicting evidence %j', async (overrides) => {
+    manual();
+    stage(confident(overrides));
+    expect(await service.reevaluatePending()).toBe(0);
+    expect(rows('SELECT state FROM sms_candidates')[0]['state']).toBe('PENDING');
+    expect(count('card_transactions')).toBe(1);
+  });
+  it('requires confirmation for duplicate purchases and refuses a second SMS claim on one existing entry', async () => {
+    manual();
+    manual({ id: 'synthetic-second' });
+    stage(confident());
+    expect(await service.reevaluatePending()).toBe(0);
+    run('DELETE FROM card_transactions WHERE id=?', ['synthetic-second']);
+    expect(await service.reevaluatePending()).toBe(1);
+    stage(confident({ id: 'b'.repeat(64), reference: 'SYNTHOTHER123' }));
+    expect(await service.reevaluatePending()).toBe(0);
+    expect(count('sms_reconciliation')).toBe(1);
+    expect(count('card_transactions')).toBe(1);
+  });
+  it('does not arbitrarily assign one manual purchase between two competing SMS events in the same batch', async () => {
+    manual();
+    stage(confident());
+    stage(confident({ id: 'b'.repeat(64), reference: 'SYNTHSECOND1234' }));
+    expect(await service.reevaluatePending()).toBe(0);
+    expect(count('sms_reconciliation')).toBe(0);
+    expect(count('card_transactions')).toBe(1);
+  });
+  it('invalidates automatic links after amount/source changes but never undoes explicit review decisions', async () => {
+    const entry = manual();
+    stage(confident());
+    await service.reevaluatePending();
+    run('UPDATE card_transactions SET payload=? WHERE id=?', [
+      JSON.stringify({ ...entry, amountMinor: 1 }),
+      entry.id,
+    ]);
+    await service.reevaluatePending();
+    expect(rows('SELECT state,transaction_id FROM sms_candidates')).toEqual([
+      { state: 'PENDING', transaction_id: null },
+    ]);
+    run("UPDATE sms_candidates SET state='REJECTED'");
+    const restage = service as unknown as { stage(items: readonly SmsEvidence[]): Promise<void> };
+    await restage.stage([confident({ merchant: 'Better evidence' })]);
+    expect(rows('SELECT state FROM sms_candidates')[0]['state']).toBe('REJECTED');
+  });
+  it('recognizes a missing-suffix Pluxee purchase only with one meal wallet and independently matching merchant evidence', async () => {
+    const wallet: PaymentSource = {
+      id: 'synthetic-meal',
+      kind: 'MEAL',
+      nickname: 'Synthetic meal',
+      institution: 'Sodexo',
+      lastDigits: '8765',
+      noLimit: false,
+      balanceMinor: 90000,
+      autoLoad: false,
+      archived: false,
+    };
+    sources.set([wallet]);
+    run('INSERT INTO app_preferences VALUES(?,?)', ['payment_sources', JSON.stringify([wallet])]);
+    manual({ cardId: wallet.id });
+    stage(confident({ kind: 'PLUXEE_PURCHASE', issuer: 'Pluxee', cardDigits: undefined }));
+    const before = rows('SELECT * FROM card_transactions');
+    expect(await service.reevaluatePending()).toBe(1);
+    expect(rows('SELECT * FROM card_transactions')).toEqual(before);
+    expect(
+      JSON.parse(
+        String(
+          rows("SELECT encrypted_value FROM app_preferences WHERE key='payment_sources'")[0][
+            'encrypted_value'
+          ],
+        ),
+      )[0].balanceMinor,
+    ).toBe(90000);
+  });
+  it('rolls back an automatic match when reconciliation persistence fails', async () => {
+    manual();
+    stage(confident());
+    sql.exec(
+      "CREATE TRIGGER fail_auto BEFORE INSERT ON sms_reconciliation BEGIN SELECT RAISE(ABORT,'Synthetic reconciliation failure'); END",
+    );
+    await expect(service.reevaluatePending()).rejects.toThrow('Synthetic reconciliation failure');
+    expect(rows('SELECT state FROM sms_candidates')[0]['state']).toBe('PENDING');
+    expect(count('sms_reconciliation')).toBe(0);
+    expect(count('card_transactions')).toBe(1);
+  });
+  it.each([
+    ['REFUND', 'REFUND'],
+    ['CASHBACK', 'CASHBACK'],
+    ['CARD_PAYMENT_RECEIVED', 'PAYMENT'],
+  ] as const)('links compatible %s without creating or modifying money', async (kind, type) => {
+    manual({ type });
+    stage(confident({ kind }));
+    const before = rows('SELECT * FROM card_transactions');
+    expect(await service.reevaluatePending()).toBe(1);
+    expect(rows('SELECT * FROM card_transactions')).toEqual(before);
+  });
+  it('links a verified unique reference without a merchant but refuses conflicting transaction times', async () => {
+    manual({ merchant: undefined, reference: 'SYNTHREF123456', transactionTime: '12:15' });
+    stage(confident({ merchant: undefined, reference: 'SYNTHREF123456', eventTime: '12:15:00' }));
+    expect(await service.reevaluatePending()).toBe(1);
+  });
+  it.each(['JIO Postpaid', 'MYJIO'])(
+    'recognizes a provider alias %s as supporting merchant evidence without weakening source/date/amount checks',
+    async (merchant) => {
+      manual({ merchant: 'Jio fiber via a payment app', amountMinor: 47823 });
+      stage(confident({ merchant, amountMinor: 47823 }));
+      expect(await service.reevaluatePending()).toBe(1);
+      expect(count('card_transactions')).toBe(1);
+    },
+  );
+  it('does not let a matching merchant override conflicting verified network references', async () => {
+    manual({ reference: 'SYNTHORIGINAL123' });
+    stage(confident({ reference: 'SYNTHDIFFERENT123' }));
+    expect(await service.reevaluatePending()).toBe(0);
+    expect(count('sms_reconciliation')).toBe(0);
+  });
+  it.each([
+    'BANK_DEBIT',
+    'BANK_CREDIT',
+    'BANK_TRANSFER',
+    'LOAN_DEBIT',
+    'STATEMENT',
+    'PAYMENT_INITIATED',
+  ] as const)(
+    'keeps %s as evidence even when an amount/date/merchant resembles spending',
+    async (kind) => {
+      manual();
+      stage(confident({ kind }));
+      expect(await service.reevaluatePending()).toBe(0);
+      expect(count('card_transactions')).toBe(1);
+    },
+  );
+  it.each([
+    ['PLUXEE_TOPUP', 'MEAL', 'CREDIT'],
+    ['FASTAG_TOLL', 'FASTAG', 'PURCHASE'],
+    ['FASTAG_TOPUP', 'FASTAG', 'CREDIT'],
+  ] as const)(
+    'links an already-recorded %s without applying wallet funds again',
+    async (kind, walletKind, type) => {
+      const wallet: PaymentSource = {
+        id: 'synthetic-wallet',
+        nickname: 'Synthetic wallet',
+        kind: walletKind,
+        lastDigits: '8765',
+        vehicleNumber: 'KA01AB1234',
+        noLimit: false,
+        balanceMinor: 90000,
+        autoLoad: false,
+        archived: false,
+      };
+      sources.set([wallet]);
+      run('INSERT INTO app_preferences VALUES(?,?)', ['payment_sources', JSON.stringify([wallet])]);
+      manual({ cardId: wallet.id, type });
+      stage(confident({ kind, cardDigits: '8765', vehicleNumber: 'KA01AB1234' }));
+      const before = rows('SELECT * FROM card_transactions');
+      expect(await service.reevaluatePending()).toBe(1);
+      expect(rows('SELECT * FROM card_transactions')).toEqual(before);
+      expect(sources()[0].balanceMinor).toBe(90000);
+    },
+  );
+  it('retains read status and explicit decisions when improved evidence is restaged', async () => {
+    stage(confident({ cardDigits: undefined }));
+    run("UPDATE sms_candidates SET read_at='already-read'");
+    await (service as unknown as { stage(items: readonly SmsEvidence[]): Promise<void> }).stage([
+      confident(),
+    ]);
+    expect(
+      JSON.parse(String(rows('SELECT payload FROM sms_candidates')[0]['payload'])).cardDigits,
+    ).toBe('54321');
+    expect(rows('SELECT read_at FROM sms_candidates')[0]['read_at']).toBe('already-read');
+  });
+  it('never chooses between meal wallets or substitutes a different suffix', async () => {
+    const wallets: PaymentSource[] = ['one', 'two'].map((id) => ({
+      id,
+      nickname: id,
+      kind: 'MEAL',
+      lastDigits: id === 'one' ? '8765' : '8766',
+      noLimit: false,
+      balanceMinor: 90000,
+      autoLoad: false,
+      archived: false,
+    }));
+    sources.set(wallets);
+    run('INSERT INTO app_preferences VALUES(?,?)', ['payment_sources', JSON.stringify(wallets)]);
+    manual({ cardId: 'one' });
+    stage(confident({ kind: 'PLUXEE_PURCHASE', issuer: 'Pluxee', cardDigits: undefined }));
+    expect(await service.reevaluatePending()).toBe(0);
+    stage(
+      confident({
+        id: 'b'.repeat(64),
+        kind: 'PLUXEE_PURCHASE',
+        issuer: 'Pluxee',
+        cardDigits: '1111',
+      }),
+    );
+    expect(await service.reevaluatePending()).toBe(0);
+  });
+  it('applies a separately confirmed matched-wallet correction once, with no second purchase', async () => {
+    const wallet: PaymentSource = {
+      id: 'meal',
+      nickname: 'Synthetic meal',
+      kind: 'MEAL',
+      lastDigits: '8765',
+      noLimit: false,
+      balanceMinor: 50000,
+      autoLoad: false,
+      archived: false,
+    };
+    sources.set([wallet]);
+    run('INSERT INTO app_preferences VALUES(?,?)', ['payment_sources', JSON.stringify([wallet])]);
+    manual({ cardId: 'meal' });
+    const candidate = stage(
+      confident({
+        kind: 'PLUXEE_PURCHASE',
+        issuer: 'Pluxee',
+        cardDigits: '8765',
+        reportedBalanceMinor: 48000,
+        balancePosition: 'AFTER',
+      }),
+    );
+    await service.reevaluatePending();
+    expect(sources()[0].balanceMinor).toBe(50000);
+    await service.adjustMatchedBalance(candidate);
+    expect(sources()[0].balanceMinor).toBe(48000);
+    expect(rows("SELECT COUNT(*) AS n FROM card_transactions WHERE type='PURCHASE'")[0]['n']).toBe(
+      1,
+    );
+    expect(
+      rows("SELECT COUNT(*) AS n FROM card_transactions WHERE type='ADJUSTMENT'")[0]['n'],
+    ).toBe(1);
+    await expect(service.adjustMatchedBalance(candidate)).rejects.toThrow('cutover');
+    expect(count('card_transactions')).toBe(2);
+  });
+  it('filters multiple types with OR and combines independent filters with AND; empty means no results', async () => {
+    realRefresh();
+    stage(confident());
+    stage(confident({ id: 'b'.repeat(64), kind: 'CASHBACK' }));
+    stage(confident({ id: 'c'.repeat(64), kind: 'REFUND' }));
+    const filters = {
+      ...defaultReviewFilters(),
+      mode: 'MULTIPLE' as const,
+      kinds: ['PURCHASE', 'CASHBACK', 'PURCHASE', 'invalid'],
+      search: 'ORCHARD',
+      multipleInitialized: true,
+    };
+    await service.filterReview(filters);
+    expect(service.total()).toBe(2);
+    expect((await service.loadReviewFilters()).kinds).toEqual(['PURCHASE', 'CASHBACK']);
+    await service.filterReview({ ...filters, read: 'READ' });
+    expect(service.total()).toBe(0);
+    await service.filterReview({ ...filters, kinds: [] });
+    expect(service.total()).toBe(0);
+  });
   it('keeps old-installation defaults without creating preferences on load', async () => {
     expect(await service.loadReviewFilters()).toEqual(defaultReviewFilters());
     expect(count('app_preferences')).toBe(0);
@@ -194,14 +513,14 @@ describe('SMS approved import integrity', () => {
           [SMS_REVIEW_FILTERS_KEY],
         )[0].encrypted_value,
       ),
-    ).toEqual(filters);
+    ).toEqual({ ...defaultReviewFilters(), ...filters });
     const recreated = runInInjectionContext(
       TestBed.inject(EnvironmentInjector),
       () => new SmsReviewService(),
     );
     vi.spyOn(recreated, 'refreshAccess').mockResolvedValue();
     vi.spyOn(recreated as unknown as { handoff(): Promise<void> }, 'handoff').mockResolvedValue();
-    expect(await recreated.loadReviewFilters()).toEqual(filters);
+    expect(await recreated.loadReviewFilters()).toEqual({ ...defaultReviewFilters(), ...filters });
     await recreated.refresh();
     expect(recreated.total()).toBe(1);
     expect(recreated.candidates()[0].id).toBe('a'.repeat(64));
@@ -844,7 +1163,12 @@ describe('SMS approved import integrity', () => {
     };
     sources.set([wallet]); // Missing preference must be created durably without mutating the signal early.
     const candidate = stage(
-      evidence({ kind: 'PLUXEE_TOPUP', amountMinor: 2000, reportedBalanceMinor: 8000 }),
+      evidence({
+        kind: 'PLUXEE_TOPUP',
+        amountMinor: 2000,
+        reportedBalanceMinor: 8000,
+        balancePosition: 'AFTER',
+      }),
     );
     await service.approve(candidate, 'meal', 2000, 'Load', '', 'ADJUST_BALANCE');
     expect(sources()[0].balanceMinor).toBe(8000);

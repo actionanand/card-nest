@@ -9,6 +9,7 @@ import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { unlinkSync, existsSync } from 'node:fs';
 import { APP_ENVIRONMENT } from '../services/app-environment';
+import { reviewFilters } from '../../features/sms-sync/sms-review-filters';
 
 vi.hoisted(() => vi.resetModules());
 const config = { smsPageSize: 200, seedDemoData: false };
@@ -321,6 +322,43 @@ describe('Durable first-run data, additive read migration and private portable b
     expect(rows('SELECT * FROM card_transactions')).toEqual(before);
     expect(count('sms_reconciliation')).toBe(1);
   });
+  it.each([
+    { kind: 'REFUND', search: 'Synthetic legacy' },
+    {
+      kind: 'PURCHASE',
+      mode: 'MULTIPLE',
+      kinds: ['PURCHASE', 'CASHBACK', 'PURCHASE', 'invalid'],
+      multipleInitialized: true,
+      read: 'READ',
+    },
+    { mode: 'MULTIPLE', kinds: [], multipleInitialized: true },
+  ])(
+    'round trips old/new SMS filter preferences and matching audit without financial changes %j',
+    async (preferences) => {
+      schema(7);
+      installFinancialData();
+      await database.initialise();
+      await database.run('INSERT INTO app_preferences VALUES(?,?)', [
+        'sms_review_filters',
+        JSON.stringify(preferences),
+      ]);
+      const before = rows('SELECT * FROM card_transactions');
+      const backup = await database.exportBackupJson();
+      await database.restoreBackupJson(backup);
+      const restored = JSON.parse(
+        String(
+          rows("SELECT encrypted_value FROM app_preferences WHERE key='sms_review_filters'")[0][
+            'encrypted_value'
+          ],
+        ),
+      );
+      expect(reviewFilters(restored)).toEqual(reviewFilters(preferences));
+      expect(rows('SELECT * FROM card_transactions')).toEqual(before);
+      expect(rows('SELECT target_id FROM sms_reconciliation')[0]['target_id']).toBe(
+        'synthetic-transaction',
+      );
+    },
+  );
   it('read state survives closing and reopening an on-disk SQLite database', async () => {
     schema(7);
     installFinancialData();

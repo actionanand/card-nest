@@ -1,0 +1,200 @@
+import { CardTransaction, CreditCard, PaymentSource } from '../../core/models/domain';
+import { eligibleSources, ledgerType, SmsEvidence } from './sms-model';
+
+export interface ExistingMatch {
+  confidence:
+    'HIGH_CONFIDENCE_EXISTING' | 'POSSIBLE_EXISTING' | 'AMBIGUOUS' | 'NO_MATCH' | 'EVIDENCE_ONLY';
+  transactionIds: readonly string[];
+  sourceId?: string;
+  reason: string;
+}
+
+/** Shared words support a match, but never establish a source or an amount. */
+export function merchantSimilarity(left: string | undefined, right: string | undefined): boolean {
+  const words = (text: string | undefined) =>
+    (text ?? '')
+      .toLowerCase()
+      .replace(/\b(?:myjio|jiofiber|jioairfiber)\b/g, 'jio')
+      .replace(/[^a-z0-9]+/g, ' ')
+      .split(' ')
+      .filter(
+        (word) =>
+          word.length >= 3 &&
+          ![
+            'payment',
+            'purchase',
+            'card',
+            'online',
+            'transaction',
+            'via',
+            'using',
+            'the',
+            'ltd',
+            'private',
+            'market',
+            'store',
+            'grocery',
+            'groceries',
+            'bakery',
+            'restaurant',
+            'international',
+            'bangalore',
+            'limited',
+          ].includes(word),
+      );
+  const a = new Set(words(left));
+  const b = new Set(words(right));
+  const common = [...a].filter((word) => b.has(word));
+  // A single short generic word is weak evidence. Long, distinctive names can support aliases.
+  return common.length >= 2 || common.some((word) => word.length >= 5 || word === 'jio');
+}
+
+export function matchExisting(
+  item: SmsEvidence,
+  cards: readonly CreditCard[],
+  sources: readonly PaymentSource[],
+  ledger: readonly CardTransaction[],
+  claimed: ReadonlySet<string> = new Set(),
+): ExistingMatch {
+  const type = ledgerType(item);
+  if (!type)
+    return {
+      confidence: 'EVIDENCE_ONLY',
+      transactionIds: [],
+      reason:
+        'Bank, initiation, loan and statement evidence cannot automatically create or confirm spending.',
+    };
+  let ids = eligibleSources(item, cards, sources);
+  const missingMealDigits =
+    item.kind.startsWith('PLUXEE') && !item.cardDigits && !item.accountDigits;
+  if (missingMealDigits)
+    ids = sources
+      .filter((source) => source.kind === 'MEAL' && !source.archived)
+      .map((source) => source.id);
+  if (ids.length !== 1)
+    return {
+      confidence: ids.length ? 'AMBIGUOUS' : 'NO_MATCH',
+      transactionIds: [],
+      reason: ids.length
+        ? 'Multiple eligible sources; confirm the source.'
+        : 'No trustworthy saved source identity. Confirm a source before linking.',
+    };
+  const sourceId = ids[0];
+  const plausible = ledger.filter(
+    (entry) =>
+      entry.cardId === sourceId &&
+      entry.currencyCode === item.currency &&
+      entry.type === type &&
+      entry.amountMinor === item.amountMinor &&
+      Math.abs(Date.parse(entry.transactionDate) - Date.parse(item.eventDate)) <= 86400000 * 3,
+  );
+  if (!plausible.length)
+    return {
+      confidence: 'NO_MATCH',
+      sourceId,
+      transactionIds: [],
+      reason: 'No compatible existing entry within the review date window.',
+    };
+  const supporting = plausible.filter((entry) => {
+    if (item.reference && entry.reference && item.reference !== entry.reference) return false;
+    const reference = !!item.reference && !!entry.reference && item.reference === entry.reference;
+    const time =
+      !entry.transactionTime ||
+      !item.eventTime ||
+      entry.transactionTime.slice(0, 5) === item.eventTime.slice(0, 5);
+    return (
+      entry.transactionDate === item.eventDate &&
+      !item.dateFallback &&
+      time &&
+      (reference || merchantSimilarity(item.merchant, entry.merchant))
+    );
+  });
+  // Any second plausible financial entry needs a human, even if only one merchant resembles it.
+  const automatic =
+    plausible.length === 1 && supporting.length === 1 && !claimed.has(plausible[0].id);
+  return {
+    confidence: automatic
+      ? 'HIGH_CONFIDENCE_EXISTING'
+      : plausible.length > 1
+        ? 'AMBIGUOUS'
+        : 'POSSIBLE_EXISTING',
+    sourceId,
+    transactionIds: plausible.map((entry) => entry.id),
+    reason: automatic
+      ? `Unique existing entry: trusted ${missingMealDigits ? 'single meal wallet' : 'source identity'}, exact amount and type, explicit local date, compatible time and merchant/reference evidence.`
+      : claimed.has(plausible[0].id)
+        ? 'An existing entry is already linked to other SMS evidence; confirm this relationship manually.'
+        : plausible.length > 1
+          ? 'Multiple compatible existing entries; select the correct transaction.'
+          : 'Possible existing transaction. Amount, source and nearby date alone are insufficient for automatic linking.',
+  };
+}
+
+export interface WalletComparison {
+  current: number;
+  reported: number;
+  expected: number;
+  expectedAfter: number;
+  difference: number;
+  canAdjust: boolean;
+  explanation: string;
+}
+export function walletComparison(
+  item: SmsEvidence,
+  source: PaymentSource,
+  ledger: readonly CardTransaction[],
+  recordedId?: string,
+): WalletComparison | null {
+  if (
+    !item.kind.startsWith('PLUXEE') ||
+    source.kind !== 'MEAL' ||
+    source.noLimit ||
+    !Number.isSafeInteger(source.balanceMinor) ||
+    !Number.isSafeInteger(item.reportedBalanceMinor)
+  )
+    return null;
+  const current = source.balanceMinor!;
+  const reported = item.reportedBalanceMinor!;
+  const recorded = recordedId
+    ? ledger.find((entry) => entry.id === recordedId && entry.cardId === source.id)
+    : undefined;
+  const historical =
+    !!source.balanceCutoverAt && Date.parse(item.eventAt) <= Date.parse(source.balanceCutoverAt);
+  const newer = ledger.some(
+    (entry) =>
+      entry.cardId === source.id &&
+      entry.id !== recordedId &&
+      entry.transactionDate >= item.eventDate,
+  );
+  const eventDelta = item.kind === 'PLUXEE_PURCHASE' ? -item.amountMinor : item.amountMinor;
+  const expectedAfter = current + (recorded || historical ? 0 : eventDelta);
+  const expected =
+    item.balancePosition === 'BEFORE' && !historical ? expectedAfter - eventDelta : expectedAfter;
+  const trusted =
+    item.balancePosition === 'AFTER' &&
+    !source.archived &&
+    (!item.cardDigits || item.cardDigits === source.lastDigits) &&
+    !item.accountDigits &&
+    !item.dateFallback &&
+    !historical &&
+    !newer &&
+    reported >= 0 &&
+    Number.isSafeInteger(expected);
+  return {
+    current,
+    reported,
+    expected,
+    expectedAfter,
+    difference: reported - expected,
+    canAdjust: trusted,
+    explanation: historical
+      ? 'This snapshot is not newer than the saved cutover. Keep the current balance.'
+      : newer
+        ? 'Same-day or later activity makes ordering uncertain. Keep the current balance.'
+        : item.balancePosition !== 'AFTER'
+          ? 'The message does not establish whether this balance is before or after the event.'
+          : recorded
+            ? 'The transaction is already recorded. Its amount is not applied again.'
+            : 'Post-event prediction includes this purchase or top-up once after approval.',
+  };
+}

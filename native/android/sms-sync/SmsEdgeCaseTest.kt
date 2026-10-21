@@ -6,6 +6,17 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class SmsEdgeCaseTest {
+  @Test fun mealWalletSuffixAndPostEventBalanceVariants() {
+    for (alias in listOf("Pluxee", "Sodexo")) {
+      for (identity in listOf("wallet ending in 8765", "meal card number XX8765", "card ending with ****8765")) {
+        val result = parse("$alias: Rs. 45 spent using $identity at SYNTHETIC ORCHARD on 18-Oct-2026 at 12:30. Current meal wallet balance is Rs. 500")
+        assertEquals(SmsTransactionParser.Kind.PLUXEE_PURCHASE, result.kind)
+        assertEquals("8765", result.cardDigits)
+        assertEquals(50000L, result.reportedBalanceMinor)
+        assertEquals("AFTER", result.balancePosition)
+      }
+    }
+  }
   @Test fun merchantTrailersAreEvidenceNotTitles() {
     for (trailer in listOf("Ref SYNTHREF123456", "UTR SYNTHREF123456", "Visit example.invalid/help", "Click example.invalid")) {
       val r = parse("Spent INR 12 on HDFC credit card XX4321 at DEMO STORE $trailer")

@@ -10,6 +10,7 @@ import {
   PaymentSource,
 } from '../../core/models/domain';
 import { environment } from '../../../environments/environment';
+import { matchExisting, walletComparison } from './sms-matching';
 import {
   defaultReviewFilters,
   reviewFilters,
@@ -72,6 +73,8 @@ export class SmsReviewService {
   readonly reviewPage = signal(0);
   readonly total = signal(0);
   readonly pendingTotal = signal(0);
+  readonly matchedTotal = signal(0);
+  readonly importedTotal = signal(0);
   readonly unreadTotal = signal(0);
   readonly markingRead = signal(false);
   readonly savedTotal = signal(0);
@@ -109,11 +112,12 @@ export class SmsReviewService {
     return { ...this.filters };
   }
   async filterReview(
-    filters: Omit<typeof this.filters, 'from' | 'to' | 'read'> & {
-      from?: string;
-      to?: string;
-      read?: string;
-    },
+    filters: Pick<SmsReviewFilters, 'state' | 'kind' | 'search' | 'source'> &
+      Partial<SmsReviewFilters> & {
+        from?: string;
+        to?: string;
+        read?: string;
+      },
   ): Promise<void> {
     this.assertUnlocked();
     const applied = reviewFilters(filters);
@@ -130,6 +134,130 @@ export class SmsReviewService {
     await this.refresh();
   }
   private cancelled = false;
+  private reconciliationCursor = '';
+  private automaticCursor = '';
+
+  /** Bounded batches, serialized with manual writes. This path never writes financial tables. */
+  async reevaluatePending(): Promise<number> {
+    this.assertUnlocked();
+    return this.database.atomic(async (tx) => {
+      const [wallets] = await tx.query<{ encrypted_value: string }>(
+        "SELECT encrypted_value FROM app_preferences WHERE key='payment_sources'",
+      );
+      const sources = wallets ? (JSON.parse(wallets.encrypted_value) as PaymentSource[]) : [];
+      const cards = (await tx.query<{ payload: string }>('SELECT payload FROM credit_cards')).map(
+        (row) => JSON.parse(row.payload) as import('../../core/models/domain').CreditCard,
+      );
+      const pending = await tx.query<{ id: string; payload: string }>(
+        "SELECT id,payload FROM sms_candidates WHERE state='PENDING' AND payload IS NOT NULL AND id>? ORDER BY id LIMIT 200",
+        [this.reconciliationCursor],
+      );
+      this.reconciliationCursor = pending.length === 200 ? pending[pending.length - 1].id : '';
+      const evidence = pending.flatMap((row) => {
+        try {
+          const value: unknown = JSON.parse(row.payload);
+          return validEvidence(value) ? [value] : [];
+        } catch {
+          return [];
+        }
+      });
+      const dates = evidence.map((item) => item.eventDate).sort();
+      const ledgerRows = dates.length
+        ? await tx.query<{ payload: string }>(
+            "SELECT payload FROM card_transactions WHERE transaction_date BETWEEN date(?,'-3 days') AND date(?,'+3 days') LIMIT 5001",
+            [dates[0], dates[dates.length - 1]],
+          )
+        : [];
+      const ledger = ledgerRows.map((entry) => JSON.parse(entry.payload) as CardTransaction);
+      const bindings: { transaction_id: string }[] = [];
+      if (ledger.length <= 5000)
+        for (let start = 0; start < ledger.length; start += 400) {
+          const batch = ledger.slice(start, start + 400);
+          bindings.push(
+            ...(await tx.query<{ transaction_id: string }>(
+              `SELECT transaction_id FROM sms_candidates WHERE transaction_id IN (${batch.map(() => '?').join(',')}) AND state IN ('IMPORTED','MATCHED_EXISTING')`,
+              batch.map((entry) => entry.id),
+            )),
+          );
+        }
+      const claimed = new Set(bindings.map((binding) => binding.transaction_id));
+      const proposals = evidence.map((item) => ({
+        item,
+        match: matchExisting(item, cards, sources, ledger, claimed),
+      }));
+      const competingRows = dates.length
+        ? await tx.query<{ payload: string }>(
+            "SELECT payload FROM sms_candidates WHERE state='PENDING' AND payload IS NOT NULL AND json_extract(payload,'$.eventDate') BETWEEN ? AND ? LIMIT 5001",
+            [dates[0], dates[dates.length - 1]],
+          )
+        : [];
+      const competing = new Map<string, number>();
+      for (const row of competingRows) {
+        const item: unknown = JSON.parse(row.payload);
+        if (!validEvidence(item)) continue;
+        for (const target of matchExisting(item, cards, sources, ledger, claimed).transactionIds)
+          competing.set(target, (competing.get(target) ?? 0) + 1);
+      }
+      let linked = 0;
+      for (const { item, match } of proposals) {
+        this.assertUnlocked();
+        if (!ledgerType(item) || ledgerRows.length > 5000 || competingRows.length > 5000) continue;
+        if (
+          match.confidence !== 'HIGH_CONFIDENCE_EXISTING' ||
+          competing.get(match.transactionIds[0]) !== 1 ||
+          claimed.has(match.transactionIds[0])
+        )
+          continue;
+        const now = new Date().toISOString();
+        const decision = `AUTO_EXISTING: ${match.reason}`;
+        await tx.run(
+          'INSERT INTO sms_reconciliation(id,candidate_id,target_id,decision,amount_minor,created_at) VALUES(?,?,?,?,?,?) ON CONFLICT(candidate_id) DO UPDATE SET target_id=excluded.target_id,decision=excluded.decision,amount_minor=excluded.amount_minor,created_at=excluded.created_at',
+          [`auto-${item.id}`, item.id, match.transactionIds[0], decision, item.amountMinor, now],
+        );
+        await tx.run(
+          "UPDATE sms_candidates SET state='MATCHED_EXISTING',transaction_id=?,decision=?,updated_at=? WHERE id=? AND state='PENDING'",
+          [match.transactionIds[0], decision, now, item.id],
+        );
+        linked++;
+        claimed.add(match.transactionIds[0]);
+      }
+      // Automatically created links are checked against current ledger/source metadata on revisit.
+      // Explicit user decisions are never undone. Restored tombstones keep their dedup identity.
+      const automatic = await tx.query<{
+        id: string;
+        payload: string | null;
+        transaction_id: string | null;
+      }>(
+        "SELECT id,payload,transaction_id FROM sms_candidates WHERE state='MATCHED_EXISTING' AND decision LIKE 'AUTO_EXISTING:%' AND id>? ORDER BY id LIMIT 200",
+        [this.automaticCursor],
+      );
+      this.automaticCursor = automatic.length === 200 ? automatic[automatic.length - 1].id : '';
+      for (const row of automatic) {
+        if (!row.payload) continue;
+        const item = JSON.parse(row.payload) as SmsEvidence;
+        const [target] = await tx.query<{ payload: string }>(
+          'SELECT payload FROM card_transactions WHERE id=?',
+          [row.transaction_id],
+        );
+        const match = matchExisting(
+          item,
+          cards,
+          sources,
+          target ? [JSON.parse(target.payload) as CardTransaction] : [],
+        );
+        if (match.confidence === 'HIGH_CONFIDENCE_EXISTING') continue;
+        await tx.run(
+          "UPDATE sms_candidates SET state='PENDING',transaction_id=NULL,decision='Previous automatic link needs review after ledger/source changes' WHERE id=?",
+          [row.id],
+        );
+        await tx.run(
+          "UPDATE sms_reconciliation SET target_id=NULL,decision='INVALIDATED_AUTOMATIC_LINK' WHERE candidate_id=?",
+          [row.id],
+        );
+      }
+      return linked;
+    });
+  }
   async relatedFor(candidate: SmsCandidate): Promise<readonly SmsCandidate[]> {
     this.assertUnlocked();
     const item = candidate.item;
@@ -182,14 +310,27 @@ export class SmsReviewService {
     this.assertUnlocked();
     await this.refreshAccess();
     await this.handoff();
-    const [totals] = await this.database.query<{ saved: number; pending: number; unread: number }>(
-      `SELECT COUNT(*) AS saved, COALESCE(SUM(CASE WHEN state='PENDING' THEN 1 ELSE 0 END),0) AS pending, COALESCE(SUM(CASE WHEN read_at IS NULL THEN 1 ELSE 0 END),0) AS unread FROM sms_candidates`,
+    await this.reevaluatePending();
+    const [totals] = await this.database.query<{
+      saved: number;
+      pending: number;
+      unread: number;
+      matched: number;
+      imported: number;
+    }>(
+      `SELECT COUNT(*) AS saved, COALESCE(SUM(CASE WHEN state='PENDING' THEN 1 ELSE 0 END),0) AS pending, COALESCE(SUM(CASE WHEN state='MATCHED_EXISTING' THEN 1 ELSE 0 END),0) AS matched, COALESCE(SUM(CASE WHEN state='IMPORTED' THEN 1 ELSE 0 END),0) AS imported, COALESCE(SUM(CASE WHEN read_at IS NULL THEN 1 ELSE 0 END),0) AS unread FROM sms_candidates`,
     );
     this.savedTotal.set(totals.saved);
     this.pendingTotal.set(totals.pending);
+    this.matchedTotal.set(totals.matched ?? 0);
+    this.importedTotal.set(totals.imported ?? 0);
     this.unreadTotal.set(totals.unread);
     const filters = this.filters;
-    const where = `WHERE (? = 'ALL' OR state = ?) AND (? = 'ALL' OR kind = ?)
+    const kinds =
+      filters.mode === 'MULTIPLE' ? filters.kinds : filters.kind === 'ALL' ? null : [filters.kind];
+    const kindClause =
+      kinds === null ? '1=1' : kinds.length ? `kind IN (${kinds.map(() => '?').join(',')})` : '0=1';
+    const where = `WHERE (? = 'ALL' OR state = ?) AND (${kindClause})
       AND (? = '' OR (COALESCE(json_extract(payload,'$.merchant'),'') || ' ' || COALESCE(json_extract(payload,'$.reference'),'')) LIKE ?)
       AND (? = '' OR (COALESCE(json_extract(payload,'$.cardDigits'),'') || ' ' || COALESCE(json_extract(payload,'$.vehicleNumber'),'') || ' ' || COALESCE(json_extract(payload,'$.issuer'),'')) LIKE ?)
       AND (? = '' OR COALESCE(json_extract(payload,'$.eventDate'),substr(event_at,1,10)) >= ?)
@@ -198,8 +339,7 @@ export class SmsReviewService {
     const values = [
       filters.state,
       filters.state,
-      filters.kind,
-      filters.kind,
+      ...(kinds ?? []),
       filters.search,
       `%${filters.search}%`,
       filters.source,
@@ -226,6 +366,7 @@ export class SmsReviewService {
       payload: string | null;
       transaction_id: string;
       read_at: string | null;
+      decision: string | null;
     }>(`SELECT * FROM sms_candidates ${where} ORDER BY event_at DESC, id LIMIT 200 OFFSET ?`, [
       ...values,
       this.reviewPage() * 200,
@@ -239,6 +380,7 @@ export class SmsReviewService {
         item: r.payload ? (JSON.parse(r.payload) as SmsEvidence) : null,
         transactionId: r.transaction_id,
         readAt: r.read_at,
+        decision: r.decision,
       })),
     );
   }
@@ -248,6 +390,100 @@ export class SmsReviewService {
       read ? new Date().toISOString() : null,
       id,
     ]);
+    await this.refresh();
+  }
+  /** Explicit adjustment of a matched meal snapshot; never called by discovery or auto-linking. */
+  async adjustMatchedBalance(candidate: SmsCandidate): Promise<void> {
+    this.assertUnlocked();
+    const sources = await this.database.atomic(async (tx) => {
+      const [row] = await tx.query<{ payload: string; transaction_id: string }>(
+        "SELECT payload,transaction_id FROM sms_candidates WHERE id=? AND state='MATCHED_EXISTING'",
+        [candidate.id],
+      );
+      if (!row?.payload || !row.transaction_id)
+        throw new Error('Choose a recorded wallet transaction first.');
+      const item = JSON.parse(row.payload) as SmsEvidence;
+      if (!validEvidence(item)) throw new Error('Valid retained SMS evidence is required.');
+      const [pref] = await tx.query<{ encrypted_value: string }>(
+        "SELECT encrypted_value FROM app_preferences WHERE key='payment_sources'",
+      );
+      if (!pref) throw new Error('Saved wallet unavailable.');
+      const sources = JSON.parse(pref.encrypted_value) as PaymentSource[];
+      const ledger = (
+        await tx.query<{ payload: string }>('SELECT payload FROM card_transactions')
+      ).map((entry) => JSON.parse(entry.payload) as CardTransaction);
+      const existing = ledger.find((entry) => entry.id === row.transaction_id);
+      const source = sources.find((source) => source.id === existing?.cardId);
+      if (!source || !existing) throw new Error('Recorded wallet entry unavailable.');
+      if (
+        existing.type !== ledgerType(item) ||
+        existing.amountMinor !== item.amountMinor ||
+        existing.transactionDate !== item.eventDate
+      )
+        throw new Error(
+          'The recorded entry changed. Review the transaction before adjusting its balance.',
+        );
+      const comparison = walletComparison(item, source, ledger, existing.id);
+      if (!comparison?.canAdjust)
+        throw new Error(comparison?.explanation ?? 'The balance cannot be safely adjusted.');
+      const delta = comparison.difference;
+      if (!delta) return sources;
+      const now = new Date().toISOString();
+      const adjustment: CardTransaction = {
+        id: `sms-adjustment-${item.id}`,
+        cardId: source.id,
+        type: 'ADJUSTMENT',
+        adjustmentDirection: delta > 0 ? 'DECREASE' : 'INCREASE',
+        amountMinor: Math.abs(delta),
+        currencyCode: 'INR',
+        transactionDate: item.eventDate,
+        categoryId: 'other',
+        merchant: 'Approved wallet balance reconciliation',
+        notes: `Explicit SMS snapshot adjustment at ${item.eventAt}`,
+        relatedTransactionId: existing.id,
+        sourceBalanceApplied: true,
+        attachmentIds: [],
+        createdAt: now,
+        updatedAt: now,
+      };
+      await tx.run(
+        'INSERT INTO card_transactions(id,card_id,category_id,type,amount_minor,currency_code,transaction_date,payload,created_at,updated_at) VALUES(?,NULL,?,?,?,?,?,?,?,?)',
+        [
+          adjustment.id,
+          'other',
+          adjustment.type,
+          adjustment.amountMinor,
+          'INR',
+          item.eventDate,
+          JSON.stringify(adjustment),
+          now,
+          now,
+        ],
+      );
+      await tx.run(
+        "INSERT INTO transaction_links(transaction_id,related_transaction_id,relationship_type,created_at) VALUES(?,?,'ADJUSTMENT',?)",
+        [adjustment.id, existing.id, now],
+      );
+      source.balanceMinor = comparison.reported;
+      source.balanceSnapshotMinor = comparison.reported;
+      source.balanceCutoverAt = item.eventAt;
+      await tx.run("UPDATE app_preferences SET encrypted_value=? WHERE key='payment_sources'", [
+        JSON.stringify(sources),
+      ]);
+      await tx.run(
+        "UPDATE sms_reconciliation SET decision=decision || '; EXPLICIT_BALANCE_ADJUSTMENT' WHERE candidate_id=?",
+        [item.id],
+      );
+      return sources;
+    });
+    // Refresh from committed rows, never optimistically alter a balance before the transaction.
+    const adjustments = (
+      await this.database.query<{ payload: string }>(
+        'SELECT payload FROM card_transactions WHERE id=?',
+        [`sms-adjustment-${candidate.id}`],
+      )
+    ).map((row) => JSON.parse(row.payload) as CardTransaction);
+    this.store.acceptCommittedImport(adjustments[0] ?? null, sources);
     await this.refresh();
   }
   async markAllRead(): Promise<number> {
@@ -416,6 +652,13 @@ export class SmsReviewService {
           ],
         );
         if (!changes) this.duplicates.update((n) => n + 1);
+        if (!changes && !(retention && item.eventDate < retention.value)) {
+          // Reparsed evidence may improve a pending row, but cannot reset a decision/read flag.
+          await tx.run(
+            "UPDATE sms_candidates SET payload=?,kind=?,event_at=?,updated_at=? WHERE id=? AND state='PENDING'",
+            [JSON.stringify(item), item.kind, item.eventAt, new Date().toISOString(), item.id],
+          );
+        }
       }
     });
   }
@@ -511,6 +754,15 @@ export class SmsReviewService {
       const ledger = (
         await tx.query<{ payload: string }>('SELECT payload FROM card_transactions')
       ).map((r) => JSON.parse(r.payload) as CardTransaction);
+      if (reconciliation === 'ADJUST_BALANCE' && item.kind.startsWith('PLUXEE')) {
+        const comparison = source
+          ? walletComparison(item, source, ledger, existingId || undefined)
+          : null;
+        if (!comparison?.canAdjust)
+          throw new Error(
+            comparison?.explanation ?? 'Verify the meal wallet and balance chronology first.',
+          );
+      }
       const now = new Date().toISOString();
       const transactionDate = edits.transactionDate ?? item.eventDate;
       if (
@@ -616,6 +868,7 @@ export class SmsReviewService {
           currencyCode: 'INR',
           transactionDate,
           transactionTime: item.eventTime,
+          reference: item.reference,
           merchant: merchant.trim().slice(0, 100),
           categoryId:
             type === 'PAYMENT'

@@ -32,7 +32,14 @@ describe('Encrypted backup delivery', () => {
     async (compressed) => {
       if (!compressed) vi.stubGlobal('CompressionStream', undefined);
       const json = JSON.stringify({
-        preferences: { sms_review_filters: { search: 'Synthetic saved search' } },
+        preferences: {
+          sms_review_filters: {
+            search: 'Synthetic saved search',
+            mode: 'MULTIPLE',
+            kinds: ['PURCHASE', 'PLUXEE_PURCHASE'],
+            multipleInitialized: true,
+          },
+        },
       });
       database.exportBackupJson.mockResolvedValue(json);
       const backup = await service.create('synthetic-backup-passphrase');

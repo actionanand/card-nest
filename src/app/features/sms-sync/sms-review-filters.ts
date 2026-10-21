@@ -1,4 +1,29 @@
 export const SMS_REVIEW_FILTERS_KEY = 'sms_review_filters';
+export const SMS_KINDS = [
+  'PURCHASE',
+  'BANK_DEBIT',
+  'BANK_CREDIT',
+  'BANK_TRANSFER',
+  'CARD_PAYMENT_RECEIVED',
+  'PAYMENT_INITIATED',
+  'CASHBACK',
+  'REFUND',
+  'PLUXEE_TOPUP',
+  'PLUXEE_PURCHASE',
+  'FASTAG_TOLL',
+  'FASTAG_TOPUP',
+  'LOAN_DEBIT',
+  'STATEMENT',
+  'PAYMENT_REMINDER',
+  'LOAN_REMINDER',
+] as const;
+export const INITIAL_MULTIPLE_KINDS = [
+  'PURCHASE',
+  'CASHBACK',
+  'PLUXEE_PURCHASE',
+  'PLUXEE_TOPUP',
+  'BANK_DEBIT',
+];
 
 export interface SmsReviewFilters {
   state: string;
@@ -8,6 +33,9 @@ export interface SmsReviewFilters {
   from: string;
   to: string;
   read: string;
+  mode: 'SINGLE' | 'MULTIPLE';
+  kinds: string[];
+  multipleInitialized: boolean;
 }
 
 export function defaultReviewFilters(): SmsReviewFilters {
@@ -19,6 +47,9 @@ export function defaultReviewFilters(): SmsReviewFilters {
     from: '',
     to: '',
     read: 'UNREAD',
+    mode: 'SINGLE',
+    kinds: [],
+    multipleInitialized: false,
   };
 }
 
@@ -27,7 +58,7 @@ export function reviewFilters(value: unknown): SmsReviewFilters {
   const defaults = defaultReviewFilters();
   if (!value || typeof value !== 'object' || Array.isArray(value)) return defaults;
   const item = value as Record<string, unknown>;
-  const choice = (key: keyof SmsReviewFilters, allowed: readonly string[]) =>
+  const choice = (key: 'state' | 'kind' | 'read', allowed: readonly string[]): string =>
     typeof item[key] === 'string' && allowed.includes(item[key]) ? item[key] : defaults[key];
   const text = (key: 'search' | 'source') =>
     typeof item[key] === 'string' && item[key].length <= 1000 ? item[key] : '';
@@ -74,5 +105,19 @@ export function reviewFilters(value: unknown): SmsReviewFilters {
     from: date('from'),
     to: date('to'),
     read: choice('read', ['UNREAD', 'READ', 'ALL']),
+    mode: item['mode'] === 'MULTIPLE' ? 'MULTIPLE' : 'SINGLE',
+    kinds: Array.isArray(item['kinds'])
+      ? [
+          ...new Set(
+            item['kinds']
+              .slice(0, 100)
+              .filter(
+                (kind): kind is string =>
+                  typeof kind === 'string' && (SMS_KINDS as readonly string[]).includes(kind),
+              ),
+          ),
+        ]
+      : [],
+    multipleInitialized: item['multipleInitialized'] === true || item['mode'] === 'MULTIPLE',
   };
 }

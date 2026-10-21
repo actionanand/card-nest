@@ -94,6 +94,8 @@ export interface CardTransaction {
   foreignFeeMinor?: Money;
   transactionDate: string;
   transactionTime?: string;
+  /** Optional verified network reference, used only as supporting reconciliation evidence. */
+  reference?: string;
   merchant?: string;
   categoryId: string;
   notes?: string;

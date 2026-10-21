@@ -49,6 +49,7 @@ export interface SmsEvidence {
   issuer?: string;
   reference?: string;
   reportedBalanceMinor?: number;
+  balancePosition?: 'AFTER' | 'BEFORE' | 'UNKNOWN';
   vehicleNumber?: string;
   availableLimitMinor?: number;
   statementTotalMinor?: number;
@@ -69,6 +70,7 @@ export interface SmsCandidate {
   eventAt: string;
   transactionId?: string;
   readAt?: string | null;
+  decision?: string | null;
 }
 export interface ScanStatus {
   permission: string;
