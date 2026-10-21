@@ -81,6 +81,7 @@ describe('SMS approved import integrity', () => {
   const evidence = (overrides: Partial<SmsEvidence> = {}): SmsEvidence => ({
     id: 'a'.repeat(64),
     providerId: '12',
+    parserVersion: 3,
     kind: 'PURCHASE',
     amountMinor: 45000,
     currency: 'INR',
@@ -167,6 +168,161 @@ describe('SMS approved import integrity', () => {
   afterEach(() => {
     sql.close();
     vi.restoreAllMocks();
+  });
+  it('dismisses durably with exact Undo and guards against concurrent resolution and repeated Undo', async () => {
+    const candidate = stage(evidence());
+    service.candidates.set([candidate]);
+    const before = rows('SELECT * FROM sms_candidates');
+    const dismissal = await service.dismiss(candidate.id);
+    expect(dismissal).not.toBeNull();
+    expect(service.candidates()).toEqual([]);
+    expect(rows('SELECT state,read_at FROM sms_candidates')[0]).toMatchObject({
+      state: 'IGNORED',
+      read_at: expect.any(String),
+    });
+    expect(count('card_transactions')).toBe(0);
+    await service.undoDismissal(dismissal!);
+    expect(rows('SELECT * FROM sms_candidates')).toEqual(before);
+    await service.undoDismissal(dismissal!);
+    expect(count('sms_candidates')).toBe(1);
+    const again = await service.dismiss(candidate.id);
+    run("UPDATE sms_candidates SET state='REJECTED',decision='newer choice' WHERE id=?", [
+      candidate.id,
+    ]);
+    await service.undoDismissal(again!);
+    expect(rows('SELECT state,decision FROM sms_candidates')[0]).toEqual({
+      state: 'REJECTED',
+      decision: 'newer choice',
+    });
+  });
+  it('isolates rapid Undo tokens, preserves newer read actions, and expires dismissal Undo after seven seconds', async () => {
+    const first = stage(evidence());
+    const second = stage(evidence({ id: 'b'.repeat(64) }));
+    const a = await service.dismiss(first.id);
+    const b = await service.dismiss(second.id);
+    await service.undoDismissal(b!);
+    await service.undoDismissal(a!);
+    expect(rows('SELECT state,read_at FROM sms_candidates ORDER BY id')).toEqual([
+      { state: 'PENDING', read_at: null },
+      { state: 'PENDING', read_at: null },
+    ]);
+    const newer = await service.dismiss(first.id);
+    await service.markRead(first.id, false);
+    await service.undoDismissal(newer!);
+    expect(rows('SELECT state,read_at FROM sms_candidates WHERE id=?', [first.id])[0]).toEqual({
+      state: 'IGNORED',
+      read_at: null,
+    });
+    const expired = await service.dismiss(second.id);
+    await service.undoDismissal({ ...expired!, expires: Date.now() - 1 });
+    expect(rows('SELECT state FROM sms_candidates WHERE id=?', [second.id])[0]['state']).toBe(
+      'IGNORED',
+    );
+    expect(count('sms_candidates')).toBe(2);
+    expect(count('card_transactions')).toBe(0);
+  });
+  it('preserves imported links and provenance through dismissal and exact read-state Undo', async () => {
+    const candidate = stage(evidence());
+    await service.approve(candidate, card.id, 45000, 'Synthetic');
+    const ledger = rows('SELECT * FROM card_transactions');
+    const before = rows('SELECT * FROM sms_candidates');
+    const dismissal = await service.dismiss(candidate.id);
+    expect(rows('SELECT state,transaction_id,decision FROM sms_candidates')[0]).toMatchObject({
+      state: 'IMPORTED',
+      transaction_id: 'sms-' + candidate.id,
+      decision: before[0]['decision'],
+    });
+    await service.undoDismissal(dismissal!);
+    expect(rows('SELECT * FROM sms_candidates')).toEqual(before);
+    expect(rows('SELECT * FROM card_transactions')).toEqual(ledger);
+  });
+  it('never imports a scheduled notice and links confirmed materialized recurring occurrences once across monthly cycles', async () => {
+    run(
+      "INSERT INTO recurring_rules(id,card_id,next_occurrence_date,status,payload) VALUES('synthetic-rule',?,'2026-11-18','ACTIVE',?)",
+      [card.id, JSON.stringify({ id: 'synthetic-rule', amountMinor: 45000, status: 'ACTIVE' })],
+    );
+    const ruleBefore = rows('SELECT * FROM recurring_rules');
+    const entry = manual({
+      recurringRuleId: 'synthetic-rule',
+      generatedOccurrenceDate: '2026-10-18',
+    });
+    const scheduled = stage(
+      evidence({
+        kind: 'SCHEDULED_CHARGE',
+        issuer: 'AMEX',
+        cardDigits: '4321',
+        merchant: entry.merchant,
+      }),
+    );
+    await expect(service.approve(scheduled, card.id, 45000, entry.merchant!)).rejects.toThrow(
+      'evidence only',
+    );
+    expect(await service.reevaluatePending()).toBe(0);
+    const confirmed = stage(
+      evidence({
+        id: 'b'.repeat(64),
+        issuer: 'AMEX',
+        cardDigits: '4321',
+        merchant: entry.merchant,
+      }),
+    );
+    expect(await service.reevaluatePending()).toBe(1);
+    await service.approve(confirmed, card.id, 45000, entry.merchant!);
+    expect(count('card_transactions')).toBe(1);
+    expect(
+      rows('SELECT transaction_id FROM sms_candidates WHERE id=?', [confirmed.id])[0][
+        'transaction_id'
+      ],
+    ).toBe(entry.id);
+    expect(await service.reevaluatePending()).toBe(0);
+    const july = evidence({
+      id: 'c'.repeat(64),
+      issuer: 'AMEX',
+      cardDigits: '4321',
+      merchant: entry.merchant,
+      eventDate: '2026-07-18',
+      eventAt: '2026-07-18T00:00:00Z',
+    });
+    expect(matchExisting(july, [card], [], [entry]).transactionIds).toEqual([]);
+    expect(rows('SELECT * FROM recurring_rules')).toEqual(ruleBefore);
+    const second = manual({
+      id: 'second-real-occurrence',
+      recurringRuleId: 'another-rule',
+      generatedOccurrenceDate: '2026-10-18',
+    });
+    expect(matchExisting(confirmed.item!, [card], [], [entry, second]).confidence).toBe(
+      'AMBIGUOUS',
+    );
+    expect(matchExisting(confirmed.item!, [card], [], [entry, second]).reason).toContain(
+      'Possible existing recurring transaction',
+    );
+  });
+  it('requires bounded original recheck for pre-v3 AMEX purchases without changing read state or ledger', async () => {
+    const old = stage(
+      evidence({ parserVersion: 2, issuer: 'AMEX', cardDigits: '4321', merchant: 'T&Cs Apply' }),
+    );
+    await expect(service.approve(old, card.id, 45000, 'Unknown')).rejects.toThrow('Recheck');
+    vi.spyOn(
+      service as unknown as { recheckOriginals(items: unknown[]): Promise<{ items: unknown[] }> },
+      'recheckOriginals',
+    ).mockResolvedValue({
+      items: [
+        {
+          ...old.item,
+          kind: 'SCHEDULED_CHARGE',
+          parserVersion: 3,
+          merchant: 'Synthetic Insurance',
+        },
+      ],
+    });
+    await service.recheckSaved();
+    expect(rows('SELECT id,kind,state,read_at FROM sms_candidates')[0]).toEqual({
+      id: old.id,
+      kind: 'SCHEDULED_CHARGE',
+      state: 'PENDING',
+      read_at: null,
+    });
+    expect(count('card_transactions')).toBe(0);
   });
   const count = (table: string) => rows<{ n: number }>(`SELECT COUNT(*) AS n FROM ${table}`)[0].n;
   function manual(overrides: Partial<CardTransaction> = {}): CardTransaction {
@@ -610,7 +766,7 @@ describe('SMS approved import integrity', () => {
     ).toHaveLength(2);
   });
   it('blocks legacy due-date purchases until original evidence is recovered and retains identity/read state', async () => {
-    const old = evidence({ dueDate: '2026-10-18', merchant: undefined });
+    const old = evidence({ parserVersion: 1, dueDate: '2026-10-18', merchant: undefined });
     const candidate = stage(old);
     run('UPDATE sms_candidates SET read_at=? WHERE id=?', ['synthetic-read', old.id]);
     await expect(
@@ -641,7 +797,7 @@ describe('SMS approved import integrity', () => {
     );
   });
   it('keeps unavailable originals suspect and explicit imported decisions intact during recheck', async () => {
-    const pending = stage(evidence({ dueDate: '2026-10-18' }));
+    const pending = stage(evidence({ parserVersion: 1, dueDate: '2026-10-18' }));
     const imported = stage(evidence({ id: 'b'.repeat(64) }));
     await service.approve(imported, card.id, 45000, 'Synthetic');
     const before = rows('SELECT * FROM card_transactions');
@@ -713,10 +869,10 @@ describe('SMS approved import integrity', () => {
   );
   it('marks one suggestion read and unread without changing its review decision or ledger', async () => {
     const candidate = stage(evidence());
-    const before = rows('SELECT id,state,transaction_id,payload,updated_at FROM sms_candidates');
+    const before = rows('SELECT id,state,transaction_id,payload,decision FROM sms_candidates');
     await service.markRead(candidate.id, true);
     expect(readCount()).toBe(1);
-    expect(rows('SELECT id,state,transaction_id,payload,updated_at FROM sms_candidates')).toEqual(
+    expect(rows('SELECT id,state,transaction_id,payload,decision FROM sms_candidates')).toEqual(
       before,
     );
     expect(count('card_transactions')).toBe(0);

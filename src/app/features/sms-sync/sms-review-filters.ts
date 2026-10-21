@@ -16,6 +16,7 @@ export const SMS_KINDS = [
   'STATEMENT',
   'PAYMENT_REMINDER',
   'LOAN_REMINDER',
+  'SCHEDULED_CHARGE',
 ] as const;
 export const INITIAL_MULTIPLE_KINDS = [
   'PURCHASE',
@@ -101,6 +102,7 @@ export function reviewFilters(value: unknown): SmsReviewFilters {
       'STATEMENT',
       'PAYMENT_REMINDER',
       'LOAN_REMINDER',
+      'SCHEDULED_CHARGE',
     ]),
     search: text('search'),
     source: text('source'),

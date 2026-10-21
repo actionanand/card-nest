@@ -1,0 +1,52 @@
+@mixin control {
+  input {
+    appearance: none;
+    display: grid;
+    place-items: center;
+    flex: 0 0 44px;
+    width: 44px;
+    height: 44px;
+    min-height: 44px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0.4rem;
+    background: transparent;
+    cursor: pointer;
+  }
+  input::before {
+    content: '';
+    grid-area: 1 / 1;
+    box-sizing: border-box;
+    width: 20px;
+    height: 20px;
+    border: 2px solid var(--muted);
+    border-radius: 3px;
+  }
+  input:checked::before {
+    border-color: var(--accent);
+    background: var(--accent);
+  }
+  input:checked::after {
+    content: '';
+    grid-area: 1 / 1;
+    width: 6px;
+    height: 11px;
+    border: solid var(--surface);
+    border-width: 0 2px 2px 0;
+    transform: translateY(-1px) rotate(45deg);
+  }
+  input:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  @media (forced-colors: active) {
+    input {
+      appearance: auto;
+    }
+    input::before,
+    input::after {
+      display: none;
+    }
+  }
+}

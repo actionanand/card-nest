@@ -28,6 +28,7 @@ import {
   validEvidence,
   existingSuggestions,
   transferRelationship,
+  recurringRelationship,
   suspectEvidence,
 } from './sms-model';
 
@@ -49,6 +50,20 @@ interface NativeSms {
   }): Promise<{ items: unknown[] }>;
 }
 const native = registerPlugin<NativeSms>('CardNestSms');
+
+export interface SmsDismissal {
+  readonly id: string;
+  readonly token: string | null;
+  readonly at: string;
+  readonly expires: number;
+  readonly previous: {
+    state: ReviewState;
+    read_at: string | null;
+    decision: string | null;
+    updated_at: string;
+    transaction_id: string | null;
+  };
+}
 
 @Service()
 export class SmsReviewService {
@@ -314,7 +329,13 @@ export class SmsReviewService {
   async relatedFor(candidate: SmsCandidate): Promise<readonly SmsCandidate[]> {
     this.assertUnlocked();
     const item = candidate.item;
-    if (!item?.reference) return [];
+    if (
+      !item ||
+      (!item.reference &&
+        !item.standingInstructionReference &&
+        !['PURCHASE', 'SCHEDULED_CHARGE'].includes(item.kind))
+    )
+      return [];
     const rows = await this.database.query<{
       id: string;
       state: ReviewState;
@@ -324,17 +345,19 @@ export class SmsReviewService {
       transaction_id: string;
     }>(
       `SELECT * FROM sms_candidates WHERE id != ? AND payload IS NOT NULL AND payload LIKE ? LIMIT 50`,
-      [candidate.id, `%${item.reference}%`],
+      [candidate.id, `%${item.reference ?? item.standingInstructionReference ?? item.eventDate}%`],
     );
     return rows.flatMap((row) => {
       const other: unknown = JSON.parse(row.payload);
       if (
         !validEvidence(other) ||
-        other.reference !== item.reference ||
+        (!recurringRelationship(item, other) &&
+          (!item.reference || other.reference !== item.reference)) ||
         other.amountMinor !== item.amountMinor
       )
         return [];
       if (
+        !recurringRelationship(item, other) &&
         !transferRelationship(item, other) &&
         !(
           ledgerType(item) === ledgerType(other) ||
@@ -448,7 +471,11 @@ export class SmsReviewService {
   async markRead(id: string, read: boolean): Promise<void> {
     this.assertUnlocked();
     const readAt = read ? new Date().toISOString() : null;
-    await this.database.run('UPDATE sms_candidates SET read_at=? WHERE id=?', [readAt, id]);
+    await this.database.run('UPDATE sms_candidates SET read_at=?,updated_at=? WHERE id=?', [
+      readAt,
+      this.nextDecisionAt(),
+      id,
+    ]);
     ++this.refreshRevision;
     this.candidates.update((items) =>
       items
@@ -463,6 +490,68 @@ export class SmsReviewService {
       await this.refresh();
     } catch {
       this.notice.set('Read state saved. Refresh the inbox to reload counts.');
+    }
+  }
+  /** Keep the original candidate as a dedup tombstone. Never touch financial tables. */
+  private lastDismissalTime = 0;
+  private nextDecisionAt(): string {
+    this.lastDismissalTime = Math.max(Date.now(), this.lastDismissalTime + 1);
+    return new Date(this.lastDismissalTime).toISOString();
+  }
+  async dismiss(id: string): Promise<SmsDismissal | null> {
+    this.assertUnlocked();
+    const dismissal = await this.database.atomic(async (tx) => {
+      const [previous] = await tx.query<SmsDismissal['previous']>(
+        'SELECT state,read_at,decision,updated_at,transaction_id FROM sms_candidates WHERE id=?',
+        [id],
+      );
+      if (!previous) return null;
+      const at = this.nextDecisionAt();
+      const token = ['IMPORTED', 'MATCHED_EXISTING'].includes(previous.state)
+        ? previous.decision
+        : `DISMISS:${crypto.randomUUID()}`;
+      await tx.run(
+        "UPDATE sms_candidates SET state=CASE WHEN state IN ('PENDING','DEFERRED','ERROR') THEN 'IGNORED' ELSE state END,read_at=?,decision=?,updated_at=? WHERE id=?",
+        [at, token, at, id],
+      );
+      return { id, token, at, expires: Date.now() + 7000, previous };
+    });
+    if (!dismissal) return null;
+    ++this.refreshRevision;
+    this.candidates.update((items) => items.filter((item) => item.id !== id));
+    await this.refreshAfterDismissal();
+    return { ...dismissal, expires: Date.now() + 7000 };
+  }
+  async undoDismissal(dismissal: SmsDismissal): Promise<void> {
+    this.assertUnlocked();
+    if (Date.now() > dismissal.expires) return;
+    const previous = dismissal.previous;
+    const restored = await this.database.atomic((tx) =>
+      tx.run(
+        'UPDATE sms_candidates SET state=?,read_at=?,decision=?,updated_at=? WHERE id=? AND decision IS ? AND updated_at=? AND read_at=? AND transaction_id IS ? AND state=?',
+        [
+          previous.state,
+          previous.read_at,
+          previous.decision,
+          previous.updated_at,
+          dismissal.id,
+          dismissal.token,
+          dismissal.at,
+          dismissal.at,
+          previous.transaction_id,
+          ['PENDING', 'DEFERRED', 'ERROR'].includes(previous.state) ? 'IGNORED' : previous.state,
+        ],
+      ),
+    );
+    ++this.refreshRevision;
+    if (!restored) this.notice.set('This suggestion changed. Its newer decision was retained.');
+    await this.refreshAfterDismissal();
+  }
+  private async refreshAfterDismissal(): Promise<void> {
+    try {
+      await this.refresh();
+    } catch {
+      this.notice.set('Suggestion decision saved. Refresh the inbox to reload counts.');
     }
   }
   /** Explicit adjustment of a matched meal snapshot; never called by discovery or auto-linking. */
@@ -773,8 +862,8 @@ export class SmsReviewService {
   ): Promise<void> {
     this.assertUnlocked();
     await this.database.run(
-      `UPDATE sms_candidates SET state = ?, updated_at = ? WHERE id = ? AND state NOT IN ('IMPORTED','MATCHED_EXISTING')`,
-      [state, new Date().toISOString(), candidate.id],
+      `UPDATE sms_candidates SET state = ?, decision = ?, updated_at = ? WHERE id = ? AND state NOT IN ('IMPORTED','MATCHED_EXISTING')`,
+      [state, `Manual review: ${state}`, this.nextDecisionAt(), candidate.id],
     );
     await this.refresh();
   }
@@ -816,7 +905,7 @@ export class SmsReviewService {
       if (!validEvidence(item)) throw new Error('Evidence unavailable.');
       if (suspectEvidence(item))
         throw new Error(
-          'Possible statement misclassification. Recheck the original SMS before adding.',
+          'Possible statement or scheduled-charge misclassification. Recheck the original SMS before adding.',
         );
       const type = ledgerType(item);
       if (!type)

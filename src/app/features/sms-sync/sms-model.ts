@@ -21,13 +21,15 @@ export type SmsKind =
   | 'LOAN_DEBIT'
   | 'STATEMENT'
   | 'PAYMENT_REMINDER'
-  | 'LOAN_REMINDER';
+  | 'LOAN_REMINDER'
+  | 'SCHEDULED_CHARGE';
 export type ReviewState =
   'PENDING' | 'REJECTED' | 'IGNORED' | 'IMPORTED' | 'MATCHED_EXISTING' | 'DEFERRED' | 'ERROR';
 export type ReconciliationChoice =
   'PENDING' | 'FULLY_PAID' | 'RETAIN_BALANCE' | 'REPAIR_EXISTING' | 'ADJUST_BALANCE';
 export interface SmsEvidence {
   parserVersion?: number;
+  standingInstructionReference?: string;
   legacyId?: string;
   eventTimeExplicit?: boolean;
   eventTime?: string;
@@ -60,14 +62,15 @@ export interface SmsEvidence {
   dueDate?: string;
   evidence: string;
 }
-/** Old extracted evidence cannot prove a due-date-only purchase without its original SMS. */
+/** Before v3, extraction did not distinguish upcoming card charges from completed debits. */
 export function suspectEvidence(item: SmsEvidence): boolean {
   return (
     item.kind === 'PURCHASE' &&
-    (item.parserVersion ?? 0) < 2 &&
-    !!item.dueDate &&
-    item.eventDate === item.dueDate &&
-    !item.merchant
+    !(
+      typeof item.parserVersion === 'number' &&
+      Number.isInteger(item.parserVersion) &&
+      item.parserVersion >= 3
+    )
   );
 }
 export interface ApprovalEdits {
@@ -145,6 +148,7 @@ export function validEvidence(value: unknown): value is SmsEvidence {
       'STATEMENT',
       'PAYMENT_REMINDER',
       'LOAN_REMINDER',
+      'SCHEDULED_CHARGE',
     ].includes(item['kind']) &&
     typeof item['eventDate'] === 'string' &&
     /^\d{4}-\d{2}-\d{2}$/.test(item['eventDate']) &&
@@ -238,7 +242,7 @@ export function normalizedIssuer(value: string | undefined): string {
 export function merchantTitle(item: SmsEvidence | null, kind: SmsKind): string {
   const merchant = item?.merchant
     ?.split(
-      /https?:\/\/|www\.|\b(?:ref(?:erence)?|utr|rrn|visit|click|not you|if not you|to dispute|call|sms block|available limit|avl limit)\b/i,
+      /https?:\/\/|www\.|\b(?:t&cs|terms and conditions|manage standing instructions|unsubscribe|contact support|ref(?:erence)?|utr|rrn|visit|click|not you|if not you|to dispute|call|sms block|available limit|avl limit)\b/i,
     )[0]
     .replace(/^\s*\d{9,30}\s+/, '')
     .trim()
@@ -250,6 +254,7 @@ export function merchantTitle(item: SmsEvidence | null, kind: SmsKind): string {
     return merchant;
   const titles: Partial<Record<SmsKind, string>> = {
     PURCHASE: 'Card purchase',
+    SCHEDULED_CHARGE: 'Scheduled card charge',
     CARD_PAYMENT_RECEIVED: 'Payment received',
     STATEMENT: 'Credit card statement',
     PAYMENT_REMINDER: 'Payment reminder',
@@ -274,6 +279,31 @@ export function existingSuggestions(
       t.currencyCode === item.currency &&
       t.amountMinor === item.amountMinor &&
       Math.abs(Date.parse(t.transactionDate) - Date.parse(item.eventDate)) <= 3 * 86400000,
+  );
+}
+export function recurringRelationship(a: SmsEvidence, b: SmsEvidence): boolean {
+  return (
+    a.id !== b.id &&
+    [a.kind, b.kind].includes('SCHEDULED_CHARGE') &&
+    [a.kind, b.kind].includes('PURCHASE') &&
+    !a.dateFallback &&
+    !b.dateFallback &&
+    a.eventDate === b.eventDate &&
+    a.amountMinor === b.amountMinor &&
+    a.currency === b.currency &&
+    normalizedIssuer(a.issuer) === normalizedIssuer(b.issuer) &&
+    !!a.cardDigits &&
+    !!b.cardDigits &&
+    (a.cardDigits === b.cardDigits ||
+      (normalizedIssuer(a.issuer) === 'amex' &&
+        a.cardDigits.slice(-4) === b.cardDigits.slice(-4))) &&
+    !!a.merchant &&
+    a.merchant.toLowerCase() === b.merchant?.toLowerCase() &&
+    !(
+      a.standingInstructionReference &&
+      b.standingInstructionReference &&
+      a.standingInstructionReference !== b.standingInstructionReference
+    )
   );
 }
 export function transferRelationship(a: SmsEvidence, b: SmsEvidence): boolean {

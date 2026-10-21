@@ -1,3 +1,4 @@
+@use '../../shared/checkbox';
 :host {
   display: block;
 }
@@ -302,6 +303,10 @@ details p,
   min-width: 0;
   overflow-wrap: anywhere;
 }
+.row-source .btn {
+  min-width: 44px;
+  flex-shrink: 0;
+}
 .badge {
   display: inline-block;
   padding: 0.2rem 0.45rem;
@@ -423,12 +428,10 @@ dd {
 }
 .check {
   display: flex;
-  align-items: start;
-}
-.check input {
-  width: 1.3rem;
-  min-width: 1.3rem;
-  min-height: 1.3rem;
+  align-items: center;
+  gap: 0.35rem;
+  min-height: 44px;
+  @include checkbox.control;
 }
 :focus-visible {
   outline: 3px solid var(--accent);
@@ -730,26 +733,7 @@ dd {
     grid-column: 1 / -1;
   }
 }
-.type-mode {
-  display: flex;
-  border: 1px solid var(--line);
-  border-radius: 0.65rem;
-  overflow: hidden;
-}
-.type-mode button {
-  flex: 1;
-  min-height: 44px;
-  border: 0;
-  background: var(--surface-2);
-  color: var(--ink);
-  font: inherit;
-  font-size: 0.8rem;
-}
-.type-mode button[aria-pressed='true'] {
-  background: var(--accent-soft);
-  color: var(--accent);
-}
-.inbox-tabs {
+:is(.inbox-tabs, .type-mode) {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.25rem;
@@ -758,7 +742,7 @@ dd {
   border-radius: 0.75rem;
   background: var(--surface-2);
 }
-.inbox-tabs button {
+:is(.inbox-tabs, .type-mode) button {
   min-width: 0;
   min-height: 44px;
   padding: 0.4rem 0.25rem;
@@ -770,7 +754,7 @@ dd {
   font-size: 0.75rem;
   font-weight: 650;
 }
-.inbox-tabs button[aria-pressed='true'] {
+:is(.inbox-tabs, .type-mode) button[aria-pressed='true'] {
   background: var(--accent-soft);
   color: var(--accent);
   box-shadow: 0 1px 3px rgb(0 0 0 / 10%);
@@ -783,7 +767,7 @@ dd {
 }
 .row-actions .btn {
   flex: 1;
-  min-width: min(100%, 7rem);
+  min-width: 0;
   font-size: 0.78rem;
   padding: 0.5rem;
 }
@@ -806,22 +790,48 @@ dd {
 }
 .candidate {
   position: relative;
+  overflow: hidden;
+  padding-block: 0;
+}
+.candidate-content {
+  position: relative;
+  z-index: 1;
+  padding-block: 0.85rem;
+  background: var(--surface);
+  transform: translate3d(var(--sms-drag, 0px), 0, 0);
+  transition: transform 190ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.candidate.dragging .candidate-content {
+  transition: none;
+  user-select: none;
 }
 .swipe-review-hint,
 .swipe-read-hint {
-  display: none;
+  position: absolute;
+  inset-block: 0;
+  display: flex;
+  align-items: center;
+  width: 120px;
+  padding: 0.5rem;
   font-size: 0.75rem;
-  padding: 0.4rem;
-  margin-bottom: 0.4rem;
-  border-radius: 0.4rem;
+  font-weight: 650;
   background: var(--accent-soft);
   color: var(--accent);
 }
-.candidate[data-swipe='review'] .swipe-review-hint,
-.candidate[data-swipe='read'] .swipe-read-hint {
-  display: block;
+.swipe-review-hint {
+  left: 0;
 }
-.candidate[data-swipe='read'] .swipe-read-hint {
+.swipe-read-hint {
+  right: 0;
+  justify-content: end;
   background: var(--surface-2);
   color: var(--ink);
+}
+.type-mode {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+@media (prefers-reduced-motion: reduce) {
+  .candidate-content {
+    transition: none;
+  }
 }

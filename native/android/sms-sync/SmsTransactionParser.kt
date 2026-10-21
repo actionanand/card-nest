@@ -14,7 +14,7 @@ object SmsTransactionParser {
   enum class Kind {
     PURCHASE, BANK_DEBIT, BANK_CREDIT, BANK_TRANSFER, CARD_PAYMENT_RECEIVED, PAYMENT_INITIATED,
     CASHBACK, REFUND, PLUXEE_TOPUP, PLUXEE_PURCHASE, FASTAG_TOLL, FASTAG_TOPUP,
-    LOAN_DEBIT, STATEMENT, PAYMENT_REMINDER, LOAN_REMINDER
+    LOAN_DEBIT, STATEMENT, PAYMENT_REMINDER, LOAN_REMINDER, SCHEDULED_CHARGE
   }
   data class Result(
     val kind: Kind, val amountMinor: Long?, val eventDate: String, val merchant: String?,
@@ -27,7 +27,7 @@ object SmsTransactionParser {
     val eventTime: String, val timeZone: String, val cardNetwork: String?, val confidence: String,
     val earnedForPeriod: String?, val statementDate: String?, val merchantEvidence: String? = null,
     val balancePosition: String = "UNKNOWN", val eventTimeExplicit: Boolean = false,
-    val parserVersion: Int = 2, val legacyId: String? = null
+    val parserVersion: Int = 3, val legacyId: String? = null, val standingInstructionReference: String? = null
   )
   private fun rx(s: String) = Regex(s, RegexOption.IGNORE_CASE)
   private const val NUMBER = "([0-9][0-9,]*(?:\\.[0-9]{1,2})?)(?![0-9]|\\.[0-9])"
@@ -67,8 +67,13 @@ object SmsTransactionParser {
     val statement = card && (has("statement.{0,120}\\b(?:sent|generated|issued|available|ready|emailed|delivered)\\b|your\\s+(?:credit\\s+)?card\\s+statement|statement\\s+(?:total|amount)") ||
       (has("\\bstatement\\b") && due && has("total|minimum") && !has("reminder")))
     val purchase = has("\\b(spent|debited|charged)\\b|transaction of.+was made using|thank you for using.+card")
+    val scheduled = card && has("will be (?:charged|debited)|is scheduled to be (?:charged|debited)|standing instruction.{0,60}registered")
+    // A failed attempt is not a debit; a reversal remains refund evidence below.
+    if (has("failed|declined|unsuccessful|has not been charged|will not be charged") && !has("refunded|reversed|reversal")) return null
     val kind = when {
       has("refunded|refund successful|refund of|reversal|reversed") && (credit || has("refunded|reversed")) -> Kind.REFUND
+      scheduled -> Kind.SCHEDULED_CHARGE
+      card && has("mandate.{0,40}(?:successfully )?executed") -> Kind.PURCHASE
       card && has("cashback") && credit -> Kind.CASHBACK
       meal && credit && !debit -> Kind.PLUXEE_TOPUP
       meal && debit -> Kind.PLUXEE_PURCHASE
@@ -110,6 +115,7 @@ object SmsTransactionParser {
     val ref = rx("\\b(?:UPI\\s*(?:ref(?:erence)?\\s*(?:no\\.?)?)?|RRN|UTR|Ref(?:erence)?\\s*(?:No\\.?)?)\\s*[:#.]?\\s*([A-Z0-9]{9,30})\\b")
       .find(flat)?.groupValues?.get(1)
     val merchant = rx("\\bfor (.+?) has been charged").find(flat)?.groupValues?.get(1)
+      ?: rx("\\bby (.+?) on [0-9]{1,2}[-/]").find(flat)?.groupValues?.get(1)
       ?: rx("\\bat\\s+(.+?)(?=\\s+(?:on|via|through|avl|wallet bal)\\b|\\s*\\.\\s*Avl|$)").find(flat)?.groupValues?.get(1)
       ?: safe.lines().getOrNull(3)?.takeIf { has("spent") && !it.contains("limit", true) }
       ?: rx("\\bon [0-9]{1,2}[-/][A-Za-z0-9]{2,3}[-/][0-9]{2,4} on (.+?)(?:\\. Avl|$)").find(flat)?.groupValues?.get(1)
@@ -121,7 +127,7 @@ object SmsTransactionParser {
     val event = event(if (kind == Kind.STATEMENT || kind == Kind.PAYMENT_REMINDER) statementText ?: "" else eventTextDates, receivedAtMillis, zone) ?: return null
     val dueText = rx(if (due || kind == Kind.STATEMENT) "(?:due on|due by|payable by|\\bby)[: ]+(.+)" else "(?:due on|due by|payable by)[: ]+(.+)").find(safe)?.groupValues?.get(1)
     val parsedDue = dueText?.let { event(it, receivedAtMillis, zone) }?.takeIf { !it.second }?.first?.toLocalDate()?.toString()
-    val cleanMerchant = merchant?.split(rx("\\b(?:ref(?:erence)?|utr|rrn|visit|click|not you|if not you|to dispute|call|sms block)\\b"))?.firstOrNull()
+    val cleanMerchant = merchant?.split(rx("\\b(?:t&cs|terms and conditions|manage|you can manage|unsubscribe|contact support|ref(?:erence)?|utr|rrn|visit|click|not you|if not you|to dispute|call|sms block)\\b"))?.firstOrNull()
       ?.trim()?.trimEnd('.', ',', ';')?.takeIf { it.isNotBlank() && !rx("^(?:[0-9\\W]+|(?:[a-z0-9-]+\\.)+[a-z]{2,}(?:/.*)?|[a-z0-9]{18,})$").matches(it) }?.take(100)
     return Result(kind, amount, event.first.toLocalDate().toString(), cleanMerchant,
       digits, account, issuer, ref, value(flat, "current meal wallet balance is|current balance|(?:avl|available|wallet) bal(?:ance)?"),
@@ -139,6 +145,7 @@ object SmsTransactionParser {
       merchantEvidence = merchant?.trim()?.take(300),
       balancePosition = if (meal && has("current meal wallet balance|(?:available|avl|wallet) bal(?:ance)?") && !has("before|opening balance")) "AFTER" else "UNKNOWN",
       eventTimeExplicit = event.third,
+      standingInstructionReference = rx("\\bSI Hub Id\\s+([A-Z0-9]{6,40})\\b").find(flat)?.groupValues?.get(1),
       legacyId = if (kind == Kind.STATEMENT || kind == Kind.PAYMENT_REMINDER) fingerprint(text) else null)
   }
 

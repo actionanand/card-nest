@@ -284,6 +284,7 @@ export class SmsSyncPage {
     'STATEMENT',
     'PAYMENT_REMINDER',
     'LOAN_REMINDER',
+    'SCHEDULED_CHARGE',
   ];
   readonly visible = this.sync.candidates;
   readonly possibleOnPage = computed(
@@ -366,7 +367,7 @@ export class SmsSyncPage {
   });
   matchReason(candidate: SmsCandidate): string {
     if (candidate.item && suspectEvidence(candidate.item))
-      return 'Possible statement misclassification. Recheck the original SMS before adding. If already imported, inspect and explicitly correct the linked transaction in Activity; no automatic reversal is made.';
+      return 'Possible statement or scheduled-charge misclassification. Recheck the original SMS before adding. If already imported, inspect and explicitly correct the linked transaction in Activity; no automatic reversal is made.';
     if (candidate.state === 'IMPORTED')
       return 'Added after your approval. View the recorded transaction; this suggestion cannot be imported again.';
     if (candidate.state === 'MATCHED_EXISTING' && candidate.item && ledgerType(candidate.item)) {
@@ -848,8 +849,26 @@ export class SmsSyncPage {
       );
     });
   }
+  swipeReview(candidate: SmsCandidate): void {
+    if (
+      (candidate.state === 'MATCHED_EXISTING' || candidate.state === 'IMPORTED') &&
+      candidate.transactionId
+    )
+      this.viewExisting(candidate);
+    else this.open(candidate);
+  }
   swipeRead(candidate: SmsCandidate): void {
-    if (!candidate.readAt && !this.loading()) this.markRead(candidate);
+    if (this.loading()) return;
+    void this.run(async () => {
+      const dismissal = await this.sync.dismiss(candidate.id);
+      if (!dismissal) return;
+      this.snackbar.show('SMS suggestion dismissed', 'INFO', 7000, {
+        label: 'Undo',
+        run: () => {
+          void this.run(() => this.sync.undoDismissal(dismissal));
+        },
+      });
+    });
   }
   requestMarkAllRead(): void {
     if (this.loading() || this.sync.markingRead()) return;

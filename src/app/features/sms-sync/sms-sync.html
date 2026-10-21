@@ -386,61 +386,78 @@
         <article
           class="candidate"
           appSmsSwipe
-          [enabled]="swipeEnabled() && !loading()"
-          (reviewSwipe)="open(candidate)"
+          [enabled]="swipeEnabled() && !loading() && !sync.lock.locked() && sync.lock.foreground()"
+          (reviewSwipe)="swipeReview(candidate)"
           (readSwipe)="swipeRead(candidate)"
         >
-          <span class="swipe-review-hint" aria-hidden="true">Review details →</span
-          ><span class="swipe-read-hint" aria-hidden="true">← Mark read</span>
-          <div class="row-main">
-            <strong>{{ title(candidate.item, candidate.kind) }}</strong
-            ><span class="amount">{{
-              candidate.item ? money(candidate.item.amountMinor) : '—'
-            }}</span>
-          </div>
-          <div class="row-meta">
-            <span class="badge">{{ candidate.readAt ? 'Read' : 'Unread' }}</span>
-            <span class="badge">{{ label(candidate.kind) }}</span
-            ><span>{{ label(candidate.state) }}</span
-            ><time [attr.datetime]="candidate.eventAt">{{ dateTime(candidate.eventAt) }}</time>
-          </div>
-          <div class="row-source">
-            <span>{{ sourceLabel(candidate) }}</span>
-          </div>
-          <div class="row-actions">
-            <button
-              class="btn"
-              type="button"
-              [id]="'review-' + candidate.id"
-              aria-haspopup="dialog"
-              (click)="open(candidate)"
-            >
-              {{
-                candidate.state === 'PENDING' && candidate.item && importableCandidate(candidate)
-                  ? 'Review & add'
-                  : 'Review details'
-              }}<span class="sr-only"> {{ title(candidate.item, candidate.kind) }}</span>
-            </button>
-            @if (
-              (candidate.state === 'MATCHED_EXISTING' || candidate.state === 'IMPORTED') &&
-              candidate.transactionId
-            ) {
-              <button class="btn btn-primary" type="button" (click)="viewExisting(candidate)">
-                View transaction
+          <span class="swipe-review-hint" aria-hidden="true">Review →</span
+          ><span class="swipe-read-hint" aria-hidden="true">← Dismiss</span>
+          <div class="candidate-content">
+            <div class="row-main">
+              <strong>{{ title(candidate.item, candidate.kind) }}</strong
+              ><span class="amount">{{
+                candidate.item ? money(candidate.item.amountMinor) : '—'
+              }}</span>
+            </div>
+            <div class="row-meta">
+              <span class="badge">{{ candidate.readAt ? 'Read' : 'Unread' }}</span>
+              <span class="badge">{{ label(candidate.kind) }}</span
+              ><span>{{ label(candidate.state) }}</span
+              ><time [attr.datetime]="candidate.eventAt">{{ dateTime(candidate.eventAt) }}</time>
+            </div>
+            <div class="row-source">
+              <span>{{ sourceLabel(candidate) }}</span>
+              @if (candidate.state === 'MATCHED_EXISTING' || candidate.state === 'IMPORTED') {
+                <button
+                  class="btn clear"
+                  type="button"
+                  [id]="'review-' + candidate.id"
+                  aria-label="Review SMS evidence and reconciliation details"
+                  aria-haspopup="dialog"
+                  (click)="open(candidate)"
+                >
+                  <app-icon name="message" />
+                </button>
+              }
+            </div>
+            <div class="row-actions">
+              @if (
+                (candidate.state === 'MATCHED_EXISTING' || candidate.state === 'IMPORTED') &&
+                candidate.transactionId
+              ) {
+                <button class="btn btn-primary" type="button" (click)="viewExisting(candidate)">
+                  View transaction
+                </button>
+              } @else {
+                <button
+                  class="btn btn-primary"
+                  type="button"
+                  [id]="'review-' + candidate.id"
+                  aria-haspopup="dialog"
+                  (click)="open(candidate)"
+                >
+                  {{
+                    candidate.state === 'PENDING' &&
+                    candidate.item &&
+                    importableCandidate(candidate)
+                      ? 'Review & add'
+                      : 'Review details'
+                  }}<span class="sr-only"> {{ title(candidate.item, candidate.kind) }}</span>
+                </button>
+              }
+              <button
+                class="btn"
+                type="button"
+                (click)="markRead(candidate)"
+                [disabled]="loading()"
+              >
+                {{ candidate.readAt ? 'Mark unread' : 'Mark read' }}
               </button>
+            </div>
+            @if (matchReason(candidate); as reason) {
+              <p class="muted">{{ reason }}</p>
             }
           </div>
-          @if (matchReason(candidate); as reason) {
-            <p class="muted">{{ reason }}</p>
-          }
-          <button
-            class="btn clear"
-            type="button"
-            (click)="markRead(candidate)"
-            [disabled]="loading()"
-          >
-            {{ candidate.readAt ? 'Mark unread' : 'Mark read' }}
-          </button>
         </article>
       } @empty {
         <p class="empty">

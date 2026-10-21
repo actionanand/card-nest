@@ -62,7 +62,7 @@ export function matchExisting(
       confidence: 'EVIDENCE_ONLY',
       transactionIds: [],
       reason:
-        'Bank, initiation, loan and statement evidence cannot automatically create or confirm spending.',
+        'Scheduled charges, bank, initiation, loan and statement evidence cannot automatically create or confirm spending.',
     };
   let ids = eligibleSources(item, cards, sources);
   const missingMealDigits =
@@ -142,6 +142,9 @@ export function matchExisting(
       !item.eventTime ||
       entry.transactionTime.slice(0, 5) === item.eventTime.slice(0, 5);
     return (
+      (!entry.recurringRuleId ||
+        !entry.generatedOccurrenceDate ||
+        entry.generatedOccurrenceDate === item.eventDate) &&
       entry.transactionDate === item.eventDate &&
       !item.dateFallback &&
       time &&
@@ -161,11 +164,15 @@ export function matchExisting(
     transactionIds: plausible.map((entry) => entry.id),
     reason: automatic
       ? `Unique existing entry: trusted ${missingMealDigits ? 'single meal wallet' : 'source identity'}, exact amount and type, explicit local date, compatible time and merchant/reference evidence.`
-      : claimed.has(plausible[0].id)
-        ? 'An existing entry is already linked to other SMS evidence; confirm this relationship manually.'
-        : plausible.length > 1
-          ? 'Multiple compatible existing entries; select the correct transaction.'
-          : 'Possible existing transaction. Amount, source and nearby date alone are insufficient for automatic linking.',
+      : plausible.some((entry) => !!entry.recurringRuleId)
+        ? 'Possible existing recurring transaction. Select and confirm the correct occurrence.'
+        : claimed.has(plausible[0].id)
+          ? 'An existing entry is already linked to other SMS evidence; confirm this relationship manually.'
+          : plausible.length > 1
+            ? 'Multiple compatible existing entries; select the correct transaction.'
+            : plausible.some((entry) => !!entry.recurringRuleId)
+              ? 'Possible existing recurring transaction'
+              : 'Possible existing transaction. Amount, source and nearby date alone are insufficient for automatic linking.',
   };
 }
 

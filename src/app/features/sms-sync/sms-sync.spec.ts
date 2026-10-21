@@ -41,6 +41,7 @@ const demoCandidate = (): SmsCandidate => ({
   item: {
     id: 'a'.repeat(64),
     providerId: 'demo',
+    parserVersion: 3,
     kind: 'PURCHASE',
     amountMinor: 10000,
     currency: 'INR',
@@ -97,11 +98,47 @@ describe('SMS review privacy and explicit approval UI', () => {
     filterReview: vi.fn().mockResolvedValue(undefined),
     loadReviewFilters: vi.fn().mockImplementation(async () => defaultReviewFilters()),
     enterFromReview: vi.fn().mockResolvedValue(undefined),
+    dismiss: vi.fn(),
+    undoDismissal: vi.fn().mockResolvedValue(undefined),
     disable: vi.fn().mockResolvedValue(undefined),
     cancel: vi.fn().mockResolvedValue(undefined),
     scan: vi.fn().mockResolvedValue(undefined),
     turnPage: vi.fn().mockResolvedValue(undefined),
   };
+  it('shows a seven-second dismissal Undo and keeps visible row actions together', async () => {
+    const candidate = demoCandidate();
+    candidates.set([candidate]);
+    const dismissal = {
+      id: candidate.id,
+      token: 'synthetic',
+      at: 'synthetic',
+      expires: Date.now() + 7000,
+      previous: {},
+    };
+    sync.dismiss.mockResolvedValue(dismissal);
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    await vi.waitFor(() => expect(fixture.componentInstance.loading()).toBe(false));
+    const show = vi.spyOn(TestBed.inject(SnackbarService), 'show');
+    fixture.componentInstance.swipeRead(candidate);
+    await fixture.whenStable();
+    await vi.waitFor(() => expect(show).toHaveBeenCalled());
+    expect(sync.dismiss).toHaveBeenCalledWith(candidate.id);
+    expect(show).toHaveBeenCalledWith(
+      'SMS suggestion dismissed',
+      'INFO',
+      7000,
+      expect.objectContaining({ label: 'Undo' }),
+    );
+    TestBed.inject(SnackbarService).runAction();
+    await fixture.whenStable();
+    expect(sync.undoDismissal).toHaveBeenCalledWith(dismissal);
+    const buttons = fixture.nativeElement.querySelectorAll('.row-actions button');
+    expect(buttons.length).toBe(2);
+    expect(buttons[0].textContent).toContain('Review & add');
+    expect(buttons[1].textContent).toContain('Mark read');
+  });
   beforeEach(() => {
     locked.set(false);
     foreground.set(true);
@@ -233,13 +270,12 @@ describe('SMS review privacy and explicit approval UI', () => {
     fixture.detectChanges();
     await fixture.whenStable();
     const candidate = demoCandidate();
+    candidate.item!.parserVersion = 1;
     candidate.item!.dueDate = candidate.item!.eventDate;
     fixture.componentInstance.open(candidate);
     fixture.detectChanges();
     expect(fixture.nativeElement.querySelector('button[type="submit"]')).toBeNull();
-    expect(fixture.componentInstance.matchReason(candidate)).toContain(
-      'statement misclassification',
-    );
+    expect(fixture.componentInstance.matchReason(candidate)).toContain('Recheck the original SMS');
     fixture.componentInstance.closeEditor();
     expect(fixture.componentInstance.related()).toEqual([]);
     expect(fixture.componentInstance.selected()).toBeNull();
@@ -419,6 +455,7 @@ describe('SMS review privacy and explicit approval UI', () => {
       item: {
         id: 'a'.repeat(64),
         providerId: '1',
+        parserVersion: 3,
         kind: 'PURCHASE',
         amountMinor: 100,
         currency: 'INR',
@@ -727,6 +764,7 @@ describe('SMS review privacy and explicit approval UI', () => {
         item: {
           id: 'a'.repeat(64),
           providerId: '1',
+          parserVersion: 3,
           kind: 'PURCHASE',
           amountMinor: 100,
           currency: 'INR',

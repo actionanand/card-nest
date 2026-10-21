@@ -1,5 +1,11 @@
 import { CreditCard } from '../../core/models/domain';
-import { SmsEvidence, eligibleSources, merchantTitle } from './sms-model';
+import {
+  SmsEvidence,
+  eligibleSources,
+  merchantTitle,
+  recurringRelationship,
+  ledgerType,
+} from './sms-model';
 
 const card = (changes: Partial<CreditCard> = {}): CreditCard => ({
   id: 'synthetic-card',
@@ -26,6 +32,7 @@ const card = (changes: Partial<CreditCard> = {}): CreditCard => ({
 const item = (changes: Partial<SmsEvidence> = {}): SmsEvidence => ({
   id: 'a'.repeat(64),
   providerId: 'demo',
+  parserVersion: 3,
   kind: 'PURCHASE',
   amountMinor: 10000,
   currency: 'INR',
@@ -98,6 +105,32 @@ describe('Reliable SMS source matching', () => {
     expect(
       eligibleSources(item(), [card({ archived: true, archivedAt: '2026-10-01' })], []),
     ).toEqual([]);
+  });
+  it('groups scheduled and confirmed evidence only within the same source and explicit cycle', () => {
+    const scheduled = item({
+      kind: 'SCHEDULED_CHARGE',
+      merchant: 'Synthetic Insurance',
+      issuer: 'AMEX',
+      standingInstructionReference: 'SYNTHSI12345',
+    });
+    const confirmed = item({
+      id: 'b'.repeat(64),
+      merchant: 'Synthetic Insurance',
+      issuer: 'AMEX',
+      standingInstructionReference: 'SYNTHSI12345',
+    });
+    expect(ledgerType(scheduled)).toBeUndefined();
+    expect(recurringRelationship(scheduled, confirmed)).toBe(true);
+    expect(recurringRelationship(scheduled, { ...confirmed, eventDate: '2026-07-18' })).toBe(false);
+    expect(recurringRelationship(scheduled, { ...confirmed, cardDigits: '9876' })).toBe(false);
+    expect(
+      recurringRelationship(scheduled, { ...confirmed, standingInstructionReference: 'OTHERREF' }),
+    ).toBe(false);
+    expect(merchantTitle({ ...confirmed, merchant: 'T&Cs Apply' }, 'PURCHASE')).toBe(
+      'Card purchase',
+    );
+    for (const parserVersion of [undefined, 2, Number.NaN, Number.POSITIVE_INFINITY])
+      expect(ledgerType({ ...confirmed, parserVersion })).toBeUndefined();
   });
   it('does not guess a meal wallet from its kind alone', () => {
     expect(
