@@ -223,7 +223,12 @@ describe('SMS review privacy and explicit approval UI', () => {
     trigger.click();
     fixture.detectChanges();
     expect(trigger.getAttribute('aria-expanded')).toBe('true');
-    const menu = card.querySelector('[role=menu]') as HTMLElement;
+    const menu = fixture.nativeElement.querySelector('[role=menu]') as HTMLElement;
+    expect(card.contains(menu)).toBe(false);
+    expect(menu.classList).toContain('candidate-menu-overlay');
+    expect(fixture.nativeElement.querySelector('.review-panel')?.classList).toContain(
+      'candidate-menu-open',
+    );
     expect(menu.querySelectorAll('[role=menuitem]')).toHaveLength(2);
     expect(menu.textContent).toContain('Review & add');
     expect(menu.textContent).toContain('Mark read');
@@ -253,9 +258,10 @@ describe('SMS review privacy and explicit approval UI', () => {
     expect(card.querySelector('.swipe-read-hint')?.classList).toContain('swipe-action-disabled');
     (card.querySelector('.candidate-menu-trigger') as HTMLButtonElement).click();
     fixture.detectChanges();
-    expect(card.querySelector('[role=menu]')?.textContent).toContain('View transaction');
-    expect(card.querySelector('[role=menu]')?.textContent).toContain('Review details');
-    expect(card.querySelector('[role=menu]')?.textContent).toContain('Mark read');
+    const menu = fixture.nativeElement.querySelector('[role=menu]') as HTMLElement;
+    expect(menu.textContent).toContain('View transaction');
+    expect(menu.textContent).toContain('Review details');
+    expect(menu.textContent).toContain('Mark read');
   });
   it('restores applied SQLite filters into the controls without saving them again or approving', async () => {
     sync.loadReviewFilters.mockResolvedValueOnce({

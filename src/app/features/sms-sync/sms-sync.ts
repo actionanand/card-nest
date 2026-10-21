@@ -43,6 +43,15 @@ function isReviewEntry(info: unknown): boolean {
   );
 }
 
+interface CandidateMenuPosition {
+  readonly left: number;
+  readonly top: number;
+  readonly opensUp: boolean;
+}
+
+const CANDIDATE_MENU_WIDTH = 240;
+const CANDIDATE_MENU_ITEM_HEIGHT = 44;
+
 @Component({
   selector: 'app-sms-sync',
   imports: [ReactiveFormsModule, AppIcon, AppSelectPicker, SmsTypePicker, SmsSwipe],
@@ -51,7 +60,9 @@ function isReviewEntry(info: unknown): boolean {
   host: {
     '(document:keydown.escape)': 'escape()',
     '(document:keydown)': 'trapFocus($event)',
+    '(document:scroll)': 'closeCandidateMenu(false)',
     '(window:focus)': 'refreshAccess()',
+    '(window:resize)': 'closeCandidateMenu(false)',
     '(window:cardnest:back)': 'androidBack($event)',
   },
 })
@@ -65,6 +76,11 @@ export class SmsSyncPage {
     () => Capacitor.getPlatform() === 'android' && (this.store.smsSwipeActionsEnabled?.() ?? false),
   );
   readonly candidateMenuId = signal<string | null>(null);
+  readonly candidateMenuPosition = signal<CandidateMenuPosition | null>(null);
+  readonly activeCandidateMenu = computed(() => {
+    const id = this.candidateMenuId();
+    return id ? this.visible().find((candidate) => candidate.id === id) ?? null : null;
+  });
   enableSwipeActions(): void {
     void this.run(() => this.store.setDurableUiPreference('sms_swipe_actions_enabled', true));
   }
@@ -843,14 +859,44 @@ export class SmsSyncPage {
     else if (this.confirmReadCount() !== null) this.confirmReadCount.set(null);
     else this.closeEditor();
   }
-  toggleCandidateMenu(id: string): void {
+  toggleCandidateMenu(id: string, event: MouseEvent): void {
     if (this.candidateMenuId() === id) this.closeCandidateMenu(false);
-    else this.candidateMenuId.set(id);
+    else {
+      const trigger = event.currentTarget;
+      if (!(trigger instanceof HTMLElement)) return;
+      const rect = trigger.getBoundingClientRect();
+      const candidate = this.visible().find((item) => item.id === id);
+      const itemCount =
+        candidate &&
+        (candidate.state === 'MATCHED_EXISTING' || candidate.state === 'IMPORTED') &&
+        candidate.transactionId
+          ? 3
+          : 2;
+      const menuHeight = itemCount * CANDIDATE_MENU_ITEM_HEIGHT + 10;
+      const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
+      const viewportHeight = document.documentElement.clientHeight || window.innerHeight;
+      const sideGap = 8;
+      const menuWidth = Math.min(CANDIDATE_MENU_WIDTH, Math.max(0, viewportWidth - sideGap * 2));
+      const spaceBelow = viewportHeight - rect.bottom - sideGap;
+      const opensUp = spaceBelow < menuHeight && rect.top > spaceBelow;
+      this.candidateMenuPosition.set({
+        left: Math.min(Math.max(sideGap, rect.right - menuWidth), viewportWidth - menuWidth - sideGap),
+        top: opensUp
+          ? Math.max(sideGap, rect.top - menuHeight - 4)
+          : Math.min(viewportHeight - sideGap, rect.bottom + 4),
+        opensUp,
+      });
+      this.candidateMenuId.set(id);
+      queueMicrotask(() =>
+        document.querySelector<HTMLElement>(`#candidate-menu-${id} [role='menuitem']`)?.focus(),
+      );
+    }
   }
   closeCandidateMenu(restoreFocus = true): void {
     const id = this.candidateMenuId();
     if (!id) return;
     this.candidateMenuId.set(null);
+    this.candidateMenuPosition.set(null);
     if (restoreFocus)
       queueMicrotask(() => document.getElementById(`candidate-menu-trigger-${id}`)?.focus());
   }

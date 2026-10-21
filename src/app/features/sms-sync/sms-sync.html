@@ -168,6 +168,7 @@
       class="panel review-panel"
       aria-labelledby="sms-inbox-title"
       [attr.aria-busy]="loading() || sync.reconciling()"
+      [class.candidate-menu-open]="candidateMenuId() !== null"
     >
       <div class="review-heading">
         <div class="review-heading-copy">
@@ -467,43 +468,10 @@
                     [attr.aria-controls]="'candidate-menu-' + candidate.id"
                     aria-haspopup="menu"
                     [attr.aria-label]="'Actions for ' + title(candidate.item, candidate.kind)"
-                    (click)="toggleCandidateMenu(candidate.id)"
+                    (click)="toggleCandidateMenu(candidate.id, $event)"
                   >
                     <app-icon name="more" />
                   </button>
-                  @if (candidateMenuId() === candidate.id) {
-                    <div
-                      class="candidate-menu"
-                      [id]="'candidate-menu-' + candidate.id"
-                      role="menu"
-                      [attr.aria-label]="'Actions for ' + title(candidate.item, candidate.kind)"
-                    >
-                      @if (
-                        (candidate.state === 'MATCHED_EXISTING' || candidate.state === 'IMPORTED') &&
-                        candidate.transactionId
-                      ) {
-                        <button type="button" role="menuitem" (click)="viewExistingFromMenu(candidate)">
-                          View transaction
-                        </button>
-                        <button type="button" role="menuitem" (click)="reviewFromMenu(candidate)">
-                          Review details
-                        </button>
-                      } @else {
-                        <button type="button" role="menuitem" (click)="reviewFromMenu(candidate)">
-                          {{
-                            candidate.state === 'PENDING' &&
-                            candidate.item &&
-                            importableCandidate(candidate)
-                              ? 'Review & add'
-                              : 'Review details'
-                          }}
-                        </button>
-                      }
-                      <button type="button" role="menuitem" (click)="markReadFromMenu(candidate)">
-                        {{ candidate.readAt ? 'Mark unread' : 'Mark read' }}
-                      </button>
-                    </div>
-                  }
                 </div>
               } @else {
                 <div class="row-actions">
@@ -554,6 +522,43 @@
                 : 'No suggestions match these filters. Try clearing filters, scanning or pasting a message.'
             }}
           </p>
+        }
+        @if (activeCandidateMenu(); as candidate) {
+          <div class="candidate-menu-backdrop" aria-hidden="true" (pointerdown)="closeCandidateMenu()"></div>
+          @if (candidateMenuPosition(); as position) {
+            <div
+              class="candidate-menu candidate-menu-overlay"
+              [class.opens-up]="position.opensUp"
+              [id]="'candidate-menu-' + candidate.id"
+              [style.left.px]="position.left"
+              [style.top.px]="position.top"
+              role="menu"
+              [attr.aria-label]="'Actions for ' + title(candidate.item, candidate.kind)"
+            >
+              @if (
+                (candidate.state === 'MATCHED_EXISTING' || candidate.state === 'IMPORTED') &&
+                candidate.transactionId
+              ) {
+                <button type="button" role="menuitem" (click)="viewExistingFromMenu(candidate)">
+                  View transaction
+                </button>
+                <button type="button" role="menuitem" (click)="reviewFromMenu(candidate)">
+                  Review details
+                </button>
+              } @else {
+                <button type="button" role="menuitem" (click)="reviewFromMenu(candidate)">
+                  {{
+                    candidate.state === 'PENDING' && candidate.item && importableCandidate(candidate)
+                      ? 'Review & add'
+                      : 'Review details'
+                  }}
+                </button>
+              }
+              <button type="button" role="menuitem" (click)="markReadFromMenu(candidate)">
+                {{ candidate.readAt ? 'Mark unread' : 'Mark read' }}
+              </button>
+            </div>
+          }
         }
       }
       @if (pageCount() > 1) {
