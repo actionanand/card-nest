@@ -153,9 +153,7 @@ export function matchExisting(
       entry.transactionDate === item.eventDate &&
       !item.dateFallback &&
       time &&
-      (reference ||
-        merchantSimilarity(item.merchant, entry.merchant) ||
-        (exact.length === 1 && !missingMealDigits))
+      (reference || merchantSimilarity(item.merchant, entry.merchant))
     );
   });
   // Multiple exact-date records still need confirmation; nearby records are only suggestions.

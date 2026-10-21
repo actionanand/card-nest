@@ -329,9 +329,7 @@ export class CardNestStore {
       "SELECT key,encrypted_value FROM app_preferences WHERE key IN ('sms_swipe_actions_enabled','show_transaction_time')",
     );
     const swipePreference = durableUi.find((row) => row.key === 'sms_swipe_actions_enabled');
-    this.smsSwipeActionsEnabled.set(
-      swipePreference ? swipePreference.encrypted_value === '1' : true,
-    );
+    this.smsSwipeActionsEnabled.set(swipePreference?.encrypted_value === '1');
     this.showTransactionTime.set(
       durableUi.some((row) => row.key === 'show_transaction_time' && row.encrypted_value === '1'),
     );
@@ -414,7 +412,7 @@ export class CardNestStore {
     await this.loadLoans();
   }
 
-  readonly smsSwipeActionsEnabled = signal(true);
+  readonly smsSwipeActionsEnabled = signal(false);
   readonly showTransactionTime = signal(false);
   async setDurableUiPreference(
     key: 'sms_swipe_actions_enabled' | 'show_transaction_time',

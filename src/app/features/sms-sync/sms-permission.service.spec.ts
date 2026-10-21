@@ -7,6 +7,7 @@ import { CardNestStore } from '../../core/services/card-nest-store';
 import { AppLockService } from '../../core/services/app-lock.service';
 
 const native = vi.hoisted(() => ({
+  getPlatform: vi.fn<() => string>(),
   status: vi.fn(),
   enable: vi.fn(),
   openSettings: vi.fn(),
@@ -17,7 +18,7 @@ const native = vi.hoisted(() => ({
   disable: vi.fn(),
 }));
 vi.mock('@capacitor/core', () => ({
-  Capacitor: { getPlatform: () => 'android' },
+  Capacitor: { getPlatform: native.getPlatform },
   registerPlugin: () => native,
 }));
 
@@ -48,6 +49,7 @@ describe('SMS permission interaction through the native bridge', () => {
   const database = { atomic: vi.fn(), run: vi.fn(), query: vi.fn() };
   beforeEach(() => {
     vi.resetAllMocks();
+    native.getPlatform.mockReturnValue('android');
     native.status.mockResolvedValue(denied);
     native.enable.mockResolvedValue(denied);
     native.pending.mockResolvedValue({ items: [] });

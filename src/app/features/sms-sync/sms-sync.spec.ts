@@ -76,6 +76,8 @@ describe('SMS review privacy and explicit approval UI', () => {
         status()?.permission === 'granted' && status()?.enabled === true && !requestingPermission(),
     ),
     busy: signal(false),
+    reconciling: signal(false),
+    verificationFailed: signal(false),
     error: signal(''),
     duplicates: signal(0),
     total: signal(0),
@@ -148,6 +150,8 @@ describe('SMS review privacy and explicit approval UI', () => {
     changingSync.set(false);
     navigation.set(null);
     sync.busy.set(false);
+    sync.reconciling.set(false);
+    sync.verificationFailed.set(false);
     sync.total.set(0);
     sync.reviewPage.set(0);
     sync.unreadTotal.set(0);

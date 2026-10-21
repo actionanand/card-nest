@@ -21,11 +21,12 @@ import {
     '(pointermove)': 'move($event)',
     '(pointerup)': 'finish($event)',
     '(pointercancel)': 'cancel()',
-    '(lostpointercapture)': 'lostCapture($event)',
+    '(lostpointercapture)': 'cancel()',
     '(window:cardnest:back)': 'cancel()',
     '(window:blur)': 'cancel()',
     '(window:pagehide)': 'cancel()',
     '(document:visibilitychange)': 'cancel()',
+    '(document:scroll)': 'cancel()',
   },
 })
 export class SmsSwipe {
@@ -64,7 +65,7 @@ export class SmsSwipe {
       (event.pointerType === 'mouse' && event.button !== 0) ||
       event.clientX < 24 ||
       event.clientX > innerWidth - 24 ||
-      (event.target as Element).closest('input,a,select,textarea,summary')
+      (event.target as Element).closest('button,input,a,select,textarea,summary')
     )
       return;
     this.origin = { x: event.clientX, y: event.clientY, id: event.pointerId };
@@ -97,12 +98,6 @@ export class SmsSwipe {
     if (!this.enabled() || Math.abs(offset) < 55) return;
     if (offset > 0) this.reviewSwipe.emit();
     else this.readSwipe.emit();
-  }
-  lostCapture(event: PointerEvent): void {
-    // Touch implicitly captures the nested button. Moving that capture to this row
-    // emits a bubbling event from the button; it must not cancel the new row drag.
-    if (event.target === this.element.nativeElement && event.pointerId === this.origin?.id)
-      this.cancel();
   }
   cancel(): void {
     const id = this.origin?.id;

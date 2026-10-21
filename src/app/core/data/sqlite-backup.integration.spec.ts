@@ -5,9 +5,10 @@ import { CapacitorSQLite } from '@capacitor-community/sqlite';
 import { SqliteDatabase } from './sqlite-database';
 import { DATABASE_MIGRATIONS } from './migrations';
 import { CardNestStore } from '../services/card-nest-store';
-import { resolve } from 'node:path';
+import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { unlinkSync, existsSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { APP_ENVIRONMENT } from '../services/app-environment';
 import { reviewFilters } from '../../features/sms-sync/sms-review-filters';
 import { BackupService } from '../services/backup.service';
@@ -456,7 +457,8 @@ describe('Durable first-run data, additive read migration and private portable b
     await database.run(
       "UPDATE sms_candidates SET read_at='synthetic-seen' WHERE id='synthetic-pending'",
     );
-    const file = resolve('tmp', `synthetic-read-restart-${randomUUID()}.sqlite`);
+    const directory = mkdtempSync(join(tmpdir(), 'card-nest-read-restart-'));
+    const file = join(directory, `synthetic-read-restart-${randomUUID()}.sqlite`);
     await database.run('INSERT INTO app_preferences VALUES(?,?)', [
       'sms_review_filters',
       JSON.stringify({ search: 'Synthetic saved query', read: 'ALL' }),
@@ -482,7 +484,7 @@ describe('Durable first-run data, additive read migration and private portable b
     } finally {
       sql.close();
       sql = new DatabaseSync(':memory:');
-      if (existsSync(file)) unlinkSync(file);
+      if (existsSync(directory)) rmSync(directory, { recursive: true, force: true });
     }
   });
   it('restores old backups without read fields using the migration policy and never seeds an empty restored backup', async () => {

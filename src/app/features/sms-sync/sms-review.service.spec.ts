@@ -1281,8 +1281,11 @@ describe('SMS approved import integrity', () => {
     );
     const stale = service.refresh();
     await started;
-    await service.approve(candidate, card.id, 45000, 'Synthetic approved');
+    const approval = service.approve(candidate, card.id, 45000, 'Synthetic approved');
+    // Release the intentionally blocked stale read before waiting for the
+    // post-approval refresh, which is serialized behind it.
     release();
+    await approval;
     await stale;
     expect(service.candidates()).toEqual([]);
     expect(rows('SELECT state FROM sms_candidates')).toEqual([{ state: 'IMPORTED' }]);
