@@ -50,6 +50,24 @@ describe('Explicit backup destination choice', () => {
     await fixture.componentInstance.submitBackup(new Event('submit'));
     return fixture;
   };
+  it('scrolls and focuses every Settings section without navigation or losing form state', () => {
+    const fixture = TestBed.createComponent(SettingsPage);
+    fixture.detectChanges();
+    fixture.componentInstance.backupPassphrase.set('synthetic-unsaved');
+    const before = location.href;
+    for (const id of ['security', 'appearance', 'defaults', 'notifications', 'data'] as const) {
+      const section = fixture.nativeElement.querySelector(`#${id}`) as HTMLElement;
+      const scroll = vi.fn();
+      section.scrollIntoView = scroll;
+      document.body.append(fixture.nativeElement);
+      fixture.componentInstance.scrollSection(id);
+      expect(scroll).toHaveBeenCalledWith({ block: 'start', behavior: 'instant' });
+      expect(document.activeElement).toBe(section);
+    }
+    expect(location.href).toBe(before);
+    expect(fixture.componentInstance.backupPassphrase()).toBe('synthetic-unsaved');
+    fixture.nativeElement.remove();
+  });
   it('creates once, clears credentials, and waits for a destination before doing any delivery', async () => {
     const fixture = await create();
     expect(fixture.componentInstance.pendingBackup()).toEqual(backup);

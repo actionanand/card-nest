@@ -28,9 +28,11 @@
   }
   <div class="settings-grid">
     <nav class="settings-nav" aria-label="Settings sections">
-      <a href="#security">Security</a><a href="#appearance">Appearance</a
-      ><a href="#defaults">Cards & currency</a><a href="#notifications">Notifications</a
-      ><a href="#data">Backup & data</a>
+      <button type="button" (click)="scrollSection('security')">Security</button>
+      <button type="button" (click)="scrollSection('appearance')">Appearance</button>
+      <button type="button" (click)="scrollSection('defaults')">Cards & currency</button>
+      <button type="button" (click)="scrollSection('notifications')">Notifications</button>
+      <button type="button" (click)="scrollSection('data')">Backup & data</button>
     </nav>
     <div class="settings-content">
       <section id="security" class="panel">

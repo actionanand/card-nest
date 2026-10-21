@@ -80,6 +80,8 @@ describe('SMS review privacy and explicit approval UI', () => {
     total: signal(0),
     savedTotal: signal(0),
     pendingTotal: signal(0),
+    matchedTotal: signal(0),
+    importedTotal: signal(0),
     unreadTotal: signal(0),
     markingRead: signal(false),
     markRead: vi.fn().mockResolvedValue(undefined),
@@ -171,6 +173,31 @@ describe('SMS review privacy and explicit approval UI', () => {
     expect(sync.enable).not.toHaveBeenCalled();
     expect(sync.approve).not.toHaveBeenCalled();
     expect(fixture.nativeElement.textContent).toContain('Nothing changes your transactions');
+  });
+  it('initializes Multiple once, preserves custom selections across mode changes, removes chips and saves them', async () => {
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const page = fixture.componentInstance;
+    page.kind.set('REFUND');
+    page.changeTypeMode('MULTIPLE');
+    expect(page.multipleKinds()).toEqual([
+      'PURCHASE',
+      'CASHBACK',
+      'PLUXEE_PURCHASE',
+      'PLUXEE_TOPUP',
+      'BANK_DEBIT',
+    ]);
+    page.multipleKinds.set(['REFUND', 'CASHBACK']);
+    page.changeTypeMode('SINGLE');
+    expect(page.kind()).toBe('REFUND');
+    page.changeTypeMode('MULTIPLE');
+    expect(page.multipleKinds()).toEqual(['REFUND', 'CASHBACK']);
+    page.removeFilter('type:REFUND');
+    await fixture.whenStable();
+    expect(sync.filterReview).toHaveBeenLastCalledWith(
+      expect.objectContaining({ mode: 'MULTIPLE', kinds: ['CASHBACK'], multipleInitialized: true }),
+    );
   });
   it('hides pending work and disables Scan for denied access even with legacy pending fields', () => {
     status.set({
@@ -494,6 +521,7 @@ describe('SMS review privacy and explicit approval UI', () => {
     page.clearFilters();
     expect(page.filterChips()).toEqual([]);
     expect(sync.filterReview).toHaveBeenLastCalledWith({
+      ...defaultReviewFilters(),
       from: '',
       to: '',
       state: 'ALL',

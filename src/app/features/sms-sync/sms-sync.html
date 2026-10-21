@@ -186,6 +186,28 @@
           }}</span>
         </button>
       </div>
+      <div class="actions" role="group" aria-label="Review inboxes">
+        <button class="btn" type="button" (click)="chooseInbox('PENDING')">Needs review</button>
+        <button class="btn" type="button" (click)="chooseInbox('MATCHED_EXISTING')">
+          Already added
+        </button>
+        <button class="btn" type="button" (click)="chooseInbox('ALL')">All history</button>
+      </div>
+      <p class="muted">
+        Needs review {{ sync.pendingTotal() }} · Already added {{ sync.matchedTotal() }} · Imported
+        {{ sync.importedTotal() }} · Unread {{ sync.unreadTotal() }}
+      </p>
+      @if (possibleOnPage()) {
+        <p class="muted">
+          {{ possibleOnPage() }} possible existing matches on this page need confirmation.
+        </p>
+      }
+      <button class="btn" type="button" [disabled]="loading()" (click)="reevaluate()">
+        Recheck saved suggestions
+      </button>
+      <p class="muted">
+        Checks saved pending evidence in bounded batches. Previous review decisions are retained.
+      </p>
       <app-select-picker
         label="Inbox"
         [options]="readOptions"
@@ -219,13 +241,39 @@
               [value]="sourceFilter()"
               (input)="sourceFilter.set(value($event))"
           /></label>
-          <app-select-picker
-            label="Type"
-            [options]="kindOptions()"
-            [value]="kind()"
-            (valueChange)="kind.set($event)"
-            [searchable]="true"
-          />
+          <div class="type-filter">
+            <span>Type</span>
+            <div class="type-mode" role="group" aria-label="Transaction type selection mode">
+              <button
+                type="button"
+                [attr.aria-pressed]="typeMode() === 'SINGLE'"
+                (click)="changeTypeMode('SINGLE')"
+              >
+                Single
+              </button>
+              <button
+                type="button"
+                [attr.aria-pressed]="typeMode() === 'MULTIPLE'"
+                (click)="changeTypeMode('MULTIPLE')"
+              >
+                Multiple
+              </button>
+            </div>
+            @if (typeMode() === 'SINGLE') {
+              <app-select-picker
+                label="Single type"
+                [options]="kindOptions()"
+                [value]="kind()"
+                (valueChange)="kind.set($event)"
+                [searchable]="true"
+              />
+            } @else {
+              <app-sms-type-picker
+                [value]="multipleKinds()"
+                (changed)="multipleKinds.set($event)"
+              />
+            }
+          </div>
           <app-select-picker
             label="Review status"
             [options]="stateOptions"
@@ -290,6 +338,14 @@
               Review<span class="sr-only"> {{ title(candidate.item, candidate.kind) }}</span>
             </button>
           </div>
+          @if (candidate.state === 'MATCHED_EXISTING' && candidate.transactionId) {
+            <button class="btn" type="button" (click)="viewExisting(candidate)">
+              View existing transaction
+            </button>
+          }
+          @if (matchReason(candidate); as reason) {
+            <p class="muted">{{ reason }}</p>
+          }
           <button
             class="btn clear"
             type="button"
@@ -388,6 +444,58 @@
           <p class="feedback" role="alert">{{ error() || sync.error() }}</p>
         }
         @if (candidate.item; as item) {
+          @if (candidate.state === 'MATCHED_EXISTING') {
+            <aside class="review-notice">
+              <app-icon name="success" />
+              <div>
+                <strong>Already added</strong>
+                <p>{{ matchReason(candidate) }}</p>
+              </div>
+            </aside>
+            @if (candidate.transactionId) {
+              <button type="button" class="btn" (click)="viewExisting(candidate)">
+                View existing transaction
+              </button>
+            }
+            @if (walletInfo(); as balance) {
+              <aside class="review-notice">
+                <app-icon name="help" />
+                <div>
+                  <strong>Wallet balance comparison</strong>
+                  <p>CardNest {{ money(balance.current) }} · SMS {{ money(balance.reported) }}</p>
+                  <p>
+                    {{ item.balancePosition || 'UNKNOWN' }} transaction · Expected snapshot
+                    {{ money(balance.expected) }} · Difference {{ money(balance.difference) }}
+                  </p>
+                  <p>{{ balance.explanation }}</p>
+                  <button type="button" class="btn" (click)="confirmBalance.set(false)">
+                    Keep CardNest balance
+                  </button>
+                  @if (balance.canAdjust && balance.difference) {
+                    @if (!confirmBalance()) {
+                      <button type="button" class="btn" (click)="confirmBalance.set(true)">
+                        Review balance difference
+                      </button>
+                    } @else {
+                      <p>
+                        Confirm replacing the wallet balance with {{ money(balance.reported) }}. The
+                        existing purchase or top-up will not be posted again. A balance correction
+                        will be recorded.
+                      </p>
+                      <button
+                        type="button"
+                        class="btn"
+                        [disabled]="saving()"
+                        (click)="updateMatchedBalance()"
+                      >
+                        Update balance from SMS
+                      </button>
+                    }
+                  }
+                </div>
+              </aside>
+            }
+          }
           @if (importable() && (candidate.state === 'PENDING' || candidate.state === 'DEFERRED')) {
             <form [formGroup]="editor" (submit)="approve($event)">
               @if (!sources().length) {
@@ -452,6 +560,25 @@
                 [options]="matchOptions()"
                 [searchable]="true"
               />
+              @if (walletInfo(); as balance) {
+                <aside class="review-notice" aria-label="Meal wallet balance comparison">
+                  <app-icon name="help" />
+                  <div>
+                    <strong>Review balance difference</strong>
+                    <p>CardNest {{ money(balance.current) }} · SMS {{ money(balance.reported) }}</p>
+                    <p>
+                      Snapshot: {{ item.balancePosition || 'UNKNOWN' }} transaction. Expected
+                      {{ money(balance.expected) }} · Difference {{ money(balance.difference) }}
+                    </p>
+                    <p>{{ balance.explanation }}</p>
+                    <p>Calculated balance after the event: {{ money(balance.expectedAfter) }}</p>
+                    <p>
+                      Keep CardNest balance by leaving reconciliation pending. An update requires
+                      explicit approval and verified event order.
+                    </p>
+                  </div>
+                </aside>
+              }
               <details class="reconciliation">
                 <summary>
                   <span>Reconciliation and duplicate controls</span><app-icon name="chevron_down" />

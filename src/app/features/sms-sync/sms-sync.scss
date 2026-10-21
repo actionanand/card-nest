@@ -714,3 +714,38 @@ dd {
   opacity: 0.5;
   cursor: not-allowed;
 }
+.type-filter {
+  display: grid;
+  gap: 0.5rem;
+  min-width: 0;
+}
+.filters {
+  align-items: start;
+}
+.filters > label {
+  align-content: start;
+}
+@media (max-width: 600px) {
+  .type-filter {
+    grid-column: 1 / -1;
+  }
+}
+.type-mode {
+  display: flex;
+  border: 1px solid var(--line);
+  border-radius: 0.65rem;
+  overflow: hidden;
+}
+.type-mode button {
+  flex: 1;
+  min-height: 44px;
+  border: 0;
+  background: var(--surface-2);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.8rem;
+}
+.type-mode button[aria-pressed='true'] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}

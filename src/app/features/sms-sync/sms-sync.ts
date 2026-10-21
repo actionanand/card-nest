@@ -17,6 +17,9 @@ import { lockDocumentScroll } from '../../shared/document-scroll-lock';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { parseMoneyToMinor } from '../../core/services/money';
 import { SmsReviewService } from './sms-review.service';
+import { SmsTypePicker } from './sms-type-picker';
+import { INITIAL_MULTIPLE_KINDS, reviewFilters } from './sms-review-filters';
+import { matchExisting, walletComparison } from './sms-matching';
 import {
   SmsCandidate,
   SmsKind,
@@ -38,7 +41,7 @@ function isReviewEntry(info: unknown): boolean {
 
 @Component({
   selector: 'app-sms-sync',
-  imports: [ReactiveFormsModule, AppIcon, AppSelectPicker],
+  imports: [ReactiveFormsModule, AppIcon, AppSelectPicker, SmsTypePicker],
   templateUrl: './sms-sync.html',
   styleUrl: './sms-sync.scss',
   host: {
@@ -151,6 +154,16 @@ export class SmsSyncPage {
   readonly range = signal(30);
   readonly search = signal('');
   readonly kind = signal('ALL');
+  readonly typeMode = signal<'SINGLE' | 'MULTIPLE'>('SINGLE');
+  readonly multipleKinds = signal<string[]>([]);
+  readonly multipleInitialized = signal(false);
+  changeTypeMode(mode: 'SINGLE' | 'MULTIPLE'): void {
+    if (mode === 'MULTIPLE' && !this.multipleInitialized()) {
+      this.multipleKinds.set([...INITIAL_MULTIPLE_KINDS]);
+      this.multipleInitialized.set(true);
+    }
+    this.typeMode.set(mode);
+  }
   readonly state = signal('PENDING');
   readonly sourceFilter = signal('');
   readonly from = signal('');
@@ -172,7 +185,12 @@ export class SmsSyncPage {
     [
       { key: 'search', label: this.search() && `Search: ${this.search()}` },
       { key: 'source', label: this.sourceFilter() && `Source: ${this.sourceFilter()}` },
-      { key: 'kind', label: this.kind() !== 'ALL' && this.label(this.kind()) },
+      ...(this.typeMode() === 'MULTIPLE'
+        ? this.multipleKinds().map((kind) => ({
+            key: `type:${kind}`,
+            label: `${this.label(kind)} (OR)`,
+          }))
+        : [{ key: 'kind', label: this.kind() !== 'ALL' && this.label(this.kind()) }]),
       { key: 'state', label: this.state() !== 'ALL' && this.label(this.state()) },
       { key: 'from', label: this.from() && `From ${this.from()}` },
       { key: 'to', label: this.to() && `To ${this.to()}` },
@@ -180,6 +198,11 @@ export class SmsSyncPage {
     ].filter((chip) => chip.label),
   );
   removeFilter(key: string): void {
+    if (key.startsWith('type:')) {
+      this.multipleKinds.update((kinds) => kinds.filter((kind) => kind !== key.slice(5)));
+      this.applyFilters();
+      return;
+    }
     const controls: Record<string, { set(value: string): void }> = {
       search: this.search,
       source: this.sourceFilter,
@@ -196,6 +219,7 @@ export class SmsSyncPage {
     this.search.set('');
     this.sourceFilter.set('');
     this.kind.set('ALL');
+    this.typeMode.set('SINGLE');
     this.state.set('ALL');
     this.from.set('');
     this.to.set('');
@@ -205,6 +229,7 @@ export class SmsSyncPage {
   readonly selected = signal<SmsCandidate | null>(null);
   readonly related = signal<readonly SmsCandidate[]>([]);
   readonly error = signal('');
+  readonly confirmBalance = signal(false);
   readonly saving = signal(false);
   readonly text = new FormControl('', {
     nonNullable: true,
@@ -244,11 +269,28 @@ export class SmsSyncPage {
     'LOAN_REMINDER',
   ];
   readonly visible = this.sync.candidates;
+  readonly possibleOnPage = computed(
+    () =>
+      this.visible().filter(
+        (candidate) =>
+          candidate.state === 'PENDING' &&
+          !!candidate.item &&
+          matchExisting(
+            candidate.item,
+            this.store.cards(),
+            this.store.paymentSources(),
+            this.store.transactions(),
+          ).transactionIds.length > 0,
+      ).length,
+  );
   applyFilters(): void {
     void this.run(() =>
       this.sync.filterReview({
         state: this.state(),
         kind: this.kind(),
+        mode: this.typeMode(),
+        kinds: this.multipleKinds(),
+        multipleInitialized: this.multipleInitialized(),
         search: this.search(),
         source: this.sourceFilter(),
         from: this.from(),
@@ -285,6 +327,8 @@ export class SmsSyncPage {
     }));
   });
   sourceLabel(candidate: SmsCandidate): string {
+    if (candidate.state === 'MATCHED_EXISTING')
+      return 'Already added · Matched to existing transaction';
     const ids = candidate.item
       ? eligibleSources(candidate.item, this.store.cards(), this.store.paymentSources())
       : [];
@@ -301,6 +345,92 @@ export class SmsSyncPage {
     const item = this.selected()?.item;
     return !!item && !!ledgerType(item);
   });
+  matchReason(candidate: SmsCandidate): string {
+    if (candidate.state === 'MATCHED_EXISTING' && candidate.item && ledgerType(candidate.item)) {
+      const target = this.store
+        .transactions()
+        .find((entry) => entry.id === candidate.transactionId);
+      if (!target)
+        return 'Linked record unavailable. The original review decision is retained; inspect Activity before recording anything again.';
+      if (
+        candidate.item &&
+        (target.type !== ledgerType(candidate.item) ||
+          target.amountMinor !== candidate.item.amountMinor ||
+          target.transactionDate !== candidate.item.eventDate)
+      )
+        return 'The current ledger differs from the SMS evidence. The original review decision is retained; compare its current details in Activity.';
+    }
+    if (
+      candidate.state === 'MATCHED_EXISTING' &&
+      candidate.decision &&
+      !candidate.decision.startsWith('AUTO_EXISTING:')
+    )
+      return 'Explicitly matched to an existing record. Your review decision and recorded financial details are retained.';
+    if (candidate.decision) return candidate.decision.replace(/^AUTO_EXISTING: /, '');
+    if (!candidate.item) return '';
+    const match = matchExisting(
+      candidate.item,
+      this.store.cards(),
+      this.store.paymentSources(),
+      this.store.transactions(),
+    );
+    return match.confidence === 'HIGH_CONFIDENCE_EXISTING'
+      ? 'Possible existing transaction. Saved ledger and other SMS claims must be checked before linking.'
+      : match.confidence === 'NO_MATCH'
+        ? ''
+        : match.reason;
+  }
+  viewExisting(candidate: SmsCandidate): void {
+    if (candidate.transactionId)
+      void this.router.navigate(['/transactions'], {
+        queryParams: { edit: candidate.transactionId },
+      });
+  }
+  chooseInbox(state: string): void {
+    this.state.set(state);
+    this.readFilter.set('ALL');
+    this.applyFilters();
+  }
+  reevaluate(): void {
+    void this.run(async () => {
+      const before = this.sync.matchedTotal();
+      await this.sync.refresh();
+      const count = Math.max(0, this.sync.matchedTotal() - before);
+      this.snackbar.show(
+        `${count} already-recorded events linked. No transaction amounts or balances changed.`,
+      );
+    });
+  }
+  private readonly router = inject(Router);
+  walletInfo(): ReturnType<typeof walletComparison> {
+    const candidate = this.selected();
+    const item = candidate?.item;
+    const source = this.store
+      .paymentSources()
+      .find((source) => source.id === this.editor.controls.source.value);
+    return item && source
+      ? walletComparison(
+          item,
+          source,
+          this.store.transactions(),
+          candidate?.transactionId ?? this.editor.controls.existing.value,
+        )
+      : null;
+  }
+  updateMatchedBalance(): void {
+    const candidate = this.selected();
+    if (!candidate || !this.confirmBalance() || this.saving()) return;
+    this.saving.set(true);
+    void this.run(async () => {
+      try {
+        await this.sync.adjustMatchedBalance(candidate);
+        this.confirmBalance.set(false);
+        this.snackbar.show('Wallet balance updated from the verified SMS snapshot.');
+      } finally {
+        this.saving.set(false);
+      }
+    });
+  }
   readonly accessTitle = computed(() => {
     if (this.sync.requestingPermission()) return 'Requesting permission';
     if (this.sync.changingSync()) return 'Updating sync…';
@@ -350,10 +480,13 @@ export class SmsSyncPage {
       if (available)
         untracked(() => {
           void this.run(async () => {
-            const filters = await this.sync.loadReviewFilters();
+            const filters = reviewFilters(await this.sync.loadReviewFilters());
             this.search.set(filters.search);
             this.sourceFilter.set(filters.source);
             this.kind.set(filters.kind);
+            this.typeMode.set(filters.mode);
+            this.multipleKinds.set(filters.kinds);
+            this.multipleInitialized.set(filters.multipleInitialized);
             this.state.set(filters.state);
             this.from.set(filters.from);
             this.to.set(filters.to);
@@ -480,6 +613,7 @@ export class SmsSyncPage {
     });
   }
   open(candidate: SmsCandidate): void {
+    this.confirmBalance.set(false);
     this.error.set('');
     this.notice.set('');
     this.selected.set(candidate);
@@ -497,7 +631,10 @@ export class SmsSyncPage {
               this.store.cards(),
               this.store.paymentSources(),
             );
-            return ids.length === 1 ? ids[0] : '';
+            return (
+              this.store.transactions().find((entry) => entry.id === candidate.transactionId)
+                ?.cardId ?? (ids.length === 1 ? ids[0] : '')
+            );
           })()
         : '',
       amount: String((candidate.item?.amountMinor ?? 0) / 100),

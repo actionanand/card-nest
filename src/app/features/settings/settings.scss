@@ -34,7 +34,7 @@
   top: 1rem;
   align-self: start;
 }
-.settings-nav a {
+.settings-nav button {
   display: inline-flex;
   align-items: center;
   padding: 0.4rem 0.6rem;
@@ -42,6 +42,11 @@
   min-height: 2.4rem;
   color: var(--muted);
   font-size: 0.78rem;
+  border: 0;
+  background: transparent;
+  text-align: start;
+  font-family: inherit;
+  cursor: pointer;
 }
 .settings-content {
   display: grid;
@@ -62,7 +67,7 @@
   width: 100%;
   max-width: 100%;
   min-width: 0;
-  scroll-margin-top: 1rem;
+  scroll-margin-top: calc(4.5rem + env(safe-area-inset-top));
   padding: 1.3rem;
 }
 .setting-heading {
@@ -483,7 +488,7 @@ button:disabled {
   .settings-content section {
     padding: 1rem;
   }
-  .settings-nav a {
+  .settings-nav button {
     white-space: nowrap;
   }
   .theme-options {

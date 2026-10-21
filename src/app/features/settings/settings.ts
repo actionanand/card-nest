@@ -57,6 +57,13 @@ type ProtectedDataAction = 'DELETE_ALL' | 'RETENTION';
   host: { '(document:keydown.escape)': 'closeDialogs()' },
 })
 export class SettingsPage {
+  scrollSection(id: 'security' | 'appearance' | 'defaults' | 'notifications' | 'data'): void {
+    const section = document.getElementById(id);
+    if (!section) return;
+    section.setAttribute('tabindex', '-1');
+    section.focus({ preventScroll: true });
+    section.scrollIntoView({ block: 'start', behavior: 'instant' });
+  }
   readonly appVersion = APP_VERSION;
   readonly showAppVersion = Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android';
   readonly copyright =
