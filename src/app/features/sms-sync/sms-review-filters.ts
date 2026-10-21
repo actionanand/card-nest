@@ -36,6 +36,7 @@ export interface SmsReviewFilters {
   mode: 'SINGLE' | 'MULTIPLE';
   kinds: string[];
   multipleInitialized: boolean;
+  hideAlreadyAdded: boolean;
 }
 
 export function defaultReviewFilters(): SmsReviewFilters {
@@ -50,6 +51,7 @@ export function defaultReviewFilters(): SmsReviewFilters {
     mode: 'SINGLE',
     kinds: [],
     multipleInitialized: false,
+    hideAlreadyAdded: true,
   };
 }
 
@@ -119,5 +121,6 @@ export function reviewFilters(value: unknown): SmsReviewFilters {
         ]
       : [],
     multipleInitialized: item['multipleInitialized'] === true || item['mode'] === 'MULTIPLE',
+    hideAlreadyAdded: item['hideAlreadyAdded'] !== false,
   };
 }

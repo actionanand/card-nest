@@ -26,7 +26,8 @@ object SmsTransactionParser {
     val evidence: String = "Verify source, event date and amount before approval.",
     val eventTime: String, val timeZone: String, val cardNetwork: String?, val confidence: String,
     val earnedForPeriod: String?, val statementDate: String?, val merchantEvidence: String? = null,
-    val balancePosition: String = "UNKNOWN"
+    val balancePosition: String = "UNKNOWN", val eventTimeExplicit: Boolean = false,
+    val parserVersion: Int = 2, val legacyId: String? = null
   )
   private fun rx(s: String) = Regex(s, RegexOption.IGNORE_CASE)
   private const val NUMBER = "([0-9][0-9,]*(?:\\.[0-9]{1,2})?)(?![0-9]|\\.[0-9])"
@@ -63,6 +64,9 @@ object SmsTransactionParser {
     val loan = has("loan|\\bemi\\b|\\becs\\b|merchantmandate")
     val aggregator = has("\\bcred\\b|cheq|ccbp")
     val confirmed = card && !aggregator && has("payment of.{0,100}(received|credited)|online payment.{0,100}credited")
+    val statement = card && (has("statement.{0,120}\\b(?:sent|generated|issued|available|ready|emailed|delivered)\\b|your\\s+(?:credit\\s+)?card\\s+statement|statement\\s+(?:total|amount)") ||
+      (has("\\bstatement\\b") && due && has("total|minimum") && !has("reminder")))
+    val purchase = has("\\b(spent|debited|charged)\\b|transaction of.+was made using|thank you for using.+card")
     val kind = when {
       has("refunded|refund successful|refund of|reversal|reversed") && (credit || has("refunded|reversed")) -> Kind.REFUND
       card && has("cashback") && credit -> Kind.CASHBACK
@@ -72,22 +76,24 @@ object SmsTransactionParser {
       tag && has("recharged|loaded|credited|topped up") -> Kind.FASTAG_TOPUP
       confirmed -> Kind.CARD_PAYMENT_RECEIVED
       aggregator && has("payment.{0,80}(received|processed)|sent|debited") && !due && !loan -> Kind.PAYMENT_INITIATED
-      has("statement.+generated") -> Kind.STATEMENT
+      statement && !purchase && !confirmed && !credit -> Kind.STATEMENT
+      card && due && !purchase && !confirmed -> Kind.PAYMENT_REMINDER
+      has("statement.+generated") && !purchase && !credit -> Kind.STATEMENT
       loan && due && !has("has been debited|(?:account|acc) [x*0-9]+ debited") -> Kind.LOAN_REMINDER
       due && !debit -> Kind.PAYMENT_REMINDER
       loan && debit && bank -> Kind.LOAN_DEBIT
-      card && debit && (!bank || has("(?:spent|charged).{0,40}(?:your|using|on).{0,20}card|(?:credit card|card)[x*0-9\\s]{0,20}debited")) -> Kind.PURCHASE
+      card && purchase && (!bank || has("(?:spent|charged).{0,40}(?:your|using|on).{0,20}card|(?:credit card|card)[x*0-9\\s]{0,20}debited")) -> Kind.PURCHASE
       bank && debit && has("\\bcred\\b|cheq|ccbp") -> Kind.PAYMENT_INITIATED
       bank && has("sent from|credited.+debited from") -> Kind.BANK_TRANSFER
       bank && debit -> Kind.BANK_DEBIT
       bank && credit -> Kind.BANK_CREDIT
       else -> return null
     }
-    val total = value(flat, "total (?:amount due|amt|due)(?: of)?|statement total due")
-    val minimum = value(flat, "min(?:imum)? (?:amount |amt )?due(?: of)?")
+    val total = value(flat, "total (?:statement amount|amount due|amt|due)(?: of)?|statement total(?: due)?|total(?: of)?")
+    val minimum = value(flat, "min(?:imum)? (?:amount |amt )?due(?: of)?|minimum(?: of)?")
     // Prefer verb-scoped monetary events; statement amounts and balance are separate evidence.
     val eventText = flat.split(rx("avl|available|wallet bal|current meal|statement total|minimum|total due"))[0]
-    val amount = if (kind == Kind.STATEMENT || (kind == Kind.PAYMENT_REMINDER && total != null)) total else {
+    val amount = if (kind == Kind.STATEMENT || (kind == Kind.PAYMENT_REMINDER && total != null)) total ?: minimum ?: money.find(flat)?.groupValues?.get(1)?.let(::minor) else {
       val matches = money.findAll(eventText).map { minor(it.groupValues[1]) }.toList()
       if (matches.size > 1 && kind !in setOf(Kind.PAYMENT_REMINDER, Kind.LOAN_REMINDER)) return null
       matches.firstOrNull()
@@ -109,8 +115,11 @@ object SmsTransactionParser {
       ?: rx("\\bon [0-9]{1,2}[-/][A-Za-z0-9]{2,3}[-/][0-9]{2,4} on (.+?)(?:\\. Avl|$)").find(flat)?.groupValues?.get(1)
       ?: rx(";\\s*(.+?) credited").find(flat)?.groupValues?.get(1)
       ?: rx("(?:refunded by|from) (.+?)(?= on | is credited|\\.|$)").find(flat)?.groupValues?.get(1)
-    val event = event(safe, receivedAtMillis, zone) ?: return null
-    val dueText = rx("(?:due on|due by|payable by|\\bby)[: ]+(.+)").find(safe)?.groupValues?.get(1)
+    // A deadline is never the financial event date. Receipt fallback is explicit evidence.
+    val eventTextDates = safe.replace(rx("(?:due on|due by|payable by)[: ]+[^.;\\n]+"), "")
+    val statementText = rx("statement\\s+(?:dated|date)\\s*:?\\s*(.+)").find(safe)?.groupValues?.get(1)
+    val event = event(if (kind == Kind.STATEMENT || kind == Kind.PAYMENT_REMINDER) statementText ?: "" else eventTextDates, receivedAtMillis, zone) ?: return null
+    val dueText = rx(if (due || kind == Kind.STATEMENT) "(?:due on|due by|payable by|\\bby)[: ]+(.+)" else "(?:due on|due by|payable by)[: ]+(.+)").find(safe)?.groupValues?.get(1)
     val parsedDue = dueText?.let { event(it, receivedAtMillis, zone) }?.takeIf { !it.second }?.first?.toLocalDate()?.toString()
     val cleanMerchant = merchant?.split(rx("\\b(?:ref(?:erence)?|utr|rrn|visit|click|not you|if not you|to dispute|call|sms block)\\b"))?.firstOrNull()
       ?.trim()?.trimEnd('.', ',', ';')?.takeIf { it.isNotBlank() && !rx("^(?:[0-9\\W]+|(?:[a-z0-9-]+\\.)+[a-z]{2,}(?:/.*)?|[a-z0-9]{18,})$").matches(it) }?.take(100)
@@ -128,10 +137,12 @@ object SmsTransactionParser {
       statementDate = rx("statement\\s+dated\\s+(.+)").find(safe)?.groupValues?.get(1)
         ?.let { event(it,receivedAtMillis,zone) }?.takeIf { !it.second }?.first?.toLocalDate()?.toString(),
       merchantEvidence = merchant?.trim()?.take(300),
-      balancePosition = if (meal && has("current meal wallet balance|(?:available|avl|wallet) bal(?:ance)?") && !has("before|opening balance")) "AFTER" else "UNKNOWN")
+      balancePosition = if (meal && has("current meal wallet balance|(?:available|avl|wallet) bal(?:ance)?") && !has("before|opening balance")) "AFTER" else "UNKNOWN",
+      eventTimeExplicit = event.third,
+      legacyId = if (kind == Kind.STATEMENT || kind == Kind.PAYMENT_REMINDER) fingerprint(text) else null)
   }
 
-  private fun event(text: String, receipt: Long, zone: ZoneId): Pair<ZonedDateTime, Boolean>? {
+  private fun event(text: String, receipt: Long, zone: ZoneId): Triple<ZonedDateTime, Boolean, Boolean>? {
     val dateRx = rx("\\b(?:[0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{1,2}[-/][0-9]{1,2}[-/](?:[0-9]{4}|[0-9]{2})|[0-9]{1,2}[-/ ][A-Za-z]{3,9}[-/ ](?:[0-9]{4}|[0-9]{2})|(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) [A-Za-z]{3} [0-9]{1,2} [0-9]{4})(?:(?: at)? [0-9]{1,2}:[0-9]{2}(?::[0-9]{1,2})?(?: [AP]M)?)?")
     val dateText = text.replace(rx("\\b(?:Ref(?:erence)?(?: No\\.?)?|UTR|RRN|UPI Ref(?: No\\.?)?)\\s*[:#.]?\\s*[A-Z0-9-]{8,30}"), "")
       .replace(rx("([0-9]{1,2})(?:st|nd|rd|th)\\b"), "$1")
@@ -145,11 +156,11 @@ object SmsTransactionParser {
           if (time.isEmpty()) builder.parseDefaulting(ChronoField.HOUR_OF_DAY, 0)
           val formatter = builder
             .toFormatter(Locale.ENGLISH).withResolverStyle(ResolverStyle.STRICT)
-          return LocalDateTime.parse(raw, formatter).atZone(if (text.contains("IST")) ZoneId.of("Asia/Kolkata") else zone) to false
+          return Triple(LocalDateTime.parse(raw, formatter).atZone(if (text.contains("IST")) ZoneId.of("Asia/Kolkata") else zone), false, time.isNotEmpty())
         } catch (_: DateTimeException) { }
       }
       return null // Explicit invalid dates must not silently become the receipt date.
     }
-    return Instant.ofEpochMilli(receipt).atZone(zone) to true
+    return Triple(Instant.ofEpochMilli(receipt).atZone(zone), true, false)
   }
 }

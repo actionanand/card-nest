@@ -27,6 +27,9 @@ export type ReviewState =
 export type ReconciliationChoice =
   'PENDING' | 'FULLY_PAID' | 'RETAIN_BALANCE' | 'REPAIR_EXISTING' | 'ADJUST_BALANCE';
 export interface SmsEvidence {
+  parserVersion?: number;
+  legacyId?: string;
+  eventTimeExplicit?: boolean;
   eventTime?: string;
   timeZone?: string;
   cardNetwork?: string;
@@ -56,6 +59,16 @@ export interface SmsEvidence {
   minimumDueMinor?: number;
   dueDate?: string;
   evidence: string;
+}
+/** Old extracted evidence cannot prove a due-date-only purchase without its original SMS. */
+export function suspectEvidence(item: SmsEvidence): boolean {
+  return (
+    item.kind === 'PURCHASE' &&
+    (item.parserVersion ?? 0) < 2 &&
+    !!item.dueDate &&
+    item.eventDate === item.dueDate &&
+    !item.merchant
+  );
 }
 export interface ApprovalEdits {
   transactionDate?: string;
@@ -102,7 +115,7 @@ const LEDGER_TYPES: Partial<Record<SmsKind, TransactionType>> = {
   FASTAG_TOPUP: 'CREDIT',
 };
 export function ledgerType(item: SmsEvidence): TransactionType | undefined {
-  return LEDGER_TYPES[item.kind];
+  return suspectEvidence(item) ? undefined : LEDGER_TYPES[item.kind];
 }
 export function validEvidence(value: unknown): value is SmsEvidence {
   if (!value || typeof value !== 'object') return false;
@@ -258,6 +271,7 @@ export function existingSuggestions(
     (t) =>
       t.cardId === sourceId &&
       t.type === type &&
+      t.currencyCode === item.currency &&
       t.amountMinor === item.amountMinor &&
       Math.abs(Date.parse(t.transactionDate) - Date.parse(item.eventDate)) <= 3 * 86400000,
   );

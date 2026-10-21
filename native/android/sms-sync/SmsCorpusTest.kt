@@ -31,7 +31,12 @@ class SmsCorpusTest(private val fixture: JSONObject, private val oracle: String)
     }
     assertEquals(kind, result.kind.name)
     assertEquals(fields[0].toLong(), result.amountMinor)
-    assertEquals(fields[1], result.eventDate)
+    if (kind in setOf("STATEMENT", "PAYMENT_REMINDER", "LOAN_REMINDER") && result.statementDate == null) {
+      // Legacy date oracles above described the deadline. It is separate evidence, not a purchase date.
+      assertEquals(fields[1], result.dueDate ?: "2026-10-19") // Relative/absent deadlines are not invented.
+      assertEquals("2026-10-19", result.eventDate)
+      assertTrue(result.dateFallback)
+    } else assertEquals(fields[1], result.eventDate)
     assertEquals(fields[2].ifEmpty { null }, result.cardDigits)
     if (fields.size > 3 && fields[3].isNotEmpty()) assertEquals(fields[3].toLong(), result.reportedBalanceMinor)
     assertEquals("INR", result.currency)

@@ -1,5 +1,5 @@
 import { CardTransaction, CreditCard, PaymentSource } from '../../core/models/domain';
-import { eligibleSources, ledgerType, SmsEvidence } from './sms-model';
+import { eligibleSources, ledgerType, normalizedIssuer, SmsEvidence } from './sms-model';
 
 export interface ExistingMatch {
   confidence:
@@ -71,14 +71,52 @@ export function matchExisting(
     ids = sources
       .filter((source) => source.kind === 'MEAL' && !source.archived)
       .map((source) => source.id);
-  if (ids.length !== 1)
+  if (ids.length !== 1) {
+    const possibleSources = ids.length
+      ? ids
+      : !item.cardDigits &&
+          !item.accountDigits &&
+          !item.kind.startsWith('PLUXEE') &&
+          !item.kind.startsWith('FASTAG')
+        ? cards
+            .filter(
+              (card) =>
+                !card.deletedAt &&
+                card.currencyCode === item.currency &&
+                (!card.archived ||
+                  (!!card.archivedAt && item.eventDate <= card.archivedAt.slice(0, 10))) &&
+                (!item.issuer ||
+                  normalizedIssuer(item.issuer) === normalizedIssuer(card.issuerName)),
+            )
+            .map((card) => card.id)
+        : [];
+    const suggestions = item.dateFallback
+      ? []
+      : ledger
+          .filter(
+            (entry) =>
+              possibleSources.includes(entry.cardId) &&
+              entry.type === type &&
+              entry.currencyCode === item.currency &&
+              entry.amountMinor === item.amountMinor &&
+              entry.transactionDate === item.eventDate,
+          )
+          .sort(
+            (a, b) =>
+              Number(merchantSimilarity(item.merchant, b.merchant)) -
+                Number(merchantSimilarity(item.merchant, a.merchant)) || a.id.localeCompare(b.id),
+          )
+          .slice(0, 20);
     return {
-      confidence: ids.length ? 'AMBIGUOUS' : 'NO_MATCH',
-      transactionIds: [],
+      confidence: suggestions.length ? 'POSSIBLE_EXISTING' : ids.length ? 'AMBIGUOUS' : 'NO_MATCH',
+      transactionIds: suggestions.map((entry) => entry.id),
       reason: ids.length
         ? 'Multiple eligible sources; confirm the source.'
-        : 'No trustworthy saved source identity. Confirm a source before linking.',
+        : suggestions.length
+          ? 'Possible existing transactions found. Source identity is unconfirmed; choose and verify a record before linking.'
+          : 'No trustworthy saved source identity. Confirm a source before linking.',
     };
+  }
   const sourceId = ids[0];
   const plausible = ledger.filter(
     (entry) =>
@@ -99,6 +137,7 @@ export function matchExisting(
     if (item.reference && entry.reference && item.reference !== entry.reference) return false;
     const reference = !!item.reference && !!entry.reference && item.reference === entry.reference;
     const time =
+      item.eventTimeExplicit === false ||
       !entry.transactionTime ||
       !item.eventTime ||
       entry.transactionTime.slice(0, 5) === item.eventTime.slice(0, 5);

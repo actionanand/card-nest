@@ -169,6 +169,26 @@ class CardNestSmsPlugin : Plugin() {
     val result = SmsTransactionParser.parse(body, System.currentTimeMillis())
     call.resolve(JSObject().put("item", result?.let { SmsQueue.json(it, "paste") }))
   }
+  /** Deliberate, bounded provider lookup; never changes discovery progress or system messages. */
+  @PluginMethod fun recheckSaved(call: PluginCall) { execute {
+    try {
+      check(SmsDiscovery.permitted(context))
+      val requests = call.getArray("items") ?: JSArray()
+      require(requests.length() <= 50)
+      val identities = (0 until requests.length()).map { index -> requests.getJSONObject(index).let {
+        SmsRecheckEngine.Identity(it.getString("id"), it.getString("providerId"), it.getLong("receivedAt"))
+      } }
+      val recovered = SmsRecheckEngine.recover(identities) { provider ->
+        context.contentResolver.query(android.provider.Telephony.Sms.Inbox.CONTENT_URI,
+          arrayOf("date", "body"), "_id = ?", arrayOf(provider), null)?.use { cursor ->
+          if (cursor.moveToFirst()) SmsRecheckEngine.Original(cursor.getLong(0), cursor.getString(1) ?: "") else null
+        }
+      }
+      val results = JSONArray()
+      recovered.forEach { (request, parsed) -> results.put(SmsQueue.json(parsed, request.providerId).put("id", request.id)) }
+      call.resolve(JSObject().put("items", results))
+    } catch (_: Exception) { call.reject("Saved SMS could not be rechecked. Permission or original message is unavailable; no financial records changed.") }
+  } }
   @PluginMethod fun clear(call: PluginCall) {
     SmsDiscovery.clear(context)
     call.resolve()

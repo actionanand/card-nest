@@ -6,6 +6,45 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class SmsEdgeCaseTest {
+  @Test fun statementDeliveryNeverBecomesSpendingOrUsesDeadlineAsEvent() {
+    for (delivery in listOf("is sent", "generated", "issued", "available", "ready", "has been emailed")) {
+      for (minimum in listOf("", " or minimum of Rs 120.00")) {
+        for (deadline in listOf("30-OCT-26", "30/10/2026", "2026-10-30")) {
+          val r = parse("ICICI Credit Card XX4321 Statement $delivery. Total of Rs 1,234.56$minimum is due by $deadline.")
+          assertEquals(SmsTransactionParser.Kind.STATEMENT, r.kind)
+          assertEquals(123456L, r.amountMinor)
+          assertEquals(123456L, r.statementTotalMinor)
+          assertEquals(if (minimum.isEmpty()) null else 12000L, r.minimumDueMinor)
+          assertEquals("2026-10-30", r.dueDate)
+          assertEquals("2026-10-19", r.eventDate)
+          assertTrue(r.dateFallback)
+          assertFalse(r.eventTimeExplicit)
+        }
+      }
+    }
+  }
+  @Test fun actualPurchasesKeepEventDatesAndExactMinorAmounts() {
+    for (amount in listOf("Rs.1919.16", "Rs. 1,919.16", "INR 1,919.16", "₹1,919.16", "INR 1919.16")) {
+      val r = parse("PNB Credit Card 4321 debited with $amount at SYNTHETIC CLINIC on 13-10-2026 19:24. Avl limit Rs 9,000.00")
+      assertEquals(191916L, r.amountMinor)
+      assertEquals(SmsTransactionParser.Kind.PURCHASE, r.kind)
+      assertEquals("2026-10-13", r.eventDate)
+      assertTrue(r.eventTimeExplicit)
+    }
+  }
+  @Test fun statementWordInMerchantIsNotAStatementAndDateOnlyIsNotATime() {
+    assertNull(SmsTransactionParser.parse("ICICI card XX4321 summary sent with INR 100.00 information", receipt))
+    val r = parse("Spent INR 50 using ICICI card XX4321 at STATEMENT BOOKSHOP on 18-Oct-2026")
+    assertEquals(SmsTransactionParser.Kind.PURCHASE, r.kind)
+    assertFalse(r.eventTimeExplicit)
+    assertFalse(parse("Spent INR 50 using ICICI card XX4321 at SYNTHETIC BOOKSHOP on 18-Oct-2026. Opening hours 19:24").eventTimeExplicit)
+    val reminder = parse("Pay Total Amount Due of Rs 1,234 or Minimum Amount Due of Rs 120 by 30-Oct-26 towards ICICI Credit Card XX4321")
+    assertEquals(SmsTransactionParser.Kind.PAYMENT_REMINDER, reminder.kind)
+    assertEquals("2026-10-19", reminder.eventDate)
+    val dated = parse("ICICI card XX4321 statement dated 18-Oct-2026 is available. Total of Rs 1,234 due by 30-Oct-26")
+    assertEquals(SmsTransactionParser.Kind.STATEMENT, dated.kind)
+    assertEquals("2026-10-18", dated.eventDate)
+  }
   @Test fun mealWalletSuffixAndPostEventBalanceVariants() {
     for (alias in listOf("Pluxee", "Sodexo")) {
       for (identity in listOf("wallet ending in 8765", "meal card number XX8765", "card ending with ****8765")) {

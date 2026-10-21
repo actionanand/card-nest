@@ -12,6 +12,7 @@ import { AppLockService } from '../../core/services/app-lock.service';
 import { CardTransaction, CreditCard, PaymentSource } from '../../core/models/domain';
 import { SmsReviewService } from './sms-review.service';
 import { defaultReviewFilters, SMS_REVIEW_FILTERS_KEY } from './sms-review-filters';
+import { matchExisting } from './sms-matching';
 import {
   SmsCandidate,
   SmsEvidence,
@@ -580,6 +581,136 @@ describe('SMS approved import integrity', () => {
     source: '',
     read,
   });
+  it('ranks bounded missing-suffix possibilities without automatically linking or guessing card identity', async () => {
+    const entry = manual({ merchant: 'Product purchased at Synthetic clinic' });
+    const item = evidence({ issuer: 'AMEX', merchant: 'SYNTHETIC CLINIC' });
+    expect(matchExisting(item, [card], [], [entry])).toMatchObject({
+      confidence: 'POSSIBLE_EXISTING',
+      transactionIds: [entry.id],
+    });
+    const candidate = stage(item);
+    expect(await service.reevaluatePending()).toBe(0);
+    await service.approve(
+      candidate,
+      card.id,
+      item.amountMinor,
+      'Keep manual description',
+      entry.id,
+    );
+    expect(count('card_transactions')).toBe(1);
+    expect(rows('SELECT state FROM sms_candidates')).toEqual([{ state: 'MATCHED_EXISTING' }]);
+    expect(
+      matchExisting({ ...item, accountDigits: '1234' }, [card], [], [entry]).transactionIds,
+    ).toEqual([]);
+    expect(
+      matchExisting({ ...item, dateFallback: true }, [card], [], [entry]).transactionIds,
+    ).toEqual([]);
+    expect(
+      matchExisting(item, [card], [], [entry, { ...entry, id: 'another' }]).transactionIds,
+    ).toHaveLength(2);
+  });
+  it('blocks legacy due-date purchases until original evidence is recovered and retains identity/read state', async () => {
+    const old = evidence({ dueDate: '2026-10-18', merchant: undefined });
+    const candidate = stage(old);
+    run('UPDATE sms_candidates SET read_at=? WHERE id=?', ['synthetic-read', old.id]);
+    await expect(
+      service.approve(candidate, card.id, old.amountMinor, 'Unverified'),
+    ).rejects.toThrow('statement');
+    vi.spyOn(
+      service as unknown as { recheckOriginals(items: unknown[]): Promise<{ items: unknown[] }> },
+      'recheckOriginals',
+    ).mockResolvedValue({
+      items: [
+        {
+          ...old,
+          kind: 'STATEMENT',
+          parserVersion: 2,
+          dateFallback: true,
+          eventDate: '2026-10-17',
+          statementTotalMinor: old.amountMinor,
+        },
+      ],
+    });
+    await service.recheckSaved();
+    expect(rows('SELECT id,kind,state,read_at FROM sms_candidates')).toEqual([
+      { id: old.id, kind: 'STATEMENT', state: 'PENDING', read_at: 'synthetic-read' },
+    ]);
+    expect(count('card_transactions')).toBe(0);
+    await expect(service.approve(candidate, card.id, old.amountMinor, 'Statement')).rejects.toThrow(
+      'evidence only',
+    );
+  });
+  it('keeps unavailable originals suspect and explicit imported decisions intact during recheck', async () => {
+    const pending = stage(evidence({ dueDate: '2026-10-18' }));
+    const imported = stage(evidence({ id: 'b'.repeat(64) }));
+    await service.approve(imported, card.id, 45000, 'Synthetic');
+    const before = rows('SELECT * FROM card_transactions');
+    const recovery = vi
+      .spyOn(
+        service as unknown as { recheckOriginals(items: unknown[]): Promise<{ items: unknown[] }> },
+        'recheckOriginals',
+      )
+      .mockResolvedValue({ items: [] });
+    await service.recheckSaved();
+    expect(recovery.mock.calls[0][0]).toEqual([expect.objectContaining({ id: pending.id })]);
+    expect(rows('SELECT * FROM card_transactions')).toEqual(before);
+    expect(rows('SELECT state FROM sms_candidates WHERE id=?', [imported.id])).toEqual([
+      { state: 'IMPORTED' },
+    ]);
+    expect(service.notice()).toContain('1 originals unavailable');
+  });
+  it('approves once, persists read/resolved state across a fresh service and retains imported history', async () => {
+    const candidate = stage(evidence());
+    await service.approve(candidate, card.id, 45000, 'Synthetic saved');
+    service = TestBed.runInInjectionContext(() => new SmsReviewService());
+    vi.spyOn(service, 'refreshAccess').mockResolvedValue();
+    vi.spyOn(service as unknown as { handoff(): Promise<void> }, 'handoff').mockResolvedValue();
+    await service.filterReview({ ...defaultReviewFilters(), read: 'ALL' });
+    expect(service.candidates()).toEqual([]);
+    expect(service.pendingTotal()).toBe(0);
+    await service.filterReview({ ...readFilters('ALL'), hideAlreadyAdded: false });
+    expect(service.candidates()[0]).toMatchObject({
+      state: 'IMPORTED',
+      transactionId: expect.any(String),
+      readAt: expect.any(String),
+    });
+    await service.approve(candidate, card.id, 45000, 'Retry');
+    expect(count('card_transactions')).toBe(1);
+    await service.filterReview({ ...readFilters('ALL'), hideAlreadyAdded: true });
+    expect(service.candidates()).toEqual([]);
+    await service.filterReview({ ...readFilters('ALL'), state: 'MATCHED_EXISTING' });
+    expect(service.candidates()).toEqual([]);
+  });
+  it('clears only old dismissed optional evidence and replay cannot resurrect its tombstone', async () => {
+    const dismissed = stage(evidence());
+    const readPending = stage(evidence({ id: 'b'.repeat(64) }));
+    run(
+      "UPDATE sms_candidates SET state='REJECTED',updated_at='2020-01-01',read_at='before' WHERE id=?",
+      [dismissed.id],
+    );
+    await service.markRead(readPending.id, true);
+    expect(await service.cleanCompletedEvidence()).toBe(1);
+    const after = rows('SELECT id,state,read_at,payload FROM sms_candidates ORDER BY id');
+    expect(after[0]).toMatchObject({ state: 'REJECTED', read_at: 'before', payload: null });
+    expect(after[1]['payload']).toBeTruthy();
+    await (service as unknown as { stage(items: SmsEvidence[]): Promise<void> }).stage([
+      dismissed.item!,
+    ]);
+    expect(rows('SELECT id,state,read_at,payload FROM sms_candidates ORDER BY id')).toEqual(after);
+    expect(count('card_transactions')).toBe(0);
+  });
+  it.each([false, true])(
+    'only records genuine explicit transaction time (%s)',
+    async (explicit) => {
+      await service.approve(
+        stage(evidence({ eventTime: '00:00', eventTimeExplicit: explicit })),
+        card.id,
+        45000,
+        'Synthetic',
+      );
+      expect(transactions()[0].transactionTime).toBe(explicit ? '00:00' : undefined);
+    },
+  );
   it('marks one suggestion read and unread without changing its review decision or ledger', async () => {
     const candidate = stage(evidence());
     const before = rows('SELECT id,state,transaction_id,payload,updated_at FROM sms_candidates');
@@ -599,6 +730,23 @@ describe('SMS approved import integrity', () => {
     expect(readCount()).toBe(451);
     expect(await service.markAllRead()).toBe(0);
     expect(rows('SELECT DISTINCT state FROM sms_candidates')).toEqual([{ state: 'PENDING' }]);
+    expect(count('card_transactions')).toBe(0);
+  });
+  it('retains only a 200-row active page across a large historical inbox without losing identities', async () => {
+    for (let index = 0; index < 1001; index++)
+      stage(evidence({ id: index.toString(16).padStart(64, '0') }));
+    realRefresh();
+    await service.filterReview({ ...readFilters('ALL'), state: 'PENDING' });
+    const first = service.candidates();
+    expect(first).toHaveLength(200);
+    expect(service.total()).toBe(1001);
+    await service.turnPage(1);
+    expect(service.candidates()).toHaveLength(200);
+    expect(service.candidates()).not.toBe(first);
+    expect(
+      service.candidates().some((item) => first.some((previous) => previous.id === item.id)),
+    ).toBe(false);
+    expect(count('sms_candidates')).toBe(1001);
     expect(count('card_transactions')).toBe(0);
   });
   it('defaults to unread independently of financial state and exposes Read/All history', async () => {
@@ -931,6 +1079,43 @@ describe('SMS approved import integrity', () => {
     expect(count('card_transactions')).toBe(1);
     expect(count('sms_reconciliation')).toBe(1);
     expect(transactions()).toHaveLength(1);
+  });
+  it('discards a stale pending-page refresh that finishes after a successful approval', async () => {
+    const candidate = stage(evidence());
+    realRefresh();
+    const db = TestBed.inject(SqliteDatabase);
+    const query = db.query.bind(db);
+    let release!: () => void;
+    let ready!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      ready = resolve;
+    });
+    let delayed = false;
+    vi.spyOn(db, 'query').mockImplementation(
+      async <T extends Record<string, unknown>>(
+        statement: string,
+        values: readonly unknown[] = [],
+      ) => {
+        const result = await query<T>(statement, values);
+        if (statement.startsWith('SELECT * FROM sms_candidates') && !delayed) {
+          delayed = true;
+          ready();
+          await blocked;
+        }
+        return result;
+      },
+    );
+    const stale = service.refresh();
+    await started;
+    await service.approve(candidate, card.id, 45000, 'Synthetic approved');
+    release();
+    await stale;
+    expect(service.candidates()).toEqual([]);
+    expect(rows('SELECT state FROM sms_candidates')).toEqual([{ state: 'IMPORTED' }]);
+    expect(count('card_transactions')).toBe(1);
   });
   it('constraint failure rolls back ledger, binding and UI state together', async () => {
     sql.exec(

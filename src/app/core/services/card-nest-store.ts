@@ -325,6 +325,17 @@ export class CardNestStore {
         updatedAt: new Date().toISOString(),
       },
     });
+    const durableUi = await this.database.query<{ key: string; encrypted_value: string }>(
+      "SELECT key,encrypted_value FROM app_preferences WHERE key IN ('sms_swipe_actions_enabled','show_transaction_time')",
+    );
+    this.smsSwipeActionsEnabled.set(
+      durableUi.some(
+        (row) => row.key === 'sms_swipe_actions_enabled' && row.encrypted_value === '1',
+      ),
+    );
+    this.showTransactionTime.set(
+      durableUi.some((row) => row.key === 'show_transaction_time' && row.encrypted_value === '1'),
+    );
     const preferences = await this.database.query<{ key: string; encrypted_value: string }>(
       `SELECT key, encrypted_value FROM app_preferences
        WHERE key IN ('budget_cycle_start_day', 'monthly_budget_minor', 'profile_title', 'profile_name', 'default_country_code', 'default_currency_code', 'emi_minimum_minor', 'spend_highlight_threshold_minor', 'highlight_dashboard_spending', 'flash_transaction_source_id', 'snoozed_reminder_card_ids', 'payment_sources', 'data_cleared')`,
@@ -402,6 +413,20 @@ export class CardNestStore {
     this.materializeRecurringTransactions();
     await this.loadEmiPlans();
     await this.loadLoans();
+  }
+
+  readonly smsSwipeActionsEnabled = signal(false);
+  readonly showTransactionTime = signal(false);
+  async setDurableUiPreference(
+    key: 'sms_swipe_actions_enabled' | 'show_transaction_time',
+    enabled: boolean,
+  ): Promise<void> {
+    if (!this.database.ready()) throw new Error('SQLite storage is unavailable.');
+    await this.upsertPreference(key, enabled ? '1' : '0');
+    (key === 'sms_swipe_actions_enabled'
+      ? this.smsSwipeActionsEnabled
+      : this.showTransactionTime
+    ).set(enabled);
   }
 
   async setMonthlyIncome(amountMinor: number): Promise<void> {

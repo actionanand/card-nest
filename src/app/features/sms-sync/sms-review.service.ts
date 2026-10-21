@@ -28,6 +28,7 @@ import {
   validEvidence,
   existingSuggestions,
   transferRelationship,
+  suspectEvidence,
 } from './sms-model';
 
 interface NativeSms {
@@ -43,6 +44,9 @@ interface NativeSms {
   acknowledge(options: { ids: string[] }): Promise<void>;
   parseText(options: { text: string }): Promise<{ item: unknown }>;
   clear(): Promise<void>;
+  recheckSaved(options: {
+    items: { id: string; providerId: string; receivedAt: number }[];
+  }): Promise<{ items: unknown[] }>;
 }
 const native = registerPlugin<NativeSms>('CardNestSms');
 
@@ -80,6 +84,7 @@ export class SmsReviewService {
   readonly savedTotal = signal(0);
   readonly notice = signal('');
   private accessRevision = 0;
+  private refreshRevision = 0;
   private reviewEntryAttempted = false;
   /** Called only by deliberate SMS Review navigation, never application startup. */
   async enterFromReview(days: number): Promise<void> {
@@ -136,6 +141,54 @@ export class SmsReviewService {
   private cancelled = false;
   private reconciliationCursor = '';
   private automaticCursor = '';
+  private reparseCursor = '';
+  private recheckOriginals(
+    items: { id: string; providerId: string; receivedAt: number }[],
+  ): Promise<{ items: unknown[] }> {
+    return native.recheckSaved({ items });
+  }
+  /** Explicit provider recheck, not a historical scan or a financial repair. */
+  async recheckSaved(): Promise<void> {
+    this.assertUnlocked();
+    const rows = await this.database.query<{ id: string; payload: string }>(
+      "SELECT id,payload FROM sms_candidates WHERE payload IS NOT NULL AND state='PENDING' AND id>? ORDER BY id LIMIT 50",
+      [this.reparseCursor],
+    );
+    const requests = rows.flatMap((row) => {
+      const item: unknown = JSON.parse(row.payload);
+      return validEvidence(item)
+        ? [{ id: row.id, providerId: item.providerId, receivedAt: item.receivedAt }]
+        : [];
+    });
+    const result = requests.length ? await this.recheckOriginals(requests) : { items: [] };
+    const allowed = new Set(requests.map((item) => item.id));
+    if (!result.items.every((item) => validEvidence(item) && allowed.has(item.id)))
+      throw new Error('Invalid recheck evidence. Saved decisions are retained.');
+    await this.stage(result.items as SmsEvidence[]);
+    this.reparseCursor = rows.length === 50 ? rows.at(-1)!.id : '';
+    this.notice.set(
+      `${result.items.length} saved messages reparsed. ${requests.length - result.items.length} originals unavailable; verify their evidence manually. No financial records changed.`,
+    );
+    await this.refresh();
+  }
+  /** User-requested cleanup: old dismissed evidence only, with permanent dedup tombstones. */
+  async cleanCompletedEvidence(): Promise<number> {
+    this.assertUnlocked();
+    const count = await this.database.atomic(async (tx) => {
+      const rows = await tx.query<{ id: string }>(
+        "SELECT id FROM sms_candidates WHERE state IN ('REJECTED','IGNORED') AND payload IS NOT NULL AND updated_at < ? ORDER BY updated_at LIMIT 200",
+        [new Date(Date.now() - 90 * 86400000).toISOString()],
+      );
+      for (const row of rows)
+        await tx.run(
+          "UPDATE sms_candidates SET payload=NULL,decision=COALESCE(decision,'') || ' · Optional evidence cleared after 90 days' WHERE id=? AND state IN ('REJECTED','IGNORED')",
+          [row.id],
+        );
+      return rows.length;
+    });
+    await this.refresh();
+    return count;
+  }
 
   /** Bounded batches, serialized with manual writes. This path never writes financial tables. */
   async reevaluatePending(): Promise<number> {
@@ -308,6 +361,7 @@ export class SmsReviewService {
   }
   async refresh(): Promise<void> {
     this.assertUnlocked();
+    const revision = ++this.refreshRevision;
     await this.refreshAccess();
     await this.handoff();
     await this.reevaluatePending();
@@ -320,6 +374,7 @@ export class SmsReviewService {
     }>(
       `SELECT COUNT(*) AS saved, COALESCE(SUM(CASE WHEN state='PENDING' THEN 1 ELSE 0 END),0) AS pending, COALESCE(SUM(CASE WHEN state='MATCHED_EXISTING' THEN 1 ELSE 0 END),0) AS matched, COALESCE(SUM(CASE WHEN state='IMPORTED' THEN 1 ELSE 0 END),0) AS imported, COALESCE(SUM(CASE WHEN read_at IS NULL THEN 1 ELSE 0 END),0) AS unread FROM sms_candidates`,
     );
+    if (revision !== this.refreshRevision || this.lock.locked() || !this.lock.foreground()) return;
     this.savedTotal.set(totals.saved);
     this.pendingTotal.set(totals.pending);
     this.matchedTotal.set(totals.matched ?? 0);
@@ -330,7 +385,11 @@ export class SmsReviewService {
       filters.mode === 'MULTIPLE' ? filters.kinds : filters.kind === 'ALL' ? null : [filters.kind];
     const kindClause =
       kinds === null ? '1=1' : kinds.length ? `kind IN (${kinds.map(() => '?').join(',')})` : '0=1';
-    const where = `WHERE (? = 'ALL' OR state = ?) AND (${kindClause})
+    const hideAdded =
+      filters.hideAlreadyAdded &&
+      filters.state !== 'MATCHED_EXISTING' &&
+      filters.state !== 'IMPORTED';
+    const where = `WHERE (? = 'ALL' OR state = ?) AND (${kindClause}) ${hideAdded ? "AND state NOT IN ('IMPORTED','MATCHED_EXISTING')" : ''}
       AND (? = '' OR (COALESCE(json_extract(payload,'$.merchant'),'') || ' ' || COALESCE(json_extract(payload,'$.reference'),'')) LIKE ?)
       AND (? = '' OR (COALESCE(json_extract(payload,'$.cardDigits'),'') || ' ' || COALESCE(json_extract(payload,'$.vehicleNumber'),'') || ' ' || COALESCE(json_extract(payload,'$.issuer'),'')) LIKE ?)
       AND (? = '' OR COALESCE(json_extract(payload,'$.eventDate'),substr(event_at,1,10)) >= ?)
@@ -356,6 +415,7 @@ export class SmsReviewService {
       `SELECT COUNT(*) AS total FROM sms_candidates ${where}`,
       values,
     );
+    if (revision !== this.refreshRevision || this.lock.locked() || !this.lock.foreground()) return;
     this.total.set(count.total);
     this.reviewPage.update((page) => Math.min(page, Math.max(0, Math.ceil(count.total / 200) - 1)));
     const rows = await this.database.query<{
@@ -371,6 +431,7 @@ export class SmsReviewService {
       ...values,
       this.reviewPage() * 200,
     ]);
+    if (revision !== this.refreshRevision || this.lock.locked() || !this.lock.foreground()) return;
     this.candidates.set(
       rows.map((r) => ({
         id: r.id,
@@ -386,11 +447,23 @@ export class SmsReviewService {
   }
   async markRead(id: string, read: boolean): Promise<void> {
     this.assertUnlocked();
-    await this.database.run('UPDATE sms_candidates SET read_at=? WHERE id=?', [
-      read ? new Date().toISOString() : null,
-      id,
-    ]);
-    await this.refresh();
+    const readAt = read ? new Date().toISOString() : null;
+    await this.database.run('UPDATE sms_candidates SET read_at=? WHERE id=?', [readAt, id]);
+    ++this.refreshRevision;
+    this.candidates.update((items) =>
+      items
+        .map((item) => (item.id === id ? { ...item, readAt } : item))
+        .filter(
+          (item) =>
+            this.filters.read === 'ALL' ||
+            (this.filters.read === 'READ' ? !!item.readAt : !item.readAt),
+        ),
+    );
+    try {
+      await this.refresh();
+    } catch {
+      this.notice.set('Read state saved. Refresh the inbox to reload counts.');
+    }
   }
   /** Explicit adjustment of a matched meal snapshot; never called by discovery or auto-linking. */
   async adjustMatchedBalance(candidate: SmsCandidate): Promise<void> {
@@ -496,7 +569,18 @@ export class SmsReviewService {
           new Date().toISOString(),
         ]),
       );
-      await this.refresh();
+      ++this.refreshRevision;
+      this.unreadTotal.set(0);
+      this.candidates.update((items) =>
+        this.filters.read === 'UNREAD'
+          ? []
+          : items.map((item) => ({ ...item, readAt: item.readAt ?? new Date().toISOString() })),
+      );
+      try {
+        await this.refresh();
+      } catch {
+        this.notice.set('Read state saved. Refresh the inbox to reload counts.');
+      }
       return count;
     } finally {
       this.markingRead.set(false);
@@ -637,7 +721,15 @@ export class SmsReviewService {
       const [retention] = await tx.query<{ value: string }>(
         `SELECT value FROM sms_sync_state WHERE key='retention_cutoff'`,
       );
-      for (const item of items) {
+      for (const incoming of items) {
+        // Parser fixes may change a receipt-fallback fingerprint. Retain the old identity/decision.
+        const [old] =
+          incoming.legacyId && incoming.legacyId !== incoming.id
+            ? await tx.query<{ id: string }>('SELECT id FROM sms_candidates WHERE id=?', [
+                incoming.legacyId,
+              ])
+            : [];
+        const item = old ? { ...incoming, id: old.id } : incoming;
         const changes = await tx.run(
           `INSERT OR IGNORE INTO sms_candidates(id, provider_id, event_at, kind, state, payload, updated_at)
           VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -663,7 +755,8 @@ export class SmsReviewService {
     });
   }
   private async handoff(): Promise<void> {
-    for (;;) {
+    // A refresh cannot retain or drain an unbounded inbox; subsequent refreshes resume safely.
+    for (let page = 0; page < 5; page++) {
       this.assertUnlocked();
       const { items } = await native.pending();
       if (!items.length) return;
@@ -719,6 +812,10 @@ export class SmsReviewService {
         throw new Error('Reopen this item for review first.');
       const item: unknown = JSON.parse(row.payload);
       if (!validEvidence(item)) throw new Error('Evidence unavailable.');
+      if (suspectEvidence(item))
+        throw new Error(
+          'Possible statement misclassification. Recheck the original SMS before adding.',
+        );
       const type = ledgerType(item);
       if (!type)
         throw new Error(
@@ -867,7 +964,7 @@ export class SmsReviewService {
           amountMinor,
           currencyCode: 'INR',
           transactionDate,
-          transactionTime: item.eventTime,
+          transactionTime: item.eventTimeExplicit === true ? item.eventTime : undefined,
           reference: item.reference,
           merchant: merchant.trim().slice(0, 100),
           categoryId:
@@ -991,8 +1088,15 @@ export class SmsReviewService {
         );
       }
       await tx.run(
-        `UPDATE sms_candidates SET state = ?, transaction_id = ?, decision = ?, updated_at = ? WHERE id = ?`,
-        [existingId ? 'MATCHED_EXISTING' : 'IMPORTED', transactionId, reconciliation, now, item.id],
+        `UPDATE sms_candidates SET state = ?, transaction_id = ?, decision = ?, updated_at = ?, read_at=COALESCE(read_at,?) WHERE id = ?`,
+        [
+          existingId ? 'MATCHED_EXISTING' : 'IMPORTED',
+          transactionId,
+          reconciliation,
+          now,
+          now,
+          item.id,
+        ],
       );
       await tx.run(
         `INSERT INTO sms_reconciliation(id,candidate_id,target_id,decision,amount_minor,created_at) VALUES (?,?,?,?,?,?)`,
@@ -1053,6 +1157,7 @@ export class SmsReviewService {
         this.store.acceptCommittedImport(result.balanceAdjustment, result.sources);
       if (result.statement) this.store.acceptCommittedStatement(result.statement);
     }
+    ++this.refreshRevision;
     this.notice.set(
       existingId
         ? reconciliation === 'REPAIR_EXISTING'

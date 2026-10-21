@@ -10,6 +10,10 @@ import { randomUUID } from 'node:crypto';
 import { unlinkSync, existsSync } from 'node:fs';
 import { APP_ENVIRONMENT } from '../services/app-environment';
 import { reviewFilters } from '../../features/sms-sync/sms-review-filters';
+import { BackupService } from '../services/backup.service';
+import { webcrypto } from 'node:crypto';
+import { Blob as NodeBlob } from 'node:buffer';
+import { NATIVE_EXPORT } from '../services/native-export';
 
 vi.hoisted(() => vi.resetModules());
 const config = { smsPageSize: 200, seedDemoData: false };
@@ -35,6 +39,46 @@ vi.mock('@capacitor-community/sqlite', () => ({
 describe('Durable first-run data, additive read migration and private portable backups', () => {
   let sql: DatabaseSync;
   let database: SqliteDatabase;
+  it('persists default-off UI preferences through serialized writes, reload and encrypted backup restoration', async () => {
+    await database.initialise();
+    const store = TestBed.inject(CardNestStore);
+    await store.initialisePreferences();
+    expect(store.smsSwipeActionsEnabled()).toBe(false);
+    expect(store.showTransactionTime()).toBe(false);
+    await Promise.all([
+      store.setDurableUiPreference('sms_swipe_actions_enabled', true),
+      store.setDurableUiPreference('show_transaction_time', true),
+    ]);
+    vi.stubGlobal('crypto', webcrypto);
+    vi.stubGlobal('Blob', NodeBlob);
+    try {
+      const backups = TestBed.inject(BackupService);
+      const backup = await backups.create('synthetic-preference-passphrase');
+      expect(backup.contents).not.toContain('sms_swipe_actions_enabled');
+      await store.setDurableUiPreference('show_transaction_time', false);
+      await backups.restore(backup.contents, 'synthetic-preference-passphrase');
+      await store.initialisePreferences();
+      expect(store.smsSwipeActionsEnabled()).toBe(true);
+      expect(store.showTransactionTime()).toBe(true);
+      await database.run(
+        "UPDATE app_preferences SET encrypted_value='invalid' WHERE key='show_transaction_time'",
+      );
+      await database.run("DELETE FROM app_preferences WHERE key='sms_swipe_actions_enabled'");
+      await store.initialisePreferences();
+      expect(store.showTransactionTime()).toBe(false);
+      expect(store.smsSwipeActionsEnabled()).toBe(false);
+      await database.run("DELETE FROM app_preferences WHERE key='show_transaction_time'");
+      const oldBackup = await backups.create('synthetic-preference-passphrase');
+      await store.setDurableUiPreference('sms_swipe_actions_enabled', true);
+      await store.setDurableUiPreference('show_transaction_time', true);
+      await backups.restore(oldBackup.contents, 'synthetic-preference-passphrase');
+      await store.initialisePreferences();
+      expect(store.showTransactionTime()).toBe(false);
+      expect(store.smsSwipeActionsEnabled()).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
   const rows = (statement: string, values: readonly unknown[] = []) =>
     sql.prepare(statement).all(...(values as SQLInputValue[]));
   const count = (table: string) => Number(rows(`SELECT COUNT(*) AS n FROM ${table}`)[0]['n']);
@@ -129,7 +173,12 @@ describe('Durable first-run data, additive read migration and private portable b
       return { changes: { changes: 0 } };
     });
     TestBed.configureTestingModule({
-      providers: [SqliteDatabase, CardNestStore, { provide: APP_ENVIRONMENT, useValue: config }],
+      providers: [
+        SqliteDatabase,
+        CardNestStore,
+        { provide: APP_ENVIRONMENT, useValue: config },
+        { provide: NATIVE_EXPORT, useValue: {} },
+      ],
     });
     database = TestBed.inject(SqliteDatabase);
   });

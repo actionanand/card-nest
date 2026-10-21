@@ -77,6 +77,7 @@ class SmsQueue(context: Context) : SQLiteOpenHelper(context, "sms-discovery.db",
       put("eventTime", r.eventTime); put("timeZone", r.timeZone); put("cardNetwork", r.cardNetwork)
       put("confidence", r.confidence); put("earnedForPeriod", r.earnedForPeriod); put("statementDate", r.statementDate)
       put("balancePosition", r.balancePosition)
+      put("eventTimeExplicit", r.eventTimeExplicit); put("parserVersion", r.parserVersion); put("legacyId", r.legacyId)
     }
   }
 }
