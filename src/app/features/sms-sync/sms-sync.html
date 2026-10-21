@@ -409,6 +409,7 @@
         @for (candidate of visible(); track candidate.id) {
           <article
             class="candidate"
+            [class.swipe-layout]="swipeEnabled()"
             appSmsSwipe
             [enabled]="
               swipeEnabled() && !loading() && !sync.lock.locked() && sync.lock.foreground()
@@ -417,8 +418,14 @@
             (reviewSwipe)="swipeReview(candidate)"
             (readSwipe)="swipeRead(candidate)"
           >
-            <span class="swipe-review-hint" aria-hidden="true">Review →</span
-            ><span class="swipe-read-hint" aria-hidden="true">← Dismiss</span>
+            <span class="swipe-review-hint" aria-hidden="true"
+              ><app-icon name="arrow_right" /><span>Review</span></span
+            ><span
+              class="swipe-read-hint"
+              [class.swipe-action-disabled]="candidate.state !== 'PENDING'"
+              aria-hidden="true"
+              ><app-icon name="arrow_left" /><span>Dismiss</span></span
+            >
             <div class="candidate-content">
               <div class="row-main">
                 <strong>{{ title(candidate.item, candidate.kind) }}</strong
@@ -434,7 +441,10 @@
               </div>
               <div class="row-source">
                 <span>{{ sourceLabel(candidate) }}</span>
-                @if (candidate.state === 'MATCHED_EXISTING' || candidate.state === 'IMPORTED') {
+                @if (
+                  !swipeEnabled() &&
+                  (candidate.state === 'MATCHED_EXISTING' || candidate.state === 'IMPORTED')
+                ) {
                   <button
                     class="btn clear"
                     type="button"
@@ -447,40 +457,90 @@
                   </button>
                 }
               </div>
-              <div class="row-actions">
-                @if (
-                  (candidate.state === 'MATCHED_EXISTING' || candidate.state === 'IMPORTED') &&
-                  candidate.transactionId
-                ) {
-                  <button class="btn btn-primary" type="button" (click)="viewExisting(candidate)">
-                    View transaction
-                  </button>
-                } @else {
+              @if (swipeEnabled()) {
+                <div class="candidate-menu-wrap">
                   <button
-                    class="btn btn-primary"
+                    class="candidate-menu-trigger"
                     type="button"
-                    [id]="'review-' + candidate.id"
-                    aria-haspopup="dialog"
-                    (click)="open(candidate)"
+                    [id]="'candidate-menu-trigger-' + candidate.id"
+                    [attr.aria-expanded]="candidateMenuId() === candidate.id"
+                    [attr.aria-controls]="'candidate-menu-' + candidate.id"
+                    aria-haspopup="menu"
+                    [attr.aria-label]="'Actions for ' + title(candidate.item, candidate.kind)"
+                    (click)="toggleCandidateMenu(candidate.id)"
                   >
-                    {{
-                      candidate.state === 'PENDING' &&
-                      candidate.item &&
-                      importableCandidate(candidate)
-                        ? 'Review & add'
-                        : 'Review details'
-                    }}<span class="sr-only"> {{ title(candidate.item, candidate.kind) }}</span>
+                    <app-icon name="more" />
                   </button>
-                }
-                <button
-                  class="btn"
-                  type="button"
-                  (click)="markRead(candidate)"
-                  [disabled]="loading()"
-                >
-                  {{ candidate.readAt ? 'Mark unread' : 'Mark read' }}
-                </button>
-              </div>
+                  @if (candidateMenuId() === candidate.id) {
+                    <div
+                      class="candidate-menu"
+                      [id]="'candidate-menu-' + candidate.id"
+                      role="menu"
+                      [attr.aria-label]="'Actions for ' + title(candidate.item, candidate.kind)"
+                    >
+                      @if (
+                        (candidate.state === 'MATCHED_EXISTING' || candidate.state === 'IMPORTED') &&
+                        candidate.transactionId
+                      ) {
+                        <button type="button" role="menuitem" (click)="viewExistingFromMenu(candidate)">
+                          View transaction
+                        </button>
+                        <button type="button" role="menuitem" (click)="reviewFromMenu(candidate)">
+                          Review details
+                        </button>
+                      } @else {
+                        <button type="button" role="menuitem" (click)="reviewFromMenu(candidate)">
+                          {{
+                            candidate.state === 'PENDING' &&
+                            candidate.item &&
+                            importableCandidate(candidate)
+                              ? 'Review & add'
+                              : 'Review details'
+                          }}
+                        </button>
+                      }
+                      <button type="button" role="menuitem" (click)="markReadFromMenu(candidate)">
+                        {{ candidate.readAt ? 'Mark unread' : 'Mark read' }}
+                      </button>
+                    </div>
+                  }
+                </div>
+              } @else {
+                <div class="row-actions">
+                  @if (
+                    (candidate.state === 'MATCHED_EXISTING' || candidate.state === 'IMPORTED') &&
+                    candidate.transactionId
+                  ) {
+                    <button class="btn btn-primary" type="button" (click)="viewExisting(candidate)">
+                      View transaction
+                    </button>
+                  } @else {
+                    <button
+                      class="btn btn-primary"
+                      type="button"
+                      [id]="'review-' + candidate.id"
+                      aria-haspopup="dialog"
+                      (click)="open(candidate)"
+                    >
+                      {{
+                        candidate.state === 'PENDING' &&
+                        candidate.item &&
+                        importableCandidate(candidate)
+                          ? 'Review & add'
+                          : 'Review details'
+                      }}<span class="sr-only"> {{ title(candidate.item, candidate.kind) }}</span>
+                    </button>
+                  }
+                  <button
+                    class="btn"
+                    type="button"
+                    (click)="markRead(candidate)"
+                    [disabled]="loading()"
+                  >
+                    {{ candidate.readAt ? 'Mark unread' : 'Mark read' }}
+                  </button>
+                </div>
+              }
               @if (matchReason(candidate); as reason) {
                 <p class="muted">{{ reason }}</p>
               }

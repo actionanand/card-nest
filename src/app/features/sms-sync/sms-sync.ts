@@ -64,6 +64,7 @@ export class SmsSyncPage {
   readonly swipeEnabled = computed(
     () => Capacitor.getPlatform() === 'android' && (this.store.smsSwipeActionsEnabled?.() ?? false),
   );
+  readonly candidateMenuId = signal<string | null>(null);
   enableSwipeActions(): void {
     void this.run(() => this.store.setDurableUiPreference('sms_swipe_actions_enabled', true));
   }
@@ -559,6 +560,11 @@ export class SmsSyncPage {
   }
   androidBack(event: Event): void {
     if (document.querySelector('app-select-picker dialog[open]')) return;
+    if (this.candidateMenuId()) {
+      event.preventDefault();
+      this.closeCandidateMenu();
+      return;
+    }
     if (this.confirmReadCount() !== null) {
       event.preventDefault();
       this.confirmReadCount.set(null);
@@ -833,8 +839,32 @@ export class SmsSyncPage {
   readonly evidenceTarget = new FormControl('', { nonNullable: true });
   escape(): void {
     if (document.querySelector('app-select-picker dialog[open]')) return;
-    if (this.confirmReadCount() !== null) this.confirmReadCount.set(null);
+    if (this.candidateMenuId()) this.closeCandidateMenu();
+    else if (this.confirmReadCount() !== null) this.confirmReadCount.set(null);
     else this.closeEditor();
+  }
+  toggleCandidateMenu(id: string): void {
+    if (this.candidateMenuId() === id) this.closeCandidateMenu(false);
+    else this.candidateMenuId.set(id);
+  }
+  closeCandidateMenu(restoreFocus = true): void {
+    const id = this.candidateMenuId();
+    if (!id) return;
+    this.candidateMenuId.set(null);
+    if (restoreFocus)
+      queueMicrotask(() => document.getElementById(`candidate-menu-trigger-${id}`)?.focus());
+  }
+  reviewFromMenu(candidate: SmsCandidate): void {
+    this.closeCandidateMenu(false);
+    this.swipeReview(candidate);
+  }
+  viewExistingFromMenu(candidate: SmsCandidate): void {
+    this.closeCandidateMenu(false);
+    this.viewExisting(candidate);
+  }
+  markReadFromMenu(candidate: SmsCandidate): void {
+    this.closeCandidateMenu(false);
+    this.markRead(candidate);
   }
   markRead(candidate: SmsCandidate): void {
     void this.run(async () => {

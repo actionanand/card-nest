@@ -3,6 +3,7 @@ import { DomSanitizer } from '@angular/platform-browser';
 import {
   LucideArrowDown,
   LucideArrowLeft,
+  LucideArrowRight,
   LucideArrowUp,
   LucideApple,
   LucideArchive,
@@ -163,6 +164,8 @@ const ICONS: Readonly<Record<string, LucideIconInput>> = {
   close: LucideX,
   plus: LucidePlus,
   back: LucideArrowLeft,
+  arrow_left: LucideArrowLeft,
+  arrow_right: LucideArrowRight,
   chevron_down: LucideChevronDown,
   chevron_left: LucideChevronLeft,
   chevron_right: LucideChevronRight,

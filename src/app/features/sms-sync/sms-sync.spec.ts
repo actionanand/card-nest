@@ -11,6 +11,7 @@ import { By } from '@angular/platform-browser';
 import { AppSelectPicker } from '../../shared/app-select-picker';
 import { SnackbarService } from '../../core/services/snackbar.service';
 import { defaultReviewFilters } from './sms-review-filters';
+import { Capacitor } from '@capacitor/core';
 
 const demoCard: CreditCard = {
   id: 'demo-card',
@@ -64,6 +65,8 @@ describe('SMS review privacy and explicit approval UI', () => {
   const navigation = signal<{ extras: { info?: unknown; state?: Record<string, unknown> } } | null>(
     null,
   );
+  const swipePreference = signal(false);
+  const setDurableUiPreference = vi.fn().mockResolvedValue(undefined);
   const sync = {
     lock: { locked, foreground },
     candidates,
@@ -106,6 +109,17 @@ describe('SMS review privacy and explicit approval UI', () => {
     cancel: vi.fn().mockResolvedValue(undefined),
     scan: vi.fn().mockResolvedValue(undefined),
     turnPage: vi.fn().mockResolvedValue(undefined),
+  };
+  const store = {
+    cards: signal([]),
+    paymentSources: signal([]),
+    categories: signal([]),
+    transactions: signal([]),
+    loans: signal([]),
+    emiInstallments: signal([]),
+    smsSwipeActionsEnabled: swipePreference,
+    setDurableUiPreference,
+    sourceDetail: () => 'DEMO',
   };
   it('shows a seven-second dismissal Undo and keeps visible row actions together', async () => {
     const candidate = demoCandidate();
@@ -156,6 +170,8 @@ describe('SMS review privacy and explicit approval UI', () => {
     sync.reviewPage.set(0);
     sync.unreadTotal.set(0);
     sync.markingRead.set(false);
+    swipePreference.set(false);
+    vi.spyOn(Capacitor, 'getPlatform').mockReturnValue('web');
     vi.clearAllMocks();
     sync.loadReviewFilters.mockImplementation(async () => defaultReviewFilters());
     TestBed.configureTestingModule({
@@ -165,18 +181,75 @@ describe('SMS review privacy and explicit approval UI', () => {
         { provide: SmsReviewService, useValue: sync },
         {
           provide: CardNestStore,
-          useValue: {
-            cards: signal([]),
-            paymentSources: signal([]),
-            categories: signal([]),
-            transactions: signal([]),
-            loans: signal([]),
-            emiInstallments: signal([]),
-            sourceDetail: () => 'DEMO',
-          },
+          useValue: store,
         },
       ],
     });
+  });
+  it('uses compact icon-labelled swipe actions and keeps explicit row buttons when swipe is off', async () => {
+    candidates.set([demoCandidate()]);
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const candidate = fixture.nativeElement.querySelector('.candidate') as HTMLElement;
+    expect(candidate.querySelectorAll('.row-actions button')).toHaveLength(2);
+    expect(candidate.querySelector('.candidate-menu-trigger')).toBeNull();
+  });
+  it('compacts Android swipe cards into an accessible actions menu with semantic SVG swipe panels', async () => {
+    vi.mocked(Capacitor.getPlatform).mockReturnValue('android');
+    swipePreference.set(true);
+    const candidate = demoCandidate();
+    candidates.set([candidate]);
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    document.body.append(fixture.nativeElement);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    const card = fixture.nativeElement.querySelector('.candidate') as HTMLElement;
+    expect(card.querySelector('.row-actions')).toBeNull();
+    expect(card.querySelector('.candidate-menu-trigger')).not.toBeNull();
+    expect(card.querySelector('.swipe-review-hint app-icon svg')).not.toBeNull();
+    expect(card.querySelector('.swipe-read-hint app-icon svg')).not.toBeNull();
+    expect(card.querySelector('.swipe-review-hint')?.textContent).toContain('Review');
+    expect(card.querySelector('.swipe-read-hint')?.textContent).toContain('Dismiss');
+    expect(card.textContent).not.toMatch(/[←→➜]/);
+    const trigger = card.querySelector('.candidate-menu-trigger') as HTMLButtonElement;
+    trigger.click();
+    fixture.detectChanges();
+    expect(trigger.getAttribute('aria-expanded')).toBe('true');
+    const menu = card.querySelector('[role=menu]') as HTMLElement;
+    expect(menu.querySelectorAll('[role=menuitem]')).toHaveLength(2);
+    expect(menu.textContent).toContain('Review & add');
+    expect(menu.textContent).toContain('Mark read');
+    (menu.querySelector('[role=menuitem]') as HTMLButtonElement).click();
+    fixture.detectChanges();
+    expect(fixture.componentInstance.selected()?.id).toBe(candidate.id);
+    expect(sync.approve).not.toHaveBeenCalled();
+    fixture.componentInstance.closeEditor();
+    fixture.detectChanges();
+    trigger.click();
+    fixture.detectChanges();
+    fixture.componentInstance.escape();
+    await fixture.whenStable();
+    expect(fixture.componentInstance.candidateMenuId()).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+    fixture.nativeElement.remove();
+  });
+  it('keeps matched cards reachable through the compact menu without offering enabled dismissal', async () => {
+    vi.mocked(Capacitor.getPlatform).mockReturnValue('android');
+    swipePreference.set(true);
+    const candidate = { ...demoCandidate(), state: 'MATCHED_EXISTING' as const, transactionId: 'tx' };
+    candidates.set([candidate]);
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const card = fixture.nativeElement.querySelector('.candidate') as HTMLElement;
+    expect(card.querySelector('.swipe-read-hint')?.classList).toContain('swipe-action-disabled');
+    (card.querySelector('.candidate-menu-trigger') as HTMLButtonElement).click();
+    fixture.detectChanges();
+    expect(card.querySelector('[role=menu]')?.textContent).toContain('View transaction');
+    expect(card.querySelector('[role=menu]')?.textContent).toContain('Review details');
+    expect(card.querySelector('[role=menu]')?.textContent).toContain('Mark read');
   });
   it('restores applied SQLite filters into the controls without saving them again or approving', async () => {
     sync.loadReviewFilters.mockResolvedValueOnce({
