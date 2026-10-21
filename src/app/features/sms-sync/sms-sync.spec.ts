@@ -170,6 +170,12 @@ describe('SMS review privacy and explicit approval UI', () => {
     sync.reviewPage.set(0);
     sync.unreadTotal.set(0);
     sync.markingRead.set(false);
+    store.cards.set([]);
+    store.paymentSources.set([]);
+    store.categories.set([]);
+    store.transactions.set([]);
+    store.loans.set([]);
+    store.emiInstallments.set([]);
     swipePreference.set(false);
     vi.spyOn(Capacitor, 'getPlatform').mockReturnValue('web');
     vi.clearAllMocks();
