@@ -1,3 +1,4 @@
+@use '../../shared/checkbox';
 .database-warning {
   display: flex;
   gap: 0.8rem;
@@ -50,7 +51,8 @@
 }
 .settings-nav button[aria-pressed='true'] {
   color: var(--accent);
-  background: var(--accent-soft);
+  text-decoration: underline;
+  text-underline-offset: 0.3em;
 }
 .settings-content {
   display: grid;
@@ -175,55 +177,8 @@
 .spend-toggle {
   grid-column: 1 / -1;
 }
-.toggle input {
-  appearance: none;
-  display: grid;
-  place-items: center;
-  flex: 0 0 44px;
-  width: 44px;
-  height: 44px;
-  min-height: 44px;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  border-radius: 0.4rem;
-  background: transparent;
-  cursor: pointer;
-}
-.toggle input::before {
-  content: '';
-  grid-area: 1 / 1;
-  box-sizing: border-box;
-  width: 20px;
-  height: 20px;
-  border: 2px solid var(--muted);
-  border-radius: 3px;
-}
-.toggle input:checked::before {
-  border-color: var(--accent);
-  background: var(--accent);
-}
-.toggle input:checked::after {
-  content: '';
-  grid-area: 1 / 1;
-  width: 6px;
-  height: 11px;
-  border: solid var(--surface);
-  border-width: 0 2px 2px 0;
-  transform: translateY(-1px) rotate(45deg);
-}
-.toggle input:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-@media (forced-colors: active) {
-  .toggle input {
-    appearance: auto;
-  }
-  .toggle input::before,
-  .toggle input::after {
-    display: none;
-  }
+.toggle {
+  @include checkbox.control;
 }
 .theme-options {
   display: grid;
@@ -485,8 +440,7 @@ button:disabled {
   .settings-nav {
     position: static;
     display: flex;
-    flex-wrap: nowrap;
-    overflow-x: auto;
+    flex-wrap: wrap;
     min-width: 0;
     padding-block: 0.25rem;
     overscroll-behavior-x: contain;
@@ -497,8 +451,9 @@ button:disabled {
     padding: 1rem;
   }
   .settings-nav button {
-    white-space: nowrap;
-    flex-shrink: 0;
+    white-space: normal;
+    flex: 0 1 auto;
+    max-width: 100%;
     min-height: 44px;
   }
   .theme-options {
@@ -531,4 +486,16 @@ button:disabled {
   .pin-actions .btn {
     flex: 1;
   }
+}
+
+.auto-lock-row {
+  flex-wrap: wrap;
+}
+.auto-lock-row app-select-picker {
+  width: 9rem;
+  max-width: 100%;
+  margin-left: auto;
+}
+#monthly-budget {
+  scroll-margin-top: calc(6rem + env(safe-area-inset-top));
 }

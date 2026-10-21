@@ -79,6 +79,47 @@ describe('Durable first-run data, additive read migration and private portable b
       vi.unstubAllGlobals();
     }
   });
+  it('keeps the SQLite budget and cycle through reload and encrypted restore, including older unset backups', async () => {
+    await database.initialise();
+    const store = TestBed.inject(CardNestStore);
+    await store.initialisePreferences();
+    expect(store.monthlyBudgetMinor()).toBe(0);
+    await store.setMonthlyBudget(654321);
+    await store.setBudgetCycleStartDay(12);
+    const restartedStore = TestBed.runInInjectionContext(() => new CardNestStore());
+    await restartedStore.initialisePreferences();
+    expect(restartedStore.monthlyBudgetMinor()).toBe(654321);
+    expect(restartedStore.budgetCycleStartDay()).toBe(12);
+    await store.initialisePreferences();
+    expect(store.monthlyBudgetMinor()).toBe(654321);
+    expect(store.budgetCycleStartDay()).toBe(12);
+    vi.stubGlobal('crypto', webcrypto);
+    vi.stubGlobal('Blob', NodeBlob);
+    try {
+      const backups = TestBed.inject(BackupService);
+      const backup = await backups.create('synthetic-budget-passphrase');
+      expect(backup.contents).not.toContain('monthly_budget_minor');
+      await store.setMonthlyBudget(100);
+      await store.setBudgetCycleStartDay(5);
+      await backups.restore(backup.contents, 'synthetic-budget-passphrase');
+      await store.initialisePreferences();
+      expect(store.monthlyBudgetMinor()).toBe(654321);
+      expect(store.budgetCycleStartDay()).toBe(12);
+      await database.run(
+        "DELETE FROM app_preferences WHERE key IN ('monthly_budget_minor','budget_cycle_start_day')",
+      );
+      const oldBackup = await backups.create('synthetic-budget-passphrase');
+      await store.setMonthlyBudget(100);
+      await store.setBudgetCycleStartDay(5);
+      await backups.restore(oldBackup.contents, 'synthetic-budget-passphrase');
+      await store.initialisePreferences();
+      expect(store.monthlyBudgetMinor()).toBe(0);
+      expect(store.budgetCycleStartDay()).toBe(1);
+      expect(store.displayCurrencyCode()).toBe('INR');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
   const rows = (statement: string, values: readonly unknown[] = []) =>
     sql.prepare(statement).all(...(values as SQLInputValue[]));
   const count = (table: string) => Number(rows(`SELECT COUNT(*) AS n FROM ${table}`)[0]['n']);

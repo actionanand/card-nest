@@ -120,9 +120,11 @@
             [checked]="lockOnBackground()"
             (change)="toggleLockOnBackground()"
         /></label>
-        <div class="setting-row">
+        <div class="setting-row auto-lock-row">
+          <span>Auto-lock after</span>
           <app-select-picker
             label="Auto-lock after"
+            [hideLabel]="true"
             [options]="autoLockOptions"
             [value]="autoLockDelay()"
             (valueChange)="autoLockDelay.set($event)"
@@ -146,16 +148,16 @@
             <p>Choose how CardNest looks.</p>
           </div>
         </div>
-        <label class="setting-row"
+        <label class="setting-row toggle"
           ><span
             ><strong>Enable SMS review swipe actions</strong
-            ><small>Swipe right to review and add; swipe left to mark as read.</small></span
+            ><small>Swipe right to review and add; swipe left to dismiss with Undo.</small></span
           ><input
             type="checkbox"
             [checked]="store.smsSwipeActionsEnabled?.() ?? false"
             (change)="saveDisplayPreference('sms_swipe_actions_enabled', $event)"
         /></label>
-        <label class="setting-row"
+        <label class="setting-row toggle"
           ><span
             ><strong>Show transaction time</strong
             ><small>Display the recorded transaction time below its date in Activity.</small></span
@@ -274,6 +276,8 @@
             ></label
           ><label
             >Monthly budget<input
+              #monthlyBudgetInput
+              id="monthly-budget"
               [value]="store.monthlyBudgetMinor() / 100"
               [disabled]="!database.ready()"
               type="number"

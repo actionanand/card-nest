@@ -210,7 +210,7 @@
           type="checkbox"
           [checked]="hideAlreadyAdded()"
           (change)="hideAlreadyAdded.set(checked($event)); applyFilters()"
-        />Hide already added</label
+        /><span>Hide already added</span></label
       >
       <p class="muted">
         Hides imported and matched items in active or all-history results. Already added remains
@@ -725,8 +725,9 @@
                   balances never overwrite calculated funds.
                 </p>
                 <label class="check"
-                  ><input type="checkbox" formControlName="separate" />I verified this is a separate
-                  event from any suggested existing entry.</label
+                  ><input type="checkbox" formControlName="separate" /><span
+                    >I verified this is a separate event from any suggested existing entry.</span
+                  ></label
                 >
               </details>
               <button class="btn btn-primary" type="submit" [disabled]="saving() || !editor.valid">

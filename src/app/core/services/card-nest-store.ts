@@ -344,9 +344,9 @@ export class CardNestStore {
     this.dataWasCleared = values.get('data_cleared') === '1';
     const cycleDay = Number(values.get('budget_cycle_start_day'));
     const budget = Number(values.get('monthly_budget_minor'));
-    if (Number.isInteger(cycleDay) && cycleDay >= 1 && cycleDay <= 28) {
-      this.budgetCycleStartDay.set(cycleDay);
-    }
+    this.budgetCycleStartDay.set(
+      Number.isInteger(cycleDay) && cycleDay >= 1 && cycleDay <= 28 ? cycleDay : 1,
+    );
     if (Number.isFinite(budget) && budget >= 0) this.monthlyBudgetMinor.set(budget);
     else this.monthlyBudgetMinor.set(0);
     this.profileTitle.set(values.get('profile_title') ?? '');

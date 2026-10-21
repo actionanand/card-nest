@@ -297,6 +297,21 @@ describe('SMS approved import integrity', () => {
       'Possible existing recurring transaction',
     );
   });
+  it('does not unlink a resolved legacy automatic relationship merely because the parser was upgraded', async () => {
+    const entry = manual();
+    const candidate = stage(
+      evidence({ parserVersion: 2, issuer: 'AMEX', cardDigits: '4321', merchant: entry.merchant }),
+    );
+    run(
+      "UPDATE sms_candidates SET state='MATCHED_EXISTING',transaction_id=?,decision='AUTO_EXISTING: prior verified relationship',read_at='before' WHERE id=?",
+      [entry.id, candidate.id],
+    );
+    const before = rows('SELECT * FROM sms_candidates');
+    const ledger = rows('SELECT * FROM card_transactions');
+    expect(await service.reevaluatePending()).toBe(0);
+    expect(rows('SELECT * FROM sms_candidates')).toEqual(before);
+    expect(rows('SELECT * FROM card_transactions')).toEqual(ledger);
+  });
   it('requires bounded original recheck for pre-v3 AMEX purchases without changing read state or ledger', async () => {
     const old = stage(
       evidence({ parserVersion: 2, issuer: 'AMEX', cardDigits: '4321', merchant: 'T&Cs Apply' }),

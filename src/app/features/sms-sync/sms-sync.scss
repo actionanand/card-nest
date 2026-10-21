@@ -428,10 +428,14 @@ dd {
 }
 .check {
   display: flex;
-  align-items: center;
+  align-items: start;
   gap: 0.35rem;
   min-height: 44px;
   @include checkbox.control;
+}
+.check > span {
+  line-height: 1.4;
+  padding-top: max(0px, calc(22px - 0.7em));
 }
 :focus-visible {
   outline: 3px solid var(--accent);
@@ -744,6 +748,7 @@ dd {
 }
 :is(.inbox-tabs, .type-mode) button {
   min-width: 0;
+  overflow-wrap: anywhere;
   min-height: 44px;
   padding: 0.4rem 0.25rem;
   border: 0;
@@ -768,6 +773,7 @@ dd {
 .row-actions .btn {
   flex: 1;
   min-width: 0;
+  overflow-wrap: anywhere;
   font-size: 0.78rem;
   padding: 0.5rem;
 }

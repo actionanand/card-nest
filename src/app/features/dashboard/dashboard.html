@@ -106,7 +106,11 @@
             <span class="dot"></span>{{ money(snapshot().remainingBudgetMinor ?? 0) }} remaining
           </p>
         } @else {
-          <p>Set a monthly budget in Settings.</p>
+          <p>
+            <a routerLink="/settings" fragment="monthly-budget" style="color: var(--accent)"
+              >Set a monthly budget in Settings.</a
+            >
+          </p>
         }
       </div>
     </section>

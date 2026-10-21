@@ -303,6 +303,9 @@ export class SmsReviewService {
       for (const row of automatic) {
         if (!row.payload) continue;
         const item = JSON.parse(row.payload) as SmsEvidence;
+        // A parser upgrade is not permission to undo a previously resolved relationship.
+        // Legacy evidence is surfaced for explicit inspection, while its ledger remains intact.
+        if (suspectEvidence(item)) continue;
         const [target] = await tx.query<{ payload: string }>(
           'SELECT payload FROM card_transactions WHERE id=?',
           [row.transaction_id],

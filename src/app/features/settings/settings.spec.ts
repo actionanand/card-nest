@@ -1,6 +1,8 @@
 import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
-import { provideRouter } from '@angular/router';
+import { of } from 'rxjs';
+import axe from 'axe-core';
+import { ActivatedRoute, provideRouter } from '@angular/router';
 import { SettingsPage } from './settings';
 import { SqliteDatabase } from '../../core/data/sqlite-database';
 import { BackupService } from '../../core/services/backup.service';
@@ -66,6 +68,48 @@ describe('Explicit backup destination choice', () => {
     }
     expect(location.href).toBe(before);
     expect(fixture.componentInstance.backupPassphrase()).toBe('synthetic-unsaved');
+    fixture.nativeElement.remove();
+  });
+  it.each(['light', 'dark'])(
+    'passes available AXE WCAG checks for Settings in %s mode',
+    async (theme) => {
+      document.documentElement.dataset['theme'] = theme;
+      const fixture = TestBed.createComponent(SettingsPage);
+      fixture.detectChanges();
+      await fixture.whenStable();
+      document.body.append(fixture.nativeElement);
+      try {
+        const audit = await axe.run(fixture.nativeElement as HTMLElement, {
+          runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa'] },
+          rules: { 'color-contrast': { enabled: false } },
+        });
+        expect(audit.violations).toEqual([]);
+      } finally {
+        fixture.nativeElement.remove();
+        document.documentElement.removeAttribute('data-theme');
+      }
+    },
+    30000,
+  );
+  it('focuses the budget deep-link after rendering without a navigation timeout', async () => {
+    TestBed.overrideProvider(ActivatedRoute, { useValue: { fragment: of('monthly-budget') } });
+    TestBed.inject(SqliteDatabase).ready.set(true);
+    const scroll = vi.fn();
+    HTMLElement.prototype.scrollIntoView = scroll;
+    const fixture = TestBed.createComponent(SettingsPage);
+    document.body.append(fixture.nativeElement);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(document.activeElement?.id).toBe('monthly-budget');
+    expect(fixture.componentInstance.currentSection()).toBe('defaults');
+    expect(scroll).toHaveBeenCalledWith({ block: 'center', behavior: 'instant' });
+    const labels = [...fixture.nativeElement.querySelectorAll('label')] as HTMLLabelElement[];
+    for (const text of ['Enable SMS review swipe actions', 'Show transaction time'])
+      expect(
+        labels.find((label) => label.textContent?.includes(text))?.classList.contains('toggle'),
+      ).toBe(true);
+    expect(fixture.nativeElement.querySelector('.auto-lock-row app-select-picker')).toBeTruthy();
     fixture.nativeElement.remove();
   });
   it('creates once, clears credentials, and waits for a destination before doing any delivery', async () => {

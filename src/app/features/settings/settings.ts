@@ -1,5 +1,6 @@
 import {
   Component,
+  afterNextRender,
   DestroyRef,
   ElementRef,
   computed,
@@ -8,6 +9,8 @@ import {
   signal,
   viewChild,
 } from '@angular/core';
+import { ActivatedRoute } from '@angular/router';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { BackupDeliveryDialog } from '../../shared/backup-delivery-dialog';
 import { PlatformTools } from '../../shared/platform-tools';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
@@ -57,6 +60,30 @@ type ProtectedDataAction = 'DELETE_ALL' | 'RETENTION';
   host: { '(document:keydown.escape)': 'closeDialogs()' },
 })
 export class SettingsPage {
+  private readonly budgetInput = viewChild<ElementRef<HTMLInputElement>>('monthlyBudgetInput');
+  private readonly route = inject(ActivatedRoute, { optional: true });
+  private readonly requestedFragment = signal<string | null>(null);
+  private readonly viewReady = signal(false);
+  private readonly budgetNavigation = (() => {
+    this.route?.fragment
+      .pipe(takeUntilDestroyed())
+      .subscribe((fragment) => this.requestedFragment.set(fragment));
+    afterNextRender(() => this.viewReady.set(true));
+    return effect(() => {
+      const input = this.budgetInput()?.nativeElement;
+      if (
+        !this.viewReady() ||
+        this.requestedFragment() !== 'monthly-budget' ||
+        !input ||
+        !this.database.ready()
+      )
+        return;
+      this.currentSection.set('defaults');
+      input.focus({ preventScroll: true });
+      input.scrollIntoView({ block: 'center', behavior: 'instant' });
+      this.requestedFragment.set(null);
+    });
+  })();
   readonly currentSection = signal('security');
   scrollSection(id: 'security' | 'appearance' | 'defaults' | 'notifications' | 'data'): void {
     const section = document.getElementById(id);
