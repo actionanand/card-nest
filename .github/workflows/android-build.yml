@@ -37,25 +37,6 @@ jobs:
           node-version-file: '.nvmrc'
           cache: npm
 
-      - name: Bump versionCode and commit
-        if: github.ref == 'refs/heads/main-android'
-        shell: bash
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          node scripts/bump-android-version.js
-          VERSION_CODE=$(node -p "require('./android-version.json').versionCode")
-          VERSION_NAME=$(node -p "require('./android-version.json').versionName")
-          echo "Building versionName=$VERSION_NAME versionCode=$VERSION_CODE"
-          git pull --rebase --autostash
-          git add android-version.json src/app/core/app-version.ts
-          if git diff --cached --quiet; then
-            echo "Android version is unchanged."
-          else
-            git commit -m "chore: bump Android versionCode to $VERSION_CODE [skip ci]"
-            git push
-          fi
-
       - name: Read Android version
         shell: bash
         run: |
