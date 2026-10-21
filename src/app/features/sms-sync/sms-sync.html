@@ -413,6 +413,7 @@
             [enabled]="
               swipeEnabled() && !loading() && !sync.lock.locked() && sync.lock.foreground()
             "
+            [dismissEnabled]="candidate.state === 'PENDING'"
             (reviewSwipe)="swipeReview(candidate)"
             (readSwipe)="swipeRead(candidate)"
           >

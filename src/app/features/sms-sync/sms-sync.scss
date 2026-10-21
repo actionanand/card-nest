@@ -833,6 +833,10 @@ dd {
   background: var(--surface-2);
   color: var(--ink);
 }
+.candidate[data-swipe='review-ready'] .swipe-review-hint,
+.candidate[data-swipe='read-ready'] .swipe-read-hint {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
 .type-mode {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
