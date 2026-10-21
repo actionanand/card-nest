@@ -167,12 +167,14 @@
     <section
       class="panel review-panel"
       aria-labelledby="sms-inbox-title"
-      [attr.aria-busy]="loading()"
+      [attr.aria-busy]="loading() || sync.reconciling()"
     >
       <div class="review-heading">
         <div class="review-heading-copy">
           <h2 id="sms-inbox-title" tabindex="-1">SMS Review</h2>
-          <span class="unread-count">{{ sync.unreadTotal() }} unread</span>
+          <span class="unread-count">{{
+            sync.reconciling() ? 'Checking messages…' : sync.unreadTotal() + ' unread'
+          }}</span>
         </div>
         <button
           id="mark-all-read"
@@ -216,14 +218,16 @@
         Hides imported and matched items in active or all-history results. Already added remains
         available.
       </p>
-      <p class="muted">
-        Needs review {{ sync.pendingTotal() }} · Already added {{ sync.matchedTotal() }} · Imported
-        {{ sync.importedTotal() }} · Unread {{ sync.unreadTotal() }}
-      </p>
-      @if (possibleOnPage()) {
+      @if (!sync.reconciling() && !sync.verificationFailed()) {
         <p class="muted">
-          {{ possibleOnPage() }} possible existing matches on this page need confirmation.
+          Needs review {{ sync.pendingTotal() }} · Already added {{ sync.matchedTotal() }} ·
+          Imported {{ sync.importedTotal() }} · Unread {{ sync.unreadTotal() }}
         </p>
+        @if (possibleOnPage()) {
+          <p class="muted">
+            {{ possibleOnPage() }} possible existing matches on this page need confirmation.
+          </p>
+        }
       }
       <details>
         <summary>
@@ -380,93 +384,116 @@
         <button class="btn clear" type="button" (click)="clearFilters()">Clear filters</button>
       </div>
       <p class="muted" role="status">
-        {{ loading() ? 'Loading review…' : sync.total() + ' results for these filters' }}
+        {{
+          loading() || sync.reconciling()
+            ? 'Loading review…'
+            : sync.verificationFailed()
+              ? 'Review verification failed'
+              : sync.total() + ' results for these filters'
+        }}
       </p>
-      @for (candidate of visible(); track candidate.id) {
-        <article
-          class="candidate"
-          appSmsSwipe
-          [enabled]="swipeEnabled() && !loading() && !sync.lock.locked() && sync.lock.foreground()"
-          (reviewSwipe)="swipeReview(candidate)"
-          (readSwipe)="swipeRead(candidate)"
-        >
-          <span class="swipe-review-hint" aria-hidden="true">Review →</span
-          ><span class="swipe-read-hint" aria-hidden="true">← Dismiss</span>
-          <div class="candidate-content">
-            <div class="row-main">
-              <strong>{{ title(candidate.item, candidate.kind) }}</strong
-              ><span class="amount">{{
-                candidate.item ? money(candidate.item.amountMinor) : '—'
-              }}</span>
-            </div>
-            <div class="row-meta">
-              <span class="badge">{{ candidate.readAt ? 'Read' : 'Unread' }}</span>
-              <span class="badge">{{ label(candidate.kind) }}</span
-              ><span>{{ label(candidate.state) }}</span
-              ><time [attr.datetime]="candidate.eventAt">{{ dateTime(candidate.eventAt) }}</time>
-            </div>
-            <div class="row-source">
-              <span>{{ sourceLabel(candidate) }}</span>
-              @if (candidate.state === 'MATCHED_EXISTING' || candidate.state === 'IMPORTED') {
-                <button
-                  class="btn clear"
-                  type="button"
-                  [id]="'review-' + candidate.id"
-                  aria-label="Review SMS evidence and reconciliation details"
-                  aria-haspopup="dialog"
-                  (click)="open(candidate)"
-                >
-                  <app-icon name="message" />
-                </button>
-              }
-            </div>
-            <div class="row-actions">
-              @if (
-                (candidate.state === 'MATCHED_EXISTING' || candidate.state === 'IMPORTED') &&
-                candidate.transactionId
-              ) {
-                <button class="btn btn-primary" type="button" (click)="viewExisting(candidate)">
-                  View transaction
-                </button>
-              } @else {
-                <button
-                  class="btn btn-primary"
-                  type="button"
-                  [id]="'review-' + candidate.id"
-                  aria-haspopup="dialog"
-                  (click)="open(candidate)"
-                >
-                  {{
-                    candidate.state === 'PENDING' &&
-                    candidate.item &&
-                    importableCandidate(candidate)
-                      ? 'Review & add'
-                      : 'Review details'
-                  }}<span class="sr-only"> {{ title(candidate.item, candidate.kind) }}</span>
-                </button>
-              }
-              <button
-                class="btn"
-                type="button"
-                (click)="markRead(candidate)"
-                [disabled]="loading()"
-              >
-                {{ candidate.readAt ? 'Mark unread' : 'Mark read' }}
-              </button>
-            </div>
-            @if (matchReason(candidate); as reason) {
-              <p class="muted">{{ reason }}</p>
-            }
-          </div>
-        </article>
-      } @empty {
-        <p class="empty">
-          {{
-            loading()
-              ? 'Loading suggestions…'
-              : 'No suggestions match these filters. Try clearing filters, scanning or pasting a message.'
-          }}
+      @if (swipeEnabled()) {
+        <p class="muted">Swipe right to review and add · swipe left to dismiss</p>
+      } @else {
+        <button class="btn" type="button" (click)="enableSwipeActions()" [disabled]="loading()">
+          Enable swipe actions
+        </button>
+      }
+      @if (sync.reconciling()) {
+        <p role="status" aria-live="polite">Checking saved transactions and SMS links…</p>
+      } @else if (sync.verificationFailed()) {
+        <p role="alert">
+          Saved transactions could not be verified. Recheck saved suggestions to retry.
         </p>
+      } @else {
+        @for (candidate of visible(); track candidate.id) {
+          <article
+            class="candidate"
+            appSmsSwipe
+            [enabled]="
+              swipeEnabled() && !loading() && !sync.lock.locked() && sync.lock.foreground()
+            "
+            (reviewSwipe)="swipeReview(candidate)"
+            (readSwipe)="swipeRead(candidate)"
+          >
+            <span class="swipe-review-hint" aria-hidden="true">Review →</span
+            ><span class="swipe-read-hint" aria-hidden="true">← Dismiss</span>
+            <div class="candidate-content">
+              <div class="row-main">
+                <strong>{{ title(candidate.item, candidate.kind) }}</strong
+                ><span class="amount">{{
+                  candidate.item ? money(candidate.item.amountMinor) : '—'
+                }}</span>
+              </div>
+              <div class="row-meta">
+                <span class="badge">{{ candidate.readAt ? 'Read' : 'Unread' }}</span>
+                <span class="badge">{{ label(candidate.kind) }}</span
+                ><span>{{ label(candidate.state) }}</span
+                ><time [attr.datetime]="candidate.eventAt">{{ dateTime(candidate.eventAt) }}</time>
+              </div>
+              <div class="row-source">
+                <span>{{ sourceLabel(candidate) }}</span>
+                @if (candidate.state === 'MATCHED_EXISTING' || candidate.state === 'IMPORTED') {
+                  <button
+                    class="btn clear"
+                    type="button"
+                    [id]="'review-' + candidate.id"
+                    aria-label="Review SMS evidence and reconciliation details"
+                    aria-haspopup="dialog"
+                    (click)="open(candidate)"
+                  >
+                    <app-icon name="message" />
+                  </button>
+                }
+              </div>
+              <div class="row-actions">
+                @if (
+                  (candidate.state === 'MATCHED_EXISTING' || candidate.state === 'IMPORTED') &&
+                  candidate.transactionId
+                ) {
+                  <button class="btn btn-primary" type="button" (click)="viewExisting(candidate)">
+                    View transaction
+                  </button>
+                } @else {
+                  <button
+                    class="btn btn-primary"
+                    type="button"
+                    [id]="'review-' + candidate.id"
+                    aria-haspopup="dialog"
+                    (click)="open(candidate)"
+                  >
+                    {{
+                      candidate.state === 'PENDING' &&
+                      candidate.item &&
+                      importableCandidate(candidate)
+                        ? 'Review & add'
+                        : 'Review details'
+                    }}<span class="sr-only"> {{ title(candidate.item, candidate.kind) }}</span>
+                  </button>
+                }
+                <button
+                  class="btn"
+                  type="button"
+                  (click)="markRead(candidate)"
+                  [disabled]="loading()"
+                >
+                  {{ candidate.readAt ? 'Mark unread' : 'Mark read' }}
+                </button>
+              </div>
+              @if (matchReason(candidate); as reason) {
+                <p class="muted">{{ reason }}</p>
+              }
+            </div>
+          </article>
+        } @empty {
+          <p class="empty">
+            {{
+              loading()
+                ? 'Loading suggestions…'
+                : 'No suggestions match these filters. Try clearing filters, scanning or pasting a message.'
+            }}
+          </p>
+        }
       }
       @if (pageCount() > 1) {
         <nav class="pagination" aria-label="Review pages">

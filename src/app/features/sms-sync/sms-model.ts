@@ -188,18 +188,18 @@ export function eligibleSources(
   return cards
     .filter((card) => {
       const issuer = normalizedIssuer(item.issuer);
+      const amex =
+        card.network === 'AMERICAN_EXPRESS' || normalizedIssuer(card.issuerName) === 'amex';
       const issuerMatches =
-        !issuer ||
-        normalizedIssuer(card.issuerName) === issuer ||
-        (issuer === 'amex' && card.network === 'AMERICAN_EXPRESS');
+        !issuer || normalizedIssuer(card.issuerName) === issuer || (issuer === 'amex' && amex);
       const suffixMatches =
         !!item.cardDigits &&
         /^\d{4,5}$/.test(item.cardDigits) &&
-        (card.network === 'AMERICAN_EXPRESS' ? /^\d{4,5}$/ : /^\d{4}$/).test(card.lastDigits) &&
+        (amex ? /^\d{4,5}$/ : /^\d{4}$/).test(card.lastDigits) &&
         (card.lastDigits === item.cardDigits ||
-          (card.network === 'AMERICAN_EXPRESS' &&
-            item.cardDigits.length === 4 &&
-            card.lastDigits.endsWith(item.cardDigits)));
+          (amex &&
+            Math.min(item.cardDigits.length, card.lastDigits.length) === 4 &&
+            card.lastDigits.slice(-4) === item.cardDigits.slice(-4)));
       const historical =
         !card.archived || (!!card.archivedAt && item.eventDate <= card.archivedAt.slice(0, 10));
       return (

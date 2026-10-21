@@ -21,12 +21,11 @@ import {
     '(pointermove)': 'move($event)',
     '(pointerup)': 'finish($event)',
     '(pointercancel)': 'cancel()',
-    '(lostpointercapture)': 'cancel()',
+    '(lostpointercapture)': 'lostCapture($event)',
     '(window:cardnest:back)': 'cancel()',
     '(window:blur)': 'cancel()',
     '(window:pagehide)': 'cancel()',
     '(document:visibilitychange)': 'cancel()',
-    '(document:scroll)': 'cancel()',
   },
 })
 export class SmsSwipe {
@@ -37,35 +36,54 @@ export class SmsSwipe {
   readonly offset = signal(0);
   private readonly element = inject<ElementRef<HTMLElement>>(ElementRef);
   private origin: { x: number; y: number; id: number } | null = null;
+  private horizontal = false;
+  private suppressClick = false;
+  private readonly preventDraggedClick = (event: MouseEvent): void => {
+    if (!this.suppressClick || event.detail === 0) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    this.suppressClick = false;
+  };
   constructor() {
     effect(() => {
       if (!this.enabled()) this.cancel();
     });
-    inject(DestroyRef).onDestroy(() => this.cancel());
+    // Capture before a nested action button handles the synthetic post-drag click.
+    this.element.nativeElement.addEventListener('click', this.preventDraggedClick, true);
+    inject(DestroyRef).onDestroy(() => {
+      this.cancel();
+      this.element.nativeElement.removeEventListener('click', this.preventDraggedClick, true);
+    });
   }
   start(event: PointerEvent): void {
     this.cancel();
+    this.suppressClick = false;
     if (
       !this.enabled() ||
-      !event.isPrimary ||
-      event.button !== 0 ||
+      event.isPrimary === false ||
+      (event.pointerType === 'mouse' && event.button !== 0) ||
       event.clientX < 24 ||
       event.clientX > innerWidth - 24 ||
-      (event.target as HTMLElement).closest('button,input,a,select,textarea,summary')
+      (event.target as Element).closest('input,a,select,textarea,summary')
     )
       return;
     this.origin = { x: event.clientX, y: event.clientY, id: event.pointerId };
-    this.element.nativeElement.setPointerCapture?.(event.pointerId);
   }
   move(event: PointerEvent): void {
     if (!this.origin || event.pointerId !== this.origin.id) return;
     const dx = event.clientX - this.origin.x;
     const dy = Math.abs(event.clientY - this.origin.y);
-    if (dy > 12 && dy * 1.8 > Math.abs(dx)) {
+    if (!this.horizontal && dy > 8 && dy > Math.abs(dx)) {
       this.cancel();
       return;
     }
-    if (Math.abs(dx) > 6 && Math.abs(dx) > dy * 1.8) {
+    if (!this.horizontal && Math.abs(dx) > 8 && Math.abs(dx) > dy * 1.25) {
+      this.horizontal = true;
+      this.suppressClick = true;
+      this.element.nativeElement.setPointerCapture?.(event.pointerId);
+    }
+    if (this.horizontal) {
+      if (event.cancelable) event.preventDefault();
       // Same resistance and maximum slide as Reminder cards.
       this.offset.set(Math.sign(dx) * Math.min(120, Math.abs(dx) * 0.9));
       this.hint.set(dx > 0 ? 'review' : 'read');
@@ -80,9 +98,16 @@ export class SmsSwipe {
     if (offset > 0) this.reviewSwipe.emit();
     else this.readSwipe.emit();
   }
+  lostCapture(event: PointerEvent): void {
+    // Touch implicitly captures the nested button. Moving that capture to this row
+    // emits a bubbling event from the button; it must not cancel the new row drag.
+    if (event.target === this.element.nativeElement && event.pointerId === this.origin?.id)
+      this.cancel();
+  }
   cancel(): void {
     const id = this.origin?.id;
     this.origin = null;
+    this.horizontal = false;
     this.offset.set(0);
     this.hint.set('');
     if (id !== undefined && this.element.nativeElement.hasPointerCapture?.(id))

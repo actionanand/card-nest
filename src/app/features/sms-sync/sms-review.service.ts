@@ -73,6 +73,10 @@ export class SmsReviewService {
   readonly status = signal<ScanStatus | null>(null);
   readonly candidates = signal<readonly SmsCandidate[]>([]);
   readonly busy = signal(false);
+  readonly reconciling = signal(false);
+  readonly verificationFailed = signal(false);
+  private refreshQueue: Promise<void> = Promise.resolve();
+  private pendingRefreshes = 0;
   readonly requestingPermission = signal(false);
   readonly changingSync = signal(false);
   readonly syncEnabled = computed(
@@ -206,7 +210,9 @@ export class SmsReviewService {
   }
 
   /** Bounded batches, serialized with manual writes. This path never writes financial tables. */
-  async reevaluatePending(): Promise<number> {
+  async reevaluatePending(
+    options: { pending?: boolean; automatic?: boolean } = {},
+  ): Promise<number> {
     this.assertUnlocked();
     return this.database.atomic(async (tx) => {
       const [wallets] = await tx.query<{ encrypted_value: string }>(
@@ -216,11 +222,15 @@ export class SmsReviewService {
       const cards = (await tx.query<{ payload: string }>('SELECT payload FROM credit_cards')).map(
         (row) => JSON.parse(row.payload) as import('../../core/models/domain').CreditCard,
       );
-      const pending = await tx.query<{ id: string; payload: string }>(
-        "SELECT id,payload FROM sms_candidates WHERE state='PENDING' AND payload IS NOT NULL AND id>? ORDER BY id LIMIT 200",
-        [this.reconciliationCursor],
-      );
-      this.reconciliationCursor = pending.length === 200 ? pending[pending.length - 1].id : '';
+      const pending =
+        options.pending === false
+          ? []
+          : await tx.query<{ id: string; payload: string }>(
+              "SELECT id,payload FROM sms_candidates WHERE state='PENDING' AND payload IS NOT NULL AND id>? ORDER BY id LIMIT 200",
+              [this.reconciliationCursor],
+            );
+      if (options.pending !== false)
+        this.reconciliationCursor = pending.length === 200 ? pending[pending.length - 1].id : '';
       const evidence = pending.flatMap((row) => {
         try {
           const value: unknown = JSON.parse(row.payload);
@@ -263,7 +273,10 @@ export class SmsReviewService {
       for (const row of competingRows) {
         const item: unknown = JSON.parse(row.payload);
         if (!validEvidence(item)) continue;
-        for (const target of matchExisting(item, cards, sources, ledger, claimed).transactionIds)
+        const proposal = matchExisting(item, cards, sources, ledger, claimed);
+        // Weak nearby suggestions do not claim an exact existing occurrence.
+        if (proposal.confidence !== 'HIGH_CONFIDENCE_EXISTING') continue;
+        for (const target of proposal.transactionIds)
           competing.set(target, (competing.get(target) ?? 0) + 1);
       }
       let linked = 0;
@@ -291,15 +304,19 @@ export class SmsReviewService {
       }
       // Automatically created links are checked against current ledger/source metadata on revisit.
       // Explicit user decisions are never undone. Restored tombstones keep their dedup identity.
-      const automatic = await tx.query<{
-        id: string;
-        payload: string | null;
-        transaction_id: string | null;
-      }>(
-        "SELECT id,payload,transaction_id FROM sms_candidates WHERE state='MATCHED_EXISTING' AND decision LIKE 'AUTO_EXISTING:%' AND id>? ORDER BY id LIMIT 200",
-        [this.automaticCursor],
-      );
-      this.automaticCursor = automatic.length === 200 ? automatic[automatic.length - 1].id : '';
+      const automatic =
+        options.automatic === false
+          ? []
+          : await tx.query<{
+              id: string;
+              payload: string | null;
+              transaction_id: string | null;
+            }>(
+              "SELECT id,payload,transaction_id FROM sms_candidates WHERE state='MATCHED_EXISTING' AND decision LIKE 'AUTO_EXISTING:%' AND id>? ORDER BY id LIMIT 200",
+              [this.automaticCursor],
+            );
+      if (options.automatic !== false)
+        this.automaticCursor = automatic.length === 200 ? automatic[automatic.length - 1].id : '';
       for (const row of automatic) {
         if (!row.payload) continue;
         const item = JSON.parse(row.payload) as SmsEvidence;
@@ -385,12 +402,46 @@ export class SmsReviewService {
     if (Capacitor.getPlatform() !== 'android' || this.lock.locked() || !this.lock.foreground())
       throw new Error('Unlock CardNest on Android to review SMS.');
   }
-  async refresh(): Promise<void> {
-    this.assertUnlocked();
+  refresh(): Promise<void> {
     const revision = ++this.refreshRevision;
+    this.pendingRefreshes++;
+    this.reconciling.set(true);
+    // Keep batch cursors private to one refresh and publish only verified results.
+    const work = this.refreshQueue.then(async () => {
+      if (revision !== this.refreshRevision) return;
+      this.verificationFailed.set(false);
+      try {
+        await this.refreshSnapshot(revision);
+      } catch (error) {
+        if (revision === this.refreshRevision) {
+          this.candidates.set([]);
+          this.verificationFailed.set(true);
+        }
+        throw error;
+      }
+    });
+    this.refreshQueue = work.catch(() => undefined);
+    return work.finally(() => {
+      this.pendingRefreshes--;
+      this.reconciling.set(this.pendingRefreshes > 0);
+    });
+  }
+  private async refreshSnapshot(revision: number): Promise<void> {
+    this.assertUnlocked();
     await this.refreshAccess();
     await this.handoff();
-    await this.reevaluatePending();
+    // Finish revalidating saved automatic links first. Any invalidated evidence is
+    // then included in the complete pending pass, even if its ID sorts earlier.
+    this.automaticCursor = '';
+    do {
+      await this.reevaluatePending({ pending: false });
+      if (revision !== this.refreshRevision) return;
+    } while (this.automaticCursor);
+    this.reconciliationCursor = '';
+    do {
+      await this.reevaluatePending({ automatic: false });
+      if (revision !== this.refreshRevision) return;
+    } while (this.reconciliationCursor);
     const [totals] = await this.database.query<{
       saved: number;
       pending: number;

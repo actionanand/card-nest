@@ -118,7 +118,7 @@ export function matchExisting(
     };
   }
   const sourceId = ids[0];
-  const plausible = ledger.filter(
+  const nearby = ledger.filter(
     (entry) =>
       entry.cardId === sourceId &&
       entry.currencyCode === item.currency &&
@@ -126,6 +126,11 @@ export function matchExisting(
       entry.amountMinor === item.amountMinor &&
       Math.abs(Date.parse(entry.transactionDate) - Date.parse(item.eventDate)) <= 86400000 * 3,
   );
+  // Nearby dates are suggestions only; they must not obscure an exact local-date occurrence.
+  const exact = item.dateFallback
+    ? []
+    : nearby.filter((entry) => entry.transactionDate === item.eventDate);
+  const plausible = exact.length ? exact : nearby;
   if (!plausible.length)
     return {
       confidence: 'NO_MATCH',
@@ -137,7 +142,7 @@ export function matchExisting(
     if (item.reference && entry.reference && item.reference !== entry.reference) return false;
     const reference = !!item.reference && !!entry.reference && item.reference === entry.reference;
     const time =
-      item.eventTimeExplicit === false ||
+      item.eventTimeExplicit !== true ||
       !entry.transactionTime ||
       !item.eventTime ||
       entry.transactionTime.slice(0, 5) === item.eventTime.slice(0, 5);
@@ -148,12 +153,14 @@ export function matchExisting(
       entry.transactionDate === item.eventDate &&
       !item.dateFallback &&
       time &&
-      (reference || merchantSimilarity(item.merchant, entry.merchant))
+      (reference ||
+        merchantSimilarity(item.merchant, entry.merchant) ||
+        (exact.length === 1 && !missingMealDigits))
     );
   });
-  // Any second plausible financial entry needs a human, even if only one merchant resembles it.
+  // Multiple exact-date records still need confirmation; nearby records are only suggestions.
   const automatic =
-    plausible.length === 1 && supporting.length === 1 && !claimed.has(plausible[0].id);
+    plausible.length === 1 && supporting.length === 1 && !claimed.has(supporting[0].id);
   return {
     confidence: automatic
       ? 'HIGH_CONFIDENCE_EXISTING'
@@ -161,18 +168,16 @@ export function matchExisting(
         ? 'AMBIGUOUS'
         : 'POSSIBLE_EXISTING',
     sourceId,
-    transactionIds: plausible.map((entry) => entry.id),
+    transactionIds: (automatic ? supporting : plausible).map((entry) => entry.id),
     reason: automatic
-      ? `Unique existing entry: trusted ${missingMealDigits ? 'single meal wallet' : 'source identity'}, exact amount and type, explicit local date, compatible time and merchant/reference evidence.`
+      ? `Unique existing entry: trusted ${missingMealDigits ? 'single meal wallet' : 'source identity'}, exact amount and type, explicit local date, compatible recorded time.`
       : plausible.some((entry) => !!entry.recurringRuleId)
         ? 'Possible existing recurring transaction. Select and confirm the correct occurrence.'
         : claimed.has(plausible[0].id)
           ? 'An existing entry is already linked to other SMS evidence; confirm this relationship manually.'
           : plausible.length > 1
             ? 'Multiple compatible existing entries; select the correct transaction.'
-            : plausible.some((entry) => !!entry.recurringRuleId)
-              ? 'Possible existing recurring transaction'
-              : 'Possible existing transaction. Amount, source and nearby date alone are insufficient for automatic linking.',
+            : 'Possible existing transaction. Conflicting details or a nearby date require confirmation.',
   };
 }
 

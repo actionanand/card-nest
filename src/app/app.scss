@@ -281,27 +281,33 @@ main {
   font-size: 0.85rem;
 }
 
-.app-snackbar {
-  --snackbar-tone: var(--success);
-  --snackbar-surface: var(--success-soft);
+.snackbar-stack {
   position: fixed;
   z-index: 1200;
   right: max(1rem, env(safe-area-inset-right));
   bottom: max(1rem, env(safe-area-inset-bottom));
   display: grid;
   width: min(24rem, calc(100vw - 2rem));
+  gap: 0.4rem;
+  pointer-events: none;
+  max-height: calc(100dvh - 2rem);
+  overflow-y: auto;
+}
+.app-snackbar {
+  --snackbar-tone: var(--success);
+  --snackbar-surface: var(--success-soft);
+  display: grid;
+  pointer-events: auto;
   box-sizing: border-box;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 0.65rem;
-  padding: 0.75rem 0.8rem;
+  padding: 0.35rem 0.65rem;
   border: 1px solid var(--snackbar-tone);
   border-radius: 0.8rem;
   color: var(--ink);
   background: var(--snackbar-surface);
   box-shadow: var(--shadow);
-  max-height: calc(100dvh - 2rem);
-  overflow-y: auto;
 }
 .app-snackbar.info {
   --snackbar-tone: var(--accent);
@@ -339,19 +345,21 @@ main {
   width: 0.9rem;
   height: 0.9rem;
 }
-.app-snackbar .snackbar-action {
-  grid-column: 2;
-  grid-row: 2;
-  justify-self: start;
+.snackbar-undo {
+  justify-self: end;
+  pointer-events: auto;
   max-width: 100%;
-  height: auto;
   min-height: 2.75rem;
   overflow-wrap: anywhere;
-  width: auto;
-  padding: 0 0.65rem;
+  padding: 0.4rem 1.25rem;
+  border: 1px solid var(--accent);
   border-radius: 0.55rem;
+  color: var(--ink);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  font: inherit;
   font-weight: 800;
-  text-transform: uppercase;
+  cursor: pointer;
 }
 
 @media (max-width: 760px) {
@@ -608,7 +616,7 @@ main {
   .permission-dialog__actions .btn {
     width: 100%;
   }
-  .app-snackbar {
+  .snackbar-stack {
     left: max(0.75rem, env(safe-area-inset-left));
     right: max(0.75rem, env(safe-area-inset-right));
     bottom: calc(6.5rem + env(safe-area-inset-bottom));

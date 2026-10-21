@@ -64,6 +64,9 @@ export class SmsSyncPage {
   readonly swipeEnabled = computed(
     () => Capacitor.getPlatform() === 'android' && (this.store.smsSwipeActionsEnabled?.() ?? false),
   );
+  enableSwipeActions(): void {
+    void this.run(() => this.store.setDurableUiPreference('sms_swipe_actions_enabled', true));
+  }
   readonly confirmReadCount = signal<number | null>(null);
   readonly readDialog = viewChild<ElementRef<HTMLDialogElement>>('readDialog');
   readonly historyOptions: readonly AppSelectOption[] = [
@@ -399,7 +402,7 @@ export class SmsSyncPage {
       this.store.transactions(),
     );
     return match.confidence === 'HIGH_CONFIDENCE_EXISTING'
-      ? 'Possible existing transaction. Saved ledger and other SMS claims must be checked before linking.'
+      ? 'An existing transaction may already cover this SMS. Confirm its link before adding another entry.'
       : match.confidence === 'NO_MATCH'
         ? ''
         : match.reason;
@@ -836,17 +839,12 @@ export class SmsSyncPage {
   markRead(candidate: SmsCandidate): void {
     void this.run(async () => {
       await this.sync.markRead(candidate.id, !candidate.readAt);
-      this.snackbar.show(
-        candidate.readAt ? 'Suggestion marked unread.' : 'Suggestion marked read.',
-        'INFO',
-        5000,
-        {
-          label: 'Undo',
-          run: () => {
-            void this.run(() => this.sync.markRead(candidate.id, !!candidate.readAt));
-          },
+      this.snackbar.show(candidate.readAt ? 'Marked as unread' : 'Marked as read', 'INFO', 5000, {
+        label: 'Undo',
+        run: () => {
+          void this.run(() => this.sync.markRead(candidate.id, !!candidate.readAt));
         },
-      );
+      });
     });
   }
   swipeReview(candidate: SmsCandidate): void {

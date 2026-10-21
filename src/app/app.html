@@ -266,17 +266,19 @@
 }
 
 @if (snackbar.message(); as message) {
-  <div class="app-snackbar" [class]="'app-snackbar ' + message.tone.toLowerCase()" role="status">
-    <app-icon [name]="message.tone === 'WARNING' ? 'warning' : 'success'" />
-    <span class="snackbar-text">{{ message.text }}</span>
+  <div class="snackbar-stack">
+    <div [class]="'app-snackbar ' + message.tone.toLowerCase()" role="status">
+      <app-icon [name]="message.tone === 'WARNING' ? 'warning' : 'success'" />
+      <span class="snackbar-text">{{ message.text }}</span>
+      <button type="button" (click)="snackbar.dismiss()" aria-label="Dismiss message">
+        <app-icon name="close" />
+      </button>
+    </div>
     @if (message.actionLabel) {
-      <button class="snackbar-action" type="button" (click)="snackbar.runAction()">
+      <button class="snackbar-undo" type="button" (click)="snackbar.runAction()">
         {{ message.actionLabel }}
       </button>
     }
-    <button type="button" (click)="snackbar.dismiss()" aria-label="Dismiss message">
-      <app-icon name="close" />
-    </button>
   </div>
 }
 
