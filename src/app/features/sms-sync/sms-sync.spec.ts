@@ -232,7 +232,15 @@ describe('SMS review privacy and explicit approval UI', () => {
     expect(menu.querySelectorAll('[role=menuitem]')).toHaveLength(2);
     expect(menu.textContent).toContain('Review & add');
     expect(menu.textContent).toContain('Mark read');
-    (menu.querySelector('[role=menuitem]') as HTMLButtonElement).click();
+    expect(card.classList).toContain('candidate-menu-owner');
+    trigger.click();
+    fixture.detectChanges();
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expect(fixture.nativeElement.querySelector('[role=menu]')).toBeNull();
+    trigger.click();
+    fixture.detectChanges();
+    const reopenedMenu = fixture.nativeElement.querySelector('[role=menu]') as HTMLElement;
+    (reopenedMenu.querySelector('[role=menuitem]') as HTMLButtonElement).click();
     fixture.detectChanges();
     expect(fixture.componentInstance.selected()?.id).toBe(candidate.id);
     expect(sync.approve).not.toHaveBeenCalled();

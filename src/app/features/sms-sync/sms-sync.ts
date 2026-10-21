@@ -860,6 +860,7 @@ export class SmsSyncPage {
     else this.closeEditor();
   }
   toggleCandidateMenu(id: string, event: MouseEvent): void {
+    event.stopPropagation();
     if (this.candidateMenuId() === id) this.closeCandidateMenu(false);
     else {
       const trigger = event.currentTarget;

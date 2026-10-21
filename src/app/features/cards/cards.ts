@@ -887,6 +887,7 @@ export class CardsPage {
     return toIsoDate(this.nextStatement(card));
   }
   toggleActionMenu(event: MouseEvent, cardId: string): void {
+    event.stopPropagation();
     if (this.actionMenuId() === cardId) {
       this.actionMenuId.set(null);
       return;

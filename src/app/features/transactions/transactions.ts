@@ -1107,6 +1107,7 @@ export class TransactionsPage {
     this.snackbar.show(`Transaction split into ${created.length} payments.`);
   }
   toggleActionMenu(event: MouseEvent, transactionId: string): void {
+    event.stopPropagation();
     this.summaryMenuOpen.set(false);
     if (this.actionMenuId() === transactionId) {
       this.actionMenuId.set(null);
@@ -1116,6 +1117,7 @@ export class TransactionsPage {
     this.positionMenu(event.currentTarget);
   }
   toggleSummaryMenu(event: MouseEvent): void {
+    event.stopPropagation();
     this.actionMenuId.set(null);
     if (this.summaryMenuOpen()) {
       this.summaryMenuOpen.set(false);
