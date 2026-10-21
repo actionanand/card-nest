@@ -1,5 +1,6 @@
 import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
+import { Capacitor } from '@capacitor/core';
 import { SmsReviewService } from './sms-review.service';
 import { ScanStatus } from './sms-model';
 import { SqliteDatabase } from '../../core/data/sqlite-database';
@@ -7,7 +8,6 @@ import { CardNestStore } from '../../core/services/card-nest-store';
 import { AppLockService } from '../../core/services/app-lock.service';
 
 const native = vi.hoisted(() => ({
-  getPlatform: vi.fn<() => string>(),
   status: vi.fn(),
   enable: vi.fn(),
   openSettings: vi.fn(),
@@ -17,10 +17,10 @@ const native = vi.hoisted(() => ({
   catchUp: vi.fn(),
   disable: vi.fn(),
 }));
-vi.mock('@capacitor/core', () => ({
-  Capacitor: { getPlatform: native.getPlatform },
-  registerPlugin: () => native,
-}));
+vi.mock('@capacitor/core', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@capacitor/core')>();
+  return { ...actual, registerPlugin: () => native };
+});
 
 describe('SMS permission interaction through the native bridge', () => {
   let service: SmsReviewService;
@@ -48,26 +48,35 @@ describe('SMS permission interaction through the native bridge', () => {
   };
   const database = { atomic: vi.fn(), run: vi.fn(), query: vi.fn() };
   beforeEach(() => {
+    vi.restoreAllMocks();
     vi.resetAllMocks();
-    native.getPlatform.mockReturnValue('android');
+    vi.spyOn(Capacitor, 'getPlatform').mockReturnValue('android');
     native.status.mockResolvedValue(denied);
     native.enable.mockResolvedValue(denied);
     native.pending.mockResolvedValue({ items: [] });
     native.disable.mockResolvedValue({ ...granted, enabled: false });
+    const locked = signal(false);
+    const foreground = signal(true);
     TestBed.configureTestingModule({
       providers: [
         SmsReviewService,
         { provide: SqliteDatabase, useValue: database },
         { provide: CardNestStore, useValue: {} },
-        { provide: AppLockService, useValue: { locked: signal(false), foreground: signal(true) } },
+        { provide: AppLockService, useValue: { locked, foreground } },
       ],
     });
     service = TestBed.inject(SmsReviewService);
+    expect(Capacitor.getPlatform()).toBe('android');
+    expect(service.lock.locked).toBe(locked);
+    expect(service.lock.foreground).toBe(foreground);
+    expect(service.lock.locked()).toBe(false);
+    expect(service.lock.foreground()).toBe(true);
   });
   it('first opening and restart read live status without requesting or changing financial data', async () => {
     native.status.mockResolvedValue({ ...denied, permission: 'not requested' });
     await service.refreshAccess();
     expect(service.status()?.permission).toBe('not requested');
+    expect(native.status).toHaveBeenCalledOnce();
     expect(native.enable).not.toHaveBeenCalled();
     expect(database.atomic).not.toHaveBeenCalled();
     expect(database.run).not.toHaveBeenCalled();
