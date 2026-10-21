@@ -1129,6 +1129,19 @@ describe('SMS approved import integrity', () => {
     expect(transactions()).toHaveLength(0);
     expect(rows<{ state: string }>('SELECT state FROM sms_candidates')[0].state).toBe('PENDING');
   });
+  it('does not announce success when a stale candidate no longer exists', async () => {
+    const item = evidence();
+    await expect(
+      service.approve(
+        { id: item.id, kind: item.kind, item, state: 'PENDING', eventAt: item.eventAt },
+        card.id,
+        item.amountMinor,
+        'Synthetic',
+      ),
+    ).rejects.toThrow('unavailable');
+    expect(service.notice()).toBe('');
+    expect(count('card_transactions')).toBe(0);
+  });
   it('reject survives restaging and cannot be imported until deliberately reopened', async () => {
     const candidate = stage(evidence());
     await service.decide(candidate, 'REJECTED');

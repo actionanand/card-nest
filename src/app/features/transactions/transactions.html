@@ -557,6 +557,9 @@
                       {{ recurringProgressLabel(transaction) }}</span
                     >
                   }
+                  @if (recordedTime(transaction); as time) {
+                    <small class="tx-recorded-time"><app-icon name="schedule" />{{ time }}</small>
+                  }
                 </span>
                 <span class="tx-date">
                   <span>{{ transaction.transactionDate | appDate }}</span

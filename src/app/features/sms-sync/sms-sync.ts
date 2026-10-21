@@ -1,5 +1,6 @@
 import {
   Component,
+  DestroyRef,
   ElementRef,
   computed,
   effect,
@@ -10,6 +11,8 @@ import {
 } from '@angular/core';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { Router } from '@angular/router';
+import { Capacitor } from '@capacitor/core';
+import { SmsSwipe } from './sms-swipe';
 import { AppIcon } from '../../shared/app-icon';
 import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
 import { SnackbarService } from '../../core/services/snackbar.service';
@@ -28,6 +31,7 @@ import {
   existingSuggestions,
   ledgerType,
   merchantTitle,
+  suspectEvidence,
 } from './sms-model';
 
 function isReviewEntry(info: unknown): boolean {
@@ -41,7 +45,7 @@ function isReviewEntry(info: unknown): boolean {
 
 @Component({
   selector: 'app-sms-sync',
-  imports: [ReactiveFormsModule, AppIcon, AppSelectPicker, SmsTypePicker],
+  imports: [ReactiveFormsModule, AppIcon, AppSelectPicker, SmsTypePicker, SmsSwipe],
   templateUrl: './sms-sync.html',
   styleUrl: './sms-sync.scss',
   host: {
@@ -56,6 +60,10 @@ export class SmsSyncPage {
   readonly store = inject(CardNestStore);
   private readonly snackbar = inject(SnackbarService);
   readonly readFilter = signal('UNREAD');
+  readonly hideAlreadyAdded = signal(true);
+  readonly swipeEnabled = computed(
+    () => Capacitor.getPlatform() === 'android' && (this.store.smsSwipeActionsEnabled?.() ?? false),
+  );
   readonly confirmReadCount = signal<number | null>(null);
   readonly readDialog = viewChild<ElementRef<HTMLDialogElement>>('readDialog');
   readonly historyOptions: readonly AppSelectOption[] = [
@@ -188,7 +196,7 @@ export class SmsSyncPage {
       ...(this.typeMode() === 'MULTIPLE'
         ? this.multipleKinds().map((kind) => ({
             key: `type:${kind}`,
-            label: `${this.label(kind)} (OR)`,
+            label: this.label(kind),
           }))
         : [{ key: 'kind', label: this.kind() !== 'ALL' && this.label(this.kind()) }]),
       { key: 'state', label: this.state() !== 'ALL' && this.label(this.state()) },
@@ -197,6 +205,15 @@ export class SmsSyncPage {
       { key: 'read', label: this.readFilter() !== 'ALL' && this.label(this.readFilter()) },
     ].filter((chip) => chip.label),
   );
+  readonly typeChips = computed(() =>
+    this.filterChips().filter((chip) => chip.key.startsWith('type:') || chip.key === 'kind'),
+  );
+  checked(event: Event): boolean {
+    return (event.target as HTMLInputElement).checked;
+  }
+  importableCandidate(candidate: SmsCandidate): boolean {
+    return !!candidate.item && !!ledgerType(candidate.item);
+  }
   removeFilter(key: string): void {
     if (key.startsWith('type:')) {
       this.multipleKinds.update((kinds) => kinds.filter((kind) => kind !== key.slice(5)));
@@ -296,6 +313,7 @@ export class SmsSyncPage {
         from: this.from(),
         to: this.to(),
         read: this.readFilter(),
+        hideAlreadyAdded: this.hideAlreadyAdded(),
       }),
     );
   }
@@ -327,6 +345,7 @@ export class SmsSyncPage {
     }));
   });
   sourceLabel(candidate: SmsCandidate): string {
+    if (candidate.state === 'IMPORTED') return 'Added from SMS · Recorded transaction';
     if (candidate.state === 'MATCHED_EXISTING')
       return 'Already added · Matched to existing transaction';
     const ids = candidate.item
@@ -346,6 +365,10 @@ export class SmsSyncPage {
     return !!item && !!ledgerType(item);
   });
   matchReason(candidate: SmsCandidate): string {
+    if (candidate.item && suspectEvidence(candidate.item))
+      return 'Possible statement misclassification. Recheck the original SMS before adding. If already imported, inspect and explicitly correct the linked transaction in Activity; no automatic reversal is made.';
+    if (candidate.state === 'IMPORTED')
+      return 'Added after your approval. View the recorded transaction; this suggestion cannot be imported again.';
     if (candidate.state === 'MATCHED_EXISTING' && candidate.item && ledgerType(candidate.item)) {
       const target = this.store
         .transactions()
@@ -388,6 +411,7 @@ export class SmsSyncPage {
   }
   chooseInbox(state: string): void {
     this.state.set(state);
+    if (state === 'ALL') this.hideAlreadyAdded.set(false);
     this.readFilter.set('ALL');
     this.applyFilters();
   }
@@ -398,6 +422,22 @@ export class SmsSyncPage {
       const count = Math.max(0, this.sync.matchedTotal() - before);
       this.snackbar.show(
         `${count} already-recorded events linked. No transaction amounts or balances changed.`,
+      );
+    });
+  }
+  reparseSaved(): void {
+    void this.run(async () => {
+      await this.sync.recheckSaved();
+      this.snackbar.show(this.sync.notice(), 'INFO', 6000);
+    });
+  }
+  cleanEvidence(): void {
+    void this.run(async () => {
+      const count = await this.sync.cleanCompletedEvidence();
+      this.snackbar.show(
+        `${count} dismissed evidence payloads older than 90 days cleared. Deduplication history retained.`,
+        'INFO',
+        6000,
       );
     });
   }
@@ -447,6 +487,12 @@ export class SmsSyncPage {
     return labels[status.permission] ?? 'SMS access unavailable';
   });
   constructor() {
+    inject(DestroyRef).onDestroy(() => {
+      this.sync.candidates.set([]);
+      this.selected.set(null);
+      this.related.set([]);
+      this.text.reset();
+    });
     effect((cleanup) => {
       const dialog = this.readDialog()?.nativeElement;
       if (!dialog) return;
@@ -491,6 +537,7 @@ export class SmsSyncPage {
             this.from.set(filters.from);
             this.to.set(filters.to);
             this.readFilter.set(filters.read);
+            this.hideAlreadyAdded.set(filters.hideAlreadyAdded);
             if (this.entryPermissionPending) {
               this.entryPermissionPending = false;
               await this.sync.enterFromReview(this.range());
@@ -660,6 +707,9 @@ export class SmsSyncPage {
     const id = this.selected()?.id;
     if (!id) return;
     this.selected.set(null);
+    this.related.set([]);
+    this.editor.reset();
+    this.evidenceTarget.reset();
     queueMicrotask(() =>
       (
         document.getElementById(`review-${id}`) ?? document.getElementById('sms-inbox-title')
@@ -676,6 +726,20 @@ export class SmsSyncPage {
           id: t.id,
           label: `${t.transactionDate} · ${t.merchant ?? t.type} · ${this.money(t.amountMinor)}`,
         }));
+    if (item && !this.editor.controls.source.value) {
+      const ids = matchExisting(
+        item,
+        this.store.cards(),
+        this.store.paymentSources(),
+        this.store.transactions(),
+      ).transactionIds;
+      return ids
+        .flatMap((id) => this.store.transactions().filter((entry) => entry.id === id))
+        .map((entry) => ({
+          id: entry.id,
+          label: `${entry.transactionDate} · ${entry.merchant ?? entry.type} · ${this.money(entry.amountMinor)} · ${this.store.sourceDetail(entry.cardId)}`,
+        }));
+    }
     return item
       ? [
           ...new Map(
@@ -702,6 +766,12 @@ export class SmsSyncPage {
           label: `${t.transactionDate} · ${t.merchant ?? t.type} · ${this.money(t.amountMinor)}`,
         }))
       : [];
+  }
+  chooseExisting(id: string): void {
+    const entry = this.store.transactions().find((entry) => entry.id === id);
+    if (!entry) return;
+    this.editor.controls.source.setValue(entry.cardId);
+    this.editor.controls.existing.setValue(entry.id);
   }
   decide(candidate: SmsCandidate, state: 'REJECTED' | 'DEFERRED' | 'IGNORED' | 'PENDING'): void {
     void this.run(async () => {
@@ -768,8 +838,18 @@ export class SmsSyncPage {
       this.snackbar.show(
         candidate.readAt ? 'Suggestion marked unread.' : 'Suggestion marked read.',
         'INFO',
+        5000,
+        {
+          label: 'Undo',
+          run: () => {
+            void this.run(() => this.sync.markRead(candidate.id, !!candidate.readAt));
+          },
+        },
       );
     });
+  }
+  swipeRead(candidate: SmsCandidate): void {
+    if (!candidate.readAt && !this.loading()) this.markRead(candidate);
   }
   requestMarkAllRead(): void {
     if (this.loading() || this.sync.markingRead()) return;

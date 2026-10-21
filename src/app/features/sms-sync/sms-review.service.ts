@@ -807,7 +807,9 @@ export class SmsReviewService {
         'SELECT state, payload FROM sms_candidates WHERE id = ?',
         [candidate.id],
       );
-      if (!row || ['IMPORTED', 'MATCHED_EXISTING'].includes(row.state)) return null;
+      if (!row)
+        throw new Error('Saved suggestion is unavailable. Refresh the inbox before reviewing.');
+      if (['IMPORTED', 'MATCHED_EXISTING'].includes(row.state)) return null;
       if (!row.payload || !['PENDING', 'DEFERRED'].includes(row.state))
         throw new Error('Reopen this item for review first.');
       const item: unknown = JSON.parse(row.payload);
@@ -1159,11 +1161,13 @@ export class SmsReviewService {
     }
     ++this.refreshRevision;
     this.notice.set(
-      existingId
-        ? reconciliation === 'REPAIR_EXISTING'
-          ? 'Existing wallet top-up repaired and matched.'
-          : 'Matched existing transaction. Its recorded details are retained.'
-        : 'Transaction approved and saved.',
+      !result
+        ? 'This suggestion was already resolved. No additional transaction was added.'
+        : existingId
+          ? reconciliation === 'REPAIR_EXISTING'
+            ? 'Existing wallet top-up repaired and matched.'
+            : 'Matched existing transaction. Its recorded details are retained.'
+          : 'Transaction approved and saved.',
     );
     // The ledger is already durable. A bridge/permission/inbox refresh error must not
     // tell the user the financial write failed or encourage a second manual entry.
@@ -1176,7 +1180,9 @@ export class SmsReviewService {
       await this.refresh();
     } catch {
       this.notice.set(
-        'Transaction approved and saved. Review inbox could not refresh; retry refresh safely.',
+        result
+          ? 'Transaction approved and saved. Review inbox could not refresh; retry refresh safely.'
+          : 'Review decision retained. No additional transaction was added. Retry inbox refresh safely.',
       );
     }
   }

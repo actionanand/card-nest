@@ -57,9 +57,11 @@ type ProtectedDataAction = 'DELETE_ALL' | 'RETENTION';
   host: { '(document:keydown.escape)': 'closeDialogs()' },
 })
 export class SettingsPage {
+  readonly currentSection = signal('security');
   scrollSection(id: 'security' | 'appearance' | 'defaults' | 'notifications' | 'data'): void {
     const section = document.getElementById(id);
     if (!section) return;
+    this.currentSection.set(id);
     section.setAttribute('tabindex', '-1');
     section.focus({ preventScroll: true });
     section.scrollIntoView({ block: 'start', behavior: 'instant' });
@@ -74,6 +76,20 @@ export class SettingsPage {
   readonly pin = inject(ApplicationPinService);
   readonly appLock = inject(AppLockService);
   readonly uiPreferences = inject(UiPreferencesService);
+  saveDisplayPreference(
+    key: 'sms_swipe_actions_enabled' | 'show_transaction_time',
+    event: Event,
+  ): void {
+    const input = event.target as HTMLInputElement;
+    const enabled = input.checked;
+    input.checked =
+      key === 'sms_swipe_actions_enabled'
+        ? this.store.smsSwipeActionsEnabled()
+        : this.store.showTransactionTime();
+    void this.store
+      .setDurableUiPreference(key, enabled)
+      .catch(() => this.snackbar.show('Preference could not be saved. Please retry.', 'WARNING'));
+  }
   readonly cardExpiry = inject(CardExpiryService);
   private readonly themes = inject(ThemeService);
   private readonly snackbar = inject(SnackbarService);

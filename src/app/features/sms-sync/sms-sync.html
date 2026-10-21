@@ -186,13 +186,36 @@
           }}</span>
         </button>
       </div>
-      <div class="actions" role="group" aria-label="Review inboxes">
-        <button class="btn" type="button" (click)="chooseInbox('PENDING')">Needs review</button>
-        <button class="btn" type="button" (click)="chooseInbox('MATCHED_EXISTING')">
+      <div class="inbox-tabs" role="group" aria-label="Review inboxes">
+        <button
+          type="button"
+          [attr.aria-pressed]="state() === 'PENDING'"
+          (click)="chooseInbox('PENDING')"
+        >
+          Needs review
+        </button>
+        <button
+          type="button"
+          [attr.aria-pressed]="state() === 'MATCHED_EXISTING'"
+          (click)="chooseInbox('MATCHED_EXISTING')"
+        >
           Already added
         </button>
-        <button class="btn" type="button" (click)="chooseInbox('ALL')">All history</button>
+        <button type="button" [attr.aria-pressed]="state() === 'ALL'" (click)="chooseInbox('ALL')">
+          All history
+        </button>
       </div>
+      <label class="check"
+        ><input
+          type="checkbox"
+          [checked]="hideAlreadyAdded()"
+          (change)="hideAlreadyAdded.set(checked($event)); applyFilters()"
+        />Hide already added</label
+      >
+      <p class="muted">
+        Hides imported and matched items in active or all-history results. Already added remains
+        available.
+      </p>
       <p class="muted">
         Needs review {{ sync.pendingTotal() }} · Already added {{ sync.matchedTotal() }} · Imported
         {{ sync.importedTotal() }} · Unread {{ sync.unreadTotal() }}
@@ -202,12 +225,35 @@
           {{ possibleOnPage() }} possible existing matches on this page need confirmation.
         </p>
       }
-      <button class="btn" type="button" [disabled]="loading()" (click)="reevaluate()">
-        Recheck saved suggestions
-      </button>
-      <p class="muted">
-        Checks saved pending evidence in bounded batches. Previous review decisions are retained.
-      </p>
+      <details>
+        <summary>
+          <span>Saved message checks & storage</span><app-icon name="chevron_down" />
+        </summary>
+        <button class="btn" type="button" [disabled]="loading()" (click)="reevaluate()">
+          Recheck saved suggestions
+        </button>
+        <p class="muted">
+          Checks saved pending evidence in bounded batches. Previous review decisions are retained.
+        </p>
+        <button class="btn" type="button" [disabled]="loading()" (click)="reparseSaved()">
+          Recheck original messages
+        </button>
+        <p class="muted">
+          Reparse up to 50 saved pending messages with SMS permission. Missing originals stay
+          unverified; scan progress and financial records are retained.
+        </p>
+        <details>
+          <summary><span>Private evidence storage</span><app-icon name="chevron_down" /></summary>
+          <p class="muted">
+            Clear optional details for up to 200 rejected or ignored suggestions dismissed more than
+            90 days ago. Processing identities, read state and decisions remain. Pending, imported
+            and matched evidence is retained. Original phone SMS is untouched.
+          </p>
+          <button class="btn" type="button" [disabled]="loading()" (click)="cleanEvidence()">
+            Clear old dismissed evidence
+          </button>
+        </details>
+      </details>
       <app-select-picker
         label="Inbox"
         [options]="readOptions"
@@ -296,18 +342,40 @@
         <button class="btn" type="button" (click)="applyFilters()">Apply filters</button>
       </div>
       <div class="chips" aria-label="Review filters">
+        <div class="chips type-chips" role="group" aria-label="Transaction types">
+          @for (chip of typeChips(); track chip.key) {
+            @if (chip.key.startsWith('type:') || chip.key === 'kind') {
+              @if (!$first && chip.key.startsWith('type:')) {
+                <span class="or-separator" aria-hidden="true">OR</span>
+              }
+              <button
+                class="chip"
+                type="button"
+                (click)="removeFilter(chip.key)"
+                [attr.aria-label]="'Remove ' + chip.label + ' filter'"
+              >
+                <span class="chip-body"
+                  ><span class="chip-label">{{ chip.label }}</span
+                  ><app-icon name="close"
+                /></span>
+              </button>
+            }
+          }
+        </div>
         @for (chip of filterChips(); track chip.key) {
-          <button
-            class="chip"
-            type="button"
-            (click)="removeFilter(chip.key)"
-            [attr.aria-label]="'Remove ' + chip.label + ' filter'"
-          >
-            <span class="chip-body"
-              ><span class="chip-label">{{ chip.label }}</span
-              ><app-icon name="close"
-            /></span>
-          </button>
+          @if (!chip.key.startsWith('type:') && chip.key !== 'kind') {
+            <button
+              class="chip"
+              type="button"
+              (click)="removeFilter(chip.key)"
+              [attr.aria-label]="'Remove ' + chip.label + ' filter'"
+            >
+              <span class="chip-body"
+                ><span class="chip-label">{{ chip.label }}</span
+                ><app-icon name="close"
+              /></span>
+            </button>
+          }
         }
         <button class="btn clear" type="button" (click)="clearFilters()">Clear filters</button>
       </div>
@@ -315,10 +383,20 @@
         {{ loading() ? 'Loading review…' : sync.total() + ' results for these filters' }}
       </p>
       @for (candidate of visible(); track candidate.id) {
-        <article class="candidate">
+        <article
+          class="candidate"
+          appSmsSwipe
+          [enabled]="swipeEnabled() && !loading()"
+          (reviewSwipe)="open(candidate)"
+          (readSwipe)="swipeRead(candidate)"
+        >
+          <span class="swipe-review-hint" aria-hidden="true">Review details →</span
+          ><span class="swipe-read-hint" aria-hidden="true">← Mark read</span>
           <div class="row-main">
             <strong>{{ title(candidate.item, candidate.kind) }}</strong
-            ><span class="amount">{{ money(candidate.item?.amountMinor) }}</span>
+            ><span class="amount">{{
+              candidate.item ? money(candidate.item.amountMinor) : '—'
+            }}</span>
           </div>
           <div class="row-meta">
             <span class="badge">{{ candidate.readAt ? 'Read' : 'Unread' }}</span>
@@ -327,22 +405,31 @@
             ><time [attr.datetime]="candidate.eventAt">{{ dateTime(candidate.eventAt) }}</time>
           </div>
           <div class="row-source">
-            <span>{{ sourceLabel(candidate) }}</span
-            ><button
+            <span>{{ sourceLabel(candidate) }}</span>
+          </div>
+          <div class="row-actions">
+            <button
               class="btn"
               type="button"
               [id]="'review-' + candidate.id"
               aria-haspopup="dialog"
               (click)="open(candidate)"
             >
-              Review<span class="sr-only"> {{ title(candidate.item, candidate.kind) }}</span>
+              {{
+                candidate.state === 'PENDING' && candidate.item && importableCandidate(candidate)
+                  ? 'Review & add'
+                  : 'Review details'
+              }}<span class="sr-only"> {{ title(candidate.item, candidate.kind) }}</span>
             </button>
+            @if (
+              (candidate.state === 'MATCHED_EXISTING' || candidate.state === 'IMPORTED') &&
+              candidate.transactionId
+            ) {
+              <button class="btn btn-primary" type="button" (click)="viewExisting(candidate)">
+                View transaction
+              </button>
+            }
           </div>
-          @if (candidate.state === 'MATCHED_EXISTING' && candidate.transactionId) {
-            <button class="btn" type="button" (click)="viewExisting(candidate)">
-              View existing transaction
-            </button>
-          }
           @if (matchReason(candidate); as reason) {
             <p class="muted">{{ reason }}</p>
           }
@@ -553,6 +640,15 @@
                   Possible existing transaction found. Select a match below to avoid adding it
                   twice, or confirm a separate event after checking.
                 </p>
+                @if (!editor.controls.source.value) {
+                  <div class="possible-matches" aria-label="Possible existing transactions">
+                    @for (match of matches(); track match.id) {
+                      <button class="btn" type="button" (click)="chooseExisting(match.id)">
+                        {{ match.label }} · Match this transaction
+                      </button>
+                    }
+                  </div>
+                }
               }
               <app-select-picker
                 label="Match existing entry"
@@ -739,7 +835,17 @@
                 }}
               </dd>
               <dt>Statement total / minimum</dt>
-              <dd>{{ money(item.statementTotalMinor) }} / {{ money(item.minimumDueMinor) }}</dd>
+              <dd>
+                {{
+                  item.statementTotalMinor === undefined
+                    ? 'Not provided'
+                    : money(item.statementTotalMinor)
+                }}
+                /
+                {{
+                  item.minimumDueMinor === undefined ? 'Not provided' : money(item.minimumDueMinor)
+                }}
+              </dd>
             </dl>
           </details>
         } @else {

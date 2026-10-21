@@ -199,6 +199,51 @@ describe('SMS review privacy and explicit approval UI', () => {
       expect.objectContaining({ mode: 'MULTIPLE', kinds: ['CASHBACK'], multipleInitialized: true }),
     );
   });
+  it('shows OR only between type chips, selected inbox semantics and an accessible bottom-sheet picker', async () => {
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const page = fixture.componentInstance;
+    page.changeTypeMode('MULTIPLE');
+    page.multipleKinds.set(['PURCHASE', 'CASHBACK']);
+    page.advanced.set(true);
+    fixture.detectChanges();
+    const root = fixture.nativeElement as HTMLElement;
+    expect(root.querySelectorAll('.type-chips .or-separator')).toHaveLength(1);
+    expect(root.querySelector('.type-chips')?.textContent).not.toContain('(OR)');
+    expect(root.querySelector('.inbox-tabs button[aria-pressed="true"]')?.textContent).toContain(
+      'Needs review',
+    );
+    root.querySelector<HTMLButtonElement>('app-sms-type-picker > button')!.click();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(root.querySelector('app-sms-type-picker dialog[open]')?.textContent).toContain(
+      'Select transaction types',
+    );
+    const picker = root.querySelector('app-sms-type-picker dialog')!;
+    picker.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
+    );
+    fixture.detectChanges();
+    expect(root.querySelector('app-sms-type-picker dialog')).toBeNull();
+    expect(sync.approve).not.toHaveBeenCalled();
+  });
+  it('blocks a legacy deadline-only purchase and releases transient evidence on modal close', async () => {
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const candidate = demoCandidate();
+    candidate.item!.dueDate = candidate.item!.eventDate;
+    fixture.componentInstance.open(candidate);
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('button[type="submit"]')).toBeNull();
+    expect(fixture.componentInstance.matchReason(candidate)).toContain(
+      'statement misclassification',
+    );
+    fixture.componentInstance.closeEditor();
+    expect(fixture.componentInstance.related()).toEqual([]);
+    expect(fixture.componentInstance.selected()).toBeNull();
+  });
   it('hides pending work and disables Scan for denied access even with legacy pending fields', () => {
     status.set({
       permission: 'denied',
@@ -494,10 +539,13 @@ describe('SMS review privacy and explicit approval UI', () => {
     expect(fixture.nativeElement.querySelector('dialog').textContent).toContain('evidence only');
     const imported = demoCandidate();
     imported.state = 'IMPORTED';
+    imported.decision = 'PENDING'; // Balance reconciliation choice is not the financial review state.
     fixture.componentInstance.open(imported);
     fixture.detectChanges();
     expect(fixture.nativeElement.querySelector('dialog button[type=submit]')).toBeNull();
     expect(sync.approve).not.toHaveBeenCalled();
+    expect(fixture.componentInstance.sourceLabel(imported)).toContain('Recorded transaction');
+    expect(fixture.componentInstance.matchReason(imported)).not.toContain('PENDING');
   });
   it('applies and clears filter chips including the original event-date range', () => {
     const fixture = TestBed.createComponent(SmsSyncPage);

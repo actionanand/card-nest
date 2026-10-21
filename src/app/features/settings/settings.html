@@ -28,11 +28,41 @@
   }
   <div class="settings-grid">
     <nav class="settings-nav" aria-label="Settings sections">
-      <button type="button" (click)="scrollSection('security')">Security</button>
-      <button type="button" (click)="scrollSection('appearance')">Appearance</button>
-      <button type="button" (click)="scrollSection('defaults')">Cards & currency</button>
-      <button type="button" (click)="scrollSection('notifications')">Notifications</button>
-      <button type="button" (click)="scrollSection('data')">Backup & data</button>
+      <button
+        type="button"
+        [attr.aria-pressed]="currentSection() === 'security'"
+        (click)="scrollSection('security')"
+      >
+        Security
+      </button>
+      <button
+        type="button"
+        [attr.aria-pressed]="currentSection() === 'appearance'"
+        (click)="scrollSection('appearance')"
+      >
+        Appearance
+      </button>
+      <button
+        type="button"
+        [attr.aria-pressed]="currentSection() === 'defaults'"
+        (click)="scrollSection('defaults')"
+      >
+        Cards & currency
+      </button>
+      <button
+        type="button"
+        [attr.aria-pressed]="currentSection() === 'notifications'"
+        (click)="scrollSection('notifications')"
+      >
+        Notifications
+      </button>
+      <button
+        type="button"
+        [attr.aria-pressed]="currentSection() === 'data'"
+        (click)="scrollSection('data')"
+      >
+        Backup & data
+      </button>
     </nav>
     <div class="settings-content">
       <section id="security" class="panel">
@@ -116,6 +146,24 @@
             <p>Choose how CardNest looks.</p>
           </div>
         </div>
+        <label class="setting-row"
+          ><span
+            ><strong>Enable SMS review swipe actions</strong
+            ><small>Swipe right to review and add; swipe left to mark as read.</small></span
+          ><input
+            type="checkbox"
+            [checked]="store.smsSwipeActionsEnabled?.() ?? false"
+            (change)="saveDisplayPreference('sms_swipe_actions_enabled', $event)"
+        /></label>
+        <label class="setting-row"
+          ><span
+            ><strong>Show transaction time</strong
+            ><small>Display the recorded transaction time below its date in Activity.</small></span
+          ><input
+            type="checkbox"
+            [checked]="store.showTransactionTime?.() ?? false"
+            (change)="saveDisplayPreference('show_transaction_time', $event)"
+        /></label>
         <div class="theme-options" role="radiogroup" aria-label="Theme">
           @for (option of themeOptions; track option) {
             <label

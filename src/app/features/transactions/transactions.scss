@@ -1276,3 +1276,15 @@ label small {
     grid-template-columns: 1fr;
   }
 }
+.tx-recorded-time {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  color: var(--muted);
+  font-size: 0.7rem;
+  margin-top: 0.2rem;
+}
+.tx-recorded-time app-icon {
+  width: 0.8rem;
+  height: 0.8rem;
+}

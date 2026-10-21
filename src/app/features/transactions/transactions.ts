@@ -31,6 +31,7 @@ import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker
 import { AppDatePicker } from '../../shared/app-date-picker';
 import { indiaCurrentMonth, indiaTodayIso } from '../../core/services/india-date';
 import { PlatformTools } from '../../shared/platform-tools';
+import { recordedTransactionTime } from '../../core/services/transaction-time';
 
 type GroupingMode = 'MONTH' | 'CYCLE' | 'STATEMENT';
 type TransactionTypeFilter = TransactionType | 'ALL' | 'WITH_IMAGE';
@@ -75,6 +76,12 @@ function sanitizedMoneyInput(value: string): string {
 })
 export class TransactionsPage {
   readonly store = inject(CardNestStore);
+  recordedTime(transaction: CardTransaction): string {
+    return recordedTransactionTime(
+      transaction.transactionTime,
+      this.store.showTransactionTime?.() ?? false,
+    );
+  }
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
   private readonly snackbar = inject(SnackbarService);
