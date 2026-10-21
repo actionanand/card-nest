@@ -42,6 +42,11 @@ import { lockDocumentScroll } from './document-scroll-lock';
       @if (busy()) {
         <p role="status">Opening…</p>
       }
+      @if (sharingOpened()) {
+        <p class="handoff" role="status">
+          Sharing opened. Complete saving in your selected app, then return here.
+        </p>
+      }
       <button class="btn cancel" type="button" [disabled]="busy()" (click)="close()">Cancel</button>
     </dialog>
   `,
@@ -142,12 +147,19 @@ import { lockDocumentScroll } from './document-scroll-lock';
     .error {
       color: var(--danger);
     }
+    .handoff {
+      padding: 0.65rem 0.75rem;
+      border-radius: 0.6rem;
+      color: var(--accent-ink, var(--ink));
+      background: var(--accent-soft);
+    }
   `,
 })
 export class BackupDeliveryDialog {
   readonly filename = input.required<string>();
   readonly busy = input(false);
   readonly canShare = input(false);
+  readonly sharingOpened = input(false);
   readonly error = input<string | null>(null);
   readonly save = output<void>();
   readonly share = output<void>();

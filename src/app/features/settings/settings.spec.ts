@@ -71,6 +71,8 @@ describe('Explicit backup destination choice', () => {
       'Backup sharing opened. Finish saving in the selected app.',
       'INFO',
     );
+    expect(fixture.componentInstance.pendingBackup()).toEqual(backup);
+    expect(fixture.componentInstance.backupSharingOpened()).toBe(true);
   });
   it('retains the encrypted file for retry after failure or cancelled web sharing', async () => {
     const fixture = await create();
@@ -112,6 +114,7 @@ describe('Explicit backup destination choice', () => {
     fixture.detectChanges();
     await fixture.whenStable();
     expect(fixture.componentInstance.pendingBackup()).toBeNull();
+    expect(fixture.componentInstance.backupSharingOpened()).toBe(false);
   });
   it('keeps restore behind explicit confirmation and clears credentials only after the restore receives them', async () => {
     const fixture = TestBed.createComponent(SettingsPage);

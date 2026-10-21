@@ -95,6 +95,7 @@ export class SettingsPage {
   readonly pendingBackup = signal<{ fileName: string; contents: string } | null>(null);
   readonly deliveringBackup = signal(false);
   readonly deliveryError = signal<string | null>(null);
+  readonly backupSharingOpened = signal(false);
   readonly canShareBackup = () => this.backups.canShare();
   readonly revealBackupPassphrase = signal(false);
   readonly revealBackupConfirmation = signal(false);
@@ -177,6 +178,7 @@ export class SettingsPage {
     effect(() => {
       if (this.appLock.locked()) {
         this.pendingBackup.set(null);
+        this.backupSharingOpened.set(false);
         this.clearBackupCredentials();
         this.showBackupDialog.set(false);
       }
@@ -202,6 +204,7 @@ export class SettingsPage {
     if (this.deliveringBackup()) return;
     this.pendingBackup.set(null);
     this.deliveryError.set(null);
+    this.backupSharingOpened.set(false);
     if (!this.appLock.locked())
       queueMicrotask(() => this.createBackupButton()?.nativeElement.focus());
   }
@@ -211,6 +214,7 @@ export class SettingsPage {
     if (!backup || this.deliveringBackup() || this.appLock.locked()) return;
     this.deliveringBackup.set(true);
     this.deliveryError.set(null);
+    this.backupSharingOpened.set(false);
     try {
       if (action === 'SAVE') {
         await this.backups.save(backup.fileName, backup.contents);
@@ -218,7 +222,11 @@ export class SettingsPage {
       } else {
         const opened = await this.backups.share(backup.fileName, backup.contents);
         if (!opened) return;
+        // Android resolves once the chooser is launched, not when a recipient finishes.
+        // Keep this recovery state in place while the selected app runs.
+        this.backupSharingOpened.set(true);
         this.snackbar.show('Backup sharing opened. Finish saving in the selected app.', 'INFO');
+        return;
       }
       this.pendingBackup.set(null);
     } catch (error: unknown) {
@@ -513,6 +521,7 @@ export class SettingsPage {
     if (this.processingBackup()) return;
     this.showBackupDialog.set(false);
     this.backupError.set(null);
+    this.backupSharingOpened.set(false);
     this.clearBackupCredentials();
   }
 

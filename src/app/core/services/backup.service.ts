@@ -74,7 +74,7 @@ export class BackupService {
       );
       return;
     }
-    const file = new File([contents], fileName, { type: 'application/json' });
+    const file = new File([contents], fileName, { type: 'application/octet-stream' });
     const url = URL.createObjectURL(file);
     const anchor = this.document.createElement('a');
     anchor.href = url;
@@ -91,9 +91,10 @@ export class BackupService {
     try {
       return (
         !!navigator?.share &&
-        !!navigator.canShare?.({
-          files: [new File([''], 'cardnest-backup.cnbak', { type: 'application/octet-stream' })],
-        })
+        (!navigator.canShare ||
+          navigator.canShare({
+            files: [new File([''], 'cardnest-backup.cnbak', { type: 'application/octet-stream' })],
+          }))
       );
     } catch {
       return false;
@@ -108,7 +109,7 @@ export class BackupService {
     }
     const navigator = this.document.defaultView?.navigator;
     const file = new File([contents], fileName, { type: 'application/octet-stream' });
-    if (!navigator?.share || !navigator.canShare?.({ files: [file] }))
+    if (!navigator?.share || navigator.canShare?.({ files: [file] }) === false)
       throw new Error('File sharing is unavailable. Save locally instead.');
     try {
       await navigator.share({ files: [file], title: 'CardNest encrypted backup' });
@@ -129,7 +130,7 @@ export class BackupService {
     return new Promise<string>((resolve, reject) => {
       const input = this.document.createElement('input');
       input.type = 'file';
-      input.accept = '.cnbak,application/json';
+      input.accept = '.cnbak,application/octet-stream,application/json';
       input.addEventListener('change', () => {
         const file = input.files?.[0];
         if (!file) {

@@ -54,6 +54,20 @@ describe('Encrypted backup delivery', () => {
     expect(await service.share('synthetic.cnbak', content)).toBe(true);
     expect(native.shareBackup).toHaveBeenCalledWith({ filename: 'synthetic.cnbak', content });
   });
+  it('rejects a corrupted encrypted envelope before any backup data is restored', async () => {
+    const json = JSON.stringify({
+      transactions: [{ merchant: 'Synthetic merchant', amount: 123 }],
+    });
+    database.exportBackupJson.mockResolvedValue(json);
+    const backup = await service.create('synthetic-backup-passphrase');
+    const damaged = JSON.parse(backup.contents) as { cipher: { data: string } };
+    const finalCharacter = damaged.cipher.data.at(-1) === 'A' ? 'B' : 'A';
+    damaged.cipher.data = `${damaged.cipher.data.slice(0, -1)}${finalCharacter}`;
+    await expect(
+      service.restore(JSON.stringify(damaged), 'synthetic-backup-passphrase'),
+    ).rejects.toThrow('incorrect');
+    expect(database.restoreBackupJson).not.toHaveBeenCalled();
+  });
   it('keeps Android Save locally on the existing document-save bridge', async () => {
     const saveBackup = vi.fn(() =>
       queueMicrotask(() =>

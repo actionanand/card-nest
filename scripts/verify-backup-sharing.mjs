@@ -12,11 +12,15 @@ const method = plugin.slice(
   plugin.indexOf('private File outputFile'),
 );
 
-test('backup delivery shares an encrypted private-cache file without writing Downloads', () => {
+test('backup delivery validates a complete encrypted envelope and writes only a private .cnbak handoff file', () => {
   assert.ok(method.includes('cardnest-encrypted-backup'));
   assert.ok(method.includes('AES-GCM'));
+  assert.ok(method.includes('PBKDF2-SHA256'));
   assert.ok(method.includes('getContext().getCacheDir(), "exports/backups"'));
-  assert.ok(method.includes('File.createTempFile'));
+  assert.ok(method.includes('uniqueBackupFile'));
+  assert.ok(method.includes('".partial"'));
+  assert.ok(method.includes('output.getFD().sync()'));
+  assert.ok(method.includes('UUID.randomUUID'));
   assert.ok(method.includes('FileProvider.getUriForFile'));
   assert.ok(method.includes('application/octet-stream'));
   assert.ok(!method.includes('saveToDownloads'));
@@ -39,6 +43,8 @@ test('the chooser grants temporary read access through the existing nonexported 
     /android:authorities="\$\{applicationId\}\.exports\.fileprovider"[\s\S]*?android:exported="false"[\s\S]*?android:grantUriPermissions="true"/,
   );
   assert.ok(
-    readFileSync(`${root}/res/xml/card_nest_file_paths.xml`, 'utf8').includes('path="exports/"'),
+    readFileSync(`${root}/res/xml/card_nest_file_paths.xml`, 'utf8').includes(
+      'path="exports/backups/"',
+    ),
   );
 });

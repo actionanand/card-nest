@@ -62,6 +62,7 @@ import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -127,36 +128,102 @@ public class CardNestExportPlugin extends Plugin {
   @PluginMethod
   public void shareBackup(PluginCall call) {
     String content = call.getString("content");
+    new Thread(() -> prepareBackupShare(call, content), "cardnest-backup-share").start();
+  }
+
+  private void prepareBackupShare(PluginCall call, String content) {
     File file = null;
+    File partial = null;
     try {
-      JSONObject backup = new JSONObject(content == null ? "" : content);
-      JSONObject cipher = backup.optJSONObject("cipher");
-      if (!"cardnest-encrypted-backup".equals(backup.optString("format")) ||
-          cipher == null || !"AES-GCM".equals(cipher.optString("algorithm")) ||
-          cipher.optString("data").isEmpty()) {
-        call.reject("Only an encrypted CardNest backup can be shared.");
+      if (!isCompleteEncryptedBackup(content)) {
+        rejectBackupShare(call, "Only a complete encrypted CardNest backup can be shared.");
         return;
       }
       File directory = new File(getContext().getCacheDir(), "exports/backups");
       if (!directory.exists() && !directory.mkdirs()) throw new Exception("Unable to prepare backup.");
-      // Keep files available while a selected app reads them; expire only this private cache.
-      File[] oldFiles = directory.listFiles();
-      long cutoff = System.currentTimeMillis() - 24L * 60 * 60 * 1000;
-      if (oldFiles != null) for (File old : oldFiles) {
-        if (old.isFile() && old.getName().endsWith(".cnbak") && old.lastModified() < cutoff) old.delete();
-      }
-      String name = call.getString("filename", "cardnest-backup").replaceAll("[^a-zA-Z0-9._-]", "_");
-      if (name.endsWith(".cnbak")) name = name.substring(0, name.length() - 6);
-      file = File.createTempFile((name.length() >= 3 ? name : "cardnest-backup") + "-", ".cnbak", directory);
-      try (FileOutputStream output = new FileOutputStream(file, false)) {
+      cleanupExpiredBackups(directory);
+      file = uniqueBackupFile(directory, call.getString("filename", "cardnest-backup"));
+      partial = new File(directory, file.getName() + ".partial");
+      try (FileOutputStream output = new FileOutputStream(partial, false)) {
         output.write(content.getBytes(StandardCharsets.UTF_8));
+        output.getFD().sync();
       }
-      Uri uri = FileProvider.getUriForFile(getContext(), getContext().getPackageName() + ".exports.fileprovider", file);
-      share(uri, "application/octet-stream", "Share CardNest encrypted backup");
-      call.resolve();
+      if (!partial.renameTo(file)) throw new Exception("Unable to finalize encrypted backup.");
+      partial = null;
+      Uri uri = FileProvider.getUriForFile(
+        getContext(),
+        getContext().getPackageName() + ".exports.fileprovider",
+        file
+      );
+      File completedFile = file;
+      getActivity().runOnUiThread(() -> {
+        try {
+          if (getActivity().isFinishing() || getActivity().isDestroyed()) {
+            completedFile.delete();
+            call.reject("CardNest is not available to open backup sharing.");
+            return;
+          }
+          share(uri, "application/octet-stream", "Share CardNest encrypted backup");
+          call.resolve(); // This means the chooser launched, not that a provider saved the file.
+        } catch (Exception error) {
+          completedFile.delete();
+          call.reject("Unable to open backup sharing. You can save locally instead.");
+        }
+      });
     } catch (Exception error) {
+      if (partial != null) partial.delete();
       if (file != null) file.delete();
-      call.reject("Unable to open backup sharing. You can save locally instead.");
+      rejectBackupShare(call, "Unable to prepare encrypted backup sharing. You can save locally instead.");
+    }
+  }
+
+  private void rejectBackupShare(PluginCall call, String message) {
+    getActivity().runOnUiThread(() -> call.reject(message));
+  }
+
+  private boolean isCompleteEncryptedBackup(String content) {
+    try {
+      JSONObject backup = new JSONObject(content == null ? "" : content);
+      JSONObject kdf = backup.optJSONObject("kdf");
+      JSONObject cipher = backup.optJSONObject("cipher");
+      int version = backup.optInt("version", 0);
+      if (!"cardnest-encrypted-backup".equals(backup.optString("format")) ||
+          (version != 1 && version != 2) ||
+          kdf == null || cipher == null ||
+          !"PBKDF2-SHA256".equals(kdf.optString("algorithm")) ||
+          kdf.optInt("iterations", 0) <= 0 ||
+          !"AES-GCM".equals(cipher.optString("algorithm")) ||
+          cipher.optString("data").isEmpty() || cipher.optString("iv").isEmpty() ||
+          kdf.optString("salt").isEmpty()) return false;
+      byte[] salt = android.util.Base64.decode(kdf.getString("salt"), android.util.Base64.DEFAULT);
+      byte[] iv = android.util.Base64.decode(cipher.getString("iv"), android.util.Base64.DEFAULT);
+      byte[] ciphertext = android.util.Base64.decode(cipher.getString("data"), android.util.Base64.DEFAULT);
+      return salt.length >= 16 && iv.length == 12 && ciphertext.length > 16;
+    } catch (Exception error) {
+      return false;
+    }
+  }
+
+  private File uniqueBackupFile(File directory, String requestedName) throws Exception {
+    String name = requestedName == null ? "" : requestedName.trim().replaceAll("[^a-zA-Z0-9._-]", "_");
+    if (name.endsWith(".cnbak")) name = name.substring(0, name.length() - 6);
+    if (name.isEmpty()) name = "cardnest-backup";
+    for (int attempt = 0; attempt < 8; attempt++) {
+      File candidate = new File(directory, name + "-" + UUID.randomUUID().toString().substring(0, 8) + ".cnbak");
+      if (candidate.createNewFile()) {
+        if (!candidate.delete()) throw new Exception("Unable to prepare backup filename.");
+        return candidate;
+      }
+    }
+    throw new Exception("Unable to reserve a backup filename.");
+  }
+
+  private void cleanupExpiredBackups(File directory) {
+    File[] oldFiles = directory.listFiles();
+    long cutoff = System.currentTimeMillis() - 24L * 60 * 60 * 1000;
+    if (oldFiles == null) return;
+    for (File old : oldFiles) {
+      if (old.isFile() && old.getName().endsWith(".cnbak") && old.lastModified() < cutoff) old.delete();
     }
   }
 
@@ -489,7 +556,7 @@ writeFileSync(
   filePathsPath,
   `<?xml version="1.0" encoding="utf-8"?>
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
-    <cache-path name="card_nest_exports" path="exports/" />
+    <cache-path name="card_nest_backups" path="exports/backups/" />
     <external-path name="card_nest_downloads" path="Download/" />
 </paths>
 `,

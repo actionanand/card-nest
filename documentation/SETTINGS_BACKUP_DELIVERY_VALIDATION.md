@@ -66,3 +66,33 @@ $env:GRADLE_USER_HOME=(Resolve-Path tmp/sms-tools/gradle-cache).Path
 Updated debug APK: `android/app/build/outputs/apk/debug/card-nest-1-1-8-debug.apk`, 31,096,940 bytes. SHA-256: `FCE3A32D2D65EF6DA06F5AEE24667D841E572BC40CDE3F3429B4B68C680CE63F`.
 
 No device was connected. Remaining physical checks: native document-save success/cancellation; chooser app availability; cloud apps actually consuming the read-granted URI and completing an upload; restoring a shared encrypted file; app lock/unlock around external pickers; system insets/keyboard/TalkBack and actual Android font scaling. The browser preview and source-contract tests do not establish those device/provider outcomes. No release signing or distribution was performed.
+
+## Android share-handoff follow-up
+
+The Android share flow was reviewed again after a physical report of a blank white screen around the external backup handoff. No phone or usable ADB daemon was available in this environment, so the exact on-device root cause remains **unconfirmed**. The report must be reproduced with logcat before attributing it to Android, Google Drive, or the WebView.
+
+Two static lifecycle defects were corrected without changing encryption or backup compatibility:
+
+- The previous Angular flow removed the destination dialog as soon as `shareBackup()` returned. Android returns at chooser launch, before the selected recipient has finished or the user has returned. The dialog now stays available with a clear “Sharing opened” state until the user dismisses it, while the existing application lock still clears it on background locking.
+- The generated plugin now creates the handoff file off the UI thread, writes and fsyncs a private `.partial` file, atomically renames it to a unique `cardnest-backup-YYYY-MM-DD-<suffix>.cnbak` filename, then launches the chooser on the UI thread. The FileProvider XML now maps only `cache/exports/backups/` for the backup handoff, rather than the broader exports cache root. The authority remains `${applicationId}.exports.fileprovider`, which resolves to `com.actionanand.cardnest.app.debug.exports.fileprovider` for debug and preserves the production application ID for release.
+
+The native method accepts only CardNest format versions 1/2 with the existing PBKDF2-SHA256/AES-GCM envelope fields and structurally valid salt, IV and ciphertext. It writes only that encrypted envelope; it does not receive a passphrase, key, plaintext database, or raw SMS. The common binary MIME type remains `application/octet-stream` for broad chooser compatibility. Web local downloads and Web Share files now use that same MIME type, while restore continues to accept legacy JSON MIME selections for existing `.cnbak` files.
+
+The share call still intentionally reports only that the Android chooser was opened. It never claims that Drive or any other recipient completed an upload. If preparing or launching fails, the in-memory encrypted backup remains available for retry or for the independent Save locally action.
+
+Follow-up validation performed after regeneration:
+
+```bash
+node scripts/patch-android-export.mjs
+node --test scripts/verify-backup-sharing.mjs
+npm test -- --watch=false
+npm run lint
+npx tsc -p tsconfig.app.json --noEmit
+npm run build:android
+npx cap sync android
+node scripts/patch-android.mjs
+npm run test:android-isolation
+android/gradlew.bat -p android :app:compileDebugJavaWithJavac :app:testDebugUnitTest --rerun-tasks --offline --no-daemon --console=plain
+```
+
+The focused native contract suite passed (2/2). The forced Java compilation and JVM test run completed successfully after stopping a stale Gradle daemon that had held a generated `R.jar` file open. The encrypted restore suite now also verifies damaged ciphertext is rejected before the database restore call. Physical checks still required: open the chooser, select Google Drive, verify the displayed `.cnbak` filename and granted `content://` URI, cancel and return to Settings, enable lock-on-background and repeat, save locally, and restore a synthetic shared file with both correct and incorrect passphrases.
