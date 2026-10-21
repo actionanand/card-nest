@@ -17,9 +17,11 @@ const native = vi.hoisted(() => ({
   catchUp: vi.fn(),
   disable: vi.fn(),
 }));
-vi.mock('@capacitor/core', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@capacitor/core')>();
-  return { ...actual, registerPlugin: () => native };
+const capacitor = vi.hoisted(() => ({
+  getPlatform: vi.fn<() => string>(() => 'android'),
+}));
+vi.mock('@capacitor/core', () => {
+  return { Capacitor: capacitor, registerPlugin: () => native };
 });
 
 describe('SMS permission interaction through the native bridge', () => {
@@ -48,9 +50,8 @@ describe('SMS permission interaction through the native bridge', () => {
   };
   const database = { atomic: vi.fn(), run: vi.fn(), query: vi.fn() };
   beforeEach(() => {
-    vi.restoreAllMocks();
-    vi.resetAllMocks();
-    vi.spyOn(Capacitor, 'getPlatform').mockReturnValue('android');
+    vi.clearAllMocks();
+    capacitor.getPlatform.mockReturnValue('android');
     native.status.mockResolvedValue(denied);
     native.enable.mockResolvedValue(denied);
     native.pending.mockResolvedValue({ items: [] });
@@ -66,6 +67,7 @@ describe('SMS permission interaction through the native bridge', () => {
       ],
     });
     service = TestBed.inject(SmsReviewService);
+    expect(Capacitor).toBe(capacitor);
     expect(Capacitor.getPlatform()).toBe('android');
     expect(service.lock.locked).toBe(locked);
     expect(service.lock.foreground).toBe(foreground);
