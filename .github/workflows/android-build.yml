@@ -20,8 +20,30 @@ env:
   RELEASE_BASENAME: card-nest-release
 
 jobs:
+  prepare:
+    name: Determine release eligibility
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.plan.outputs.build }}
+      previous-version-code: ${{ steps.plan.outputs.previous-version-code }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+      - name: Check Android release safety
+        run: node --test scripts/android-release.test.mjs
+      - name: Plan Android release
+        id: plan
+        run: node scripts/android-release.mjs
+
   build:
     name: Build APK and AAB
+    needs: prepare
+    if: needs.prepare.outputs.build == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 40
 
@@ -29,6 +51,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
 
       - name: Setup Node.js
@@ -36,6 +59,12 @@ jobs:
         with:
           node-version-file: '.nvmrc'
           cache: npm
+
+      - name: Bump release versionCode once
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main-android'
+        env:
+          PREVIOUS_VERSION_CODE: ${{ needs.prepare.outputs.previous-version-code }}
+        run: node scripts/bump-android-version.js --after-version-code="$PREVIOUS_VERSION_CODE"
 
       - name: Read Android version
         shell: bash
@@ -265,6 +294,14 @@ jobs:
           fi
           echo "SIGNED_BUILD=$SIGNED_BUILD" >> "$GITHUB_ENV"
 
+      - name: Require signed artifacts for automatic releases
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main-android'
+        run: |
+          if [[ "$SIGNED_BUILD" != "true" ]]; then
+            echo "::error::Automatic releases require the existing release signing credentials. Version metadata will not be committed."
+            exit 1
+          fi
+
       - name: Verify R8 release outputs
         shell: bash
         run: |
@@ -315,6 +352,17 @@ jobs:
           echo "APK_STATUS=$APK_STATUS" >> "$GITHUB_ENV"
           echo "AAB_STATUS=$AAB_STATUS" >> "$GITHUB_ENV"
 
+      - name: Verify embedded APK and AAB versions
+        shell: bash
+        run: |
+          curl --fail --location --retry 3 \
+            https://github.com/google/bundletool/releases/download/1.18.1/bundletool-all-1.18.1.jar \
+            --output "$RUNNER_TEMP/bundletool.jar"
+          node scripts/verify-android-release.mjs \
+            "$APK_TARGET" "$AAB_TARGET" \
+            "$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION/aapt" \
+            "$RUNNER_TEMP/bundletool.jar"
+
       - name: Summarize Android artifacts
         shell: bash
         run: |
@@ -334,22 +382,24 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           ls -lh releases/
 
-      - name: Commit versioned artifacts to main-android
-        if: github.ref == 'refs/heads/main-android'
+      - name: Commit version metadata and artifacts to main-android
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main-android'
         shell: bash
         run: |
           test -s "$APK_TARGET"
           test -s "$AAB_TARGET"
+          # Never rebase binaries onto source they were not built from.
+          REMOTE_SHA=$(git ls-remote --exit-code origin refs/heads/main-android | cut -f1)
+          if [[ "$REMOTE_SHA" != "$GITHUB_SHA" ]]; then
+            echo "::error::main-android advanced during the build; refusing to publish stale artifacts."
+            exit 1
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git pull --rebase --autostash
-          git add releases/
-          if git diff --cached --quiet; then
-            echo "Release files are unchanged."
-          else
-            git commit -m "build: add CardNest Android $VERSION_NAME ($VERSION_CODE) [skip ci]"
-            git push
-          fi
+          git add android-version.json src/app/core/app-version.ts releases/
+          HUSKY=0 git commit -m "build: add CardNest Android $VERSION_NAME ($VERSION_CODE) [skip ci]"
+          # A racing push must reject this commit, not overwrite or rebase it.
+          git push origin HEAD:refs/heads/main-android
 
       - name: Upload Android artifacts
         uses: actions/upload-artifact@v4
