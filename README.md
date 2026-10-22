@@ -18,39 +18,28 @@ Once the server is running, open your browser and navigate to `http://localhost:
 
 ## Android release versioning
 
-The [Android release workflow](.github/workflows/android-build.yml) automatically
-increments `versionCode` only for pushes to `main-android` containing application
-changes since the last persisted release artifacts. This includes merges,
-fast-forwards and direct pushes; it is not strict merge-only detection.
-Documentation, workflow-only changes, tests, version metadata and generated
-release artifacts do not request another release. Feature debug builds,
-`main`, `main-github`, manual dispatches and tags never automatically increment.
+Every push to `main-android` runs the
+[Android release workflow](.github/workflows/android-build.yml), which increments
+`versionCode` exactly once with the [version script](scripts/bump-android-version.js)
+before building the APK and AAB. This applies to merges, fast-forwards and direct
+commits, whatever files they change. `versionName` stays `1.1.9`; the next release
+uses `1.1.9 (49)`, provided 49 is not already used in Google Play (the workflow
+cannot query Play). Never reuse a code or rename an older AAB.
 
-The existing [version script](scripts/bump-android-version.js) runs once before
-building both packages and keeps `versionName` unchanged. Starting from the
-checked-in `1.1.9 (48)`, the next qualifying release uses `1.1.9 (49)`, provided
-49 has not already been used in Google Play. The workflow cannot query Play's
-upload history: confirm the next code is unused there before releasing. If
-necessary, set the checked-in code to the highest already-used code so the next
-automatic increment exceeds it. Do not pre-increment to the intended next code.
-Existing code-48 APK/AAB files must not be renamed or uploaded as a new release.
+Feature debug builds, `main`, `main-github`, manual dispatches and tags never
+increment the version. Manual and tag builds use the checked-in version.
 
-Automatic releases require the existing signing secrets. After successful signing
-and binary-manifest checks of both APK and AAB, the workflow commits
+After a signed build and APK/AAB version verification, the workflow commits
 [version metadata](android-version.json), [app version](src/app/core/app-version.ts)
-and release artifacts together with `[skip ci]`. No version is persisted on build,
-signing or verification failure. Manual and tag builds use their checked-in
-versions and never commit artifacts or metadata back to `main-android`.
-
-Branch-scoped concurrency serializes runs. Stale pushes and already-persisted
-reruns are skipped; pending application changes are compared against the last
-release rather than only the previous push. Publication checks the remote source
-SHA and uses a normal fast-forward push, never a rebase or force-push. A racing
-source update therefore rejects outdated artifacts before workflow upload.
+and release artifacts together with `[skip ci]`. The commit is skipped by Actions
+and is pushed with the workflow token, so it cannot start another release build.
+Runs are serialized per branch. If `main-android` advanced during the build, the
+workflow fails instead of publishing stale binaries, and it never rebases or
+force-pushes.
 
 The [release safety checks](.github/workflows/android-release-checks.yml) run
-focused Node tests in GitHub Actions. The release build additionally inspects the
-actual APK with Android `aapt` and the AAB with pinned Google `bundletool`.
+Node tests in GitHub Actions; the release build also inspects the APK with `aapt`
+and the AAB with pinned `bundletool`.
 
 ## Architecture
 

@@ -20,30 +20,8 @@ env:
   RELEASE_BASENAME: card-nest-release
 
 jobs:
-  prepare:
-    name: Determine release eligibility
-    runs-on: ubuntu-latest
-    outputs:
-      build: ${{ steps.plan.outputs.build }}
-      previous-version-code: ${{ steps.plan.outputs.previous-version-code }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 0
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: '.nvmrc'
-      - name: Check Android release safety
-        run: node --test scripts/android-release.test.mjs
-      - name: Plan Android release
-        id: plan
-        run: node scripts/android-release.mjs
-
   build:
     name: Build APK and AAB
-    needs: prepare
-    if: needs.prepare.outputs.build == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 40
 
@@ -62,9 +40,7 @@ jobs:
 
       - name: Bump release versionCode once
         if: github.event_name == 'push' && github.ref == 'refs/heads/main-android'
-        env:
-          PREVIOUS_VERSION_CODE: ${{ needs.prepare.outputs.previous-version-code }}
-        run: node scripts/bump-android-version.js --after-version-code="$PREVIOUS_VERSION_CODE"
+        run: node scripts/bump-android-version.js
 
       - name: Read Android version
         shell: bash
