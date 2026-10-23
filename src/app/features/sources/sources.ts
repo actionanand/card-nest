@@ -9,6 +9,7 @@ import { PaymentSourceLogo } from '../../shared/payment-source-logo';
 import { AppDatePipe } from '../../core/services/date-format.service';
 import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
+import { recordedTransactionTime } from '../../core/services/transaction-time';
 
 type SourceTab = 'ACCOUNTS' | 'ACTIVITY';
 
@@ -122,6 +123,7 @@ export class SourcesPage {
       .sort(
         (left, right) =>
           right.transactionDate.localeCompare(left.transactionDate) ||
+          (right.transactionTime ?? '').localeCompare(left.transactionTime ?? '') ||
           right.createdAt.localeCompare(left.createdAt),
       ),
   );
@@ -186,6 +188,10 @@ export class SourcesPage {
 
   categoryName(categoryId: string): string {
     return this.store.categories().find((category) => category.id === categoryId)?.name ?? 'Other';
+  }
+
+  recordedTime(transaction: CardTransaction): string {
+    return recordedTransactionTime(transaction.transactionTime, true);
   }
 
   isCredit(type: TransactionType): boolean {

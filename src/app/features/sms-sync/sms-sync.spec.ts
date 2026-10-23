@@ -201,6 +201,83 @@ describe('SMS review privacy and explicit approval UI', () => {
     expect(candidate.querySelectorAll('.row-actions button')).toHaveLength(2);
     expect(candidate.querySelector('.candidate-menu-trigger')).toBeNull();
   });
+  it.each(['light', 'dark'])(
+    'spaces swipe actions and announces finite review loading in %s mode',
+    async (theme) => {
+      document.documentElement.setAttribute('data-theme', theme);
+      const fixture = TestBed.createComponent(SmsSyncPage);
+      fixture.detectChanges();
+      await fixture.whenStable();
+      sync.reconciling.set(true);
+      fixture.detectChanges();
+      const status = fixture.nativeElement.querySelector('.review-loading-status') as HTMLElement;
+      const swipe = fixture.nativeElement.querySelector('.swipe-enable') as HTMLElement;
+      expect(status.getAttribute('role')).toBe('status');
+      expect(status.getAttribute('aria-live')).toBe('polite');
+      expect(status.textContent).toContain('Loading review items…');
+      expect(status.textContent).toContain('Checking saved transactions and SMS links…');
+      expect(status.querySelector('.review-loading-spinner')?.getAttribute('aria-hidden')).toBe(
+        'true',
+      );
+      expect(swipe.classList.contains('swipe-enable')).toBe(true);
+      expect(swipe.contains(status)).toBe(false);
+      const audit = await axe.run(status, {
+        runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa'] },
+        rules: { 'color-contrast': { enabled: false } },
+      });
+      expect(audit.violations).toEqual([]);
+      candidates.set([demoCandidate()]);
+      sync.reconciling.set(false);
+      fixture.detectChanges();
+      expect(fixture.nativeElement.querySelector('.review-loading-spinner')).toBeNull();
+      expect(fixture.nativeElement.querySelector('.candidate')).not.toBeNull();
+      document.documentElement.removeAttribute('data-theme');
+    },
+    30_000,
+  );
+  it('preselects a suffix-free Pluxee wallet and Dining, with an available-category fallback', async () => {
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    const actualStore = TestBed.inject(CardNestStore);
+    actualStore.paymentSources.set([
+      {
+        id: 'synthetic-meal',
+        kind: 'MEAL',
+        nickname: 'Synthetic meal',
+        institution: 'Sodexo',
+        noLimit: false,
+        autoLoad: false,
+        archived: false,
+        balanceMinor: 10000,
+      },
+    ]);
+    actualStore.categories.set([
+      { id: 'dining', name: 'Dining', icon: 'restaurant', archived: false, appliesTo: 'BOTH' },
+      { id: 'other', name: 'Other', icon: 'category', archived: false, appliesTo: 'BOTH' },
+    ]);
+    const original = demoCandidate();
+    const candidate: SmsCandidate = {
+      ...original,
+      kind: 'PLUXEE_PURCHASE',
+      item: { ...original.item!, kind: 'PLUXEE_PURCHASE', issuer: 'Pluxee', cardDigits: undefined },
+    };
+    fixture.componentInstance.open(candidate);
+    expect(fixture.componentInstance.editor.controls.source.value).toBe('synthetic-meal');
+    expect(fixture.componentInstance.editor.controls.category.value).toBe('dining');
+    actualStore.categories.update((categories) =>
+      categories.filter((category) => category.id !== 'dining'),
+    );
+    fixture.componentInstance.open(candidate);
+    expect(fixture.componentInstance.editor.controls.category.value).toBe('other');
+    fixture.componentInstance.open({
+      ...candidate,
+      kind: 'PLUXEE_TOPUP',
+      item: { ...candidate.item!, kind: 'PLUXEE_TOPUP' },
+    });
+    expect(fixture.componentInstance.editor.controls.category.value).toBe('other');
+    expect(sync.approve).not.toHaveBeenCalled();
+    fixture.detectChanges();
+    await fixture.whenStable();
+  });
   it('compacts Android swipe cards into an accessible actions menu with semantic SVG swipe panels', async () => {
     vi.mocked(Capacitor.getPlatform).mockReturnValue('android');
     swipePreference.set(true);
@@ -257,7 +334,11 @@ describe('SMS review privacy and explicit approval UI', () => {
   it('keeps matched cards reachable through the compact menu without offering enabled dismissal', async () => {
     vi.mocked(Capacitor.getPlatform).mockReturnValue('android');
     swipePreference.set(true);
-    const candidate = { ...demoCandidate(), state: 'MATCHED_EXISTING' as const, transactionId: 'tx' };
+    const candidate = {
+      ...demoCandidate(),
+      state: 'MATCHED_EXISTING' as const,
+      transactionId: 'tx',
+    };
     candidates.set([candidate]);
     const fixture = TestBed.createComponent(SmsSyncPage);
     fixture.detectChanges();

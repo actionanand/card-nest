@@ -1,5 +1,12 @@
 import { CardTransaction, CreditCard, PaymentSource } from '../../core/models/domain';
-import { eligibleSources, ledgerType, normalizedIssuer, SmsEvidence } from './sms-model';
+import { indiaTodayIso } from '../../core/services/india-date';
+import {
+  eligibleSources,
+  isPluxeeSource,
+  ledgerType,
+  normalizedIssuer,
+  SmsEvidence,
+} from './sms-model';
 
 export interface ExistingMatch {
   confidence:
@@ -64,13 +71,9 @@ export function matchExisting(
       reason:
         'Scheduled charges, bank, initiation, loan and statement evidence cannot automatically create or confirm spending.',
     };
-  let ids = eligibleSources(item, cards, sources);
+  const ids = eligibleSources(item, cards, sources);
   const missingMealDigits =
     item.kind.startsWith('PLUXEE') && !item.cardDigits && !item.accountDigits;
-  if (missingMealDigits)
-    ids = sources
-      .filter((source) => source.kind === 'MEAL' && !source.archived)
-      .map((source) => source.id);
   if (ids.length !== 1) {
     const possibleSources = ids.length
       ? ids
@@ -182,17 +185,43 @@ export function matchExisting(
 export interface WalletComparison {
   current: number;
   reported: number;
+  eventDelta: number;
   expected: number;
   expectedAfter: number;
   difference: number;
+  alreadyRecorded: boolean;
   canAdjust: boolean;
+  automaticRepair: boolean;
   explanation: string;
 }
+
+function hasLaterWalletActivity(
+  item: SmsEvidence,
+  sourceId: string,
+  ledger: readonly CardTransaction[],
+  recordedId?: string,
+): boolean {
+  return ledger.some((entry) => {
+    if (entry.cardId !== sourceId || entry.id === recordedId) return false;
+    if (entry.transactionDate !== item.eventDate) return entry.transactionDate > item.eventDate;
+    if (
+      !entry.transactionTime ||
+      !/^(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/.test(entry.transactionTime) ||
+      item.eventTimeExplicit !== true ||
+      !item.eventTime
+    )
+      return true;
+    const seconds = (time: string) => (time.length === 5 ? `${time}:00` : time);
+    return seconds(entry.transactionTime) >= seconds(item.eventTime);
+  });
+}
+
 export function walletComparison(
   item: SmsEvidence,
   source: PaymentSource,
   ledger: readonly CardTransaction[],
   recordedId?: string,
+  sources: readonly PaymentSource[] = [source],
 ): WalletComparison | null {
   if (
     !item.kind.startsWith('PLUXEE') ||
@@ -207,43 +236,91 @@ export function walletComparison(
   const recorded = recordedId
     ? ledger.find((entry) => entry.id === recordedId && entry.cardId === source.id)
     : undefined;
-  const historical =
-    !!source.balanceCutoverAt && Date.parse(item.eventAt) <= Date.parse(source.balanceCutoverAt);
-  const newer = ledger.some(
-    (entry) =>
-      entry.cardId === source.id &&
-      entry.id !== recordedId &&
-      entry.transactionDate >= item.eventDate,
-  );
+  const newer = hasLaterWalletActivity(item, source.id, ledger, recordedId);
   const eventDelta = item.kind === 'PLUXEE_PURCHASE' ? -item.amountMinor : item.amountMinor;
-  const expectedAfter = current + (recorded || historical ? 0 : eventDelta);
-  const expected =
-    item.balancePosition === 'BEFORE' && !historical ? expectedAfter - eventDelta : expectedAfter;
+  const coveredBySnapshot =
+    source.balanceCutoverReason === 'SMS_RECONCILIATION' &&
+    !!source.balanceCutoverAt &&
+    !item.dateFallback &&
+    (item.eventDate < indiaTodayIso(new Date(source.balanceCutoverAt)) ||
+      (item.eventTimeExplicit === true &&
+        Date.parse(item.eventAt) <= Date.parse(source.balanceCutoverAt)));
+  const effectAlreadyApplied =
+    (!!recorded && recorded.sourceBalanceApplied !== false) || coveredBySnapshot;
+  const expectedAfter = current + (effectAlreadyApplied ? 0 : eventDelta);
+  const expected = item.balancePosition === 'BEFORE' ? expectedAfter - eventDelta : expectedAfter;
+  const eligible = eligibleSources(item, [], sources);
+  const sourceMatches =
+    eligible.length === 1 &&
+    eligible[0] === source.id &&
+    isPluxeeSource(source) &&
+    (!item.issuer || normalizedIssuer(item.issuer) === 'pluxee') &&
+    (!item.cardDigits || item.cardDigits === source.lastDigits);
+  const explicitTime =
+    item.eventTimeExplicit === true &&
+    typeof item.eventTime === 'string' &&
+    /^(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/.test(item.eventTime) &&
+    (!item.timeZone || item.timeZone === 'Asia/Kolkata') &&
+    Date.parse(`${item.eventDate}T${item.eventTime}+05:30`) === Date.parse(item.eventAt);
+  const knownSnapshotIsNewer =
+    !!source.balanceCutoverReason &&
+    !!source.balanceCutoverAt &&
+    !(Date.parse(item.eventAt) > Date.parse(source.balanceCutoverAt));
+  const legacyRepair =
+    item.kind === 'PLUXEE_TOPUP' && !source.balanceReconciliation && !source.balanceCutoverReason;
+  const snapshotAllowsUpdate =
+    !source.balanceCutoverAt ||
+    Date.parse(item.eventAt) > Date.parse(source.balanceCutoverAt) ||
+    legacyRepair;
   const trusted =
     item.balancePosition === 'AFTER' &&
     !source.archived &&
-    (!item.cardDigits || item.cardDigits === source.lastDigits) &&
+    sourceMatches &&
     !item.accountDigits &&
     !item.dateFallback &&
-    !historical &&
+    explicitTime &&
     !newer &&
+    !knownSnapshotIsNewer &&
+    snapshotAllowsUpdate &&
     reported >= 0 &&
-    Number.isSafeInteger(expected);
+    Number.isSafeInteger(expected) &&
+    Number.isSafeInteger(reported - expected);
+  let explanation = 'Post-event prediction includes this purchase or top-up once after approval.';
+  if (!sourceMatches || source.archived)
+    explanation = 'The SMS does not uniquely identify an active Pluxee wallet. Verify the source.';
+  else if (item.dateFallback)
+    explanation =
+      'The event date came from message receipt. Verify the actual date before reconciling.';
+  else if (knownSnapshotIsNewer || !snapshotAllowsUpdate)
+    explanation = 'A saved balance is newer than this event. Keep the current balance.';
+  else if (newer)
+    explanation = 'Same-day or later activity makes ordering uncertain. Keep the current balance.';
+  else if (!explicitTime)
+    explanation = 'A verified event date and time are required to replace the saved balance.';
+  else if (item.balancePosition !== 'AFTER')
+    explanation =
+      'The message does not establish whether this balance is before or after the event.';
+  else if (
+    reported < 0 ||
+    !Number.isSafeInteger(expected) ||
+    !Number.isSafeInteger(reported - expected)
+  )
+    explanation = 'The balance calculation is outside the supported monetary range.';
+  else if (recorded)
+    explanation = 'The transaction is already recorded. Its amount is not applied again.';
+  else if (coveredBySnapshot)
+    explanation =
+      'This event is already covered by the verified wallet balance. Approval records history without changing funds.';
   return {
     current,
     reported,
+    eventDelta,
     expected,
     expectedAfter,
     difference: reported - expected,
+    alreadyRecorded: !!recorded,
     canAdjust: trusted,
-    explanation: historical
-      ? 'This snapshot is not newer than the saved cutover. Keep the current balance.'
-      : newer
-        ? 'Same-day or later activity makes ordering uncertain. Keep the current balance.'
-        : item.balancePosition !== 'AFTER'
-          ? 'The message does not establish whether this balance is before or after the event.'
-          : recorded
-            ? 'The transaction is already recorded. Its amount is not applied again.'
-            : 'Post-event prediction includes this purchase or top-up once after approval.',
+    automaticRepair: trusted && item.kind === 'PLUXEE_TOPUP' && !source.balanceReconciliation,
+    explanation,
   };
 }

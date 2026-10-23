@@ -104,14 +104,18 @@ erDiagram
 
 ## Payment-source caveat
 
-The current schema has no `payment_sources` table. Cash, Bank/UPI, and meal-card sources are seeded `PaymentSource` objects in `CardNestStore`.
+The current schema has no `payment_sources` table. `PaymentSource` objects (including meal/FASTag wallets) are persisted as a JSON array in `app_preferences` under `payment_sources`. Defaults are inserted only when the preference is missing, before ledger effects are persisted.
+
+Meal sources can additionally carry `balanceCutoverAt`, `balanceSnapshotMinor`, `balanceCutoverReason` (`MANUAL` or `SMS_RECONCILIATION`) and an initial `balanceReconciliation` object. The latter records candidate/transaction IDs, event type/amount/time, saved/predicted/reported balances, correction and recording time. It is an idempotency marker and baseline audit, not a merchant transaction. Later explicit corrections also retain their audit in `sms_reconciliation`; they do not replace the initial marker. Existing snapshots without a reason retain unknown provenance.
+
+These are optional JSON fields, so no schema-version bump or destructive migration is required. Existing balances/transactions/categories are not rebuilt. Portable encrypted backups preserve the source JSON and reconciliation decisions while omitting extracted candidate payloads. Restoring a repair marker prevents automatic repair replay; a tombstone cannot reconstruct discarded SMS evidence. See [Pluxee baseline reconciliation](./SMS_SYNC.md#one-time-pluxee-baseline-reconciliation).
 
 When a transaction uses a non-credit-card source:
 
 - the normalized `card_transactions.card_id` column is stored as `NULL`, because its foreign key can reference only `credit_cards`;
 - the full JSON `payload` retains the actual source identifier in `cardId`.
 
-Consequently, SQL queries that must include non-card sources need to inspect `payload` or work through the hydrated application store. A future migration should add a normalized payment-source table and a general source relationship if durable user-defined sources or direct SQL reporting across all source types is required.
+Consequently, SQL queries that must include non-card sources need to inspect `payload` or work through the hydrated application store. Ledger and source-preference writes share one serialized SQLite transaction. A future normalized payment-source table could simplify direct SQL reporting across source types.
 
 ## Relationships and delete behavior
 

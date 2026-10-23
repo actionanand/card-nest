@@ -60,6 +60,8 @@ object SmsTransactionParser {
     val card = !meal && !tag && has("card") && !has("debit card")
     val debit = has("\\b(spent|debited|charged|sent|toll paid)\\b") || has("transaction of.+was made using|thank you for using.+card")
     val credit = has("\\b(credited|received)\\b")
+    val mealTopup = has("\\b(credited|received|loaded|recharged|topped up)\\b")
+    val mealDebit = has("\\b(spent|debited)\\b")
     val due = has("is due|due on|due by|payable by|amount due|minimum due|emi reminder")
     val loan = has("loan|\\bemi\\b|\\becs\\b|merchantmandate")
     val aggregator = has("\\bcred\\b|cheq|ccbp")
@@ -75,8 +77,8 @@ object SmsTransactionParser {
       scheduled -> Kind.SCHEDULED_CHARGE
       card && has("mandate.{0,40}(?:successfully )?executed") -> Kind.PURCHASE
       card && has("cashback") && credit -> Kind.CASHBACK
-      meal && credit && !debit -> Kind.PLUXEE_TOPUP
-      meal && debit -> Kind.PLUXEE_PURCHASE
+      meal && mealTopup && !mealDebit -> Kind.PLUXEE_TOPUP
+      meal && mealDebit -> Kind.PLUXEE_PURCHASE
       tag && debit -> Kind.FASTAG_TOLL
       tag && has("recharged|loaded|credited|topped up") -> Kind.FASTAG_TOPUP
       confirmed -> Kind.CARD_PAYMENT_RECEIVED
@@ -97,7 +99,9 @@ object SmsTransactionParser {
     val total = value(flat, "total (?:statement amount|amount due|amt|due)(?: of)?|statement total(?: due)?|total(?: of)?")
     val minimum = value(flat, "min(?:imum)? (?:amount |amt )?due(?: of)?|minimum(?: of)?")
     // Prefer verb-scoped monetary events; statement amounts and balance are separate evidence.
-    val eventText = flat.split(rx("avl|available|wallet bal|current meal|statement total|minimum|total due"))[0]
+    val eventText = flat.split(rx(if (meal)
+      "(?:current\\s+)?meal wallet balance|current balance|avl|available|wallet bal|statement total|minimum|total due"
+      else "avl|available|wallet bal|current meal|statement total|minimum|total due"))[0]
     val amount = if (kind == Kind.STATEMENT || (kind == Kind.PAYMENT_REMINDER && total != null)) total ?: minimum ?: money.find(flat)?.groupValues?.get(1)?.let(::minor) else {
       val matches = money.findAll(eventText).map { minor(it.groupValues[1]) }.toList()
       if (matches.size > 1 && kind !in setOf(Kind.PAYMENT_REMINDER, Kind.LOAN_REMINDER)) return null
@@ -130,7 +134,9 @@ object SmsTransactionParser {
     val cleanMerchant = merchant?.split(rx("\\b(?:t&cs|terms and conditions|manage|you can manage|unsubscribe|contact support|ref(?:erence)?|utr|rrn|visit|click|not you|if not you|to dispute|call|sms block)\\b"))?.firstOrNull()
       ?.trim()?.trimEnd('.', ',', ';')?.takeIf { it.isNotBlank() && !rx("^(?:[0-9\\W]+|(?:[a-z0-9-]+\\.)+[a-z]{2,}(?:/.*)?|[a-z0-9]{18,})$").matches(it) }?.take(100)
     return Result(kind, amount, event.first.toLocalDate().toString(), cleanMerchant,
-      digits, account, issuer, ref, value(flat, "current meal wallet balance is|current balance|(?:avl|available|wallet) bal(?:ance)?"),
+      digits, account, issuer, ref, value(flat, if (meal)
+        "(?:(?:current\\s+)?meal wallet balance|current balance|(?:avl|available|wallet) bal(?:ance)?)(?:\\s+is)?"
+        else "current meal wallet balance is|current balance|(?:avl|available|wallet) bal(?:ance)?"),
       if (tag) rx("\\b[A-Z]{2}\\s?[0-9]{1,2}\\s?[A-Z]{1,3}\\s?[0-9]{4}\\b").find(flat)?.value?.replace(" ", "")?.uppercase(Locale.ROOT) else null,
       eventAt = event.first.toInstant().toString(), receivedAt = receivedAtMillis, dateFallback = event.second,
       availableLimitMinor = value(flat, "(?:avl|available) limit"), statementTotalMinor = total,
@@ -143,7 +149,7 @@ object SmsTransactionParser {
       statementDate = rx("statement\\s+dated\\s+(.+)").find(safe)?.groupValues?.get(1)
         ?.let { event(it,receivedAtMillis,zone) }?.takeIf { !it.second }?.first?.toLocalDate()?.toString(),
       merchantEvidence = merchant?.trim()?.take(300),
-      balancePosition = if (meal && has("current meal wallet balance|(?:available|avl|wallet) bal(?:ance)?") && !has("before|opening balance")) "AFTER" else "UNKNOWN",
+      balancePosition = if (meal && has("(?:current\\s+)?meal wallet balance|current balance|(?:available|avl|wallet) bal(?:ance)?") && !has("before|opening balance")) "AFTER" else "UNKNOWN",
       eventTimeExplicit = event.third,
       standingInstructionReference = rx("\\bSI Hub Id\\s+([A-Z0-9]{6,40})\\b").find(flat)?.groupValues?.get(1),
       legacyId = if (kind == Kind.STATEMENT || kind == Kind.PAYMENT_REMINDER) fingerprint(text) else null)

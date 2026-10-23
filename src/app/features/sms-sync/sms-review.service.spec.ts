@@ -105,7 +105,7 @@ describe('SMS approved import integrity', () => {
     sql.exec('PRAGMA foreign_keys=ON');
     for (const migration of DATABASE_MIGRATIONS)
       for (const statement of migration.statements) sql.exec(statement);
-    for (const id of ['other', 'payment', 'contra-expenses', 'groceries'])
+    for (const id of ['other', 'payment', 'contra-expenses', 'groceries', 'dining'])
       run(`INSERT INTO categories(id,name,icon,applies_to) VALUES (?,?,'test','BOTH')`, [id, id]);
     run(
       `INSERT INTO credit_cards(id,nickname,issuer_name,last_digits,network,payload,created_at,updated_at) VALUES (?,?,?,?,?,?,'now','now')`,
@@ -549,6 +549,7 @@ describe('SMS approved import integrity', () => {
         id: 'synthetic-wallet',
         nickname: 'Synthetic wallet',
         kind: walletKind,
+        institution: walletKind === 'MEAL' ? 'Pluxee' : undefined,
         lastDigits: '8765',
         vehicleNumber: 'KA01AB1234',
         noLimit: false,
@@ -559,7 +560,14 @@ describe('SMS approved import integrity', () => {
       sources.set([wallet]);
       run('INSERT INTO app_preferences VALUES(?,?)', ['payment_sources', JSON.stringify([wallet])]);
       manual({ cardId: wallet.id, type });
-      stage(confident({ kind, cardDigits: '8765', vehicleNumber: 'KA01AB1234' }));
+      stage(
+        confident({
+          kind,
+          issuer: walletKind === 'MEAL' ? 'Pluxee' : 'AMEX',
+          cardDigits: '8765',
+          vehicleNumber: 'KA01AB1234',
+        }),
+      );
       const before = rows('SELECT * FROM card_transactions');
       expect(await service.reevaluatePending()).toBe(1);
       expect(rows('SELECT * FROM card_transactions')).toEqual(before);
@@ -581,6 +589,7 @@ describe('SMS approved import integrity', () => {
     const wallets: PaymentSource[] = ['one', 'two'].map((id) => ({
       id,
       nickname: id,
+      institution: 'Pluxee',
       kind: 'MEAL',
       lastDigits: id === 'one' ? '8765' : '8766',
       noLimit: false,
@@ -607,6 +616,7 @@ describe('SMS approved import integrity', () => {
     const wallet: PaymentSource = {
       id: 'meal',
       nickname: 'Synthetic meal',
+      institution: 'Pluxee',
       kind: 'MEAL',
       lastDigits: '8765',
       noLimit: false,
@@ -624,6 +634,8 @@ describe('SMS approved import integrity', () => {
         cardDigits: '8765',
         reportedBalanceMinor: 48000,
         balancePosition: 'AFTER',
+        eventTime: '17:30:00',
+        eventTimeExplicit: true,
       }),
     );
     await service.reevaluatePending();
@@ -635,9 +647,9 @@ describe('SMS approved import integrity', () => {
     );
     expect(
       rows("SELECT COUNT(*) AS n FROM card_transactions WHERE type='ADJUSTMENT'")[0]['n'],
-    ).toBe(1);
-    await expect(service.adjustMatchedBalance(candidate)).rejects.toThrow('cutover');
-    expect(count('card_transactions')).toBe(2);
+    ).toBe(0);
+    await service.adjustMatchedBalance(candidate);
+    expect(count('card_transactions')).toBe(1);
   });
   it('filters multiple types with OR and combines independent filters with AND; empty means no results', async () => {
     realRefresh();
@@ -1156,6 +1168,7 @@ describe('SMS approved import integrity', () => {
     const wallet: PaymentSource = {
       id: 'meal-date',
       nickname: 'Synthetic wallet',
+      institution: 'Pluxee',
       kind: 'MEAL',
       archived: false,
       noLimit: false,
@@ -1387,11 +1400,12 @@ describe('SMS approved import integrity', () => {
     await expect(service.approve(candidate, card.id, 45000, 'DEMO')).rejects.toThrow('Android');
     expect(count('card_transactions')).toBe(0);
   });
-  it('preserves historical meal snapshot, and keeps different vehicle balances independent', async () => {
+  it('retains uncertain historical snapshots until explicitly confirmed and preserves FASTag accounting', async () => {
     const wallets: PaymentSource[] = [
       {
         id: 'meal',
         nickname: 'DEMO meal',
+        institution: 'Pluxee',
         kind: 'MEAL',
         autoLoad: false,
         archived: false,
@@ -1427,6 +1441,19 @@ describe('SMS approved import integrity', () => {
     await service.approve(historical, 'meal', 45000, 'Load', '', 'RETAIN_BALANCE');
     expect(sources()[0].balanceMinor).toBe(50000);
     expect(transactions()[0].sourceBalanceApplied).toBe(false);
+    const retained = stage(
+      evidence({
+        id: 'c'.repeat(64),
+        kind: 'PLUXEE_TOPUP',
+        eventDate: '2026-10-17',
+        eventAt: '2026-10-17T12:00:00Z',
+      }),
+    );
+    await service.approve(retained, 'meal', 45000, 'Load', '', 'RETAIN_BALANCE');
+    expect(sources()[0].balanceMinor).toBe(50000);
+    expect(
+      transactions().find((item) => item.id === `sms-${retained.id}`)?.sourceBalanceApplied,
+    ).toBe(false);
     const toll = stage(
       evidence({
         id: 'b'.repeat(64),
@@ -1463,6 +1490,7 @@ describe('SMS approved import integrity', () => {
     const wallet: PaymentSource = {
       id: 'meal',
       nickname: 'DEMO wallet',
+      institution: 'Pluxee',
       kind: 'MEAL',
       balanceMinor: 10000,
       noLimit: false,
@@ -1523,10 +1551,418 @@ describe('SMS approved import integrity', () => {
     await TestBed.inject(SqliteDatabase).atomic(async () => undefined);
     expect(readWallets()[0].balanceMinor).toBe(12000);
   });
-  it('explicit wallet reconciliation creates a documented adjustment and rejects an older snapshot', async () => {
+  it('reconciles an approved Pluxee top-up against its trusted post-event balance once in SQLite', async () => {
+    const wallet: PaymentSource = {
+      id: 'pluxee-6423',
+      nickname: 'Pluxee meal card',
+      institution: 'Pluxee',
+      kind: 'MEAL',
+      lastDigits: '6423',
+      autoLoad: false,
+      archived: false,
+      noLimit: false,
+      balanceMinor: 333124,
+      balanceCutoverAt: '2026-10-23T12:15:00.000Z',
+      balanceSnapshotMinor: 333124,
+    };
+    sources.set([wallet]);
+    run('INSERT INTO app_preferences VALUES (?,?)', ['payment_sources', JSON.stringify([wallet])]);
+    for (const [index, amountMinor] of [
+      ...Array.from({ length: 14 }, () => 60000),
+      163908,
+    ].entries())
+      manual({
+        id: `historical-pluxee-${index}`,
+        cardId: wallet.id,
+        amountMinor,
+        transactionDate: '2026-10-22',
+        sourceBalanceApplied: false,
+      });
+    expect(
+      transactions()
+        .filter((entry) => entry.cardId === wallet.id)
+        .reduce((sum, entry) => sum + entry.amountMinor, 0),
+    ).toBe(1003908);
+    const candidate = stage(
+      evidence({
+        id: 'f'.repeat(64),
+        kind: 'PLUXEE_TOPUP',
+        amountMinor: 880000,
+        issuer: 'Pluxee',
+        cardDigits: '6423',
+        eventDate: '2026-10-23',
+        eventAt: '2026-10-22T23:47:27.000Z',
+        eventTime: '05:17:27',
+        eventTimeExplicit: true,
+        timeZone: 'Asia/Kolkata',
+        reportedBalanceMinor: 973724,
+        balancePosition: 'AFTER',
+      }),
+    );
+
+    await service.approve(candidate, wallet.id, 880000, 'Meal wallet top-up');
+    expect(sources()[0].balanceMinor).toBe(973724);
+    expect(count('card_transactions')).toBe(16);
+    const topup = JSON.parse(
+      String(
+        rows('SELECT payload FROM card_transactions WHERE id=?', [`sms-${candidate.id}`])[0][
+          'payload'
+        ],
+      ),
+    ) as CardTransaction;
+    expect(topup).toMatchObject({
+      type: 'CREDIT',
+      amountMinor: 880000,
+      transactionDate: '2026-10-23',
+      transactionTime: '05:17:27',
+      categoryId: 'contra-expenses',
+      sourceBalanceApplied: true,
+    });
+    const storedSources = JSON.parse(
+      String(
+        rows("SELECT encrypted_value FROM app_preferences WHERE key='payment_sources'")[0][
+          'encrypted_value'
+        ],
+      ),
+    ) as PaymentSource[];
+    expect(storedSources[0].balanceMinor).toBe(973724);
+    expect(storedSources[0]).toMatchObject({
+      balanceCutoverAt: candidate.item!.eventAt,
+      balanceCutoverReason: 'SMS_RECONCILIATION',
+      balanceReconciliation: {
+        savedBalanceMinor: 333124,
+        predictedBalanceMinor: 1213124,
+        correctionMinor: -239400,
+      },
+    });
+    const decision = String(
+      rows('SELECT decision FROM sms_reconciliation WHERE candidate_id=?', [candidate.id])[0][
+        'decision'
+      ],
+    );
+    expect(decision).toContain('saved 1213124; reported 973724');
+    expect(decision).toContain('baseline decrease 239400 minor units');
+
+    await service.approve(candidate, wallet.id, 880000, 'Meal wallet top-up');
+    expect(count('card_transactions')).toBe(16);
+    expect(sources()[0].balanceMinor).toBe(973724);
+    sources.set(storedSources);
+    expect(sources()[0].balanceMinor).toBe(973724);
+
+    const historical = stage(
+      evidence({
+        id: 'b'.repeat(64),
+        kind: 'PLUXEE_PURCHASE',
+        amountMinor: 1200,
+        eventDate: '2026-10-21',
+        eventAt: '2026-10-21T12:00:00Z',
+      }),
+    );
+    await service.approve(historical, wallet.id, 1200, 'Historical already included');
+    expect(
+      transactions().find((entry) => entry.id === `sms-${historical.id}`)?.sourceBalanceApplied,
+    ).toBe(false);
+    expect(sources()[0].balanceMinor).toBe(973724);
+    const later = stage(
+      evidence({
+        id: 'c'.repeat(64),
+        kind: 'PLUXEE_TOPUP',
+        amountMinor: 10000,
+        eventDate: '2026-10-24',
+        eventAt: '2026-10-24T00:30:00Z',
+        eventTime: '06:00:00',
+        eventTimeExplicit: true,
+        reportedBalanceMinor: 2000000,
+        balancePosition: 'AFTER',
+      }),
+    );
+    await service.approve(later, wallet.id, 10000, 'Later load');
+    expect(sources()[0].balanceMinor).toBe(983724);
+    expect(sources()[0].balanceReconciliation?.candidateId).toBe(candidate.id);
+  });
+  function repairFixture(
+    sourceChanges: Partial<PaymentSource> = {},
+    evidenceChanges: Partial<SmsEvidence> = {},
+  ): { wallet: PaymentSource; candidate: SmsCandidate } {
+    const wallet: PaymentSource = {
+      id: 'meal-repair',
+      nickname: 'Synthetic Pluxee',
+      institution: 'Sodexo',
+      kind: 'MEAL',
+      balanceMinor: 333124,
+      balanceCutoverAt: '2026-10-23T12:15:00Z',
+      balanceSnapshotMinor: 333124,
+      noLimit: false,
+      autoLoad: false,
+      archived: false,
+      ...sourceChanges,
+    };
+    sources.set([wallet]);
+    run('INSERT INTO app_preferences VALUES(?,?)', ['payment_sources', JSON.stringify([wallet])]);
+    const candidate = stage(
+      evidence({
+        kind: 'PLUXEE_TOPUP',
+        issuer: 'Pluxee',
+        amountMinor: 880000,
+        eventDate: '2026-10-23',
+        eventAt: '2026-10-22T23:47:27Z',
+        eventTime: '05:17:27',
+        eventTimeExplicit: true,
+        timeZone: 'Asia/Kolkata',
+        reportedBalanceMinor: 973724,
+        balancePosition: 'AFTER',
+        ...evidenceChanges,
+      }),
+    );
+    return { wallet, candidate };
+  }
+  it.each([
+    { dateFallback: true },
+    { eventTimeExplicit: false },
+    { eventTime: '25:17:27' },
+    { eventAt: '2026-10-23T01:00:00Z' },
+    { balancePosition: 'UNKNOWN' as const },
+    { balancePosition: 'BEFORE' as const },
+  ])('does not replace an uncertain historical baseline from %j', async (evidenceChanges) => {
+    const { wallet, candidate } = repairFixture({}, evidenceChanges);
+    await expect(service.approve(candidate, wallet.id, 880000, 'Load')).rejects.toThrow('snapshot');
+    expect(sources()[0].balanceMinor).toBe(333124);
+    expect(count('card_transactions')).toBe(0);
+    expect(count('sms_reconciliation')).toBe(0);
+  });
+  it.each(['MANUAL', 'SMS_RECONCILIATION'] as const)(
+    'never replaces a newer confirmed %s snapshot',
+    async (balanceCutoverReason) => {
+      const { wallet, candidate } = repairFixture({ balanceCutoverReason });
+      await expect(
+        service.approve(candidate, wallet.id, 880000, 'Load', '', 'ADJUST_BALANCE'),
+      ).rejects.toThrow('newer');
+      expect(sources()[0].balanceMinor).toBe(333124);
+    },
+  );
+  it.each([
+    ['2026-10-23', '05:18:00'],
+    ['2026-10-23', undefined],
+    ['2026-10-24', '01:00:00'],
+  ])(
+    'blocks an older repair when recorded activity is at %s %s',
+    async (transactionDate, transactionTime) => {
+      const { wallet, candidate } = repairFixture();
+      manual({ cardId: wallet.id, transactionDate, transactionTime });
+      await expect(service.approve(candidate, wallet.id, 880000, 'Load')).rejects.toThrow(
+        'snapshot',
+      );
+      expect(sources()[0].balanceMinor).toBe(333124);
+      expect(count('card_transactions')).toBe(1);
+    },
+  );
+  it('does not reconcile edited event amounts or dates and rolls back failed audit persistence', async () => {
+    const { wallet, candidate } = repairFixture();
+    await expect(service.approve(candidate, wallet.id, 880100, 'Load')).rejects.toThrow('snapshot');
+    await expect(
+      service.approve(candidate, wallet.id, 880000, 'Load', '', 'ADJUST_BALANCE', false, '', 0, {
+        transactionDate: '2026-10-24',
+      }),
+    ).rejects.toThrow();
+    sql.exec(
+      "CREATE TRIGGER fail_repair_audit BEFORE INSERT ON sms_reconciliation BEGIN SELECT RAISE(ABORT,'synthetic audit failure'); END",
+    );
+    await expect(service.approve(candidate, wallet.id, 880000, 'Load')).rejects.toThrow(
+      'synthetic audit failure',
+    );
+    expect(sources()[0].balanceMinor).toBe(333124);
+    expect(
+      JSON.parse(
+        String(
+          rows("SELECT encrypted_value FROM app_preferences WHERE key='payment_sources'")[0][
+            'encrypted_value'
+          ],
+        ),
+      )[0].balanceMinor,
+    ).toBe(333124);
+    expect(count('card_transactions')).toBe(0);
+    expect(rows('SELECT state FROM sms_candidates')[0]['state']).toBe('PENDING');
+  });
+  it.each([undefined, 'SMS_RECONCILIATION'] as const)(
+    'deducts an explicitly verified omitted purchase once instead of permanently excluding it (%s snapshot)',
+    async (balanceCutoverReason) => {
+      const { wallet, candidate } = repairFixture(
+        { balanceCutoverReason },
+        {
+          kind: 'PLUXEE_PURCHASE',
+          amountMinor: 50000,
+          reportedBalanceMinor: undefined,
+          eventTimeExplicit: false,
+        },
+      );
+      await expect(
+        service.approve(candidate, wallet.id, 50000, 'Fictional purchase'),
+      ).rejects.toThrow('snapshot');
+      await service.approve(candidate, wallet.id, 50000, 'Fictional purchase', '', 'APPLY_EVENT');
+      expect(sources()[0].balanceMinor).toBe(283124);
+      expect(transactions()[0].sourceBalanceApplied).toBe(true);
+      await service.approve(candidate, wallet.id, 50000, 'Fictional purchase', '', 'APPLY_EVENT');
+      expect(sources()[0].balanceMinor).toBe(283124);
+      expect(count('card_transactions')).toBe(1);
+    },
+  );
+  it('will not automatically repair an ambiguous, archived, unrelated or conflicting wallet', async () => {
+    const { wallet, candidate } = repairFixture();
+    const alternate = { ...wallet, id: 'second' };
+    run("UPDATE app_preferences SET encrypted_value=? WHERE key='payment_sources'", [
+      JSON.stringify([wallet, alternate]),
+    ]);
+    await expect(service.approve(candidate, wallet.id, 880000, 'Load')).rejects.toThrow('snapshot');
+    for (const changes of [
+      { archived: true },
+      { institution: 'Other provider', nickname: 'Unrelated meal wallet' },
+    ]) {
+      run("UPDATE app_preferences SET encrypted_value=? WHERE key='payment_sources'", [
+        JSON.stringify([{ ...wallet, ...changes }]),
+      ]);
+      await expect(service.approve(candidate, wallet.id, 880000, 'Load')).rejects.toThrow('Pluxee');
+    }
+    run("UPDATE app_preferences SET encrypted_value=? WHERE key='payment_sources'", [
+      JSON.stringify([{ ...wallet, lastDigits: '1111' }]),
+    ]);
+    run('UPDATE sms_candidates SET payload=? WHERE id=?', [
+      JSON.stringify({ ...candidate.item, cardDigits: '2222' }),
+      candidate.id,
+    ]);
+    await expect(service.approve(candidate, wallet.id, 880000, 'Load')).rejects.toThrow('suffix');
+    expect(count('card_transactions')).toBe(0);
+  });
+  it('retains the repair tombstone when an alternate SMS fingerprint attempts to replay the same event', async () => {
+    const { wallet, candidate } = repairFixture();
+    await service.approve(candidate, wallet.id, 880000, 'Load');
+    const duplicate = stage({
+      ...candidate.item!,
+      id: 'b'.repeat(64),
+      eventAt: new Date(candidate.item!.eventAt).toISOString(),
+    });
+    await expect(
+      service.approve(duplicate, wallet.id, 880000, 'Load', '', 'PENDING', true),
+    ).rejects.toThrow('already reconciled');
+    expect(sources()[0].balanceMinor).toBe(973724);
+    expect(count('card_transactions')).toBe(1);
+    const existing = transactions()[0];
+    await service.approve(duplicate, wallet.id, 880000, 'Load', existing.id);
+    expect(sources()[0].balanceMinor).toBe(973724);
+    expect(count('card_transactions')).toBe(1);
+    const actualStore = TestBed.runInInjectionContext(() => new CardNestStore());
+    actualStore.paymentSources.set(sources());
+    actualStore.transactions.set(transactions());
+    actualStore.deleteTransaction(existing.id);
+    await TestBed.inject(SqliteDatabase).atomic(async () => undefined);
+    const afterDeletion = stage({ ...candidate.item!, id: 'c'.repeat(64) });
+    await expect(
+      service.approve(afterDeletion, wallet.id, 880000, 'Load', '', 'PENDING', true),
+    ).rejects.toThrow('already reconciled');
+    expect(count('card_transactions')).toBe(0);
+  });
+  it.each([
+    ['PLUXEE_PURCHASE', 'dining'],
+    ['PLUXEE_TOPUP', 'contra-expenses'],
+  ] as const)(
+    'uses a valid existing %s category and falls back to Other',
+    async (kind, preferred) => {
+      const { wallet, candidate } = repairFixture(
+        { balanceCutoverAt: undefined },
+        {
+          kind,
+          reportedBalanceMinor: undefined,
+        },
+      );
+      run('DELETE FROM categories WHERE id=?', [preferred]);
+      await service.approve(candidate, wallet.id, 880000, 'Synthetic event');
+      expect(transactions()[0].categoryId).toBe('other');
+      run(
+        "INSERT INTO categories(id,name,icon,applies_to) VALUES('synthetic-custom','Synthetic custom','category','BOTH')",
+      );
+      const next = stage({
+        ...candidate.item!,
+        id: 'c'.repeat(64),
+        eventDate: '2026-10-24',
+        eventAt: '2026-10-24T12:00:00Z',
+      });
+      await service.approve(next, wallet.id, 880000, 'Custom event', '', 'PENDING', false, '', 0, {
+        categoryId: 'synthetic-custom',
+      });
+      expect(transactions()[0].categoryId).toBe('synthetic-custom');
+    },
+  );
+  it('allows a guarded one-time baseline repair for an already approved Pluxee top-up', async () => {
+    const wallet: PaymentSource = {
+      id: 'pluxee-6423',
+      nickname: 'Pluxee meal card',
+      institution: 'Sodexo',
+      kind: 'MEAL',
+      lastDigits: '6423',
+      autoLoad: false,
+      archived: false,
+      noLimit: false,
+      balanceMinor: 333124,
+      balanceCutoverAt: '2026-10-23T12:15:00.000Z',
+    };
+    sources.set([wallet]);
+    run('INSERT INTO app_preferences VALUES (?,?)', ['payment_sources', JSON.stringify([wallet])]);
+    const existing = manual({
+      id: 'already-approved-pluxee-topup',
+      cardId: wallet.id,
+      type: 'CREDIT',
+      amountMinor: 880000,
+      transactionDate: '2026-10-23',
+      sourceBalanceApplied: false,
+    });
+    const candidate = stage(
+      evidence({
+        id: 'e'.repeat(64),
+        kind: 'PLUXEE_TOPUP',
+        amountMinor: 880000,
+        issuer: 'Pluxee',
+        cardDigits: '6423',
+        eventDate: '2026-10-23',
+        eventAt: '2026-10-22T23:47:27.000Z',
+        eventTime: '05:17:27',
+        eventTimeExplicit: true,
+        reportedBalanceMinor: 973724,
+        balancePosition: 'AFTER',
+      }),
+    );
+    run("UPDATE sms_candidates SET state='IMPORTED',transaction_id=? WHERE id=?", [
+      existing.id,
+      candidate.id,
+    ]);
+
+    await service.adjustMatchedBalance(candidate);
+    expect(sources()[0].balanceMinor).toBe(973724);
+    expect(count('card_transactions')).toBe(1);
+    expect(
+      String(
+        rows('SELECT decision FROM sms_reconciliation WHERE candidate_id=?', [candidate.id])[0][
+          'decision'
+        ],
+      ),
+    ).toContain('baseline correction -239400');
+    await service.adjustMatchedBalance(candidate);
+    expect(count('card_transactions')).toBe(1);
+    expect(sources()[0].balanceMinor).toBe(973724);
+    const actualStore = TestBed.runInInjectionContext(() => new CardNestStore());
+    actualStore.paymentSources.set(sources());
+    actualStore.transactions.set([existing]);
+    actualStore.updateTransaction({ ...existing, amountMinor: 870000 });
+    await TestBed.inject(SqliteDatabase).atomic(async () => undefined);
+    expect(actualStore.paymentSources()[0].balanceMinor).toBe(963724);
+    actualStore.deleteTransaction(existing.id);
+    await TestBed.inject(SqliteDatabase).atomic(async () => undefined);
+    expect(actualStore.paymentSources()[0].balanceMinor).toBe(93724);
+    expect(count('card_transactions')).toBe(0);
+  });
+  it('explicit Pluxee reconciliation saves an audited baseline and rejects an older snapshot', async () => {
     const wallet: PaymentSource = {
       id: 'meal',
       nickname: 'DEMO',
+      institution: 'Pluxee',
       kind: 'MEAL',
       balanceMinor: 5000,
       noLimit: false,
@@ -1540,12 +1976,14 @@ describe('SMS approved import integrity', () => {
         amountMinor: 2000,
         reportedBalanceMinor: 8000,
         balancePosition: 'AFTER',
+        eventTime: '17:30:00',
+        eventTimeExplicit: true,
       }),
     );
     await service.approve(candidate, 'meal', 2000, 'Load', '', 'ADJUST_BALANCE');
     expect(sources()[0].balanceMinor).toBe(8000);
-    expect(count('card_transactions')).toBe(2);
-    expect(transactions().find((t) => t.type === 'ADJUSTMENT')?.amountMinor).toBe(1000);
+    expect(count('card_transactions')).toBe(1);
+    expect(sources()[0].balanceReconciliation?.correctionMinor).toBe(1000);
     const older = stage(
       evidence({
         id: 'b'.repeat(64),
@@ -1557,14 +1995,15 @@ describe('SMS approved import integrity', () => {
     );
     await expect(
       service.approve(older, 'meal', 45000, 'Older', '', 'ADJUST_BALANCE'),
-    ).rejects.toThrow('snapshot');
+    ).rejects.toThrow('balance');
     expect(sources()[0].balanceMinor).toBe(8000);
-    expect(count('card_transactions')).toBe(2);
+    expect(count('card_transactions')).toBe(1);
   });
   it('repairs the selected existing top-up without posting a second load', async () => {
     const wallet: PaymentSource = {
       id: 'meal',
       nickname: 'DEMO',
+      institution: 'Pluxee',
       kind: 'MEAL',
       balanceMinor: 5000,
       noLimit: false,
@@ -1608,6 +2047,7 @@ describe('SMS approved import integrity', () => {
     const wallet: PaymentSource = {
       id: 'meal',
       nickname: 'DEMO',
+      institution: 'Pluxee',
       kind: 'MEAL',
       balanceMinor: 5000,
       noLimit: false,

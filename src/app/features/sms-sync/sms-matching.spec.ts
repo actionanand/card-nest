@@ -11,6 +11,9 @@ describe('Meal wallet snapshot chronology', () => {
     currency: 'INR',
     eventDate: '2026-10-10',
     eventAt: '2026-10-10T12:00:00Z',
+    eventTime: '17:30:00',
+    eventTimeExplicit: true,
+    timeZone: 'Asia/Kolkata',
     receivedAt: 1,
     dateFallback: false,
     balancePosition: 'AFTER',
@@ -19,7 +22,8 @@ describe('Meal wallet snapshot chronology', () => {
   };
   const source: PaymentSource = {
     id: 'meal',
-    nickname: 'Synthetic',
+    nickname: 'Synthetic Pluxee wallet',
+    institution: 'Pluxee',
     kind: 'MEAL',
     noLimit: false,
     balanceMinor: 10000,
@@ -77,12 +81,40 @@ describe('Meal wallet snapshot chronology', () => {
   ])('does not offer adjustments for uncertain snapshots %j', (overrides) => {
     expect(walletComparison({ ...item, ...overrides }, source, [])?.canAdjust).toBe(false);
   });
-  it('preserves cutover balances and blocks newer or same-day activity', () => {
+  it('only bypasses an untyped legacy cutover for the first verified top-up repair', () => {
     expect(
       walletComparison(item, { ...source, balanceCutoverAt: '2026-10-11T12:00:00Z' }, []),
-    ).toMatchObject({ expected: 10000, canAdjust: false });
+    ).toMatchObject({ expected: 8000, canAdjust: false });
+    expect(
+      walletComparison(
+        { ...item, kind: 'PLUXEE_TOPUP' },
+        { ...source, balanceCutoverAt: '2026-10-11T12:00:00Z' },
+        [],
+      ),
+    ).toMatchObject({ canAdjust: true, automaticRepair: true });
+    for (const balanceCutoverReason of ['MANUAL', 'SMS_RECONCILIATION'] as const)
+      expect(
+        walletComparison(
+          { ...item, kind: 'PLUXEE_TOPUP' },
+          { ...source, balanceCutoverAt: '2026-10-11T12:00:00Z', balanceCutoverReason },
+          [],
+        )?.canAdjust,
+      ).toBe(false);
     expect(
       walletComparison(item, source, [{ ...entry, transactionDate: '2026-10-11' }])?.canAdjust,
     ).toBe(false);
+  });
+  it('uses event times to distinguish same-day wallet activity', () => {
+    const timedEvent = { ...item, eventAt: '2026-10-10T06:30:00Z', eventTime: '12:00:00' };
+    expect(
+      walletComparison(timedEvent, source, [
+        { ...entry, transactionTime: '12:30:00', transactionDate: item.eventDate },
+      ])?.canAdjust,
+    ).toBe(false);
+    expect(
+      walletComparison(timedEvent, source, [
+        { ...entry, transactionTime: '11:30:00', transactionDate: item.eventDate },
+      ])?.canAdjust,
+    ).toBe(true);
   });
 });

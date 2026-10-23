@@ -15,6 +15,9 @@ import { BackupService } from '../services/backup.service';
 import { webcrypto } from 'node:crypto';
 import { Blob as NodeBlob } from 'node:buffer';
 import { NATIVE_EXPORT } from '../services/native-export';
+import { AppLockService } from '../services/app-lock.service';
+import { SmsReviewService } from '../../features/sms-sync/sms-review.service';
+import { SmsCandidate, SmsEvidence } from '../../features/sms-sync/sms-model';
 
 vi.hoisted(() => vi.resetModules());
 const config = { smsPageSize: 200, seedDemoData: false };
@@ -218,6 +221,8 @@ describe('Durable first-run data, additive read migration and private portable b
       providers: [
         SqliteDatabase,
         CardNestStore,
+        SmsReviewService,
+        { provide: AppLockService, useValue: { locked: () => false, foreground: () => true } },
         { provide: APP_ENVIRONMENT, useValue: config },
         { provide: NATIVE_EXPORT, useValue: {} },
       ],
@@ -227,6 +232,274 @@ describe('Durable first-run data, additive read migration and private portable b
   afterEach(() => {
     sql.close();
     vi.restoreAllMocks();
+  });
+  it('deducts 15 actual meal purchases exactly once, preserves legacy snapshots and does not manufacture a fresh cutover', async () => {
+    await database.initialise();
+    const store = TestBed.inject(CardNestStore);
+    await store.initialisePreferences();
+    const meal = store.paymentSources().find((source) => source.kind === 'MEAL')!;
+    expect(meal.balanceCutoverAt).toBeUndefined();
+    const initialPurchase = {
+      id: 'synthetic-fresh-purchase',
+      cardId: meal.id,
+      type: 'PURCHASE' as const,
+      amountMinor: 100,
+      currencyCode: 'INR',
+      transactionDate: '2026-10-22',
+      categoryId: 'dining',
+      attachmentIds: [],
+      createdAt: '2026-10-22T00:00:00Z',
+      updatedAt: '2026-10-22T00:00:00Z',
+    };
+    store.addTransaction(initialPurchase);
+    await database.atomic(async () => undefined);
+    await store.initialisePreferences();
+    expect(store.paymentSources().find((source) => source.id === meal.id)?.balanceMinor).toBe(-100);
+    store.deleteTransaction(initialPurchase.id);
+    await database.atomic(async () => undefined);
+    const initialBalance = 1097632;
+    const wallets = store
+      .paymentSources()
+      .map((source) =>
+        source.id === meal.id
+          ? { ...source, balanceMinor: initialBalance, autoLoad: true }
+          : source,
+      );
+    await database.run('INSERT OR REPLACE INTO app_preferences VALUES(?,?)', [
+      'payment_sources',
+      JSON.stringify(wallets),
+    ]);
+    await store.initialisePreferences();
+    expect(store.paymentSources().find((source) => source.id === meal.id)).toMatchObject({
+      autoLoad: false,
+      balanceMinor: initialBalance,
+    });
+    expect(
+      store.paymentSources().find((source) => source.id === meal.id)?.balanceCutoverAt,
+    ).toBeUndefined();
+    const amounts = [...Array.from({ length: 14 }, () => 60000), 163908];
+    for (const [index, amountMinor] of amounts.entries())
+      store.addTransaction({
+        id: `synthetic-meal-purchase-${index}`,
+        cardId: meal.id,
+        type: 'PURCHASE',
+        amountMinor,
+        currencyCode: 'INR',
+        transactionDate: '2026-10-22',
+        transactionTime: `${String(index + 1).padStart(2, '0')}:00:00`,
+        categoryId: 'dining',
+        merchant: 'Fictional dining',
+        attachmentIds: [],
+        createdAt: '2026-10-22T00:00:00Z',
+        updatedAt: '2026-10-22T00:00:00Z',
+      });
+    await database.atomic(async () => undefined);
+    expect(store.transactions().reduce((sum, entry) => sum + entry.amountMinor, 0)).toBe(1003908);
+    expect(store.paymentSources().find((source) => source.id === meal.id)?.balanceMinor).toBe(
+      93724,
+    );
+    const restarted = TestBed.runInInjectionContext(() => new CardNestStore());
+    await restarted.initialisePreferences();
+    expect(restarted.transactions()).toHaveLength(15);
+    expect(restarted.paymentSources().find((source) => source.id === meal.id)?.balanceMinor).toBe(
+      93724,
+    );
+    expect(
+      restarted.paymentSources().find((source) => source.id === meal.id)?.balanceCutoverAt,
+    ).toBeUndefined();
+    const snapshot = '2026-10-23T00:00:00Z';
+    await database.run("UPDATE app_preferences SET encrypted_value=? WHERE key='payment_sources'", [
+      JSON.stringify(
+        restarted
+          .paymentSources()
+          .map((source) =>
+            source.id === meal.id
+              ? {
+                  ...source,
+                  autoLoad: true,
+                  balanceCutoverAt: snapshot,
+                  balanceSnapshotMinor: 93724,
+                }
+              : source,
+          ),
+      ),
+    ]);
+    await restarted.initialisePreferences();
+    expect(restarted.paymentSources().find((source) => source.id === meal.id)).toMatchObject({
+      autoLoad: false,
+      balanceMinor: 93724,
+      balanceCutoverAt: snapshot,
+      balanceSnapshotMinor: 93724,
+    });
+    expect(count('card_transactions')).toBe(15);
+  });
+  it('persists the Pluxee baseline repair, later purchases, edits, concurrent preferences and encrypted restore without replay', async () => {
+    await database.initialise();
+    const store = TestBed.inject(CardNestStore);
+    await store.initialisePreferences();
+    const wallet = store.paymentSources().find((source) => source.kind === 'MEAL')!;
+    await database.run('INSERT INTO categories(id,name,icon,applies_to) VALUES(?,?,?,?)', [
+      'synthetic-kids',
+      'Synthetic Kids',
+      'category',
+      'BOTH',
+    ]);
+    await database.run('INSERT OR REPLACE INTO app_preferences VALUES(?,?)', [
+      'payment_sources',
+      JSON.stringify(
+        store.paymentSources().map((source) =>
+          source.id === wallet.id
+            ? {
+                ...source,
+                balanceMinor: 333124,
+                balanceCutoverAt: '2026-10-23T12:15:00Z',
+                balanceSnapshotMinor: 333124,
+              }
+            : source,
+        ),
+      ),
+    ]);
+    await store.initialisePreferences();
+    const otherSources = store.paymentSources().filter((source) => source.id !== wallet.id);
+    for (const [index, amountMinor] of [
+      ...Array.from({ length: 14 }, () => 60000),
+      163908,
+    ].entries())
+      store.addTransaction({
+        id: `synthetic-retained-${index}`,
+        cardId: wallet.id,
+        type: 'PURCHASE',
+        amountMinor,
+        currencyCode: 'INR',
+        transactionDate: '2026-10-22',
+        categoryId: index % 2 ? 'synthetic-kids' : 'groceries',
+        sourceBalanceApplied: false,
+        attachmentIds: [],
+        createdAt: '2026-10-22T00:00:00Z',
+        updatedAt: '2026-10-22T00:00:00Z',
+      });
+    await database.atomic(async () => undefined);
+    const history = rows('SELECT payload FROM card_transactions ORDER BY id');
+    const review = TestBed.inject(SmsReviewService);
+    vi.spyOn(review, 'refresh').mockResolvedValue();
+    const topup: SmsEvidence = {
+      id: 'd'.repeat(64),
+      providerId: 'synthetic-repair',
+      kind: 'PLUXEE_TOPUP',
+      issuer: 'Pluxee',
+      amountMinor: 880000,
+      currency: 'INR',
+      eventDate: '2026-10-23',
+      eventTime: '05:17:27',
+      eventAt: '2026-10-22T23:47:27Z',
+      eventTimeExplicit: true,
+      timeZone: 'Asia/Kolkata',
+      receivedAt: 1792712847000,
+      dateFallback: false,
+      balancePosition: 'AFTER',
+      reportedBalanceMinor: 973724,
+      evidence: 'Synthetic meal wallet credit',
+    };
+    const stage = async (item: SmsEvidence): Promise<SmsCandidate> => {
+      await database.run(
+        "INSERT OR IGNORE INTO sms_candidates(id,provider_id,event_at,kind,state,payload,updated_at) VALUES(?,?,?,?,'PENDING',?,'now')",
+        [item.id, item.providerId, item.eventAt, item.kind, JSON.stringify(item)],
+      );
+      return { id: item.id, kind: item.kind, eventAt: item.eventAt, state: 'PENDING', item };
+    };
+    const candidate = await stage(topup);
+    expect(rows("SELECT COUNT(*) AS n FROM card_transactions WHERE type='CREDIT'")[0]['n']).toBe(0);
+    expect(store.paymentSources().find((source) => source.id === wallet.id)?.balanceMinor).toBe(
+      333124,
+    );
+    await Promise.all([
+      review.approve(candidate, wallet.id, 880000, 'Meal wallet top-up'),
+      review.approve(candidate, wallet.id, 880000, 'Meal wallet top-up'),
+    ]);
+    const repaired = () => store.paymentSources().find((source) => source.id === wallet.id)!;
+    expect(repaired()).toMatchObject({
+      balanceMinor: 973724,
+      balanceCutoverAt: topup.eventAt,
+      balanceCutoverReason: 'SMS_RECONCILIATION',
+      balanceSnapshotMinor: 973724,
+      balanceReconciliation: {
+        candidateId: topup.id,
+        transactionId: `sms-${topup.id}`,
+        savedBalanceMinor: 333124,
+        predictedBalanceMinor: 1213124,
+        reportedBalanceMinor: 973724,
+        correctionMinor: -239400,
+      },
+    });
+    expect(rows("SELECT payload FROM card_transactions WHERE type='PURCHASE' ORDER BY id")).toEqual(
+      history,
+    );
+    expect(count('card_transactions')).toBe(16);
+    const purchase = await stage({
+      ...topup,
+      id: 'e'.repeat(64),
+      kind: 'PLUXEE_PURCHASE',
+      amountMinor: 50000,
+      eventTime: '06:00:00',
+      eventAt: '2026-10-23T00:30:00Z',
+      reportedBalanceMinor: undefined,
+    });
+    await review.approve(purchase, wallet.id, 50000, 'Fictional breakfast');
+    expect(repaired().balanceMinor).toBe(923724);
+    const second = await stage({
+      ...purchase.item!,
+      id: 'f'.repeat(64),
+      amountMinor: 25000,
+      eventTime: '07:00:00',
+      eventAt: '2026-10-23T01:30:00Z',
+    });
+    const approval = review.approve(second, wallet.id, 25000, 'Fictional lunch');
+    store.updatePaymentSource({ ...repaired(), nickname: 'Renamed Pluxee wallet' });
+    await approval;
+    await database.atomic(async () => undefined);
+    expect(repaired().balanceMinor).toBe(898724);
+    expect(repaired().nickname).toBe('Renamed Pluxee wallet');
+    const firstPurchase = store.transactions().find((entry) => entry.id === `sms-${purchase.id}`)!;
+    expect(firstPurchase.categoryId).toBe('dining');
+    store.updateTransaction({ ...firstPurchase, amountMinor: 40000 });
+    await database.atomic(async () => undefined);
+    expect(repaired().balanceMinor).toBe(908724);
+    store.deleteTransaction(firstPurchase.id);
+    await database.atomic(async () => undefined);
+    expect(repaired().balanceMinor).toBe(948724);
+    expect(store.paymentSources().filter((source) => source.id !== wallet.id)).toEqual(
+      otherSources,
+    );
+    const expectedSource = repaired();
+    const audit = rows('SELECT * FROM sms_reconciliation ORDER BY id');
+    const expectedLedger = rows('SELECT * FROM card_transactions ORDER BY id');
+    vi.stubGlobal('crypto', webcrypto);
+    vi.stubGlobal('Blob', NodeBlob);
+    try {
+      const backups = TestBed.inject(BackupService);
+      const backup = await backups.create('synthetic-wallet-passphrase');
+      expect(backup.contents).not.toContain('synthetic-retained');
+      await database.deleteAllData();
+      await backups.restore(backup.contents, 'synthetic-wallet-passphrase');
+      const restarted = TestBed.runInInjectionContext(() => new CardNestStore());
+      await restarted.initialisePreferences();
+      expect(restarted.paymentSources().find((source) => source.id === wallet.id)).toEqual(
+        expectedSource,
+      );
+      expect(restarted.categories().some((category) => category.id === 'synthetic-kids')).toBe(
+        true,
+      );
+      expect(rows('SELECT * FROM sms_reconciliation ORDER BY id')).toEqual(audit);
+      expect(rows('SELECT * FROM card_transactions ORDER BY id')).toEqual(expectedLedger);
+      await stage(topup);
+      await review.approve(candidate, wallet.id, 880000, 'Meal wallet top-up');
+      expect(rows('SELECT * FROM card_transactions ORDER BY id')).toEqual(expectedLedger);
+      expect(
+        restarted.paymentSources().find((source) => source.id === wallet.id)?.balanceMinor,
+      ).toBe(948724);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
   it('starts signals empty and initializes a genuinely fresh production database without fictional financial values', async () => {
     const store = TestBed.inject(CardNestStore);

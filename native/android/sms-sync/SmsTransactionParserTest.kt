@@ -19,6 +19,37 @@ class SmsTransactionParserTest {
     assertTrue(a.requiresReview)
   }
 
+  @Test fun pluxeeTopupSeparatesEventAmountFromTheReportedPostEventBalance() {
+    val a = parse("Your Pluxee Card has been successfully credited with Rs.8800 towards Meal Wallet on Fri Oct 23 2026 05:17:27. Your current Meal Wallet balance is Rs.9737.24.")
+    assertEquals(SmsTransactionParser.Kind.PLUXEE_TOPUP, a.kind)
+    assertEquals(880000L, a.amountMinor)
+    assertEquals(973724L, a.reportedBalanceMinor)
+    assertEquals("2026-10-23", a.eventDate)
+    assertEquals("05:17:27", a.eventTime)
+    assertEquals("2026-10-22T23:47:27Z", a.eventAt)
+    assertEquals("AFTER", a.balancePosition)
+    assertEquals("Pluxee", a.issuer)
+    assertEquals(null, SmsTransactionParser.parse("Your Pluxee Meal Wallet balance is Rs.9737.24.", received))
+  }
+
+  @Test fun pluxeeTopupSynonymsStayDistinctFromPurchases() {
+    for (verb in listOf("credited", "received", "loaded", "recharged", "topped up")) {
+      val topup = parse("Sodexo Meal Wallet $verb Rs.120.00 on 23-Oct-2026 05:17. Current balance is Rs.500.00")
+      assertEquals(SmsTransactionParser.Kind.PLUXEE_TOPUP, topup.kind)
+      assertEquals(12000L, topup.amountMinor)
+      assertEquals(50000L, topup.reportedBalanceMinor)
+      assertEquals("AFTER", topup.balancePosition)
+    }
+    for (verb in listOf("spent", "debited")) for (balance in listOf("Avl bal", "Available balance", "current Meal Wallet balance is")) {
+      val purchase = parse("Pluxee Meal Wallet $verb Rs.25.00 on 23-Oct-2026 05:18. $balance Rs.475.00")
+      assertEquals(SmsTransactionParser.Kind.PLUXEE_PURCHASE, purchase.kind)
+      assertEquals(2500L, purchase.amountMinor)
+      assertEquals(47500L, purchase.reportedBalanceMinor)
+    }
+    assertNull(SmsTransactionParser.parse("Sodexo current balance is Rs.500.00", received))
+    assertNull(SmsTransactionParser.parse("Pluxee loaded Rs.120 and Rs.130. Available balance Rs.500", received))
+  }
+
   @Test fun pluxeePurchaseHasAmountNotAvailableBalance() {
     val a = parse("Rs. 586.89 spent from Pluxee Meal wallet, card no.xx1111 on 7-10-2026 22:52:3 at FICTIONAL MARKET. Avl bal Rs.4929.44.")
     assertEquals(SmsTransactionParser.Kind.PLUXEE_PURCHASE, a.kind)

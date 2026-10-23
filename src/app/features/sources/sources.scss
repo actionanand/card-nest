@@ -433,7 +433,8 @@
   color: var(--muted);
   font-size: 0.68rem;
 }
-.transaction-amount {
+.transaction-amount,
+.transaction-time {
   white-space: nowrap;
 }
 .transaction-value {
@@ -536,7 +537,8 @@
   .transaction-value .transaction-amount {
     order: -1;
   }
-  .transaction-value time {
+  .transaction-value time,
+  .transaction-value .transaction-time {
     display: inline-flex;
     align-items: center;
     padding: 0.13rem 0.38rem;

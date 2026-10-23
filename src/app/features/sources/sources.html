@@ -264,6 +264,9 @@
                       <time [attr.datetime]="transaction.transactionDate">{{
                         transaction.transactionDate | appDate
                       }}</time>
+                      @if (recordedTime(transaction); as time) {
+                        <small class="transaction-time">{{ time }}</small>
+                      }
                       <strong
                         class="transaction-amount"
                         [class.credit]="isCredit(transaction.type)"

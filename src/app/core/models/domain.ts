@@ -135,6 +135,19 @@ export interface PaymentSource {
   vehicleNumber?: string;
   balanceCutoverAt?: string;
   balanceSnapshotMinor?: Money;
+  balanceCutoverReason?: 'MANUAL' | 'SMS_RECONCILIATION';
+  balanceReconciliation?: {
+    candidateId: string;
+    transactionId: string;
+    eventAt: string;
+    eventAmountMinor: Money;
+    eventType: 'TOPUP' | 'PURCHASE';
+    savedBalanceMinor: Money;
+    predictedBalanceMinor: Money;
+    reportedBalanceMinor: Money;
+    correctionMinor: Money;
+    recordedAt: string;
+  };
   archived: boolean;
 }
 

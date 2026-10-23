@@ -236,7 +236,6 @@ export class CardNestStore {
   private readonly database = inject(SqliteDatabase);
   private readonly environment = inject(APP_ENVIRONMENT);
   private dataWasCleared = false;
-  private sourcesLoaded = false;
   readonly cards = signal<readonly CreditCard[]>([]);
   readonly transactions = signal<readonly CardTransaction[]>([]);
   readonly categories = signal<readonly Category[]>(CATEGORIES);
@@ -308,10 +307,6 @@ export class CardNestStore {
         totalCredit === 0 ? 0 : Math.round((outstandingMinor / totalCredit) * 1000) / 10,
     };
   });
-
-  constructor() {
-    this.materializeSourceLoads();
-  }
 
   async initialisePreferences(): Promise<void> {
     if (!this.database.ready()) return;
@@ -394,8 +389,27 @@ export class CardNestStore {
     } catch {
       this.paymentSources.set(PAYMENT_SOURCES);
     }
-    this.sourcesLoaded = true;
-    this.materializeSourceLoads();
+    if (!values.has(PAYMENT_SOURCES_PREFERENCE_KEY)) {
+      const sources = await this.database.atomic(async (tx) => {
+        await tx.run('INSERT OR IGNORE INTO app_preferences(key,encrypted_value) VALUES(?,?)', [
+          PAYMENT_SOURCES_PREFERENCE_KEY,
+          JSON.stringify(PAYMENT_SOURCES),
+        ]);
+        return this.readStoredSources(tx);
+      });
+      this.paymentSources.set(sources);
+    }
+    if (this.paymentSources().some((source) => source.kind === 'MEAL' && source.autoLoad)) {
+      const sources = await this.database.atomic(async (tx) => {
+        const stored = await this.readStoredSources(tx);
+        const updated = stored.map((source) =>
+          source.kind === 'MEAL' ? { ...source, autoLoad: false } : source,
+        );
+        await this.writeStoredSources(tx, updated);
+        return updated;
+      });
+      this.paymentSources.set(sources);
+    }
     await Promise.all([this.loadCurrentIncome(), this.loadCards()]);
     await this.loadCategories();
     await this.loadCategoryLimits();
@@ -786,6 +800,11 @@ export class CardNestStore {
       splitGroupId: undefined,
       splitOriginalAmountMinor: undefined,
       transactionDate: indiaTodayIso(),
+      sourceBalanceApplied: this.paymentSources().some(
+        (source) => source.id === existing.cardId && source.kind === 'MEAL',
+      )
+        ? true
+        : existing.sourceBalanceApplied,
       createdAt: timestamp,
       updatedAt: timestamp,
     };
@@ -926,6 +945,7 @@ export class CardNestStore {
         ...updated,
         balanceCutoverAt: new Date().toISOString(),
         balanceSnapshotMinor: updated.balanceMinor,
+        ...(updated.kind === 'MEAL' ? { balanceCutoverReason: 'MANUAL' as const } : {}),
       };
     this.paymentSources.update((sources) =>
       sources.map((source) => (source.id === updated.id ? updated : source)),
@@ -1254,34 +1274,14 @@ export class CardNestStore {
     }
   }
 
-  materializeSourceLoads(asOf = today): void {
-    // Preserve balances already containing simulated loads. Never replay historical credits.
-    this.paymentSources.update((sources) =>
-      sources.map((source) =>
-        source.kind === 'MEAL' && (!source.balanceCutoverAt || source.autoLoad)
-          ? {
-              ...source,
-              autoLoad: false,
-              balanceCutoverAt:
-                source.balanceCutoverAt ??
-                (asOf === today ? new Date().toISOString() : `${asOf}T23:59:59.999Z`),
-              balanceSnapshotMinor: source.balanceSnapshotMinor ?? source.balanceMinor ?? 0,
-            }
-          : source,
-      ),
-    );
-    if (this.sourcesLoaded && this.database.ready()) {
-      void this.upsertPreference(
-        PAYMENT_SOURCES_PREFERENCE_KEY,
-        JSON.stringify(this.paymentSources()),
-      );
-    }
-  }
-
   private adjustPaymentSourceBalance(transaction: CardTransaction, direction: 1 | -1): void {
-    if (transaction.sourceBalanceApplied === false) return;
     const source = this.paymentSources().find((item) => item.id === transaction.cardId);
     if (!source || source.noLimit || source.balanceMinor === undefined) return;
+    if (
+      transaction.sourceBalanceApplied === false &&
+      source.balanceReconciliation?.transactionId !== transaction.id
+    )
+      return;
     const balanceEffect = -transactionEffect(transaction) * direction;
     this.paymentSources.update((sources) =>
       sources.map((item) =>
@@ -1605,9 +1605,14 @@ export class CardNestStore {
     transaction: CardTransaction | null,
     direction: 1 | -1,
   ): void {
-    if (!transaction || transaction.sourceBalanceApplied === false) return;
+    if (!transaction) return;
     const source = sources.find((item) => item.id === transaction.cardId);
     if (!source || source.noLimit || source.balanceMinor === undefined) return;
+    if (
+      transaction.sourceBalanceApplied === false &&
+      source.balanceReconciliation?.transactionId !== transaction.id
+    )
+      return;
     source.balanceMinor -= transactionEffect(transaction) * direction;
     if (!Number.isSafeInteger(source.balanceMinor))
       throw new Error('Wallet balance would overflow.');

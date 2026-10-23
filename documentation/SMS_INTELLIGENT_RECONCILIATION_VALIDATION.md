@@ -1,5 +1,7 @@
 # SMS reconciliation, meal-wallet comparison and multiple type filters
 
+The Pluxee accounting behavior described below is a historical validation record. The current [Pluxee baseline reconciliation and validation status](./SMS_SYNC.md#one-time-pluxee-baseline-reconciliation) supersedes its source-selection and linked-adjustment descriptions: the sole active provider-identified wallet can be suggested without digits, and Pluxee uses an audited baseline correction rather than a synthetic ledger adjustment. New regression tests for that change have **NOT RUN locally**. Earlier command results below do not validate the current changes.
+
 Implemented on `feature/8-android-sms-transaction-sync`, starting from local commit `5b40aba8cacc9a6e7764cea3ddd94461cc34e3cc`. No user database was opened or altered during development. Fixtures are fictional; screenshots and private SMS/identifiers were not copied into source. Signing, application IDs, version, backup encryption, Google Drive sharing and supplied corpus are unchanged.
 
 ## Confirmed code causes

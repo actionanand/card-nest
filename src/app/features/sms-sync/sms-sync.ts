@@ -32,6 +32,7 @@ import {
   ledgerType,
   merchantTitle,
   suspectEvidence,
+  defaultPluxeeCategory,
 } from './sms-model';
 
 function isReviewEntry(info: unknown): boolean {
@@ -79,7 +80,7 @@ export class SmsSyncPage {
   readonly candidateMenuPosition = signal<CandidateMenuPosition | null>(null);
   readonly activeCandidateMenu = computed(() => {
     const id = this.candidateMenuId();
-    return id ? this.visible().find((candidate) => candidate.id === id) ?? null : null;
+    return id ? (this.visible().find((candidate) => candidate.id === id) ?? null) : null;
   });
   enableSwipeActions(): void {
     void this.run(() => this.store.setDurableUiPreference('sms_swipe_actions_enabled', true));
@@ -162,6 +163,15 @@ export class SmsSyncPage {
         label: 'Historical wallet event',
         detail: 'Retain snapshot balance',
       },
+      ...(kind.startsWith('PLUXEE')
+        ? [
+            {
+              value: 'APPLY_EVENT',
+              label: 'Apply event to current balance',
+              detail: 'I verified this event has not yet affected the saved balance',
+            },
+          ]
+        : []),
       ...(kind.startsWith('PLUXEE') || kind.startsWith('FASTAG')
         ? [
             { value: 'REPAIR_EXISTING', label: 'Repair existing top-up amount' },
@@ -469,14 +479,50 @@ export class SmsSyncPage {
     const source = this.store
       .paymentSources()
       .find((source) => source.id === this.editor.controls.source.value);
-    return item && source
-      ? walletComparison(
-          item,
-          source,
-          this.store.transactions(),
-          candidate?.transactionId ?? this.editor.controls.existing.value,
-        )
-      : null;
+    const amount = parseMoneyToMinor(this.editor.controls.amount.value);
+    const date = this.editor.controls.transactionDate.value;
+    const comparison =
+      item && source
+        ? walletComparison(
+            { ...item, amountMinor: amount ?? item.amountMinor, eventDate: date || item.eventDate },
+            source,
+            this.store.transactions(),
+            candidate?.transactionId ?? this.editor.controls.existing.value,
+            this.store.paymentSources(),
+          )
+        : null;
+    if (comparison && item && (amount !== item.amountMinor || date !== item.eventDate))
+      return {
+        ...comparison,
+        canAdjust: false,
+        automaticRepair: false,
+        explanation: 'Restore the SMS amount and event date before using its reported balance.',
+      };
+    const choice = this.editor.controls.reconciliation.value;
+    if (comparison && (choice === 'RETAIN_BALANCE' || choice === 'APPLY_EVENT')) {
+      const expectedAfter =
+        comparison.current +
+        (choice === 'APPLY_EVENT' && !comparison.alreadyRecorded ? comparison.eventDelta : 0);
+      return {
+        ...comparison,
+        expected: expectedAfter,
+        expectedAfter,
+        difference: comparison.reported - expectedAfter,
+        canAdjust: false,
+        automaticRepair: false,
+        explanation:
+          choice === 'RETAIN_BALANCE'
+            ? 'You confirmed the event is already included. Approval will retain the saved balance.'
+            : 'You confirmed the event has not affected funds. Approval will apply its amount once.',
+      };
+    }
+    return comparison;
+  }
+  useReportedBalance(event: Event): void {
+    if (event.target instanceof HTMLInputElement)
+      this.editor.controls.reconciliation.setValue(
+        event.target.checked ? 'ADJUST_BALANCE' : 'PENDING',
+      );
   }
   updateMatchedBalance(): void {
     const candidate = this.selected();
@@ -718,8 +764,9 @@ export class SmsSyncPage {
       statementDate: '',
       statementDue: '',
       transactionDate: candidate.item?.eventDate ?? '',
-      category:
-        candidate.kind === 'CARD_PAYMENT_RECEIVED'
+      category: candidate.kind.startsWith('PLUXEE')
+        ? defaultPluxeeCategory(candidate.kind, this.store.categories())
+        : candidate.kind === 'CARD_PAYMENT_RECEIVED'
           ? 'payment'
           : ['CASHBACK', 'REFUND', 'PLUXEE_TOPUP', 'FASTAG_TOPUP'].includes(candidate.kind)
             ? 'contra-expenses'
@@ -881,7 +928,10 @@ export class SmsSyncPage {
       const spaceBelow = viewportHeight - rect.bottom - sideGap;
       const opensUp = spaceBelow < menuHeight && rect.top > spaceBelow;
       this.candidateMenuPosition.set({
-        left: Math.min(Math.max(sideGap, rect.right - menuWidth), viewportWidth - menuWidth - sideGap),
+        left: Math.min(
+          Math.max(sideGap, rect.right - menuWidth),
+          viewportWidth - menuWidth - sideGap,
+        ),
         top: opensUp
           ? Math.max(sideGap, rect.top - menuHeight - 4)
           : Math.min(viewportHeight - sideGap, rect.bottom + 4),

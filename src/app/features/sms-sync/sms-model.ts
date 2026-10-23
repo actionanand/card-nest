@@ -1,5 +1,6 @@
 import {
   CardTransaction,
+  Category,
   CreditCard,
   PaymentSource,
   TransactionType,
@@ -26,7 +27,12 @@ export type SmsKind =
 export type ReviewState =
   'PENDING' | 'REJECTED' | 'IGNORED' | 'IMPORTED' | 'MATCHED_EXISTING' | 'DEFERRED' | 'ERROR';
 export type ReconciliationChoice =
-  'PENDING' | 'FULLY_PAID' | 'RETAIN_BALANCE' | 'REPAIR_EXISTING' | 'ADJUST_BALANCE';
+  | 'PENDING'
+  | 'FULLY_PAID'
+  | 'RETAIN_BALANCE'
+  | 'APPLY_EVENT'
+  | 'REPAIR_EXISTING'
+  | 'ADJUST_BALANCE';
 export interface SmsEvidence {
   parserVersion?: number;
   standingInstructionReference?: string;
@@ -154,6 +160,12 @@ export function validEvidence(value: unknown): value is SmsEvidence {
     /^\d{4}-\d{2}-\d{2}$/.test(item['eventDate']) &&
     typeof item['eventAt'] === 'string' &&
     Number.isFinite(Date.parse(item['eventAt'])) &&
+    (item['reportedBalanceMinor'] === undefined ||
+      (typeof item['reportedBalanceMinor'] === 'number' &&
+        Number.isSafeInteger(item['reportedBalanceMinor']) &&
+        item['reportedBalanceMinor'] >= 0)) &&
+    (item['balancePosition'] === undefined ||
+      ['AFTER', 'BEFORE', 'UNKNOWN'].includes(String(item['balancePosition']))) &&
     typeof item['receivedAt'] === 'number' &&
     typeof item['providerId'] === 'string'
   );
@@ -163,17 +175,18 @@ export function eligibleSources(
   cards: readonly CreditCard[],
   sources: readonly PaymentSource[],
 ): readonly string[] {
-  if (item.kind.startsWith('PLUXEE'))
-    return sources
-      .filter(
-        (s) =>
-          s.kind === 'MEAL' &&
-          !!item.cardDigits &&
-          /^\d{4,5}$/.test(item.cardDigits) &&
-          s.lastDigits === item.cardDigits &&
-          !s.archived,
-      )
-      .map((s) => s.id);
+  if (item.kind.startsWith('PLUXEE')) {
+    if (item.accountDigits || (item.issuer && normalizedIssuer(item.issuer) !== 'pluxee'))
+      return [];
+    const wallets = sources.filter(
+      (source) => source.kind === 'MEAL' && isPluxeeSource(source) && !source.archived,
+    );
+    if (item.cardDigits)
+      return /^\d{4,5}$/.test(item.cardDigits)
+        ? wallets.filter((source) => source.lastDigits === item.cardDigits).map((s) => s.id)
+        : [];
+    return !item.accountDigits && wallets.length === 1 ? [wallets[0].id] : [];
+  }
   if (item.kind.startsWith('FASTAG'))
     return sources
       .filter(
@@ -211,6 +224,27 @@ export function eligibleSources(
       );
     })
     .map((card) => card.id);
+}
+
+export function isPluxeeSource(source: PaymentSource): boolean {
+  return (
+    normalizedIssuer(source.institution) === 'pluxee' ||
+    normalizedIssuer(source.nickname) === 'pluxee'
+  );
+}
+
+export function defaultPluxeeCategory(
+  kind: SmsKind,
+  categories: readonly Pick<Category, 'id' | 'archived' | 'appliesTo'>[],
+): string {
+  const preferred = kind === 'PLUXEE_PURCHASE' ? 'dining' : 'contra-expenses';
+  const incompatible = kind === 'PLUXEE_PURCHASE' ? 'CREDIT' : 'EXPENSE';
+  return categories.some(
+    (category) =>
+      category.id === preferred && !category.archived && category.appliesTo !== incompatible,
+  )
+    ? preferred
+    : 'other';
 }
 
 /** Aliases identify issuers; only cardDigits (never accountDigits) identifies a card. */

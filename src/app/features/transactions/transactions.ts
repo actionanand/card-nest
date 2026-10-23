@@ -82,6 +82,9 @@ export class TransactionsPage {
       this.store.showTransactionTime?.() ?? false,
     );
   }
+  recordedEventTime(transaction: CardTransaction): string {
+    return recordedTransactionTime(transaction.transactionTime, true);
+  }
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
   private readonly snackbar = inject(SnackbarService);
@@ -494,8 +497,10 @@ export class TransactionsPage {
       .map(([key, group]) => ({
         key,
         label: group.label,
-        transactions: group.transactions.sort((a, b) =>
-          b.transactionDate.localeCompare(a.transactionDate),
+        transactions: group.transactions.sort(
+          (a, b) =>
+            b.transactionDate.localeCompare(a.transactionDate) ||
+            (b.transactionTime ?? '').localeCompare(a.transactionTime ?? ''),
         ),
         totalMinor: totals.get(key) ?? 0,
       }));

@@ -384,24 +384,37 @@
         }
         <button class="btn clear" type="button" (click)="clearFilters()">Clear filters</button>
       </div>
-      <p class="muted" role="status">
-        {{
-          loading() || sync.reconciling()
-            ? 'Loading review…'
-            : sync.verificationFailed()
-              ? 'Review verification failed'
-              : sync.total() + ' results for these filters'
-        }}
-      </p>
+      @if (!(sync.reconciling() || (loading() && !sync.candidates().length))) {
+        <p class="muted" [attr.role]="loading() ? null : 'status'">
+          {{
+            loading()
+              ? 'Loading review…'
+              : sync.verificationFailed()
+                ? 'Review verification failed'
+                : sync.total() + ' results for these filters'
+          }}
+        </p>
+      }
       @if (swipeEnabled()) {
         <p class="muted">Swipe right to review and add · swipe left to dismiss</p>
       } @else {
-        <button class="btn" type="button" (click)="enableSwipeActions()" [disabled]="loading()">
+        <button
+          class="btn swipe-enable"
+          type="button"
+          (click)="enableSwipeActions()"
+          [disabled]="loading()"
+        >
           Enable swipe actions
         </button>
       }
-      @if (sync.reconciling()) {
-        <p role="status" aria-live="polite">Checking saved transactions and SMS links…</p>
+      @if (sync.reconciling() || (loading() && !sync.candidates().length)) {
+        <div class="review-loading-status" role="status" aria-live="polite">
+          <span class="review-loading-spinner" aria-hidden="true"></span>
+          <span>
+            <strong>Loading review items…</strong>
+            <small>Checking saved transactions and SMS links…</small>
+          </span>
+        </div>
       } @else if (sync.verificationFailed()) {
         <p role="alert">
           Saved transactions could not be verified. Recheck saved suggestions to retry.
@@ -525,7 +538,11 @@
           </p>
         }
         @if (activeCandidateMenu(); as candidate) {
-          <div class="candidate-menu-backdrop" aria-hidden="true" (pointerdown)="closeCandidateMenu()"></div>
+          <div
+            class="candidate-menu-backdrop"
+            aria-hidden="true"
+            (pointerdown)="closeCandidateMenu()"
+          ></div>
           @if (candidateMenuPosition(); as position) {
             <div
               class="candidate-menu candidate-menu-overlay"
@@ -549,7 +566,9 @@
               } @else {
                 <button type="button" role="menuitem" (click)="reviewFromMenu(candidate)">
                   {{
-                    candidate.state === 'PENDING' && candidate.item && importableCandidate(candidate)
+                    candidate.state === 'PENDING' &&
+                    candidate.item &&
+                    importableCandidate(candidate)
                       ? 'Review & add'
                       : 'Review details'
                   }}
@@ -642,7 +661,7 @@
           <p class="feedback" role="alert">{{ error() || sync.error() }}</p>
         }
         @if (candidate.item; as item) {
-          @if (candidate.state === 'MATCHED_EXISTING') {
+          @if (candidate.state === 'MATCHED_EXISTING' || candidate.state === 'IMPORTED') {
             <aside class="review-notice">
               <app-icon name="success" />
               <div>
@@ -660,10 +679,21 @@
                 <app-icon name="help" />
                 <div>
                   <strong>Wallet balance comparison</strong>
-                  <p>CardNest {{ money(balance.current) }} · SMS {{ money(balance.reported) }}</p>
+                  <p>Saved balance before approval: {{ money(balance.current) }}</p>
                   <p>
-                    {{ item.balancePosition || 'UNKNOWN' }} transaction · Expected snapshot
-                    {{ money(balance.expected) }} · Difference {{ money(balance.difference) }}
+                    Event:
+                    {{ balance.eventDelta < 0 ? '−' : '+'
+                    }}{{ money(balance.eventDelta < 0 ? -balance.eventDelta : balance.eventDelta) }}
+                  </p>
+                  <p>Predicted balance after event: {{ money(balance.expectedAfter) }}</p>
+                  <p>Pluxee reported balance: {{ money(balance.reported) }}</p>
+                  <p>Difference to reconcile: {{ money(balance.difference) }}</p>
+                  <p>
+                    {{
+                      balance.alreadyRecorded
+                        ? 'Already matched; no second ledger entry.'
+                        : 'Not previously recorded.'
+                    }}
                   </p>
                   <p>{{ balance.explanation }}</p>
                   <button type="button" class="btn" (click)="confirmBalance.set(false)">
@@ -676,9 +706,8 @@
                       </button>
                     } @else {
                       <p>
-                        Confirm replacing the wallet balance with {{ money(balance.reported) }}. The
-                        existing purchase or top-up will not be posted again. A balance correction
-                        will be recorded.
+                        Confirm reconciling the saved balance to {{ money(balance.reported) }}. The
+                        recorded purchase or top-up will not be posted again.
                       </p>
                       <button
                         type="button"
@@ -686,7 +715,7 @@
                         [disabled]="saving()"
                         (click)="updateMatchedBalance()"
                       >
-                        Update balance from SMS
+                        Reconcile to reported balance
                       </button>
                     }
                   }
@@ -772,17 +801,42 @@
                   <app-icon name="help" />
                   <div>
                     <strong>Review balance difference</strong>
-                    <p>CardNest {{ money(balance.current) }} · SMS {{ money(balance.reported) }}</p>
+                    <p>Saved balance before approval: {{ money(balance.current) }}</p>
                     <p>
-                      Snapshot: {{ item.balancePosition || 'UNKNOWN' }} transaction. Expected
-                      {{ money(balance.expected) }} · Difference {{ money(balance.difference) }}
+                      Event:
+                      {{ balance.eventDelta < 0 ? '−' : '+'
+                      }}{{
+                        money(balance.eventDelta < 0 ? -balance.eventDelta : balance.eventDelta)
+                      }}
+                    </p>
+                    <p>Predicted balance after event: {{ money(balance.expectedAfter) }}</p>
+                    <p>Pluxee reported balance: {{ money(balance.reported) }}</p>
+                    <p>Difference to reconcile: {{ money(balance.difference) }}</p>
+                    <p>
+                      {{
+                        balance.alreadyRecorded
+                          ? 'Already matched; no second ledger entry.'
+                          : 'Not previously recorded.'
+                      }}
                     </p>
                     <p>{{ balance.explanation }}</p>
-                    <p>Calculated balance after the event: {{ money(balance.expectedAfter) }}</p>
-                    <p>
-                      Keep CardNest balance by leaving reconciliation pending. An update requires
-                      explicit approval and verified event order.
-                    </p>
+                    @if (
+                      balance.automaticRepair && editor.controls.reconciliation.value === 'PENDING'
+                    ) {
+                      <p>
+                        Approval also reconciles this wallet to the verified post-event balance. The
+                        baseline correction is saved for audit; no extra purchase is created.
+                      </p>
+                    } @else if (balance.canAdjust) {
+                      <label class="check">
+                        <input
+                          type="checkbox"
+                          [checked]="editor.controls.reconciliation.value === 'ADJUST_BALANCE'"
+                          (change)="useReportedBalance($event)"
+                        />
+                        <span>Use the verified Pluxee balance after this event</span>
+                      </label>
+                    }
                   </div>
                 </aside>
               }
@@ -815,8 +869,8 @@
                 }
                 <p>
                   Issuer payments keep the actual received amount, including partial payments or
-                  overpayments. Statement settlement is a separate decision. Reported wallet
-                  balances never overwrite calculated funds.
+                  overpayments. Statement settlement is a separate decision. Pluxee balance
+                  reconciliation requires verified source evidence and event order.
                 </p>
                 <label class="check"
                   ><input type="checkbox" formControlName="separate" /><span

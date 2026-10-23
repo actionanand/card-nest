@@ -3,9 +3,11 @@ import { Capacitor, registerPlugin } from '@capacitor/core';
 import { SqliteDatabase } from '../../core/data/sqlite-database';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { AppLockService } from '../../core/services/app-lock.service';
+import { indiaTodayIso } from '../../core/services/india-date';
 import {
   CardTransaction,
   CardStatement,
+  Category,
   EmiInstallment,
   PaymentSource,
 } from '../../core/models/domain';
@@ -30,6 +32,9 @@ import {
   transferRelationship,
   recurringRelationship,
   suspectEvidence,
+  isPluxeeSource,
+  normalizedIssuer,
+  defaultPluxeeCategory,
 } from './sms-model';
 
 interface NativeSms {
@@ -613,13 +618,19 @@ export class SmsReviewService {
     this.assertUnlocked();
     const sources = await this.database.atomic(async (tx) => {
       const [row] = await tx.query<{ payload: string; transaction_id: string }>(
-        "SELECT payload,transaction_id FROM sms_candidates WHERE id=? AND state='MATCHED_EXISTING'",
+        "SELECT payload,transaction_id FROM sms_candidates WHERE id=? AND state IN ('MATCHED_EXISTING','IMPORTED')",
         [candidate.id],
       );
       if (!row?.payload || !row.transaction_id)
         throw new Error('Choose a recorded wallet transaction first.');
       const item = JSON.parse(row.payload) as SmsEvidence;
       if (!validEvidence(item)) throw new Error('Valid retained SMS evidence is required.');
+      const [reconciliation] = await tx.query<{ decision: string }>(
+        'SELECT decision FROM sms_reconciliation WHERE candidate_id=?',
+        [candidate.id],
+      );
+      if (reconciliation?.decision.includes('BALANCE_RECONCILIATION'))
+        return this.readStoredSources(tx);
       const [pref] = await tx.query<{ encrypted_value: string }>(
         "SELECT encrypted_value FROM app_preferences WHERE key='payment_sources'",
       );
@@ -634,73 +645,65 @@ export class SmsReviewService {
       if (
         existing.type !== ledgerType(item) ||
         existing.amountMinor !== item.amountMinor ||
-        existing.transactionDate !== item.eventDate
+        existing.transactionDate !== item.eventDate ||
+        (existing.transactionTime && existing.transactionTime !== item.eventTime)
       )
         throw new Error(
           'The recorded entry changed. Review the transaction before adjusting its balance.',
         );
-      const comparison = walletComparison(item, source, ledger, existing.id);
+      const comparison = walletComparison(item, source, ledger, existing.id, sources);
       if (!comparison?.canAdjust)
         throw new Error(comparison?.explanation ?? 'The balance cannot be safely adjusted.');
       const delta = comparison.difference;
-      if (!delta) return sources;
-      const now = new Date().toISOString();
-      const adjustment: CardTransaction = {
-        id: `sms-adjustment-${item.id}`,
-        cardId: source.id,
-        type: 'ADJUSTMENT',
-        adjustmentDirection: delta > 0 ? 'DECREASE' : 'INCREASE',
-        amountMinor: Math.abs(delta),
-        currencyCode: 'INR',
-        transactionDate: item.eventDate,
-        categoryId: 'other',
-        merchant: 'Approved wallet balance reconciliation',
-        notes: `Explicit SMS snapshot adjustment at ${item.eventAt}`,
-        relatedTransactionId: existing.id,
-        sourceBalanceApplied: true,
-        attachmentIds: [],
-        createdAt: now,
-        updatedAt: now,
-      };
-      await tx.run(
-        'INSERT INTO card_transactions(id,card_id,category_id,type,amount_minor,currency_code,transaction_date,payload,created_at,updated_at) VALUES(?,NULL,?,?,?,?,?,?,?,?)',
-        [
-          adjustment.id,
-          'other',
-          adjustment.type,
-          adjustment.amountMinor,
-          'INR',
-          item.eventDate,
-          JSON.stringify(adjustment),
-          now,
-          now,
-        ],
-      );
-      await tx.run(
-        "INSERT INTO transaction_links(transaction_id,related_transaction_id,relationship_type,created_at) VALUES(?,?,'ADJUSTMENT',?)",
-        [adjustment.id, existing.id, now],
-      );
-      source.balanceMinor = comparison.reported;
-      source.balanceSnapshotMinor = comparison.reported;
-      source.balanceCutoverAt = item.eventAt;
+      this.reconcilePluxeeBalance(source, item, existing.id, comparison, new Date().toISOString());
       await tx.run("UPDATE app_preferences SET encrypted_value=? WHERE key='payment_sources'", [
         JSON.stringify(sources),
       ]);
       await tx.run(
-        "UPDATE sms_reconciliation SET decision=decision || '; EXPLICIT_BALANCE_ADJUSTMENT' WHERE candidate_id=?",
-        [item.id],
+        `INSERT INTO sms_reconciliation(id,candidate_id,target_id,decision,amount_minor,created_at)
+         VALUES(?,?,?,?,?,?)
+         ON CONFLICT(candidate_id) DO UPDATE SET
+           target_id=excluded.target_id,decision=excluded.decision,
+           amount_minor=excluded.amount_minor,created_at=excluded.created_at`,
+        [
+          `reconciliation-${item.id}`,
+          item.id,
+          existing.id,
+          `${reconciliation?.decision ?? 'EXPLICIT_MATCH'}; BALANCE_RECONCILIATION: saved ${comparison.current}; expected ${comparison.expected}; reported ${comparison.reported}; baseline correction ${delta}`,
+          item.amountMinor,
+          new Date().toISOString(),
+        ],
       );
       return sources;
     });
-    // Refresh from committed rows, never optimistically alter a balance before the transaction.
-    const adjustments = (
-      await this.database.query<{ payload: string }>(
-        'SELECT payload FROM card_transactions WHERE id=?',
-        [`sms-adjustment-${candidate.id}`],
-      )
-    ).map((row) => JSON.parse(row.payload) as CardTransaction);
-    this.store.acceptCommittedImport(adjustments[0] ?? null, sources);
+    this.store.acceptCommittedImport(null, sources);
     await this.refresh();
+  }
+
+  private reconcilePluxeeBalance(
+    source: PaymentSource,
+    item: SmsEvidence,
+    transactionId: string,
+    comparison: NonNullable<ReturnType<typeof walletComparison>>,
+    recordedAt: string,
+  ): void {
+    source.balanceReconciliation ??= {
+      candidateId: item.id,
+      transactionId,
+      eventAt: item.eventAt,
+      eventAmountMinor: item.amountMinor,
+      eventType: item.kind === 'PLUXEE_TOPUP' ? 'TOPUP' : 'PURCHASE',
+      savedBalanceMinor: comparison.current,
+      predictedBalanceMinor: comparison.expectedAfter,
+      reportedBalanceMinor: comparison.reported,
+      correctionMinor: comparison.difference,
+      recordedAt,
+    };
+    source.balanceMinor = comparison.reported;
+    source.balanceCutoverAt = item.eventAt;
+    source.balanceSnapshotMinor = comparison.reported;
+    source.balanceCutoverReason = 'SMS_RECONCILIATION';
+    source.autoLoad = false;
   }
   async markAllRead(): Promise<number> {
     this.assertUnlocked();
@@ -977,6 +980,8 @@ export class SmsReviewService {
         : this.store.paymentSources().map((source) => ({ ...source }));
       const source = sources.find((s) => s.id === sourceId);
       const wallet = item.kind.startsWith('PLUXEE') || item.kind.startsWith('FASTAG');
+      if (reconciliation === 'APPLY_EVENT' && !item.kind.startsWith('PLUXEE'))
+        throw new Error('Explicit historical event application is only supported for Pluxee.');
       if (
         wallet
           ? !source || source.kind !== (item.kind.startsWith('FASTAG') ? 'FASTAG' : 'MEAL')
@@ -993,19 +998,21 @@ export class SmsReviewService {
         source.vehicleNumber !== item.vehicleNumber
       )
         throw new Error('Choose the wallet for this vehicle.');
+      if (
+        item.kind.startsWith('PLUXEE') &&
+        (!source ||
+          !isPluxeeSource(source) ||
+          source.archived ||
+          (item.issuer && normalizedIssuer(item.issuer) !== 'pluxee') ||
+          (item.cardDigits && item.cardDigits !== source.lastDigits) ||
+          !!item.accountDigits)
+      )
+        throw new Error('Choose the Pluxee wallet that matches the message suffix.');
       const ledger = (
         await tx.query<{ payload: string }>('SELECT payload FROM card_transactions')
       ).map((r) => JSON.parse(r.payload) as CardTransaction);
-      if (reconciliation === 'ADJUST_BALANCE' && item.kind.startsWith('PLUXEE')) {
-        const comparison = source
-          ? walletComparison(item, source, ledger, existingId || undefined)
-          : null;
-        if (!comparison?.canAdjust)
-          throw new Error(
-            comparison?.explanation ?? 'Verify the meal wallet and balance chronology first.',
-          );
-      }
       const now = new Date().toISOString();
+      let recordedDecision: string = reconciliation;
       const transactionDate = edits.transactionDate ?? item.eventDate;
       if (
         !/^\d{4}-\d{2}-\d{2}$/.test(transactionDate) ||
@@ -1018,9 +1025,42 @@ export class SmsReviewService {
         !(await tx.query('SELECT id FROM categories WHERE id=?', [edits.categoryId])).length
       )
         throw new Error('Choose an existing category.');
+      const linkedTransaction = existingId
+        ? ledger.find((entry) => entry.id === existingId)
+        : undefined;
+      const comparison = source
+        ? walletComparison(item, source, ledger, existingId || undefined, sources)
+        : null;
+      const unchangedEvent =
+        amountMinor === item.amountMinor &&
+        transactionDate === item.eventDate &&
+        (!existingId ||
+          (linkedTransaction?.cardId === sourceId &&
+            linkedTransaction.type === type &&
+            linkedTransaction.amountMinor === item.amountMinor &&
+            linkedTransaction.transactionDate === item.eventDate &&
+            (!linkedTransaction.transactionTime ||
+              linkedTransaction.transactionTime === item.eventTime)));
+      if (reconciliation === 'ADJUST_BALANCE' && item.kind.startsWith('PLUXEE')) {
+        if (!unchangedEvent)
+          throw new Error(
+            'Restore the SMS amount, event date and recorded time before reconciling.',
+          );
+        if (!comparison?.canAdjust)
+          throw new Error(
+            comparison?.explanation ?? 'Verify the meal wallet and event order first.',
+          );
+      }
+      const reconcileTopupSnapshot =
+        reconciliation === 'PENDING' && unchangedEvent && comparison?.automaticRepair === true;
+      const pluxeeCategories = item.kind.startsWith('PLUXEE')
+        ? await tx.query<{ id: string; archived: number; applies_to: Category['appliesTo'] }>(
+            'SELECT id,archived,applies_to FROM categories',
+          )
+        : [];
       let statement: CardStatement | null = null;
-      let balanceAdjustment: CardTransaction | null = null;
       let transaction: CardTransaction | null = null;
+      let balanceAdjustment: CardTransaction | null = null;
       let transactionId = existingId;
       if (existingId) {
         const existing = ledger.find((t) => t.id === existingId);
@@ -1064,6 +1104,17 @@ export class SmsReviewService {
         if (reconciliation === 'REPAIR_EXISTING')
           throw new Error('Select the existing top-up to repair.');
         if (
+          item.kind.startsWith('PLUXEE') &&
+          source?.balanceReconciliation &&
+          Date.parse(source.balanceReconciliation.eventAt) === Date.parse(item.eventAt) &&
+          source.balanceReconciliation.eventAmountMinor === item.amountMinor &&
+          source.balanceReconciliation.eventType ===
+            (item.kind === 'PLUXEE_TOPUP' ? 'TOPUP' : 'PURCHASE')
+        )
+          throw new Error(
+            'This wallet event is already reconciled. Match its existing entry, or review its saved reconciliation if deleted.',
+          );
+        if (
           !allowSeparate &&
           (existingSuggestions(item, sourceId, ledger).length ||
             existingSuggestions(
@@ -1076,7 +1127,7 @@ export class SmsReviewService {
             'Possible existing transaction. Match it or explicitly confirm a separate event.',
           );
         // Cross-message issuer confirmations with a shared reference cannot post twice.
-        if (item.reference && type === 'PAYMENT') {
+        if (item.reference && (type === 'PAYMENT' || item.kind.startsWith('PLUXEE'))) {
           const bindings = await tx.query<{ payload: string; transaction_id: string }>(
             `SELECT payload,transaction_id FROM sms_candidates WHERE state IN ('IMPORTED','MATCHED_EXISTING') AND payload IS NOT NULL`,
           );
@@ -1093,14 +1144,44 @@ export class SmsReviewService {
           )
             throw new Error('This referenced event is already linked. Match its existing entry.');
         }
+        const cutoffDate = source?.balanceCutoverAt
+          ? item.kind.startsWith('PLUXEE')
+            ? indiaTodayIso(new Date(source.balanceCutoverAt))
+            : source.balanceCutoverAt.slice(0, 10)
+          : '';
+        const uncertainSnapshotDay =
+          item.kind.startsWith('PLUXEE') &&
+          !!cutoffDate &&
+          transactionDate === cutoffDate &&
+          item.eventTimeExplicit !== true;
         const beforeCutover =
           !!source?.balanceCutoverAt &&
-          (Date.parse(item.eventAt) < Date.parse(source.balanceCutoverAt) ||
-            transactionDate < source.balanceCutoverAt.slice(0, 10));
-        if (beforeCutover && reconciliation !== 'RETAIN_BALANCE')
+          ((item.kind.startsWith('PLUXEE')
+            ? Date.parse(item.eventAt) <= Date.parse(source.balanceCutoverAt)
+            : Date.parse(item.eventAt) < Date.parse(source.balanceCutoverAt)) ||
+            transactionDate < cutoffDate);
+        const knownSnapshot =
+          source?.balanceCutoverReason === 'SMS_RECONCILIATION' &&
+          !item.dateFallback &&
+          transactionDate === item.eventDate &&
+          !uncertainSnapshotDay;
+        if (
+          (beforeCutover || uncertainSnapshotDay) &&
+          !reconcileTopupSnapshot &&
+          !knownSnapshot &&
+          reconciliation !== 'RETAIN_BALANCE' &&
+          reconciliation !== 'APPLY_EVENT'
+        )
           throw new Error(
-            'Historical wallet event precedes the balance snapshot. Choose retain balance to avoid double-counting.',
+            item.kind.startsWith('PLUXEE')
+              ? 'Verify whether this event is included in the saved balance snapshot. Choose retain balance if included, or apply event if it has not affected funds.'
+              : 'Historical wallet event precedes the balance snapshot. Choose retain balance to avoid double-counting.',
           );
+        const retainBalance =
+          (item.kind.startsWith('PLUXEE') && reconciliation === 'RETAIN_BALANCE') ||
+          ((beforeCutover || uncertainSnapshotDay) &&
+            !reconcileTopupSnapshot &&
+            reconciliation !== 'APPLY_EVENT');
         transactionId = `sms-${item.id}`;
         transaction = {
           id: transactionId,
@@ -1115,15 +1196,24 @@ export class SmsReviewService {
           categoryId:
             type === 'PAYMENT'
               ? 'payment'
-              : ['CASHBACK', 'REFUND', 'CREDIT'].includes(type)
-                ? 'contra-expenses'
-                : 'other',
+              : item.kind.startsWith('PLUXEE')
+                ? defaultPluxeeCategory(
+                    item.kind,
+                    pluxeeCategories.map((category) => ({
+                      id: category.id,
+                      archived: !!category.archived,
+                      appliesTo: category.applies_to,
+                    })),
+                  )
+                : ['CASHBACK', 'REFUND', 'CREDIT'].includes(type)
+                  ? 'contra-expenses'
+                  : 'other',
           notes: `Approved SMS discovery${item.dateFallback ? '; received date used' : ''}`,
           attachmentIds: [],
           createdAt: now,
           updatedAt: now,
         };
-        transaction.sourceBalanceApplied = !beforeCutover;
+        transaction.sourceBalanceApplied = !retainBalance;
         if (edits.categoryId) transaction.categoryId = edits.categoryId;
         if (edits.relatedTransactionId) {
           const original = ledger.find((t) => t.id === edits.relatedTransactionId);
@@ -1156,7 +1246,7 @@ export class SmsReviewService {
             `INSERT INTO transaction_links(transaction_id,related_transaction_id,relationship_type,created_at) VALUES (?,?,'REFUND',?)`,
             [transaction.id, transaction.relatedTransactionId, now],
           );
-        if (source && !source.noLimit && !beforeCutover) {
+        if (source && !source.noLimit && !retainBalance) {
           source.balanceMinor =
             (source.balanceMinor ?? 0) + (type === 'PURCHASE' ? -amountMinor : amountMinor);
           if (!Number.isSafeInteger(source.balanceMinor))
@@ -1167,7 +1257,34 @@ export class SmsReviewService {
           );
         }
       }
-      if (reconciliation === 'ADJUST_BALANCE') {
+      if (reconcileTopupSnapshot && source && comparison) {
+        this.reconcilePluxeeBalance(source, item, transactionId, comparison, now);
+        await tx.run(
+          `INSERT INTO app_preferences(key,encrypted_value) VALUES ('payment_sources',?) ON CONFLICT(key) DO UPDATE SET encrypted_value=excluded.encrypted_value`,
+          [JSON.stringify(sources)],
+        );
+        const adjustmentLabel = comparison.difference < 0 ? 'decrease' : 'increase';
+        recordedDecision =
+          `APPROVED_BALANCE_RECONCILIATION: wallet ${source.id}; before ${comparison.current}; ` +
+          `saved ${comparison.expectedAfter}; reported ${comparison.reported}; ` +
+          `baseline ${adjustmentLabel} ${Math.abs(comparison.difference)} minor units; event ${item.eventAt}`;
+      }
+      if (
+        reconciliation === 'ADJUST_BALANCE' &&
+        item.kind.startsWith('PLUXEE') &&
+        source &&
+        comparison
+      ) {
+        this.reconcilePluxeeBalance(source, item, transactionId, comparison, now);
+        recordedDecision =
+          `EXPLICIT_BALANCE_RECONCILIATION: wallet ${source.id}; before ${comparison.current}; ` +
+          `expected ${comparison.expectedAfter}; reported ${comparison.reported}; ` +
+          `baseline correction ${comparison.difference}; event ${item.eventAt}`;
+        await tx.run(
+          `INSERT INTO app_preferences(key,encrypted_value) VALUES ('payment_sources',?) ON CONFLICT(key) DO UPDATE SET encrypted_value=excluded.encrypted_value`,
+          [JSON.stringify(sources)],
+        );
+      } else if (reconciliation === 'ADJUST_BALANCE') {
         if (
           !source ||
           !wallet ||
@@ -1180,8 +1297,10 @@ export class SmsReviewService {
           (source.balanceCutoverAt &&
             Date.parse(item.eventAt) < Date.parse(source.balanceCutoverAt)) ||
           ledger.some(
-            (t) =>
-              t.cardId === sourceId && t.id !== existingId && t.transactionDate >= item.eventDate,
+            (entry) =>
+              entry.cardId === sourceId &&
+              entry.id !== existingId &&
+              entry.transactionDate >= item.eventDate,
           )
         )
           throw new Error(
@@ -1237,7 +1356,7 @@ export class SmsReviewService {
         [
           existingId ? 'MATCHED_EXISTING' : 'IMPORTED',
           transactionId,
-          reconciliation,
+          recordedDecision,
           now,
           now,
           item.id,
@@ -1245,7 +1364,7 @@ export class SmsReviewService {
       );
       await tx.run(
         `INSERT INTO sms_reconciliation(id,candidate_id,target_id,decision,amount_minor,created_at) VALUES (?,?,?,?,?,?)`,
-        [crypto.randomUUID(), item.id, transactionId, reconciliation, amountMinor, now],
+        [crypto.randomUUID(), item.id, transactionId, recordedDecision, amountMinor, now],
       );
       if (reconciliation === 'FULLY_PAID') {
         if (

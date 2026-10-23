@@ -671,7 +671,12 @@
       <dl class="detail-grid">
         <div>
           <dt>Date</dt>
-          <dd>{{ transaction.transactionDate | appDate }}</dd>
+          <dd>
+            {{ transaction.transactionDate | appDate }}
+            @if (recordedEventTime(transaction); as time) {
+              · {{ time }}
+            }
+          </dd>
         </div>
         <div>
           <dt>Category</dt>

@@ -1,4 +1,4 @@
-import { CreditCard } from '../../core/models/domain';
+import { CreditCard, PaymentSource } from '../../core/models/domain';
 import {
   SmsEvidence,
   eligibleSources,
@@ -42,6 +42,18 @@ const item = (changes: Partial<SmsEvidence> = {}): SmsEvidence => ({
   dateFallback: false,
   evidence: 'Synthetic',
   cardDigits: '4321',
+  ...changes,
+});
+const mealWallet = (changes: Partial<PaymentSource> = {}): PaymentSource => ({
+  id: 'meal-wallet',
+  nickname: 'Pluxee meal card',
+  institution: 'Pluxee',
+  kind: 'MEAL',
+  lastDigits: '8765',
+  noLimit: false,
+  balanceMinor: 10000,
+  autoLoad: false,
+  archived: false,
   ...changes,
 });
 describe('Reliable SMS source matching', () => {
@@ -148,6 +160,37 @@ describe('Reliable SMS source matching', () => {
           },
         ],
       ),
+    ).toEqual([]);
+  });
+  it('selects the sole active Pluxee/Sodexo wallet without a card suffix', () => {
+    expect(
+      eligibleSources(
+        item({ kind: 'PLUXEE_PURCHASE', cardDigits: undefined }),
+        [],
+        [mealWallet({ institution: 'Sodexo' })],
+      ),
+    ).toEqual(['meal-wallet']);
+    expect(
+      eligibleSources(
+        item({ kind: 'PLUXEE_PURCHASE', cardDigits: undefined }),
+        [],
+        [mealWallet(), mealWallet({ id: 'second' })],
+      ),
+    ).toEqual([]);
+  });
+  it('requires provider identity and never ignores a conflicting suffix or archived source', () => {
+    const evidence = item({ kind: 'PLUXEE_PURCHASE', issuer: 'Pluxee', cardDigits: '8765' });
+    expect(eligibleSources(evidence, [], [mealWallet()])).toEqual(['meal-wallet']);
+    expect(eligibleSources({ ...evidence, cardDigits: '0000' }, [], [mealWallet()])).toEqual([]);
+    expect(
+      eligibleSources(
+        { ...evidence, cardDigits: undefined },
+        [],
+        [mealWallet({ nickname: 'Unrelated meal account', institution: undefined })],
+      ),
+    ).toEqual([]);
+    expect(
+      eligibleSources({ ...evidence, cardDigits: undefined }, [], [mealWallet({ archived: true })]),
     ).toEqual([]);
   });
 });

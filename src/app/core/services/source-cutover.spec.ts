@@ -25,12 +25,24 @@ describe('wallet balance cutover and manual history', () => {
     store.transactions.set([]);
     store.paymentSources.set([{ ...wallet }]);
   });
-  it('preserves legacy balances and never materializes another simulated monthly load', () => {
-    store.materializeSourceLoads('2026-10-19');
-    store.materializeSourceLoads('2027-11-19');
+  it('does not create a historical cutover for a fresh meal wallet', async () => {
+    const fresh = { ...wallet, balanceMinor: 0, autoLoad: false };
+    store.paymentSources.set([fresh]);
+    await store.initialisePreferences();
+    expect(store.paymentSources()[0].balanceMinor).toBe(0);
+    expect(store.paymentSources()[0].balanceCutoverAt).toBeUndefined();
+    expect(store.paymentSources()[0].balanceSnapshotMinor).toBeUndefined();
+    expect(store.transactions()).toEqual([]);
+  });
+  it('preserves an existing snapshot and legacy load preference without replaying credits', () => {
+    const cutover = '2026-10-01T12:00:00.000Z';
+    store.paymentSources.set([
+      { ...wallet, balanceCutoverAt: cutover, balanceSnapshotMinor: 123456 },
+    ]);
     expect(store.paymentSources()[0].balanceMinor).toBe(123456);
     expect(store.paymentSources()[0].balanceSnapshotMinor).toBe(123456);
-    expect(store.paymentSources()[0].autoLoad).toBe(false);
+    expect(store.paymentSources()[0].balanceCutoverAt).toBe(cutover);
+    expect(store.paymentSources()[0].autoLoad).toBe(true);
     expect(store.transactions()).toEqual([]);
   });
   it('applies a moved historical entry to its newly selected wallet without replaying the old snapshot', () => {
@@ -78,6 +90,27 @@ describe('wallet balance cutover and manual history', () => {
       sourceBalanceApplied: false,
     });
     store.deleteTransaction('fiction-historical');
+    expect(store.paymentSources()[0].balanceMinor).toBe(123456);
+  });
+  it('applies a deliberately duplicated meal purchase as a new event rather than copying a historical exclusion', () => {
+    const historical: CardTransaction = {
+      id: 'fiction-old',
+      cardId: wallet.id,
+      type: 'PURCHASE',
+      amountMinor: 2000,
+      currencyCode: 'INR',
+      transactionDate: '2026-10-19',
+      categoryId: 'dining',
+      sourceBalanceApplied: false,
+      attachmentIds: [],
+      createdAt: 'before',
+      updatedAt: 'before',
+    };
+    store.addTransaction(historical);
+    const duplicate = store.duplicateTransaction(historical.id);
+    expect(duplicate?.sourceBalanceApplied).toBe(true);
+    expect(store.paymentSources()[0].balanceMinor).toBe(121456);
+    store.deleteTransaction(duplicate!.id);
     expect(store.paymentSources()[0].balanceMinor).toBe(123456);
   });
 });

@@ -1,6 +1,6 @@
 # Android Smart SMS Transaction Sync
 
-Manual ledger inserts, edits and deletions now persist their wallet deltas in the same serialized SQLite transaction as the ledger row. Source metadata edits merge only changed fields into durable preferences, and wallet creation reads the latest durable source list. This prevents a stale manual preference or concurrent SMS approval from overwriting a balance. Startup source migration persists only after saved preferences have loaded. The public manual-entry API retains its existing optimistic UI behavior.
+Manual ledger inserts, edits and deletions persist their wallet deltas in the same serialized SQLite transaction as the ledger row. Source metadata edits merge only changed fields into durable preferences, and wallet creation reads the latest durable source list. Default source preferences are persisted before manual transactions can use them. Startup disables legacy meal auto-loading without creating a balance snapshot or replaying transactions. The public manual-entry API retains its existing optimistic UI behavior.
 
 The provider query baseline was checked against the [AOSP SMS provider implementation](https://android.googlesource.com/platform/packages/providers/TelephonyProvider/+/master/src/com/android/providers/telephony/SmsProvider.java). OEM provider behavior still requires physical-device validation.
 
@@ -58,9 +58,73 @@ Issuer-confirmed repayments retain their actual amount, including partial or ove
 
 ## Meal wallets and FASTag
 
-Legacy meal balances can contain simulated monthly credits. Migration preserves the exact existing balance, records a cutover snapshot and disables scheduled loading. New default wallets start at zero. Historical SMS entries preceding that snapshot require explicit retain-balance approval, and their later edits/deletions do not replay those already-included amounts. There is no hardcoded top-up amount or monthly load day.
+Legacy meal balances can contain simulated monthly credits. Startup preserves saved balances and existing snapshot metadata, and disables scheduled loading. It does **not** infer a snapshot from a missing cutover or an old auto-load preference. New default wallets start at zero without a historical cutoff. There is no hardcoded top-up amount or monthly load day.
 
-Actual top-ups are CREDIT rows with the actual event amount/date. Users can repair a selected existing top-up, retain calculated balances, or explicitly create a documented ADJUSTMENT linked to the imported event. Adjustment is blocked when the reported snapshot predates a balance cutover or same/later tracked activity. Manual balance corrections create a new snapshot boundary. Negative calculated balances remain visible; there is no silent clamp. Multiple manually created FASTag wallets retain separate IDs, plates, providers and histories.
+Pluxee and Sodexo identify the same supported provider. A suffix-free message suggests the sole active provider-identified meal wallet. Explicit conflicting digits, account-only identifiers, unrelated providers, archived sources and ambiguous wallets cannot establish an automatic source identity. Source selection does not authorize ledger insertion.
+
+Actual top-ups are CREDIT rows; purchases are PURCHASE rows. New Pluxee purchases default to active, expense-compatible `dining`; top-ups default to active, credit-compatible `contra-expenses`. Both fall back to durable `other`. Explicit user category selections and historical categories are preserved.
+
+### One-time Pluxee baseline reconciliation
+
+The first qualifying top-up approval can reconcile an inaccurate saved baseline as part of the same SQLite transaction as the real credit, candidate binding and audit decision. It requires an unchanged amount/date, explicit India event time consistent with the timestamp, an AFTER balance, one trustworthy active source, and no same-time/later or time-ambiguous recorded activity. A newer identified manual or SMS snapshot blocks replacement. An untyped legacy cutover alone is not proof of newer financial activity: the first qualifying repair can replace it when the ledger has no newer activity. Legacy metadata cannot identify which individual historical purchases were omitted.
+
+Approval writes the actual credit once, sets the authoritative post-event balance, and records a **baseline correction**, not a fabricated purchase, income or spending adjustment. The source retains an initial `balanceReconciliation` audit/repair marker, and subsequent explicit reconciliations remain in `sms_reconciliation`. The marker includes the candidate/transaction identities, event time/type/amount, saved balance, prediction, reported balance, correction and recording time. No raw SMS is added to it.
+
+Example, in INR:
+
+| Step                                                   |    Amount |
+| ------------------------------------------------------ | --------: |
+| Saved balance before approval                          |  3,331.24 |
+| Real top-up credit                                     | +8,800.00 |
+| Predicted balance after one credit                     | 12,131.24 |
+| Authoritative post-event balance                       |  9,737.24 |
+| Audited baseline correction                            | -2,394.00 |
+| Implied actual pre-event balance (9,737.24 - 8,800.00) |    937.24 |
+
+These are regression-fixture values, not production constants. The correction does not establish that any particular purchase was missing.
+
+After repair, later purchases deduct normally: 9,737.24 - 500.00 = 9,237.24; then -250.00 = 8,987.24. A later top-up credits its real amount but does not repeat automatic baseline repair. A separately chosen reported-balance reconciliation uses the same source/time/ordering guards. Scans and automatic existing-entry matching never repair balances.
+
+Repeated approval is blocked by the persisted candidate state. The durable initial repair marker also prevents an alternate fingerprint from posting the repaired event again, even if the original entry is later deleted. Matching an already recorded entry creates no second monetary effect. With retained evidence, a matched/imported event can use the guarded explicit reconciliation action; payload-free restored tombstones cannot supply missing evidence.
+
+### Historical effects and event order
+
+`sourceBalanceApplied=false` means an entry was recorded without applying its amount again. Old flags are preserved rather than replaying all historical spending. A transaction linked by the initial repair marker is now demonstrably included in the repaired balance; edits/deletion of that entry apply the corresponding delta even if its legacy flag is false. A deliberate Duplicate action creates a new meal event with its own applied effect.
+
+A verified SMS snapshot can cover an earlier, explicitly dated/time-ordered event. Recording that history must not replay its effect. Untyped/manual snapshots and missing same-day times do not prove coverage: review requires the user to choose **retain balance** if included or **apply event to current balance** if genuinely omitted. Edited event dates do not silently establish snapshot coverage. Snapshot-day comparisons use India calendar dates, not UTC date prefixes.
+
+Review separates the saved balance before approval, signed event amount, predicted post-event balance, reported balance, difference and existing-entry status. Wallet activity displays recorded time and orders same-day rows by event time rather than scan/creation time. Activity list time visibility retains its preference; transaction details can show recorded time even with that preference off. Missing times remain missing.
+
+FASTag retains its existing explicit linked ADJUSTMENT workflow and conservative same-day/later-activity guard. Multiple FASTag wallets keep separate IDs, plates, providers and histories. Credit-card repayment, cashback, statement calculations and Bank/UPI/Cash SMS accounting are unchanged. Negative calculated balances remain visible; there is no silent clamp.
+
+### Root-cause evidence and validation status
+
+The former `materializeSourceLoads()` created a cutover merely because a MEAL source lacked one, even without a load. The former historical approval guard then rejected older events unless retained; retained rows had `sourceBalanceApplied=false`. Source activity totals read the ledger independently, while both in-memory and SQLite source-effect paths skipped those rows. Consequently a recorded purchase could count as spending without changing funds. The old comparison also suppressed the incoming top-up based on that cutover, hiding the correct one-credit prediction.
+
+The screenshots establish 15 recorded purchases totaling 10,039.08, a pending credit, and a balance discrepancy. They do **not** contain SQLite IDs, effect flags, snapshots, initial balances or reconciliation records. No device database was provided, so the precise origin of the 2,394.00 difference and which of the 15 purchases were previously deducted remain unproven. The tests use synthetic histories, not a reconstructed device ledger.
+
+Regression coverage is added/updated in:
+
+- [SQLite backup integration](../src/app/core/data/sqlite-backup.integration.spec.ts): real store/database, initial preferences, 15 purchases, genuine legacy snapshot preservation, atomic repair, two later deductions, edit/delete deltas, concurrent source rename, restart, custom categories and encrypted restore without replay.
+- [SMS approval integrity](../src/app/features/sms-sync/sms-review.service.spec.ts): SQLite-backed approval, audit rollback, repeated/alternate identities, historical retained versus explicitly applied events, uncertain evidence, ambiguous/conflicting sources, newer manual/SMS snapshots, same-day ordering, matched legacy top-up edits/deletion, category fallback and preserved FASTag/card behavior.
+- [Source cutovers](../src/app/core/services/source-cutover.spec.ts), [matching chronology](../src/app/features/sms-sync/sms-matching.spec.ts) and [source identification](../src/app/features/sms-sync/sms-model.spec.ts).
+- [Native parser](../native/android/sms-sync/SmsTransactionParserTest.kt): separate event/balance amounts, India timestamp, credit/debit synonyms, balance-only and conflicting-amount rejection; the synthetic corpus is unchanged.
+- [Review UI](../src/app/features/sms-sync/sms-sync.spec.ts) and [wallet activity/detail UI](../src/app/features/sources/sources.spec.ts): category/source defaults, swipe spacing, finite accessible loading status in both themes, event ordering and recorded time.
+
+**All new/updated tests, builds, lint and type checks: NOT RUN locally, as requested.** GitHub Actions execution remains required; this section does not claim those checks passed. Static `git diff --check` was run. Physical Android validation must cover narrow screens, light/dark contrast and AXE, Back/focus behavior, real retained/reparsed evidence, persistence after process termination and encrypted restore. jsdom AXE cannot verify rendered contrast or actual WebView geometry.
+
+### Changed-file inventory
+
+Production source files changed for this correction:
+
+- [Domain model](../src/app/core/models/domain.ts) and [store](../src/app/core/services/card-nest-store.ts).
+- [SMS model](../src/app/features/sms-sync/sms-model.ts), [matching](../src/app/features/sms-sync/sms-matching.ts) and [review service](../src/app/features/sms-sync/sms-review.service.ts).
+- [Review component](../src/app/features/sms-sync/sms-sync.ts), [template](../src/app/features/sms-sync/sms-sync.html) and [styles](../src/app/features/sms-sync/sms-sync.scss).
+- [Wallet component](../src/app/features/sources/sources.ts) and [template](../src/app/features/sources/sources.html).
+- [Activity component](../src/app/features/transactions/transactions.ts) and [template](../src/app/features/transactions/transactions.html).
+- [Native parser](../native/android/sms-sync/SmsTransactionParser.kt).
+
+The eight test files are individually linked in the regression inventory above. Documentation changes are this guide, [the schema reference](./DATABASE_SCHEMA.md), and [the historical reconciliation validation note](./SMS_INTELLIGENT_RECONCILIATION_VALIDATION.md). Release versions, release binaries, workflows, migrations, backup encryption and the synthetic corpus are untouched. Existing partial working-tree changes were retained and completed; no commit, push, merge or release was performed.
 
 ## Backup, restore, retention and deletion
 
