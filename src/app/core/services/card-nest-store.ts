@@ -13,6 +13,7 @@ import {
   RecurringRule,
 } from '../models/domain';
 import { DatabaseSession, SqliteDatabase } from '../data/sqlite-database';
+import { walletEffectApplies } from './wallet-anchor';
 import {
   excludesStatementDayTransactions,
   isTransactionIncludedInStatement,
@@ -1277,11 +1278,7 @@ export class CardNestStore {
   private adjustPaymentSourceBalance(transaction: CardTransaction, direction: 1 | -1): void {
     const source = this.paymentSources().find((item) => item.id === transaction.cardId);
     if (!source || source.noLimit || source.balanceMinor === undefined) return;
-    if (
-      transaction.sourceBalanceApplied === false &&
-      source.balanceReconciliation?.transactionId !== transaction.id
-    )
-      return;
+    if (!walletEffectApplies(source, transaction)) return;
     const balanceEffect = -transactionEffect(transaction) * direction;
     this.paymentSources.update((sources) =>
       sources.map((item) =>
@@ -1608,11 +1605,7 @@ export class CardNestStore {
     if (!transaction) return;
     const source = sources.find((item) => item.id === transaction.cardId);
     if (!source || source.noLimit || source.balanceMinor === undefined) return;
-    if (
-      transaction.sourceBalanceApplied === false &&
-      source.balanceReconciliation?.transactionId !== transaction.id
-    )
-      return;
+    if (!walletEffectApplies(source, transaction)) return;
     source.balanceMinor -= transactionEffect(transaction) * direction;
     if (!Number.isSafeInteger(source.balanceMinor))
       throw new Error('Wallet balance would overflow.');

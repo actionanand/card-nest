@@ -136,19 +136,24 @@ export interface PaymentSource {
   balanceCutoverAt?: string;
   balanceSnapshotMinor?: Money;
   balanceCutoverReason?: 'MANUAL' | 'SMS_RECONCILIATION';
-  balanceReconciliation?: {
-    candidateId: string;
-    transactionId: string;
-    eventAt: string;
-    eventAmountMinor: Money;
-    eventType: 'TOPUP' | 'PURCHASE';
-    savedBalanceMinor: Money;
-    predictedBalanceMinor: Money;
-    reportedBalanceMinor: Money;
-    correctionMinor: Money;
-    recordedAt: string;
-  };
+  /** First verified SMS repair. Never overwritten; it is the one-time idempotency marker. */
+  balanceReconciliation?: WalletBalanceReconciliation;
+  /** Most recent verified SMS reconciliation; identifies the current balance anchor. */
+  latestBalanceReconciliation?: WalletBalanceReconciliation;
   archived: boolean;
+}
+
+export interface WalletBalanceReconciliation {
+  candidateId: string;
+  transactionId: string;
+  eventAt: string;
+  eventAmountMinor: Money;
+  eventType: 'TOPUP' | 'PURCHASE';
+  savedBalanceMinor: Money;
+  predictedBalanceMinor: Money;
+  reportedBalanceMinor: Money;
+  correctionMinor: Money;
+  recordedAt: string;
 }
 
 export interface MonthlyIncomeRecord {

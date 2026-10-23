@@ -1,6 +1,6 @@
 import { Service, computed, inject, signal } from '@angular/core';
 import { Capacitor, registerPlugin } from '@capacitor/core';
-import { SqliteDatabase } from '../../core/data/sqlite-database';
+import { SqliteDatabase, DatabaseSession } from '../../core/data/sqlite-database';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { AppLockService } from '../../core/services/app-lock.service';
 import { indiaTodayIso } from '../../core/services/india-date';
@@ -10,7 +10,9 @@ import {
   Category,
   EmiInstallment,
   PaymentSource,
+  WalletBalanceReconciliation,
 } from '../../core/models/domain';
+import { walletAnchorPosition } from '../../core/services/wallet-anchor';
 import { environment } from '../../../environments/environment';
 import { matchExisting, walletComparison } from './sms-matching';
 import {
@@ -680,6 +682,13 @@ export class SmsReviewService {
     await this.refresh();
   }
 
+  private async readStoredSources(tx: DatabaseSession): Promise<PaymentSource[]> {
+    const [row] = await tx.query<{ encrypted_value: string }>(
+      "SELECT encrypted_value FROM app_preferences WHERE key='payment_sources'",
+    );
+    return row ? (JSON.parse(row.encrypted_value) as PaymentSource[]) : [];
+  }
+
   private reconcilePluxeeBalance(
     source: PaymentSource,
     item: SmsEvidence,
@@ -687,7 +696,7 @@ export class SmsReviewService {
     comparison: NonNullable<ReturnType<typeof walletComparison>>,
     recordedAt: string,
   ): void {
-    source.balanceReconciliation ??= {
+    const record: WalletBalanceReconciliation = {
       candidateId: item.id,
       transactionId,
       eventAt: item.eventAt,
@@ -699,6 +708,8 @@ export class SmsReviewService {
       correctionMinor: comparison.difference,
       recordedAt,
     };
+    source.balanceReconciliation ??= record;
+    source.latestBalanceReconciliation = record;
     source.balanceMinor = comparison.reported;
     source.balanceCutoverAt = item.eventAt;
     source.balanceSnapshotMinor = comparison.reported;
@@ -1105,11 +1116,13 @@ export class SmsReviewService {
           throw new Error('Select the existing top-up to repair.');
         if (
           item.kind.startsWith('PLUXEE') &&
-          source?.balanceReconciliation &&
-          Date.parse(source.balanceReconciliation.eventAt) === Date.parse(item.eventAt) &&
-          source.balanceReconciliation.eventAmountMinor === item.amountMinor &&
-          source.balanceReconciliation.eventType ===
-            (item.kind === 'PLUXEE_TOPUP' ? 'TOPUP' : 'PURCHASE')
+          [source?.balanceReconciliation, source?.latestBalanceReconciliation].some(
+            (record) =>
+              !!record &&
+              Date.parse(record.eventAt) === Date.parse(item.eventAt) &&
+              record.eventAmountMinor === item.amountMinor &&
+              record.eventType === (item.kind === 'PLUXEE_TOPUP' ? 'TOPUP' : 'PURCHASE'),
+          )
         )
           throw new Error(
             'This wallet event is already reconciled. Match its existing entry, or review its saved reconciliation if deleted.',
@@ -1215,6 +1228,11 @@ export class SmsReviewService {
         };
         transaction.sourceBalanceApplied = !retainBalance;
         if (edits.categoryId) transaction.categoryId = edits.categoryId;
+        // A verified SMS balance already contains earlier events; applying one would double-count.
+        if (!retainBalance && source && walletAnchorPosition(source, transaction) === 'BEFORE')
+          throw new Error(
+            'The verified Pluxee balance already includes this earlier event. Choose retain balance.',
+          );
         if (edits.relatedTransactionId) {
           const original = ledger.find((t) => t.id === edits.relatedTransactionId);
           if (

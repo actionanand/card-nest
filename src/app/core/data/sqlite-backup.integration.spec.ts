@@ -310,18 +310,16 @@ describe('Durable first-run data, additive read migration and private portable b
     const snapshot = '2026-10-23T00:00:00Z';
     await database.run("UPDATE app_preferences SET encrypted_value=? WHERE key='payment_sources'", [
       JSON.stringify(
-        restarted
-          .paymentSources()
-          .map((source) =>
-            source.id === meal.id
-              ? {
-                  ...source,
-                  autoLoad: true,
-                  balanceCutoverAt: snapshot,
-                  balanceSnapshotMinor: 93724,
-                }
-              : source,
-          ),
+        restarted.paymentSources().map((source) =>
+          source.id === meal.id
+            ? {
+                ...source,
+                autoLoad: true,
+                balanceCutoverAt: snapshot,
+                balanceSnapshotMinor: 93724,
+              }
+            : source,
+        ),
       ),
     ]);
     await restarted.initialisePreferences();
@@ -500,6 +498,241 @@ describe('Durable first-run data, additive read migration and private portable b
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+  it('keeps a verified Pluxee anchor stable when earlier history is edited, deleted or moved, while later activity applies normally', async () => {
+    await database.initialise();
+    const store = TestBed.inject(CardNestStore);
+    await store.initialisePreferences();
+    const wallet = store.paymentSources().find((source) => source.kind === 'MEAL')!;
+    const balance = () => store.paymentSources().find((source) => source.id === wallet.id)!;
+    const storedBalance = () =>
+      (
+        JSON.parse(
+          String(
+            rows("SELECT encrypted_value FROM app_preferences WHERE key='payment_sources'")[0][
+              'encrypted_value'
+            ],
+          ),
+        ) as { id: string; balanceMinor?: number }[]
+      ).find((source) => source.id === wallet.id)?.balanceMinor;
+    const settle = () => database.atomic(async () => undefined);
+    await database.run('INSERT OR REPLACE INTO app_preferences VALUES(?,?)', [
+      'payment_sources',
+      JSON.stringify(
+        store
+          .paymentSources()
+          .map((source) =>
+            source.id === wallet.id
+              ? { ...source, balanceMinor: 438124, balanceCutoverAt: '2026-10-23T12:15:00Z' }
+              : source,
+          ),
+      ),
+    ]);
+    await store.initialisePreferences();
+    const otherSources = store.paymentSources().filter((source) => source.id !== wallet.id);
+    const base = {
+      cardId: wallet.id,
+      type: 'PURCHASE' as const,
+      currencyCode: 'INR',
+      categoryId: 'groceries',
+      attachmentIds: [],
+      createdAt: '2026-10-22T00:00:00Z',
+      updatedAt: '2026-10-22T00:00:00Z',
+    };
+    // 1. Historical purchases whose effects were applied before the anchor exists.
+    store.addTransaction({
+      ...base,
+      id: 'history-a',
+      amountMinor: 100000,
+      transactionDate: '2026-10-22',
+    });
+    store.addTransaction({
+      ...base,
+      id: 'history-b',
+      amountMinor: 5000,
+      transactionDate: '2026-10-23',
+      transactionTime: '04:00:00',
+    });
+    await settle();
+    expect(balance().balanceMinor).toBe(333124);
+    const review = TestBed.inject(SmsReviewService);
+    vi.spyOn(review, 'refresh').mockResolvedValue();
+    const evidence = (changes: Partial<SmsEvidence>): SmsEvidence => ({
+      id: 'a'.repeat(64),
+      providerId: 'synthetic-anchor',
+      kind: 'PLUXEE_TOPUP',
+      issuer: 'Pluxee',
+      amountMinor: 880000,
+      currency: 'INR',
+      eventDate: '2026-10-23',
+      eventTime: '05:17:27',
+      eventAt: '2026-10-22T23:47:27Z',
+      eventTimeExplicit: true,
+      timeZone: 'Asia/Kolkata',
+      receivedAt: 1792712847000,
+      dateFallback: false,
+      balancePosition: 'AFTER',
+      reportedBalanceMinor: 973724,
+      evidence: 'Synthetic meal wallet event',
+      ...changes,
+    });
+    const stage = async (item: SmsEvidence): Promise<SmsCandidate> => {
+      await database.run(
+        "INSERT OR IGNORE INTO sms_candidates(id,provider_id,event_at,kind,state,payload,updated_at) VALUES(?,?,?,?,'PENDING',?,'now')",
+        [item.id, item.providerId, item.eventAt, item.kind, JSON.stringify(item)],
+      );
+      return { id: item.id, kind: item.kind, eventAt: item.eventAt, state: 'PENDING', item };
+    };
+    // 2. One-time repair to the verified post-event balance.
+    const topup = await stage(evidence({}));
+    await review.approve(topup, wallet.id, 880000, 'Meal wallet top-up');
+    expect(balance().balanceMinor).toBe(973724);
+    // 3–5. Editing, moving or deleting earlier history keeps the trusted anchor.
+    const historyA = store.transactions().find((entry) => entry.id === 'history-a')!;
+    store.updateTransaction({ ...historyA, amountMinor: 120000 });
+    await settle();
+    expect(balance().balanceMinor).toBe(973724);
+    const historyB = store.transactions().find((entry) => entry.id === 'history-b')!;
+    store.updateTransaction({ ...historyB, amountMinor: 6000, transactionTime: '04:30:00' });
+    await settle();
+    expect(balance().balanceMinor).toBe(973724);
+    store.deleteTransaction('history-a');
+    await settle();
+    expect(balance().balanceMinor).toBe(973724);
+    expect(storedBalance()).toBe(973724);
+    expect(rows("SELECT id FROM card_transactions WHERE id='history-b'")).toHaveLength(1);
+    // 6. Activity after the anchor applies and reverses normally.
+    const purchase = await stage(
+      evidence({
+        id: 'b'.repeat(64),
+        kind: 'PLUXEE_PURCHASE',
+        amountMinor: 50000,
+        eventTime: '06:00:00',
+        eventAt: '2026-10-23T00:30:00Z',
+        reportedBalanceMinor: undefined,
+      }),
+    );
+    await review.approve(purchase, wallet.id, 50000, 'Fictional breakfast');
+    expect(balance().balanceMinor).toBe(923724);
+    store.addTransaction({
+      ...base,
+      id: 'after-anchor',
+      amountMinor: 25000,
+      transactionDate: '2026-10-23',
+      transactionTime: '07:00:00',
+    });
+    await settle();
+    expect(balance().balanceMinor).toBe(898724);
+    store.updateTransaction({
+      ...store.transactions().find((entry) => entry.id === 'after-anchor')!,
+      amountMinor: 20000,
+    });
+    await settle();
+    expect(balance().balanceMinor).toBe(903724);
+    store.deleteTransaction('after-anchor');
+    await settle();
+    expect(balance().balanceMinor).toBe(923724);
+    // 7. The reconciled top-up itself edits and reverses symmetrically.
+    const topupEntry = () => store.transactions().find((entry) => entry.id === `sms-${topup.id}`)!;
+    store.updateTransaction({ ...topupEntry(), amountMinor: 870000 });
+    await settle();
+    expect(balance().balanceMinor).toBe(913724);
+    store.updateTransaction({ ...topupEntry(), amountMinor: 880000 });
+    await settle();
+    expect(balance().balanceMinor).toBe(923724);
+    // 8. Source transfers: later activity leaves once; earlier history never shifts the anchor.
+    const smsPurchase = store.transactions().find((entry) => entry.id === `sms-${purchase.id}`)!;
+    store.updateTransaction({ ...smsPurchase, cardId: 'source-cash' });
+    await settle();
+    expect(balance().balanceMinor).toBe(973724);
+    const movedB = store.transactions().find((entry) => entry.id === 'history-b')!;
+    store.updateTransaction({ ...movedB, cardId: 'source-cash' });
+    await settle();
+    store.updateTransaction({
+      ...store.transactions().find((entry) => entry.id === 'history-b')!,
+      cardId: wallet.id,
+    });
+    await settle();
+    expect(balance().balanceMinor).toBe(973724);
+    store.updateTransaction({
+      ...store.transactions().find((entry) => entry.id === smsPurchase.id)!,
+      cardId: wallet.id,
+    });
+    await settle();
+    expect(balance().balanceMinor).toBe(923724);
+    // Explicit historical application cannot double-count an event the anchor already contains.
+    const earlier = await stage(
+      evidence({
+        id: 'c'.repeat(64),
+        kind: 'PLUXEE_PURCHASE',
+        amountMinor: 1200,
+        eventDate: '2026-10-22',
+        eventTime: '12:00:00',
+        eventAt: '2026-10-22T06:30:00Z',
+        reportedBalanceMinor: undefined,
+      }),
+    );
+    await expect(
+      review.approve(earlier, wallet.id, 1200, 'Earlier purchase', '', 'APPLY_EVENT'),
+    ).rejects.toThrow('already includes');
+    expect(balance().balanceMinor).toBe(923724);
+    await review.approve(earlier, wallet.id, 1200, 'Earlier purchase', '', 'RETAIN_BALANCE');
+    expect(balance().balanceMinor).toBe(923724);
+    // A later explicit correction is audited without overwriting the one-time repair marker.
+    const later = await stage(
+      evidence({
+        id: 'd'.repeat(64),
+        amountMinor: 10000,
+        eventDate: '2026-10-24',
+        eventTime: '06:00:00',
+        eventAt: '2026-10-24T00:30:00Z',
+        reportedBalanceMinor: 930000,
+      }),
+    );
+    await review.approve(later, wallet.id, 10000, 'Later load', '', 'ADJUST_BALANCE');
+    expect(balance()).toMatchObject({
+      balanceMinor: 930000,
+      balanceCutoverAt: '2026-10-24T00:30:00Z',
+      balanceReconciliation: { candidateId: topup.id, correctionMinor: -239400 },
+      latestBalanceReconciliation: {
+        candidateId: later.id,
+        transactionId: `sms-${later.id}`,
+        savedBalanceMinor: 923724,
+        predictedBalanceMinor: 933724,
+        correctionMinor: -3724,
+      },
+    });
+    expect(
+      String(
+        rows('SELECT decision FROM sms_reconciliation WHERE candidate_id=?', [later.id])[0][
+          'decision'
+        ],
+      ),
+    ).toContain('EXPLICIT_BALANCE_RECONCILIATION');
+    // The new anchor now contains the earlier top-up; editing it no longer shifts funds.
+    store.updateTransaction({ ...topupEntry(), amountMinor: 870000 });
+    await settle();
+    expect(balance().balanceMinor).toBe(930000);
+    const stale = await stage(
+      evidence({
+        id: 'e'.repeat(64),
+        amountMinor: 20000,
+        eventTime: '08:00:00',
+        eventAt: '2026-10-23T02:30:00Z',
+        reportedBalanceMinor: 5000000,
+      }),
+    );
+    await expect(
+      review.approve(stale, wallet.id, 20000, 'Stale load', '', 'ADJUST_BALANCE'),
+    ).rejects.toThrow();
+    expect(balance().balanceMinor).toBe(930000);
+    expect(storedBalance()).toBe(930000);
+    expect(store.paymentSources().filter((source) => source.id !== wallet.id)).toEqual(
+      otherSources,
+    );
+    const restarted = TestBed.runInInjectionContext(() => new CardNestStore());
+    await restarted.initialisePreferences();
+    expect(restarted.paymentSources().find((source) => source.id === wallet.id)).toEqual(balance());
   });
   it('starts signals empty and initializes a genuinely fresh production database without fictional financial values', async () => {
     const store = TestBed.inject(CardNestStore);
