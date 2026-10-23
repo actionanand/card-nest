@@ -1,3 +1,8 @@
+// Non-isolated workers may have cached SmsReviewService bound to the real Capacitor
+// (e.g. sqlite-backup.integration.spec). Reset so it re-imports the mocked bridge below.
+vi.hoisted(() => {
+  vi.resetModules();
+});
 import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
 import { Capacitor } from '@capacitor/core';
@@ -49,6 +54,8 @@ describe('SMS permission interaction through the native bridge', () => {
     backgroundPending: true,
   };
   const database = { atomic: vi.fn(), run: vi.fn(), query: vi.fn() };
+  let locked = signal(false);
+  let foreground = signal(true);
   beforeEach(() => {
     vi.clearAllMocks();
     capacitor.getPlatform.mockReturnValue('android');
@@ -56,8 +63,8 @@ describe('SMS permission interaction through the native bridge', () => {
     native.enable.mockResolvedValue(denied);
     native.pending.mockResolvedValue({ items: [] });
     native.disable.mockResolvedValue({ ...granted, enabled: false });
-    const locked = signal(false);
-    const foreground = signal(true);
+    locked = signal(false);
+    foreground = signal(true);
     TestBed.configureTestingModule({
       providers: [
         SmsReviewService,
@@ -73,6 +80,25 @@ describe('SMS permission interaction through the native bridge', () => {
     expect(service.lock.foreground).toBe(foreground);
     expect(service.lock.locked()).toBe(false);
     expect(service.lock.foreground()).toBe(true);
+  });
+  it('the service itself observes the mocked Android platform and native bridge', async () => {
+    await service.refreshAccess();
+    expect(capacitor.getPlatform).toHaveBeenCalled();
+    expect(native.status).toHaveBeenCalledOnce();
+    expect(service.status()?.permission).toBe('denied');
+  });
+  it.each([
+    ['web platform', () => capacitor.getPlatform.mockReturnValue('web')],
+    ['locked app', () => locked.set(true)],
+    ['backgrounded app', () => foreground.set(false)],
+  ] as const)('a %s cannot reach the SMS bridge', async (_label, restrict) => {
+    restrict();
+    await expect(service.refreshAccess()).rejects.toThrow('Unlock CardNest on Android');
+    await expect(service.enterFromReview(30)).rejects.toThrow('Unlock CardNest on Android');
+    await expect(service.enable(30)).rejects.toThrow('Unlock CardNest on Android');
+    expect(native.status).not.toHaveBeenCalled();
+    expect(native.enable).not.toHaveBeenCalled();
+    expect(service.status()).toBeNull();
   });
   it('first opening and restart read live status without requesting or changing financial data', async () => {
     native.status.mockResolvedValue({ ...denied, permission: 'not requested' });

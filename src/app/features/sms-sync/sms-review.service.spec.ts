@@ -1441,15 +1441,17 @@ describe('SMS approved import integrity', () => {
     await service.approve(historical, 'meal', 45000, 'Load', '', 'RETAIN_BALANCE');
     expect(sources()[0].balanceMinor).toBe(50000);
     expect(transactions()[0].sourceBalanceApplied).toBe(false);
+    // A distinct amount: an equal top-up one day apart is a legitimate possible duplicate.
     const retained = stage(
       evidence({
         id: 'c'.repeat(64),
         kind: 'PLUXEE_TOPUP',
+        amountMinor: 30000,
         eventDate: '2026-10-17',
         eventAt: '2026-10-17T12:00:00Z',
       }),
     );
-    await service.approve(retained, 'meal', 45000, 'Load', '', 'RETAIN_BALANCE');
+    await service.approve(retained, 'meal', 30000, 'Load', '', 'RETAIN_BALANCE');
     expect(sources()[0].balanceMinor).toBe(50000);
     expect(
       transactions().find((item) => item.id === `sms-${retained.id}`)?.sourceBalanceApplied,
@@ -1879,16 +1881,30 @@ describe('SMS approved import integrity', () => {
       run(
         "INSERT INTO categories(id,name,icon,applies_to) VALUES('synthetic-custom','Synthetic custom','category','BOTH')",
       );
-      const next = stage({
+      const nearby = stage({
         ...candidate.item!,
-        id: 'c'.repeat(64),
+        id: 'b'.repeat(64),
         eventDate: '2026-10-24',
         eventAt: '2026-10-24T12:00:00Z',
       });
-      await service.approve(next, wallet.id, 880000, 'Custom event', '', 'PENDING', false, '', 0, {
+      await expect(
+        service.approve(nearby, wallet.id, 880000, 'Nearby event', '', 'PENDING', false, '', 0, {
+          categoryId: 'synthetic-custom',
+        }),
+      ).rejects.toThrow('Possible existing transaction');
+      expect(count('card_transactions')).toBe(1);
+      const next = stage({
+        ...candidate.item!,
+        id: 'c'.repeat(64),
+        amountMinor: 120000,
+        eventDate: '2026-10-24',
+        eventAt: '2026-10-24T12:00:00Z',
+      });
+      await service.approve(next, wallet.id, 120000, 'Custom event', '', 'PENDING', false, '', 0, {
         categoryId: 'synthetic-custom',
       });
       expect(transactions()[0].categoryId).toBe('synthetic-custom');
+      expect(count('card_transactions')).toBe(2);
     },
   );
   it('allows a guarded one-time baseline repair for an already approved Pluxee top-up', async () => {
