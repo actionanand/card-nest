@@ -1,11 +1,12 @@
 import {
   AppliedBalanceEffect,
+  BalanceTiming,
   BankCashTrackingSettings,
   CardTransaction,
   PaymentSource,
   SourceTransfer,
 } from '../models/domain';
-import { indiaTodayIso } from './india-date';
+import { indiaTimeOfDay, indiaTodayIso } from './india-date';
 import { transactionEffect } from './money';
 import { walletEffectApplies } from './wallet-anchor';
 
@@ -90,8 +91,105 @@ function effectStillApplies(
   );
 }
 
-function onOrAfterBaseline(source: { balanceCutoverAt: string }, date: string): boolean {
-  return date >= indiaTodayIso(new Date(source.balanceCutoverAt));
+const EVENT_TIME = /^(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/;
+
+export type BaselinePosition = 'BEFORE' | 'AFTER' | 'UNCERTAIN';
+
+export const TIMING_QUESTION =
+  'This has no time and is dated on the day a balance was confirmed. Add the time, or confirm whether it happened after that balance or is already included in it.';
+
+/**
+ * Where an event sits relative to a confirmed balance (India time). A date-only event on the
+ * confirmation day is UNCERTAIN: the confirmed balance may already include it.
+ */
+export function baselinePosition(cutoverAt: string, date: string, time?: string): BaselinePosition {
+  const cutover = new Date(cutoverAt);
+  const baselineDate = indiaTodayIso(cutover);
+  if (date !== baselineDate) return date < baselineDate ? 'BEFORE' : 'AFTER';
+  if (!time || !EVENT_TIME.test(time)) return 'UNCERTAIN';
+  const eventTime = time.length === 5 ? `${time}:00` : time;
+  const baselineTime = indiaTimeOfDay(cutover);
+  return eventTime < baselineTime ? 'BEFORE' : eventTime > baselineTime ? 'AFTER' : 'UNCERTAIN';
+}
+
+export const CORRECTION_QUESTION =
+  'This entry existed when the balance was confirmed and is now dated after it. Confirm whether that balance already includes it, or whether it should change the balance now.';
+
+export type BaselineDecision = 'APPLY' | 'SKIP' | 'ASK_TIMING' | 'ASK_CORRECTION';
+
+/** Saved before this balance was confirmed, with no change applied since: it may be inside it. */
+export function existedAtBaseline(
+  source: { id: string; balanceCutoverAt: string },
+  previous: { createdAt: string } | null | undefined,
+  effects: readonly (AppliedBalanceEffect | undefined)[] | undefined,
+): boolean {
+  if (!previous) return false;
+  const cutover = Date.parse(source.balanceCutoverAt);
+  return (
+    !(Date.parse(previous.createdAt) >= cutover) &&
+    !(effects ?? []).some(
+      (effect) =>
+        !!effect && effect.sourceId === source.id && Date.parse(effect.appliedAt) >= cutover,
+    )
+  );
+}
+
+/** For an entry that existed at the balance, only an answer given since that balance counts. */
+export function timingAnswer(
+  entry: { balanceTiming?: BalanceTiming; balanceTimingAt?: string },
+  source: { balanceCutoverAt: string },
+  existed: boolean,
+): BalanceTiming | undefined {
+  if (!entry.balanceTiming || !existed) return entry.balanceTiming;
+  return entry.balanceTimingAt &&
+    Date.parse(entry.balanceTimingAt) >= Date.parse(source.balanceCutoverAt)
+    ? entry.balanceTiming
+    : undefined;
+}
+
+/**
+ * Before the balance: never applies. Reliably after it: applies, unless the entry already
+ * existed at the balance and needs a correction answer. Uncertain same-day: follows the answer.
+ */
+export function baselineDecision(
+  source: { balanceCutoverAt: string },
+  date: string,
+  time: string | undefined,
+  answer: BalanceTiming | undefined,
+  existed: boolean,
+): BaselineDecision {
+  const position = baselinePosition(source.balanceCutoverAt, date, time);
+  if (position === 'BEFORE') return 'SKIP';
+  if (position === 'AFTER' && !existed) return 'APPLY';
+  if (answer) return answer === 'AFTER_BASELINE' ? 'APPLY' : 'SKIP';
+  return position === 'UNCERTAIN' ? 'ASK_TIMING' : 'ASK_CORRECTION';
+}
+
+/** True only where ordering against the balance is genuinely ambiguous for this entry. */
+export function needsBaselineConfirmation(
+  source: PaymentSource | null | undefined,
+  settings: BankCashTrackingSettings,
+  date: string,
+  time?: string,
+  existing?: {
+    createdAt: string;
+    effects?: readonly (AppliedBalanceEffect | undefined)[];
+  } | null,
+): boolean {
+  if (!bankCashTracked(source, settings)) return false;
+  const existed = existedAtBaseline(source, existing, existing?.effects);
+  return baselineDecision(source, date, time, undefined, existed).startsWith('ASK');
+}
+
+/** The saved answer to pre-select when editing, if it still refers to the current balance. */
+export function savedTimingAnswer(
+  source: PaymentSource | null | undefined,
+  settings: BankCashTrackingSettings,
+  entry: CardTransaction | SourceTransfer,
+): BalanceTiming | undefined {
+  if (!bankCashTracked(source, settings)) return undefined;
+  const effects = 'transferDate' in entry ? entry.effects : [entry.balanceEffect];
+  return timingAnswer(entry, source, existedAtBaseline(source, entry, effects));
 }
 
 export function reverseBalanceEffect(
@@ -111,9 +209,9 @@ function withoutEffect(transaction: CardTransaction): CardTransaction {
 }
 
 /**
- * Applies `next` to its Bank/Cash source after the caller reversed `previous`.
- * An edit keeps the applied/not-applied status of the original entry; a new or moved entry
- * applies only when its event is not earlier than the confirmed balance.
+ * Applies `next` to its Bank/Cash source after the caller reversed `previous`. The effect is
+ * decided afresh on every edit from the event time and the current timing answer, so changing
+ * either the date/time or the answer adds or removes the effect exactly once.
  */
 export function applyBankCashTransaction(
   sources: PaymentSource[],
@@ -125,16 +223,22 @@ export function applyBankCashTransaction(
   const base = withoutEffect(next);
   const source = sources.find((item) => item.id === next.cardId);
   if (!bankCashTracked(source, settings) || next.sourceBalanceApplied === false) return base;
-  let appliedAt = now;
-  if (previous && previous.cardId === next.cardId) {
-    const prior = previous.balanceEffect;
-    if (!prior || prior.sourceId !== source.id || !effectStillApplies(prior, sources, settings))
-      return base;
-    appliedAt = prior.appliedAt;
-  } else if (!onOrAfterBaseline(source, next.transactionDate)) return base;
+  const prior = previous?.balanceEffect;
+  const priorValid =
+    !!prior && prior.sourceId === source.id && effectStillApplies(prior, sources, settings);
+  const existed = existedAtBaseline(source, previous, [prior]);
+  const decision = baselineDecision(
+    source,
+    next.transactionDate,
+    next.transactionTime,
+    timingAnswer(next, source, existed),
+    existed,
+  );
+  if (decision !== 'APPLY') return base;
   const deltaMinor = assetEffect(next);
   if (!deltaMinor) return base;
   source.balanceMinor = checkedBalance(source.balanceMinor + deltaMinor);
+  const appliedAt = priorValid ? prior.appliedAt : now;
   return { ...base, balanceEffect: { sourceId: source.id, deltaMinor, appliedAt } };
 }
 
@@ -170,10 +274,17 @@ export function reverseTransferEffects(
   transfer: SourceTransfer | null,
   settings: BankCashTrackingSettings,
 ): void {
+  // A side whose account was re-confirmed later is already inside that confirmed balance.
   for (const effect of transfer?.effects ?? []) reverseBalanceEffect(sources, effect, settings);
 }
 
-/** Applies both sides after the caller reversed `previous`; strict mode never posts one side. */
+/**
+ * Applies a movement after the caller reversed `previous`. Every tracked side posts together or
+ * none does: a movement already covered by one confirmed balance but not another is rejected in
+ * strict mode instead of changing only one account. A purely descriptive edit restores exactly
+ * the prior effects; any change of amount, accounts, date/time or timing answer is re-decided.
+ * One-sided card/loan funding has only a From side.
+ */
 export function applyTransferEffects(
   sources: PaymentSource[],
   previous: SourceTransfer | null,
@@ -190,7 +301,6 @@ export function applyTransferEffects(
     if (strict) throw new Error('Turn on Bank & Cash tracking before recording transfers.');
     return { ...next, effects: [] };
   }
-  const effects: AppliedBalanceEffect[] = [];
   const sides = transferSides(next).map((side) => ({
     ...side,
     source: sources.find((item) => item.id === side.sourceId),
@@ -203,22 +313,73 @@ export function applyTransferEffects(
         `Set the current balance of ${source.nickname} before recording this movement.`,
       );
   }
-  for (const side of sides) {
-    const source = side.source;
-    if (!bankCashTracked(source, settings)) continue;
-    let appliedAt = now;
+  const descriptiveEdit =
+    !!previous &&
+    previous.fromSourceId === next.fromSourceId &&
+    previous.toSourceId === next.toSourceId &&
+    previous.amountMinor === next.amountMinor &&
+    previous.transferDate === next.transferDate &&
+    (previous.transferTime ?? '') === (next.transferTime ?? '') &&
+    previous.balanceTiming === next.balanceTiming &&
+    previous.balanceTimingAt === next.balanceTimingAt;
+  const decisions = sides.map((side) => {
+    const source = side.source!;
+    if (!bankCashTracked(source, settings))
+      return { side, source, tracked: false, decision: 'SKIP' as BaselineDecision, appliedAt: now };
     const previousSourceId = side.side === 'FROM' ? previous?.fromSourceId : previous?.toSourceId;
-    if (previous && previousSourceId === side.sourceId) {
-      const prior = previous.effects?.find(
-        (effect) =>
-          effect.sourceId === side.sourceId &&
-          Math.sign(effect.deltaMinor) === Math.sign(side.deltaMinor),
-      );
-      if (!prior || !effectStillApplies(prior, sources, settings)) continue;
-      appliedAt = prior.appliedAt;
-    } else if (!onOrAfterBaseline(source, next.transferDate)) continue;
-    source.balanceMinor = checkedBalance(source.balanceMinor + side.deltaMinor);
-    effects.push({ sourceId: source.id, deltaMinor: side.deltaMinor, appliedAt });
+    const prior =
+      previous && previousSourceId === side.sourceId
+        ? previous.effects?.find(
+            (effect) =>
+              effect.sourceId === side.sourceId &&
+              Math.sign(effect.deltaMinor) === Math.sign(side.deltaMinor),
+          )
+        : undefined;
+    const priorValid = !!prior && effectStillApplies(prior, sources, settings);
+    const appliedAt = priorValid ? prior.appliedAt : now;
+    if (descriptiveEdit) {
+      const decision: BaselineDecision = priorValid ? 'APPLY' : 'SKIP';
+      return { side, source, tracked: true, decision, appliedAt };
+    }
+    const existed = existedAtBaseline(source, previous, previous?.effects);
+    const decision = baselineDecision(
+      source,
+      next.transferDate,
+      next.transferTime,
+      timingAnswer(next, source, existed),
+      existed,
+    );
+    return { side, source, tracked: true, decision, appliedAt };
+  });
+  const asking = decisions.filter((decision) => decision.decision.startsWith('ASK'));
+  if (strict && asking.length)
+    throw new Error(
+      asking.some((decision) => decision.decision === 'ASK_TIMING')
+        ? TIMING_QUESTION
+        : CORRECTION_QUESTION,
+    );
+  const applying = decisions.filter((decision) => decision.decision === 'APPLY');
+  const covered = decisions.filter((decision) => decision.tracked && decision.decision !== 'APPLY');
+  if (strict && !descriptiveEdit && applying.length && covered.length)
+    throw new Error(
+      `This movement is not after the confirmed balance of ${covered
+        .map((decision) => decision.source.nickname)
+        .join(' and ')}, but is after that of ${applying
+        .map((decision) => decision.source.nickname)
+        .join(
+          ' and ',
+        )}. Recording it would change only one account. Check the date and time, or confirm both balances again.`,
+    );
+  const effects: AppliedBalanceEffect[] = [];
+  for (const decision of applying) {
+    decision.source.balanceMinor = checkedBalance(
+      (decision.source.balanceMinor ?? 0) + decision.side.deltaMinor,
+    );
+    effects.push({
+      sourceId: decision.source.id,
+      deltaMinor: decision.side.deltaMinor,
+      appliedAt: decision.appliedAt,
+    });
   }
   return { ...next, effects };
 }

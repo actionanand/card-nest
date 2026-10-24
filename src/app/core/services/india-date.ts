@@ -22,3 +22,17 @@ export function indiaTodayDate(now = new Date()): Date {
 export function indiaCurrentMonth(now = new Date()): string {
   return indiaTodayIso(now).slice(0, 7);
 }
+
+/** HH:mm:ss wall-clock time in India for an instant. */
+export function indiaTimeOfDay(now = new Date()): string {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: INDIA_TIME_ZONE,
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(now);
+  const value = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((part) => part.type === type)?.value ?? '00';
+  return `${value('hour')}:${value('minute')}:${value('second')}`;
+}

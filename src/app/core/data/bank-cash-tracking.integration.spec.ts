@@ -306,7 +306,7 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     store.updateTransaction({ ...legacy, amountMinor: 99 });
     await settle();
     expect(cash().balanceMinor).toBe(150000);
-    store.addTransaction(purchase({ id: 'new-cash' }));
+    store.addTransaction(purchase({ id: 'new-cash', balanceTiming: 'AFTER_BASELINE' }));
     await settle();
     expect(cash().balanceMinor).toBe(149000);
     expect(count('card_transactions')).toBe(2);
@@ -330,7 +330,7 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     });
     await store.enableBankCashTracking({ [bank.id]: 1_000_000, 'source-cash': 20_000 });
     const total = () => (balance(bank.id) ?? 0) + (balance('source-cash') ?? 0);
-    const base = { transferDate: today };
+    const base = { transferDate: today, balanceTiming: 'AFTER_BASELINE' as const };
     const withdrawal = await store.saveTransfer(
       {
         ...base,
@@ -447,6 +447,7 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
       amountMinor: 45000,
       description: 'HILL FARM MEATS',
       transactionDate: today,
+      baselineTiming: 'AFTER_BASELINE',
     });
     expect(balance(icici.id)).toBe(955_000);
     expect(balance(slice.id)).toBe(500_000);
@@ -460,6 +461,7 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
         amountMinor: 45000,
         description: 'FICTIONAL PAYEE',
         transactionDate: today,
+        baselineTiming: 'AFTER_BASELINE',
       }),
     ).rejects.toThrow('suffix');
     expect(balance(icici.id)).toBe(955_000);
@@ -480,6 +482,7 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
       amountMinor: 770000,
       description: 'JAMIE RIVERS',
       transactionDate: today,
+      baselineTiming: 'AFTER_BASELINE',
     });
     expect(balance(icici.id)).toBe(1_725_000);
     expect(store.transactions().find((item) => item.id === `sms-${a5.id}`)).toMatchObject({
@@ -502,6 +505,7 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
       amountMinor: 810000,
       description: '',
       transactionDate: today,
+      baselineTiming: 'AFTER_BASELINE',
     });
     expect([balance(icici.id), balance(slice.id)]).toEqual([915_000, 1_310_000]);
     const a1 = await stage(
@@ -525,6 +529,7 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
       amountMinor: 810000,
       description: '',
       transactionDate: today,
+      baselineTiming: 'AFTER_BASELINE' as const,
     };
     await expect(review.approveBank(a1, approval)).rejects.toThrow('Possible existing transfer');
     await review.approveBank(a1, { ...approval, existingTransferId: `sms-transfer-${a4.id}` });
@@ -590,6 +595,7 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
       amountMinor: 300_000,
       description: '',
       transactionDate: today,
+      baselineTiming: 'AFTER_BASELINE',
     });
     expect(balance(icici.id)).toBe(2_200_000);
     const receipt = await stage(
@@ -630,7 +636,12 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     store.updateTransaction({ ...old, amountMinor: 20_000 });
     await settle();
     expect(balance(icici.id)).toBe(100_000);
-    const tracked = purchase({ id: 'tracked', cardId: icici.id, amountMinor: 5_000 });
+    const tracked = purchase({
+      id: 'tracked',
+      cardId: icici.id,
+      amountMinor: 5_000,
+      balanceTiming: 'AFTER_BASELINE',
+    });
     store.addTransaction(tracked);
     await settle();
     expect(balance(icici.id)).toBe(95_000);
@@ -668,5 +679,404 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     expect(store.sourceDetail(icici.id)).toBe('ICICI Bank · A/c ••417');
     expect(store.deleteCategory('other')).toBe(false);
     expect(store.categories().some((category) => category.id === 'other')).toBe(true);
+  });
+
+  const daysAgo = (days: number) => indiaTodayIso(new Date(Date.now() - days * 86_400_000));
+
+  it('posts Bank->Cash, Cash->Bank and Bank->Bank movements on both sides or none across different confirmed balances', async () => {
+    const { store, stored } = await boot();
+    const bank = await store.addBankAccount({
+      nickname: 'Fiction ICICI',
+      institution: 'ICICI Bank',
+      lastDigits: '417',
+    });
+    const second = await store.addBankAccount({
+      nickname: 'Fiction slice',
+      institution: 'Slice',
+      lastDigits: '7316',
+    });
+    await store.enableBankCashTracking({
+      [bank.id]: 1_000_000,
+      [second.id]: 300_000,
+      'source-cash': 20_000,
+    });
+    // Bank confirmed 10 days ago at 12:00 IST; Cash and the second bank 3 days ago.
+    const current = JSON.parse(
+      String(
+        rows("SELECT encrypted_value FROM app_preferences WHERE key='payment_sources'")[0][
+          'encrypted_value'
+        ],
+      ),
+    ) as PaymentSource[];
+    await database.run("UPDATE app_preferences SET encrypted_value=? WHERE key='payment_sources'", [
+      JSON.stringify(
+        current.map((source) =>
+          source.id === bank.id
+            ? { ...source, balanceCutoverAt: `${daysAgo(10)}T06:30:00.000Z` }
+            : source.id === second.id || source.id === 'source-cash'
+              ? { ...source, balanceCutoverAt: `${daysAgo(3)}T06:30:00.000Z` }
+              : source,
+        ),
+      ),
+    ]);
+    const balances = () => [stored(bank.id), stored('source-cash'), stored(second.id)];
+    const pairs = [
+      { name: 'bank-cash', fromSourceId: bank.id, toSourceId: 'source-cash' },
+      { name: 'cash-bank', fromSourceId: 'source-cash', toSourceId: bank.id },
+      { name: 'bank-bank', fromSourceId: bank.id, toSourceId: second.id },
+    ];
+    for (const { name, fromSourceId, toSourceId } of pairs) {
+      const move = { fromSourceId, toSourceId, amountMinor: 10_000 };
+      const before = balances();
+      await expect(
+        store.saveTransfer({ ...move, id: `${name}-between`, transferDate: daysAgo(6) }, 'CREATE'),
+      ).rejects.toThrow('change only one account');
+      await expect(
+        store.saveTransfer(
+          { ...move, id: `${name}-same-day`, transferDate: daysAgo(3), transferTime: '11:00' },
+          'CREATE',
+        ),
+      ).rejects.toThrow('change only one account');
+      expect(balances()).toEqual(before);
+      const old = await store.saveTransfer(
+        { ...move, id: `${name}-before`, transferDate: daysAgo(20) },
+        'CREATE',
+      );
+      expect(old.effects).toEqual([]);
+      expect(balances()).toEqual(before);
+      const applied = await store.saveTransfer(
+        { ...move, id: `${name}-after`, transferDate: today },
+        'CREATE',
+      );
+      expect(applied.effects).toHaveLength(2);
+      const after = balances();
+      await expect(
+        store.saveTransfer({ ...move, id: `${name}-after`, transferDate: daysAgo(6) }, 'UPDATE'),
+      ).rejects.toThrow('change only one account');
+      expect(balances()).toEqual(after);
+      await store.saveTransfer(
+        { ...move, id: `${name}-after`, transferDate: today, description: 'Renamed' },
+        'UPDATE',
+      );
+      expect(balances()).toEqual(after);
+    }
+    expect(balances()).toEqual([990_000, 20_000, 310_000]);
+    expect(count('source_transfers')).toBe(6);
+    const backup = await database.exportBackupJson();
+    await store.deleteTransfer('bank-bank-after');
+    await store.deleteTransfer('bank-cash-before');
+    expect(balances()).toEqual([1_000_000, 20_000, 300_000]);
+    await database.restoreBackupJson(backup);
+    const restarted = TestBed.runInInjectionContext(() => new CardNestStore());
+    await restarted.initialisePreferences();
+    expect(balances()).toEqual([990_000, 20_000, 310_000]);
+    expect(restarted.transfers()).toHaveLength(6);
+  });
+
+  it('saves an incoming receipt durably, asks for same-day timing and rejects duplicates', async () => {
+    const { store, stored } = await boot();
+    await store.enableBankCashTracking({ 'source-cash': 20_000 });
+    await database.run(
+      'INSERT OR IGNORE INTO categories(id,name,icon,applies_to) VALUES(?,?,?,?),(?,?,?,?)',
+      [
+        'fiction-in',
+        'Fiction incoming',
+        'category',
+        'CREDIT',
+        'fiction-out',
+        'Fiction outgoing',
+        'category',
+        'EXPENSE',
+      ],
+    );
+    const receipt = {
+      id: 'receipt-1',
+      sourceId: 'source-cash',
+      amountMinor: 5_000,
+      transactionDate: today,
+      merchant: 'Fictional gift',
+      categoryId: 'fiction-in',
+    };
+    await expect(store.recordSourceReceipt(receipt)).rejects.toThrow('no time');
+    await expect(
+      store.recordSourceReceipt({
+        ...receipt,
+        categoryId: 'fiction-out',
+        balanceTiming: 'AFTER_BASELINE',
+      }),
+    ).rejects.toThrow('incoming money');
+    await expect(
+      store.recordSourceReceipt({
+        ...receipt,
+        sourceId: 'missing',
+        balanceTiming: 'AFTER_BASELINE',
+      }),
+    ).rejects.toThrow('bank account or cash');
+    expect(store.transactions()).toEqual([]);
+    expect(count('card_transactions')).toBe(0);
+    expect(stored('source-cash')).toBe(20_000);
+    const saved = await store.recordSourceReceipt({ ...receipt, balanceTiming: 'AFTER_BASELINE' });
+    expect(saved.balanceEffect?.deltaMinor).toBe(5_000);
+    expect(stored('source-cash')).toBe(25_000);
+    expect(count('card_transactions')).toBe(1);
+    expect(store.transactions().map((item) => item.id)).toEqual(['receipt-1']);
+    await expect(
+      store.recordSourceReceipt({ ...receipt, balanceTiming: 'AFTER_BASELINE' }),
+    ).rejects.toThrow('already saved');
+    expect(stored('source-cash')).toBe(25_000);
+    expect(count('card_transactions')).toBe(1);
+    const included = await store.recordSourceReceipt({
+      ...receipt,
+      id: 'receipt-2',
+      balanceTiming: 'INCLUDED_IN_BASELINE',
+    });
+    expect(included.balanceEffect).toBeUndefined();
+    expect(stored('source-cash')).toBe(25_000);
+  });
+
+  it('asks for the timing of an untimed same-day SMS event and honours an explicit earlier time', async () => {
+    const { store, review, balance } = await boot();
+    const icici = await store.addBankAccount({
+      nickname: 'Fiction ICICI',
+      institution: 'ICICI Bank',
+      lastDigits: '417',
+    });
+    await store.enableBankCashTracking({ [icici.id]: 1_000_000 });
+    const untimed = await stage(evidence());
+    const approval = {
+      purpose: 'PURCHASE' as const,
+      sourceId: icici.id,
+      amountMinor: 45000,
+      description: 'HILL FARM MEATS',
+      transactionDate: today,
+    };
+    await expect(review.approveBank(untimed, approval)).rejects.toThrow('no time');
+    expect(count('card_transactions')).toBe(0);
+    await review.approveBank(untimed, { ...approval, baselineTiming: 'INCLUDED_IN_BASELINE' });
+    expect(balance(icici.id)).toBe(1_000_000);
+    expect(calculateNetSpending(store.transactions())).toBe(45000);
+    const earlier = await stage(
+      evidence({
+        id: '9'.repeat(64),
+        reference: '735182094699',
+        eventTime: '00:00:00',
+        eventTimeExplicit: true,
+        eventAt: `${today}T00:00:00+05:30`,
+      }),
+    );
+    await review.approveBank(earlier, { ...approval, allowSeparate: true });
+    expect(balance(icici.id)).toBe(1_000_000);
+  });
+
+  it('edits a loan repayment as a one-account deduction and reverses it on delete', async () => {
+    const { store, review, balance } = await boot();
+    const icici = await store.addBankAccount({
+      nickname: 'Fiction ICICI',
+      institution: 'ICICI Bank',
+      lastDigits: '417',
+    });
+    await store.enableBankCashTracking({ [icici.id]: 1_000_000 });
+    const loanSms = await stage(
+      evidence({
+        id: '8'.repeat(64),
+        kind: 'LOAN_DEBIT',
+        purposeHint: 'LOAN_REPAYMENT',
+        amountMinor: 50_000,
+        merchant: undefined,
+        reference: 'SYNTHLOAN0001',
+      }),
+    );
+    await review.approveBank(loanSms, {
+      purpose: 'LOAN_REPAYMENT',
+      sourceId: icici.id,
+      amountMinor: 50_000,
+      description: 'Fictional home loan',
+      transactionDate: today,
+      baselineTiming: 'AFTER_BASELINE',
+    });
+    expect(balance(icici.id)).toBe(950_000);
+    const id = `sms-loan-${loanSms.id}`;
+    const edited = await store.saveTransfer(
+      {
+        id,
+        fromSourceId: icici.id,
+        amountMinor: 40_000,
+        transferDate: today,
+        balanceTiming: 'AFTER_BASELINE',
+      },
+      'UPDATE',
+    );
+    expect(edited).toMatchObject({ kind: 'LOAN_REPAYMENT', amountMinor: 40_000 });
+    expect(edited.toSourceId).toBeUndefined();
+    expect(balance(icici.id)).toBe(960_000);
+    expect(calculateNetSpending(store.transactions())).toBe(0);
+    await store.deleteTransfer(id);
+    expect(balance(icici.id)).toBe(1_000_000);
+    expect(count('source_transfers')).toBe(0);
+  });
+
+  it('re-decides persisted effects when timing answers or historical dates change, through restart, delete and backup', async () => {
+    const { store, stored } = await boot();
+    const bank = await store.addBankAccount({
+      nickname: 'Fiction ICICI',
+      institution: 'ICICI Bank',
+      lastDigits: '417',
+    });
+    const second = await store.addBankAccount({
+      nickname: 'Fiction slice',
+      institution: 'Slice',
+      lastDigits: '7316',
+    });
+    await store.enableBankCashTracking({
+      [bank.id]: 1_000_000,
+      [second.id]: 300_000,
+      'source-cash': 20_000,
+    });
+    const balances = () => [stored(bank.id), stored('source-cash'), stored(second.id)];
+    const answered = (balanceTiming: 'AFTER_BASELINE' | 'INCLUDED_IN_BASELINE') => ({
+      balanceTiming,
+      balanceTimingAt: new Date().toISOString(),
+    });
+
+    // Issue 1: a same-day untimed ₹500 purchase toggled between the two answers.
+    const sameDay = purchase({
+      id: 'same-day',
+      cardId: bank.id,
+      amountMinor: 50_000,
+      ...answered('AFTER_BASELINE'),
+    });
+    store.addTransaction(sameDay);
+    await settle();
+    expect(stored(bank.id)).toBe(950_000);
+    for (let round = 0; round < 2; round += 1) {
+      store.updateTransaction({ ...sameDay, ...answered('INCLUDED_IN_BASELINE') });
+      await settle();
+      expect(stored(bank.id)).toBe(1_000_000);
+      store.updateTransaction({ ...sameDay, ...answered('AFTER_BASELINE') });
+      await settle();
+      expect(stored(bank.id)).toBe(950_000);
+    }
+    for (const [id, fromSourceId, toSourceId] of [
+      ['same-day-withdrawal', bank.id, 'source-cash'],
+      ['same-day-deposit', 'source-cash', bank.id],
+    ]) {
+      const move = { id, fromSourceId, toSourceId, amountMinor: 10_000, transferDate: today };
+      const before = balances();
+      await store.saveTransfer({ ...move, balanceTiming: 'AFTER_BASELINE' }, 'CREATE');
+      const applied = balances();
+      expect(applied).not.toEqual(before);
+      for (let round = 0; round < 2; round += 1) {
+        await store.saveTransfer({ ...move, balanceTiming: 'INCLUDED_IN_BASELINE' }, 'UPDATE');
+        expect(balances()).toEqual(before);
+        await store.saveTransfer({ ...move, balanceTiming: 'AFTER_BASELINE' }, 'UPDATE');
+        expect(balances()).toEqual(applied);
+      }
+    }
+    expect(balances()).toEqual([950_000, 20_000, 300_000]);
+
+    // Issue 2: entries recorded before a balance confirmation, later redated after it.
+    const tomorrow = indiaTodayIso(new Date(Date.now() + 86_400_000));
+    const oldBuy = purchase({
+      id: 'old-buy',
+      cardId: bank.id,
+      amountMinor: 7_000,
+      transactionDate: daysAgo(5),
+    });
+    const oldCredit = purchase({
+      id: 'old-credit',
+      cardId: 'source-cash',
+      type: 'CREDIT',
+      amountMinor: 3_000,
+      transactionDate: daysAgo(5),
+    });
+    store.addTransaction(oldBuy);
+    store.addTransaction(oldCredit);
+    await settle();
+    const historical = [
+      {
+        id: 'old-withdrawal',
+        fromSourceId: bank.id,
+        toSourceId: 'source-cash',
+        amountMinor: 1_000,
+      },
+      { id: 'old-deposit', fromSourceId: 'source-cash', toSourceId: bank.id, amountMinor: 2_000 },
+      { id: 'old-bank-bank', fromSourceId: bank.id, toSourceId: second.id, amountMinor: 4_000 },
+    ];
+    for (const move of historical)
+      expect(
+        (await store.saveTransfer({ ...move, transferDate: daysAgo(5) }, 'CREATE')).effects,
+      ).toEqual([]);
+    expect(balances()).toEqual([950_000, 20_000, 300_000]);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await store.enableBankCashTracking({
+      [bank.id]: 950_000,
+      [second.id]: 300_000,
+      'source-cash': 20_000,
+    });
+
+    store.updateTransaction({ ...oldBuy, transactionDate: tomorrow });
+    store.updateTransaction({ ...oldCredit, transactionDate: tomorrow });
+    await settle();
+    expect(balances()).toEqual([950_000, 20_000, 300_000]);
+    store.updateTransaction({
+      ...oldBuy,
+      transactionDate: tomorrow,
+      ...answered('AFTER_BASELINE'),
+    });
+    store.updateTransaction({
+      ...oldCredit,
+      transactionDate: tomorrow,
+      ...answered('AFTER_BASELINE'),
+    });
+    await settle();
+    expect(balances()).toEqual([943_000, 23_000, 300_000]);
+    store.updateTransaction({
+      ...oldBuy,
+      transactionDate: tomorrow,
+      notes: 'renamed',
+      ...answered('AFTER_BASELINE'),
+    });
+    await settle();
+    expect(balances()).toEqual([943_000, 23_000, 300_000]);
+    for (const move of historical) {
+      await expect(
+        store.saveTransfer({ ...move, transferDate: tomorrow }, 'UPDATE'),
+      ).rejects.toThrow('existed when the balance was confirmed');
+      const saved = await store.saveTransfer(
+        { ...move, transferDate: tomorrow, balanceTiming: 'AFTER_BASELINE' },
+        'UPDATE',
+      );
+      expect(saved.effects).toHaveLength(2);
+      await store.saveTransfer(
+        { ...move, transferDate: tomorrow, description: 'Renamed' },
+        'UPDATE',
+      );
+    }
+    const final = [940_000, 22_000, 304_000];
+    expect(balances()).toEqual(final);
+    // Effects applied before the newer balance are inside it and are not reversed again.
+    store.deleteTransaction('same-day');
+    await settle();
+    await store.deleteTransfer('same-day-withdrawal');
+    expect(balances()).toEqual(final);
+
+    const restarted = TestBed.runInInjectionContext(() => new CardNestStore());
+    await restarted.initialisePreferences();
+    expect(balances()).toEqual(final);
+    const backup = await database.exportBackupJson();
+    for (const move of historical) await restarted.deleteTransfer(move.id);
+    store.deleteTransaction('old-buy');
+    store.deleteTransaction('old-credit');
+    await settle();
+    expect(balances()).toEqual([950_000, 20_000, 300_000]);
+    await database.restoreBackupJson(backup);
+    await restarted.initialisePreferences();
+    expect(balances()).toEqual(final);
+    expect(
+      restarted
+        .transfers()
+        .filter((item) => historical.some((move) => move.id === item.id))
+        .every((item) => item.effects?.length === 2),
+    ).toBe(true);
   });
 });

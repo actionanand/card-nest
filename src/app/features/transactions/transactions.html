@@ -178,6 +178,30 @@
               [value]="form.controls.transactionDate.value"
               (valueChange)="setTransactionDate($event)"
             />
+            @if (baselineTimingNeeded()) {
+              <fieldset class="full baseline-timing">
+                <legend>
+                  This may already be included in the balance confirmed for this account.
+                </legend>
+                <label
+                  ><input
+                    type="radio"
+                    formControlName="balanceTiming"
+                    value="AFTER_BASELINE"
+                  /><span>This happened after that balance — update the balance</span></label
+                >
+                <label
+                  ><input
+                    type="radio"
+                    formControlName="balanceTiming"
+                    value="INCLUDED_IN_BASELINE"
+                  /><span>It is already included in that balance — record only</span></label
+                >
+                @if (form.controls.balanceTiming.errors) {
+                  <small role="alert">Choose one so the balance is not counted twice.</small>
+                }
+              </fieldset>
+            }
             @if (
               form.controls.type.value === 'REFUND' || form.controls.type.value === 'ADJUSTMENT'
             ) {
@@ -1114,6 +1138,7 @@
     [initialFormat]="exportFormat()"
     [statementChoices]="exportStatementChoices()"
     [monthChoices]="exportMonthChoices()"
+    [sourceFilter]="sourceFilter()"
     (closed)="exportOpen.set(false)"
   />
 }

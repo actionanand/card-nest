@@ -1,9 +1,14 @@
 import { Component, OnInit, computed, inject, input, output, signal } from '@angular/core';
-import { SourceTransfer } from '../core/models/domain';
+import { BalanceTiming, SourceTransfer } from '../core/models/domain';
 import { CardNestStore } from '../core/services/card-nest-store';
 import { formatMoney, parseMoneyToMinor } from '../core/services/money';
 import { indiaTodayIso } from '../core/services/india-date';
-import { bankCashTracked, isBankOrCash } from '../core/services/source-balance';
+import {
+  bankCashTracked,
+  isBankOrCash,
+  needsBaselineConfirmation,
+  savedTimingAnswer,
+} from '../core/services/source-balance';
 import { SnackbarService } from '../core/services/snackbar.service';
 import { AppIcon } from './app-icon';
 import { AppSelectOption, AppSelectPicker } from './app-select-picker';
@@ -42,17 +47,24 @@ export type SourceMovementMode = 'RECEIPT' | 'TRANSFER' | 'BALANCE';
         <form (submit)="submit($event)">
           @if (mode() === 'TRANSFER') {
             <app-select-picker
-              label="From"
+              [label]="loan() ? 'Paid from' : 'From'"
               [options]="accountOptions()"
               [value]="fromId()"
               (valueChange)="fromId.set($event)"
             />
-            <app-select-picker
-              label="To"
-              [options]="accountOptions()"
-              [value]="toId()"
-              (valueChange)="toId.set($event)"
-            />
+            @if (loan()) {
+              <p class="movement-note">
+                Purpose: loan / EMI repayment. It leaves this account only and is not spending; loan
+                schedules are not changed.
+              </p>
+            } @else {
+              <app-select-picker
+                label="To"
+                [options]="accountOptions()"
+                [value]="toId()"
+                (valueChange)="toId.set($event)"
+              />
+            }
           }
           <label
             >{{ mode() === 'BALANCE' ? 'Actual current balance (INR)' : 'Amount (INR)'
@@ -67,10 +79,31 @@ export type SourceMovementMode = 'RECEIPT' | 'TRANSFER' | 'BALANCE';
               >Date<input type="date" [value]="date()" (input)="date.set(value($event))" required
             /></label>
           }
-          @if (mode() === 'TRANSFER') {
+          @if (mode() !== 'BALANCE') {
             <label
               >Time (optional)<input type="time" [value]="time()" (input)="time.set(value($event))"
             /></label>
+          }
+          @if (timingNeeded()) {
+            <fieldset class="timing-choice">
+              <legend>This may already be included in a confirmed balance.</legend>
+              <label class="choice"
+                ><input
+                  type="radio"
+                  name="movement-timing"
+                  [checked]="timing() === 'AFTER_BASELINE'"
+                  (change)="timing.set('AFTER_BASELINE')"
+                /><span>It happened after that balance — update the balance</span></label
+              >
+              <label class="choice"
+                ><input
+                  type="radio"
+                  name="movement-timing"
+                  [checked]="timing() === 'INCLUDED_IN_BASELINE'"
+                  (change)="timing.set('INCLUDED_IN_BASELINE')"
+                /><span>It is already included in that balance — record only</span></label
+              >
+            </fieldset>
           }
           @if (mode() === 'RECEIPT') {
             <app-select-picker
@@ -90,7 +123,7 @@ export type SourceMovementMode = 'RECEIPT' | 'TRANSFER' | 'BALANCE';
           @if (mode() === 'BALANCE' && balancePreview(); as preview) {
             <p class="movement-note">{{ preview }}</p>
           }
-          @if (mode() === 'TRANSFER') {
+          @if (mode() === 'TRANSFER' && !loan()) {
             <p class="movement-note">
               {{
                 editing()
@@ -104,7 +137,11 @@ export type SourceMovementMode = 'RECEIPT' | 'TRANSFER' | 'BALANCE';
           }
           <div class="movement-actions">
             <button class="btn" type="button" (click)="close()">Cancel</button>
-            <button class="btn btn-primary" type="submit" [disabled]="saving()">
+            <button
+              class="btn btn-primary"
+              type="submit"
+              [disabled]="saving() || (timingNeeded() && !timing())"
+            >
               {{ saving() ? 'Saving…' : submitLabel() }}
             </button>
           </div>
@@ -165,6 +202,21 @@ export type SourceMovementMode = 'RECEIPT' | 'TRANSFER' | 'BALANCE';
       gap: 0.3rem;
       font-size: 0.8rem;
     }
+    .timing-choice {
+      display: grid;
+      gap: 0.4rem;
+      margin: 0;
+      padding: 0.6rem 0.7rem;
+      border: 1px solid var(--line);
+      border-radius: 0.6rem;
+      font-size: 0.78rem;
+    }
+    .timing-choice .choice {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      min-height: 44px;
+    }
     .movement-note,
     .movement-error {
       margin: 0;
@@ -199,11 +251,34 @@ export class SourceMovementDialog implements OnInit {
   readonly time = signal('');
   readonly description = signal('');
   readonly categoryId = signal('income');
+  readonly timing = signal<BalanceTiming | ''>('');
   readonly saving = signal(false);
   readonly error = signal<string | null>(null);
   readonly editing = computed(() => !!this.transfer());
-  private draftId = crypto.randomUUID();
+  readonly loan = computed(() => this.transfer()?.kind === 'LOAN_REPAYMENT');
+  // Persisted ids are plain strings; a new draft simply starts from a UUID.
+  private draftId: string = crypto.randomUUID();
   private initialized = false;
+
+  readonly timingNeeded = computed(() => {
+    if (this.mode() === 'BALANCE') return false;
+    const settings = this.store.bankCashTracking();
+    const ids =
+      this.mode() === 'RECEIPT'
+        ? [this.sourceId()]
+        : this.loan()
+          ? [this.fromId()]
+          : [this.fromId(), this.toId()];
+    return ids.some((id) =>
+      needsBaselineConfirmation(
+        this.store.paymentSources().find((source) => source.id === id),
+        settings,
+        this.date(),
+        this.time() || undefined,
+        this.transfer(),
+      ),
+    );
+  });
 
   readonly accountOptions = computed<readonly AppSelectOption[]>(() => [
     { value: '', label: 'Choose an account' },
@@ -235,7 +310,7 @@ export class SourceMovementDialog implements OnInit {
       return this.source()?.kind === 'CASH' ? 'Set current cash balance' : 'Set current balance';
     if (this.mode() === 'RECEIPT')
       return this.source()?.kind === 'CASH' ? 'Add cash' : 'Record incoming money';
-    if (this.editing()) return 'Edit transfer';
+    if (this.editing()) return this.loan() ? 'Edit loan repayment' : 'Edit transfer';
     const from = this.store.paymentSources().find((item) => item.id === this.fromId());
     const to = this.store.paymentSources().find((item) => item.id === this.toId());
     if (from?.kind === 'DEBIT' && to?.kind === 'CASH') return 'Withdraw cash from bank';
@@ -270,6 +345,17 @@ export class SourceMovementDialog implements OnInit {
       this.date.set(transfer.transferDate);
       this.time.set(transfer.transferTime?.slice(0, 5) ?? '');
       this.description.set(transfer.description ?? '');
+      const answers = [transfer.fromSourceId, transfer.toSourceId].flatMap((id) => {
+        const source = this.store.paymentSources().find((item) => item.id === id);
+        return source && bankCashTracked(source, this.store.bankCashTracking())
+          ? [savedTimingAnswer(source, this.store.bankCashTracking(), transfer)]
+          : [];
+      });
+      this.timing.set(
+        answers.length && answers.every((answer) => answer && answer === answers[0])
+          ? answers[0]!
+          : '',
+      );
       this.draftId = transfer.id;
       return;
     }
@@ -304,6 +390,7 @@ export class SourceMovementDialog implements OnInit {
     }
     this.error.set(null);
     this.saving.set(true);
+    const timing = this.timingNeeded() ? this.timing() || undefined : undefined;
     try {
       if (this.mode() === 'BALANCE') {
         await this.store.setSourceBalance(this.sourceId(), amount, this.description());
@@ -311,22 +398,17 @@ export class SourceMovementDialog implements OnInit {
       } else if (this.mode() === 'RECEIPT') {
         const source = this.source();
         if (!source || !isBankOrCash(source)) throw new Error('Choose a bank account or cash.');
-        const timestamp = new Date().toISOString();
-        this.store.addTransaction({
+        await this.store.recordSourceReceipt({
           id: this.draftId,
-          cardId: source.id,
-          type: 'CREDIT',
+          sourceId: source.id,
           amountMinor: amount,
-          currencyCode: 'INR',
           transactionDate: this.date(),
+          transactionTime: this.time() || undefined,
           merchant:
-            this.description().trim().slice(0, 100) ||
+            this.description().trim() ||
             (source.kind === 'CASH' ? 'Cash received' : 'Money received'),
           categoryId: this.categoryId() || 'other',
-          origin: 'MANUAL',
-          attachmentIds: [],
-          createdAt: timestamp,
-          updatedAt: timestamp,
+          balanceTiming: timing,
         });
         this.snackbar.show(source.kind === 'CASH' ? 'Cash added.' : 'Incoming money recorded.');
       } else {
@@ -334,16 +416,19 @@ export class SourceMovementDialog implements OnInit {
           {
             id: this.draftId,
             fromSourceId: this.fromId(),
-            toSourceId: this.toId(),
+            toSourceId: this.loan() ? undefined : this.toId(),
             amountMinor: amount,
             transferDate: this.date(),
             transferTime: this.time() || undefined,
             description: this.description(),
+            balanceTiming: timing,
           },
           this.editing() ? 'UPDATE' : 'CREATE',
         );
         this.snackbar.show(
-          `${formatMoney(saved.amountMinor, 'INR')} moved. Both balances were updated together.`,
+          this.loan()
+            ? `${formatMoney(saved.amountMinor, 'INR')} loan repayment saved.`
+            : `${formatMoney(saved.amountMinor, 'INR')} moved. Both balances were updated together.`,
         );
       }
       this.saving.set(false);

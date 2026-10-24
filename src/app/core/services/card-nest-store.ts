@@ -1,5 +1,6 @@
 import { Service, computed, inject, signal } from '@angular/core';
 import {
+  BalanceTiming,
   BankCashTrackingSettings,
   CardTransaction,
   CardStatement,
@@ -30,6 +31,8 @@ import {
   parseBankCashTracking,
   reverseBalanceEffect,
   reverseTransferEffects,
+  TIMING_QUESTION,
+  needsBaselineConfirmation,
   transferKindFor,
   validTransferDate,
 } from './source-balance';
@@ -42,7 +45,7 @@ import {
   toIsoDate,
 } from './billing-cycle';
 import { calculateNetSpending, calculateOutstanding, transactionEffect } from './money';
-import { indiaTodayIso } from './india-date';
+import { indiaTimeOfDay, indiaTodayIso } from './india-date';
 import { APP_ENVIRONMENT } from './app-environment';
 import { initialiseAppData } from '../data/app-initialization';
 import {
@@ -845,6 +848,8 @@ export class CardNestStore {
       )
         ? true
         : existing.sourceBalanceApplied,
+      balanceTiming: undefined,
+      balanceTimingAt: undefined,
       createdAt: timestamp,
       updatedAt: timestamp,
     };
@@ -1065,13 +1070,16 @@ export class CardNestStore {
     if (!this.cards().some((card) => card.id === cardId && !card.deletedAt))
       throw new Error('Choose an existing credit card.');
     const timestamp = new Date().toISOString();
+    // Recorded now, so the payment is after any balance confirmed earlier.
+    const recordedAt = new Date(timestamp);
     const payment: CardTransaction = {
       id: crypto.randomUUID(),
       cardId,
       type: 'PAYMENT',
       amountMinor,
       currencyCode: 'INR',
-      transactionDate: indiaTodayIso(),
+      transactionDate: indiaTodayIso(recordedAt),
+      transactionTime: indiaTimeOfDay(recordedAt),
       merchant: label,
       categoryId: 'payment',
       attachmentIds: [],
@@ -1100,6 +1108,8 @@ export class CardNestStore {
           amountMinor,
           currencyCode: 'INR',
           transferDate: payment.transactionDate,
+          transferTime: payment.transactionTime,
+          balanceTiming: 'AFTER_BASELINE',
           description: label,
           origin: 'MANUAL',
           createdAt: timestamp,
@@ -1122,6 +1132,82 @@ export class CardNestStore {
 
   fundingFor(paymentTransactionId: string): SourceTransfer | undefined {
     return this.transfers().find((item) => item.paymentTransactionId === paymentTransactionId);
+  }
+
+  /**
+   * Durable Add Cash / Record incoming money: the ledger row and balance commit together and
+   * the UI is updated only afterwards. Saving the same id twice is rejected.
+   */
+  async recordSourceReceipt(input: {
+    id: string;
+    sourceId: string;
+    amountMinor: number;
+    transactionDate: string;
+    transactionTime?: string;
+    merchant: string;
+    categoryId: string;
+    balanceTiming?: BalanceTiming;
+  }): Promise<CardTransaction> {
+    if (!Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0)
+      throw new Error('Enter a valid amount.');
+    if (!validTransferDate(input.transactionDate, input.transactionTime))
+      throw new Error('Enter a valid date and time.');
+    const timestamp = new Date().toISOString();
+    const result = await this.database.atomic(async (tx) => {
+      const [existing] = await tx.query<{ id: string }>(
+        'SELECT id FROM card_transactions WHERE id=?',
+        [input.id],
+      );
+      if (existing) throw new Error('This entry was already saved.');
+      const sources = await this.readStoredSources(tx);
+      const settings = await this.readTrackingSettings(tx);
+      const source = sources.find((item) => item.id === input.sourceId && !item.archived);
+      if (!source || !isBankOrCash(source)) throw new Error('Choose a bank account or cash.');
+      const [category] = await tx.query<{ applies_to: string }>(
+        'SELECT applies_to FROM categories WHERE id=? AND archived=0',
+        [input.categoryId],
+      );
+      if (!category || category.applies_to === 'EXPENSE')
+        throw new Error('Choose a category that allows incoming money.');
+      if (
+        !input.balanceTiming &&
+        needsBaselineConfirmation(source, settings, input.transactionDate, input.transactionTime)
+      )
+        throw new Error(TIMING_QUESTION);
+      const transaction = applyBankCashTransaction(
+        sources,
+        null,
+        {
+          id: input.id,
+          cardId: source.id,
+          type: 'CREDIT',
+          amountMinor: input.amountMinor,
+          currencyCode: 'INR',
+          transactionDate: input.transactionDate,
+          transactionTime: input.transactionTime || undefined,
+          merchant: input.merchant.trim().slice(0, 100) || undefined,
+          categoryId: input.categoryId,
+          origin: 'MANUAL',
+          balanceTiming: input.balanceTiming,
+          balanceTimingAt: input.balanceTiming ? timestamp : undefined,
+          attachmentIds: [],
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        },
+        settings,
+        timestamp,
+      );
+      await this.upsertTransactionRow(tx, transaction);
+      await this.writeStoredSources(tx, sources);
+      return { transaction, sources };
+    });
+    this.transactions.update((items) => {
+      const next = [result.transaction, ...items.filter((item) => item.id !== input.id)];
+      this.cacheTransactions(next);
+      return next;
+    });
+    this.paymentSources.set(result.sources);
+    return result.transaction;
   }
 
   /** SMS review and store writes publish only after the transfer and balances commit. */
@@ -1297,11 +1383,12 @@ export class CardNestStore {
     input: {
       id: string;
       fromSourceId: string;
-      toSourceId: string;
+      toSourceId?: string;
       amountMinor: number;
       transferDate: string;
       transferTime?: string;
       description?: string;
+      balanceTiming?: BalanceTiming;
     },
     mode: 'CREATE' | 'UPDATE',
   ): Promise<SourceTransfer> {
@@ -1340,6 +1427,8 @@ export class CardNestStore {
           description: input.description?.trim().slice(0, 100) || undefined,
           reference: previous?.reference,
           origin: previous?.origin ?? 'MANUAL',
+          balanceTiming: input.balanceTiming ?? previous?.balanceTiming,
+          balanceTimingAt: input.balanceTiming ? now : previous?.balanceTimingAt,
           createdAt: previous?.createdAt ?? now,
           updatedAt: now,
         },

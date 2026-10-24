@@ -13,6 +13,7 @@ import { ActivatedRoute, Router } from '@angular/router';
 import { Camera, CameraResultType, CameraSource } from '@capacitor/camera';
 import { Capacitor } from '@capacitor/core';
 import {
+  BalanceTiming,
   CardTransaction,
   EmiPlan,
   RecurringRule,
@@ -38,7 +39,11 @@ import { AppDatePicker } from '../../shared/app-date-picker';
 import { indiaCurrentMonth, indiaTodayIso } from '../../core/services/india-date';
 import { PlatformTools } from '../../shared/platform-tools';
 import { recordedTransactionTime } from '../../core/services/transaction-time';
-import { transferLabel } from '../../core/services/source-balance';
+import {
+  transferLabel,
+  needsBaselineConfirmation,
+  savedTimingAnswer,
+} from '../../core/services/source-balance';
 import { SourceMovementDialog } from '../../shared/source-movement-dialog';
 
 type GroupingMode = 'MONTH' | 'CYCLE' | 'STATEMENT';
@@ -287,7 +292,21 @@ export class TransactionsPage {
     taxIncluded: new FormControl(false, { nonNullable: true }),
     taxAmount: new FormControl('', { nonNullable: true }),
     repeat: new FormControl<RepeatChoice>('NONE', { nonNullable: true }),
+    balanceTiming: new FormControl<BalanceTiming | ''>('', { nonNullable: true }),
   });
+  /** Asked only where ordering against the confirmed balance is genuinely ambiguous. */
+  baselineTimingNeeded(): boolean {
+    this.formChanges();
+    const value = this.form.getRawValue();
+    const existing = this.store.transactions().find((item) => item.id === this.editingId());
+    return needsBaselineConfirmation(
+      this.store.paymentSources().find((source) => source.id === value.cardId),
+      this.store.bankCashTracking(),
+      value.transactionDate,
+      existing?.transactionDate === value.transactionDate ? existing.transactionTime : undefined,
+      existing && { createdAt: existing.createdAt, effects: [existing.balanceEffect] },
+    );
+  }
   readonly emiForm = new FormGroup({
     kind: new FormControl<EmiKind>('NO_COST', { nonNullable: true }),
     months: new FormControl(3, {
@@ -438,6 +457,11 @@ export class TransactionsPage {
     for (const transaction of this.filtered()) {
       const key = transaction.transactionDate.slice(0, 7);
       grouped.set(key, [...(grouped.get(key) ?? []), transaction]);
+    }
+    // A month that holds only own-account transfers is still exportable.
+    for (const transfer of this.visibleTransfers()) {
+      const key = transfer.transferDate.slice(0, 7);
+      if (!grouped.has(key)) grouped.set(key, []);
     }
     return [...grouped.entries()]
       .sort(([left], [right]) => right.localeCompare(left))
@@ -836,6 +860,12 @@ export class TransactionsPage {
       taxIncluded: transaction.taxIncluded ?? false,
       taxAmount: transaction.taxMinor === undefined ? '' : String(transaction.taxMinor / 100),
       repeat: 'NONE',
+      balanceTiming:
+        savedTimingAnswer(
+          this.store.paymentSources().find((source) => source.id === transaction.cardId),
+          this.store.bankCashTracking(),
+          transaction,
+        ) ?? '',
     });
     this.receiptPreviews.set(transaction.attachmentIds);
     this.receiptDraftDirty.set(false);
@@ -1411,6 +1441,11 @@ export class TransactionsPage {
       return;
     }
     if (this.form.invalid) return;
+    const timingNeeded = this.baselineTimingNeeded();
+    if (timingNeeded && !this.form.controls.balanceTiming.value) {
+      this.form.controls.balanceTiming.setErrors({ required: true });
+      return;
+    }
     const value = this.form.getRawValue();
     const timestamp = new Date().toISOString();
     const existing = this.store
@@ -1436,6 +1471,8 @@ export class TransactionsPage {
       generatedOccurrenceDate:
         existing?.generatedOccurrenceDate ?? (recurringRuleId ? value.transactionDate : undefined),
       attachmentIds: this.receiptPreviews(),
+      balanceTiming: timingNeeded ? value.balanceTiming || undefined : existing?.balanceTiming,
+      balanceTimingAt: timingNeeded ? timestamp : existing?.balanceTimingAt,
       createdAt: existing?.createdAt ?? timestamp,
       updatedAt: timestamp,
     };

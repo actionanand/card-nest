@@ -96,6 +96,8 @@ export interface ApprovalEdits {
   relatedTransactionId?: string;
   /** Explicit paying bank account for a card payment; never inferred. */
   fundingSourceId?: string;
+  /** Answer for a date-only funding deduction on the bank's balance-confirmation day. */
+  fundingTiming?: 'AFTER_BASELINE' | 'INCLUDED_IN_BASELINE';
 }
 export interface SmsCandidate {
   id: string;

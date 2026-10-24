@@ -36,6 +36,7 @@ object SmsTransactionParser {
   private fun rx(s: String) = Regex(s, RegexOption.IGNORE_CASE)
   private const val NUMBER = "([0-9][0-9,]*(?:\\.[0-9]{1,2})?)(?![0-9]|\\.[0-9])"
   private const val MONEY = "(?:₹|\\bINR\\b|\\bRs\\.?)[\\s:.]*(?:Dr\\.?\\s*)?"
+  private const val ACCOUNT_MENTION = "\\b(?:acct|acc|a/c|account)\\s*(?:no\\.?\\s*)?(?:[0-9]*[x*]+)([0-9]{3,5})\\b"
   private val money = rx(MONEY + NUMBER)
   private fun minor(s: String?): Long? = try {
     s?.replace(",", "")?.let { BigDecimal(it).movePointRight(2).longValueExact() }
@@ -64,13 +65,51 @@ object SmsTransactionParser {
     val card = !meal && !tag && has("card") && !has("debit card")
     val debit = has("\\b(spent|debited|charged|sent|toll paid)\\b") || has("transaction of.+was made using|thank you for using.+card")
     val credit = has("\\b(credited|received)\\b")
-    // The first money verb describes the primary account ("A/c X debited ...; PAYEE credited").
+    // The primary account is the one addressed as "your" (else the first mention). Its movement is
+    // the verb grammatically attached to it, never a verb tied to a payee or counterparty account.
+    val accountMentions = rx(ACCOUNT_MENTION).findAll(flat).toList()
+    // Direction attached to one account mention: "A/c X is credited" / "credited to A/c X" /
+    // "debited from A/c X". "Sent/paid/transferred to A/c X" marks X as the counterparty.
+    fun binding(mention: MatchResult): Pair<String?, Boolean> {
+      val after = rx("^\\s*(?:\\([^)]*\\)\\s*)?(?:(?:is|has|have|was|got)\\s+)?(?:been\\s+)?(?:successfully\\s+)?(credited|debited)\\b")
+        .find(flat.substring(mention.range.last + 1))?.groupValues?.get(1)?.lowercase(Locale.ROOT)
+      val clauseStart = flat.lastIndexOf(';', mention.range.first).let { if (it < 0) 0 else it + 1 }
+      val before = rx("\\b(credited|credit of|received|deposited|debited|debit of|withdrawn|sent|paid|transferred)\\b" +
+        "(?:(?!\\b(?:credited|debited|received|deposited|withdrawn|sent|paid)\\b)[^;])*?\\b(to|in|into|from)\\s+(?:your\\s+)?(?:[a-z]+\\s+)?$")
+        .find(flat.substring(clauseStart, mention.range.first))?.groupValues?.map { it.lowercase(Locale.ROOT) }
+      val outgoingTo = before != null && before[1] in setOf("sent", "paid", "transferred") && before[2] != "from"
+      val afterDirection = when (after) { "credited" -> "CREDIT"; "debited" -> "DEBIT"; else -> null }
+      val beforeDirection = when { before == null -> null; before[2] == "from" -> "DEBIT"; else -> "CREDIT" }
+      val direction = when {
+        afterDirection != null && beforeDirection != null && afterDirection != beforeDirection -> "AMBIGUOUS"
+        else -> afterDirection ?: beforeDirection
+      }
+      return direction to outgoingTo
+    }
+    val yourMention = accountMentions.firstOrNull { rx("\\byour\\s+(?:savings\\s+|bank\\s+)?$").containsMatchIn(flat.substring(0, it.range.first)) }
+    val primaryMention = yourMention
+      ?: accountMentions.firstOrNull { !binding(it).second }
+      ?: accountMentions.firstOrNull()
+    val boundDirection = primaryMention?.let { mention ->
+      val (bound, outgoingTo) = binding(mention)
+      // Only "your" account can be the target of "sent to"; otherwise that verb belongs to the sender.
+      if (outgoingTo && mention != yourMention) null else bound
+    }
+    // Fallback for alerts without an attached verb: the first money verb.
     val debitAt = rx("\\b(?:debited|spent|sent|withdrawn|charged|paid)\\b").find(flat)?.range?.first
     val creditAt = rx("\\b(?:credited|received|deposited)\\b|\\b(?:neft|imps|rtgs|upi)\\s+credit\\b|\\bcredit of\\b").find(flat)?.range?.first
-    val direction = if (!bank) null else when {
+    val direction = if (!bank || boundDirection == "AMBIGUOUS") null else boundDirection ?: when {
       debitAt != null && (creditAt == null || debitAt < creditAt) -> "DEBIT"
       creditAt != null -> "CREDIT"
       else -> null
+    }
+    // A balance statement ("Balance in your A/c ... is INR ...") is not a completed transaction,
+    // even when a later phrase mentions a past credit or debit.
+    val balanceOnly = bank && boundDirection == null && run {
+      val balanceAt = rx("\\b(?:bal(?:ance)?|avl\\.? bal)\\b").find(flat)?.range?.first
+      val amountAt = money.find(flat)?.range?.first
+      val verbAt = listOfNotNull(debitAt, creditAt).minOrNull()
+      balanceAt != null && amountAt != null && balanceAt < amountAt && (verbAt == null || verbAt > balanceAt)
     }
     val mealTopup = has("\\b(credited|received|loaded|recharged|topped up)\\b")
     val mealDebit = has("\\b(spent|debited)\\b")
@@ -100,6 +139,8 @@ object SmsTransactionParser {
       has("statement.+generated") && !purchase && !credit -> Kind.STATEMENT
       loan && due && !has("has been debited|(?:account|acc) [x*0-9]+ debited") -> Kind.LOAN_REMINDER
       due && !debit -> Kind.PAYMENT_REMINDER
+      // Conflicting verbs on the customer's own account: keep for manual review with no direction.
+      bank && boundDirection == "AMBIGUOUS" -> Kind.BANK_TRANSFER
       loan && debit && bank -> Kind.LOAN_DEBIT
       card && purchase && (!bank || has("(?:spent|charged).{0,40}(?:your|using|on).{0,20}card|(?:credit card|card)[x*0-9\\s]{0,20}debited")) -> Kind.PURCHASE
       bank && debit && has("\\bcred\\b|cheq|ccbp") -> Kind.PAYMENT_INITIATED
@@ -108,6 +149,7 @@ object SmsTransactionParser {
       bank && direction == "CREDIT" -> Kind.BANK_CREDIT
       else -> return null
     }
+    if (balanceOnly && kind in setOf(Kind.BANK_DEBIT, Kind.BANK_CREDIT)) return null
     val total = value(flat, "total (?:statement amount|amount due|amt|due)(?: of)?|statement total(?: due)?|total(?: of)?")
     val minimum = value(flat, "min(?:imum)? (?:amount |amt )?due(?: of)?|minimum(?: of)?")
     // Prefer verb-scoped monetary events; statement amounts and balance are separate evidence.
@@ -123,9 +165,9 @@ object SmsTransactionParser {
     val digits = rx("\\b(?:credit card|card|bobcard)(?:\\s+(?:no\\.?|ending(?: with)?))?\\s*[x*]*\\s*([0-9]{4,5})\\b")
       .find(flat)?.groupValues?.get(1)
       ?: if (meal) rx("\\b(?:meal card|wallet|card)(?:\\s+(?:number|no\\.?|ending(?:\\s+(?:with|in))?))?\\s*[:#-]?\\s*(?:[x*]\\s*)*([0-9]{4})\\b").find(flat)?.groupValues?.get(1) else null
-    val accounts = rx("\\b(?:acct|acc|a/c|account)\\s*(?:no\\.?\\s*)?(?:[0-9]*[x*]+)([0-9]{3,5})\\b").findAll(flat).map { it.groupValues[1] }.toList()
-    val account = accounts.firstOrNull()
-    val counterpartyAccount = accounts.drop(1).firstOrNull { it != account }
+    val accounts = accountMentions.map { it.groupValues[1] }
+    val account = primaryMention?.groupValues?.get(1)
+    val counterpartyAccount = accounts.firstOrNull { it != account }
     val issuer = listOf("Pluxee" to "pluxee|sodexo", "Axis" to "axis", "ICICI" to "icici",
       "HDFC" to "hdfc", "PNB" to "pnb", "AMEX" to "amex|american express", "Standard Chartered" to "stanchart|standard chartered",
       "Federal" to "federal", "BOBCARD" to "bobcard", "IDFC FIRST" to "idfc", "AU Bank" to "au bank", "Slice" to "slice")
@@ -182,7 +224,7 @@ object SmsTransactionParser {
         kind == Kind.PAYMENT_INITIATED -> "CARD_REPAYMENT"
         direction == "DEBIT" && has("credit\\s*card\\s*(?:bill|payment|dues?)|towards.{0,40}\\bcard\\b|\\bbbps\\b") -> "CARD_REPAYMENT"
         direction == "DEBIT" && has("\\batm\\b|cash withdrawal|withdrawn") -> "CASH_WITHDRAWAL"
-        kind == Kind.BANK_TRANSFER && counterpartyAccount != null -> "ACCOUNT_TRANSFER"
+        kind in setOf(Kind.BANK_TRANSFER, Kind.BANK_DEBIT, Kind.BANK_CREDIT) && counterpartyAccount != null -> "ACCOUNT_TRANSFER"
         direction == "CREDIT" -> "INCOMING"
         direction == "DEBIT" -> "PURCHASE"
         else -> null

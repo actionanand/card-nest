@@ -24,7 +24,12 @@ import { SmsReviewService } from './sms-review.service';
 import { SmsTypePicker } from './sms-type-picker';
 import { INITIAL_MULTIPLE_KINDS, reviewFilters } from './sms-review-filters';
 import { matchExisting, walletComparison } from './sms-matching';
-import { bankCashTracked, isBankOrCash } from '../../core/services/source-balance';
+import {
+  bankCashTracked,
+  isBankOrCash,
+  needsBaselineConfirmation,
+} from '../../core/services/source-balance';
+import { BalanceTiming } from '../../core/models/domain';
 import {
   SmsCandidate,
   SmsKind,
@@ -318,6 +323,7 @@ export class SmsSyncPage {
     category: new FormControl('other', { nonNullable: true, validators: Validators.required }),
     relatedPurchase: new FormControl('', { nonNullable: true }),
     funding: new FormControl('', { nonNullable: true }),
+    fundingTiming: new FormControl<BalanceTiming | ''>('', { nonNullable: true }),
   });
   fundingOptions(): readonly AppSelectOption[] {
     return [
@@ -446,6 +452,7 @@ export class SmsSyncPage {
     existingTransfer: new FormControl('', { nonNullable: true }),
     card: new FormControl('', { nonNullable: true }),
     separate: new FormControl(false, { nonNullable: true }),
+    timing: new FormControl<BalanceTiming | ''>('', { nonNullable: true }),
   });
   readonly enrollBankName = new FormControl('', {
     nonNullable: true,
@@ -615,6 +622,39 @@ export class SmsSyncPage {
     const item = this.bankItem();
     return !!item?.accountDigits && !matchingBankAccounts(item, this.store.paymentSources()).length;
   }
+  /** Date-only message on a day a selected balance was confirmed: the user must answer. */
+  bankTimingNeeded(): boolean {
+    this.bankEditorChanges();
+    const item = this.bankItem();
+    const value = this.bankEditor.getRawValue();
+    if (!item || !value.purpose) return false;
+    const date = value.transactionDate || item.eventDate;
+    const time =
+      item.eventTimeExplicit === true && date === item.eventDate ? item.eventTime : undefined;
+    const settings = this.store.bankCashTracking();
+    return [value.source, value.purpose === 'TRANSFER' ? value.counterparty : '']
+      .filter(Boolean)
+      .some((id) =>
+        needsBaselineConfirmation(
+          this.store.paymentSources().find((source) => source.id === id),
+          settings,
+          date,
+          time,
+        ),
+      );
+  }
+  fundingTimingNeeded(): boolean {
+    const item = this.selected()?.item;
+    const value = this.editor.getRawValue();
+    if (!item || !value.funding) return false;
+    const date = value.transactionDate || item.eventDate;
+    return needsBaselineConfirmation(
+      this.store.paymentSources().find((source) => source.id === value.funding),
+      this.store.bankCashTracking(),
+      date,
+      item.eventTimeExplicit === true && date === item.eventDate ? item.eventTime : undefined,
+    );
+  }
   selectedBankUntracked(): boolean {
     this.bankEditorChanges();
     const source = this.store
@@ -675,6 +715,7 @@ export class SmsSyncPage {
           existingTransferId: value.existingTransfer || undefined,
           cardId: value.card || undefined,
           allowSeparate: value.separate,
+          baselineTiming: value.timing || undefined,
         });
         this.notice.set(this.sync.notice() || 'Bank event approved and saved.');
         this.saving.set(false);
@@ -1110,6 +1151,7 @@ export class SmsSyncPage {
             : 'other',
       relatedPurchase: '',
       funding: '',
+      fundingTiming: '',
     });
     queueMicrotask(() => document.getElementById('sms-review-heading')?.focus());
   }
@@ -1227,6 +1269,7 @@ export class SmsSyncPage {
             categoryId: value.category,
             relatedTransactionId: value.relatedPurchase || undefined,
             fundingSourceId: value.funding || undefined,
+            fundingTiming: value.fundingTiming || undefined,
           },
         );
         this.notice.set(this.sync.notice() || 'Transaction approved and saved.');

@@ -451,6 +451,14 @@ details p,
 .source-notice {
   background: var(--warning-soft);
 }
+.timing-choice {
+  display: grid;
+  gap: 0.25rem;
+  margin: 0.6rem 0;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 0.6rem;
+}
 .bank-enrol {
   display: grid;
   gap: 0.5rem;
@@ -461,6 +469,7 @@ details p,
   font-size: 0.8rem;
 }
 .bank-enrol p,
+.timing-choice legend,
 .review-notice-text {
   margin: 0;
   font-size: 0.8rem;

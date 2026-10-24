@@ -5,6 +5,7 @@ import { CardNestStore } from '../../core/services/card-nest-store';
 import { AppLockService } from '../../core/services/app-lock.service';
 import { indiaTodayIso } from '../../core/services/india-date';
 import {
+  BalanceTiming,
   CardTransaction,
   CardStatement,
   Category,
@@ -20,7 +21,9 @@ import {
   applyTransferEffects,
   bankCashTracked,
   isBankOrCash,
+  needsBaselineConfirmation,
   parseBankCashTracking,
+  TIMING_QUESTION,
   transferKindFor,
   validTransferDate,
 } from '../../core/services/source-balance';
@@ -74,6 +77,8 @@ export interface BankApproval {
   existingTransferId?: string;
   cardId?: string;
   allowSeparate?: boolean;
+  /** Answer for a date-only event on the day this account's balance was confirmed. */
+  baselineTiming?: BalanceTiming;
 }
 
 interface NativeSms {
@@ -1351,6 +1356,7 @@ export class SmsReviewService {
             description: payment.merchant,
             reference: item.reference,
             origin: 'SMS',
+            balanceTiming: edits.fundingTiming,
             createdAt: now,
             updatedAt: now,
           },
@@ -1792,6 +1798,8 @@ export class SmsReviewService {
             defaultBankCategory(approval.purpose, description, this.store.categories());
           if (!(await tx.query('SELECT id FROM categories WHERE id=?', [categoryId])).length)
             throw new Error('Choose an existing category.');
+          if (!approval.baselineTiming && needsBaselineConfirmation(source, settings, date, time))
+            throw new Error(TIMING_QUESTION);
           transaction = applyBankCashTransaction(
             sources,
             null,
@@ -1810,6 +1818,7 @@ export class SmsReviewService {
               bankName,
               accountSuffix,
               origin: 'SMS',
+              balanceTiming: approval.baselineTiming,
               attachmentIds: [],
               createdAt: now,
               updatedAt: now,
@@ -1876,6 +1885,7 @@ export class SmsReviewService {
               description: description || undefined,
               reference: item.reference,
               origin: 'SMS',
+              balanceTiming: approval.baselineTiming,
               createdAt: now,
               updatedAt: now,
             },
@@ -1964,6 +1974,7 @@ export class SmsReviewService {
             description: description || undefined,
             reference: item.reference,
             origin: 'SMS',
+            balanceTiming: approval.baselineTiming,
             createdAt: now,
             updatedAt: now,
           },

@@ -142,4 +142,73 @@ class SmsBankParserTest {
     assertEquals("DEBIT", atm.direction)
     assertEquals("CASH_WITHDRAWAL", atm.purposeHint)
   }
+
+  @Test fun counterpartyAccountMentionedBeforeCustomerAccount() {
+    val r = parse("Rs 500.00 debited from a/c XX9081 has been credited to your a/c XX6042 on 12-10-2026. UPI Ref 735182094630")
+    assertEquals("CREDIT", r.direction)
+    assertEquals("6042", r.accountDigits)
+    assertEquals("9081", r.counterpartyAccountDigits)
+    assertEquals(50000L, r.amountMinor)
+    assertNotEquals("PURCHASE", r.purposeHint)
+    assertTrue(r.requiresReview)
+  }
+
+  @Test fun receivingAccountCreditedWhileSenderDebited() {
+    val r = parse("Dear Customer, a/c XX9081 debited and your a/c XX6042 credited for INR 1,200.00 on 03-10-2026. IMPS Ref 735182094631")
+    assertEquals(SmsTransactionParser.Kind.BANK_CREDIT, r.kind)
+    assertEquals("CREDIT", r.direction)
+    assertEquals("6042", r.accountDigits)
+    assertEquals("9081", r.counterpartyAccountDigits)
+    assertEquals(120000L, r.amountMinor)
+    assertEquals("ACCOUNT_TRANSFER", r.purposeHint)
+  }
+
+  @Test fun merchantCreditedWhileCustomerDebited() {
+    val r = parse("FRESH MART MARKET credited with Rs 217.00 on 18-Oct-26; your A/c XX417 debited. UPI:735182094632")
+    assertEquals(SmsTransactionParser.Kind.BANK_DEBIT, r.kind)
+    assertEquals("DEBIT", r.direction)
+    assertEquals("417", r.accountDigits)
+    assertEquals(21700L, r.amountMinor)
+    assertEquals("PURCHASE", r.purposeHint)
+  }
+
+  @Test fun reversedCreditedDebitedOrderFollowsCustomerAccount() {
+    val debit = parse("Payee a/c XX9081 credited with Rs 650.00 on 05-10-2026; your a/c XX6042 debited. UPI Ref 735182094633")
+    assertEquals("DEBIT", debit.direction)
+    assertEquals("6042", debit.accountDigits)
+    assertEquals("9081", debit.counterpartyAccountDigits)
+    assertEquals("ACCOUNT_TRANSFER", debit.purposeHint)
+    val credit = parse("Credited INR 650.00 to your A/c XX6042 on 05-10-2026; debited from a/c XX9081. UPI Ref 735182094634")
+    assertEquals("CREDIT", credit.direction)
+    assertEquals("6042", credit.accountDigits)
+    val sent = parse("Rs.650.00 sent to A/c XX9081 from A/c XX6042 on 05-10-2026. UPI Ref 735182094636")
+    assertEquals("DEBIT", sent.direction)
+    assertEquals("6042", sent.accountDigits)
+    assertEquals("9081", sent.counterpartyAccountDigits)
+  }
+
+  @Test fun balanceOnlyAlertIsNotATransaction() {
+    assertNull(SmsTransactionParser.parse("Balance in your A/c XX6042 as on 05-10-2026 is INR 12,500.00 after the last credited salary.", receipt))
+    assertNull(SmsTransactionParser.parse("Avl Bal in A/c XX6042 is INR 12,500.00 on 05-10-2026.", receipt))
+  }
+
+  @Test fun cardAndLoanRepaymentsAreNeverPurchases() {
+    val card = parse("Credit card bill payment of Rs 4,500.00 for card XX1234: your A/c XX6042 debited on 08-10-2026.")
+    assertEquals(SmsTransactionParser.Kind.BANK_DEBIT, card.kind)
+    assertEquals("DEBIT", card.direction)
+    assertEquals("CARD_REPAYMENT", card.purposeHint)
+    val loan = parse("Home Loan account XX7788 credited with EMI Rs 9,800.00 on 09-10-2026; your A/c XX6042 debited.")
+    assertEquals(SmsTransactionParser.Kind.LOAN_DEBIT, loan.kind)
+    assertEquals("DEBIT", loan.direction)
+    assertEquals("6042", loan.accountDigits)
+    assertEquals("LOAN_REPAYMENT", loan.purposeHint)
+  }
+
+  @Test fun conflictingVerbsOnCustomerAccountStayInManualReview() {
+    val r = parse("Rs 300.00 credited to your A/c XX6042 debited on 06-10-2026. UPI Ref 735182094635")
+    assertEquals(SmsTransactionParser.Kind.BANK_TRANSFER, r.kind)
+    assertNull(r.direction)
+    assertNull(r.purposeHint)
+    assertTrue(r.requiresReview)
+  }
 }

@@ -22,6 +22,11 @@ interface StatisticsCycleRange {
   readonly offset: number;
 }
 
+interface ExportRange {
+  readonly startDate: string;
+  readonly endDate: string;
+}
+
 const EXPENSE_TYPES: readonly TransactionType[] = ['PURCHASE', 'FEE', 'INTEREST'];
 const CREDIT_TYPES: readonly TransactionType[] = ['PAYMENT', 'REFUND', 'CASHBACK', 'CREDIT'];
 
@@ -34,59 +39,68 @@ export class ExportService {
     format: ExportFormat,
     period: ExportPeriod,
     candidates: readonly CardTransaction[],
+    sourceId = 'ALL',
   ): void {
-    const transactions = this.inPeriod(candidates, period).sort((left, right) =>
-      right.transactionDate.localeCompare(left.transactionDate),
+    const transactions = this.inPeriod(candidates, period);
+    const transfers = this.transfersIn(this.periodRange(period), sourceId, transactions);
+    this.deliverTransactions(
+      format,
+      transactions,
+      transfers,
+      this.periodLabel(period),
+      `cardnest-transactions-${this.filePeriod(period)}`,
     );
-    const label = this.periodLabel(period);
-    const filename = `cardnest-transactions-${this.filePeriod(period)}`;
-
-    if (format === 'CSV') {
-      const csv = this.transactionsCsv(transactions);
-      void this.deliverCsv(csv, `${filename}.csv`, `CardNest transactions - ${label}`);
-      return;
-    }
-
-    const debits = transactions
-      .filter((item) => !this.isCredit(item.type))
-      .reduce((sum, item) => sum + item.amountMinor, 0);
-    const credits = transactions
-      .filter((item) => this.isCredit(item.type))
-      .reduce((sum, item) => sum + item.amountMinor, 0);
-    const sections = this.transactionSections(transactions);
-    const document: ExportDocument = {
-      title: 'CardNest transaction statement',
-      subtitle: label,
-      generatedOn: this.generatedOn(),
-      summary: [
-        { label: 'Transactions', value: String(transactions.length) },
-        { label: 'Spent / charged', value: this.money(debits) },
-        { label: 'Payments / credits', value: this.money(credits) },
-        { label: 'Net outflow', value: this.money(debits - credits) },
-      ],
-      sections,
-    };
-    void this.deliverPdf(document, `${filename}.pdf`);
   }
 
+  /**
+   * Exports a chosen month or statement. When `scope.range` is supplied (calendar month),
+   * own-account movements are selected by that range and source filter directly, so a month
+   * containing only transfers still exports them. Without a range (card statement), only the
+   * funding transfers linked to the exported payments are included.
+   */
   exportTransactionSelection(
     format: ExportFormat,
     candidates: readonly CardTransaction[],
     label: string,
     filePeriod: string,
+    scope: { readonly range?: ExportRange; readonly sourceId?: string } = {},
   ): void {
-    const transactions = [...candidates].sort((left, right) =>
+    const transfers = scope.range
+      ? this.transfersIn(scope.range, scope.sourceId ?? 'ALL', candidates)
+      : this.linkedFunding(candidates);
+    this.deliverTransactions(
+      format,
+      [...candidates],
+      transfers,
+      label,
+      `cardnest-transactions-${filePeriod}`,
+    );
+  }
+
+  private deliverTransactions(
+    format: ExportFormat,
+    candidates: CardTransaction[],
+    transferCandidates: readonly SourceTransfer[],
+    label: string,
+    filename: string,
+  ): void {
+    const transactions = candidates.sort((left, right) =>
       right.transactionDate.localeCompare(left.transactionDate),
     );
-    const filename = `cardnest-transactions-${filePeriod}`;
+    const transfers = [...transferCandidates].sort((left, right) =>
+      `${right.transferDate}${right.transferTime ?? ''}`.localeCompare(
+        `${left.transferDate}${left.transferTime ?? ''}`,
+      ),
+    );
     if (format === 'CSV') {
       void this.deliverCsv(
-        this.transactionsCsv(transactions),
+        this.transactionsCsv(transactions, transfers),
         `${filename}.csv`,
         `CardNest transactions - ${label}`,
       );
       return;
     }
+    // Transfers move money between the user's own accounts; they never count as spending or income.
     const debits = transactions
       .filter((item) => !this.isCredit(item.type))
       .reduce((sum, item) => sum + item.amountMinor, 0);
@@ -102,8 +116,21 @@ export class ExportService {
         { label: 'Spent / charged', value: this.money(debits) },
         { label: 'Payments / credits', value: this.money(credits) },
         { label: 'Net outflow', value: this.money(debits - credits) },
+        ...(transfers.length
+          ? [
+              {
+                label: 'Transfers & settlements (not spending)',
+                value: `${transfers.length} · ${this.money(
+                  transfers.reduce((sum, item) => sum + item.amountMinor, 0),
+                )}`,
+              },
+            ]
+          : []),
       ],
-      sections: this.transactionSections(transactions),
+      sections: [
+        ...this.transactionSections(transactions),
+        ...(transfers.length ? [this.transferSection(transfers)] : []),
+      ],
     };
     void this.deliverPdf(document, `${filename}.pdf`);
   }
@@ -259,7 +286,43 @@ export class ExportService {
       }));
   }
 
-  private transactionsCsv(transactions: readonly CardTransaction[]): string {
+  private transferSection(transfers: readonly SourceTransfer[]): ExportSection {
+    return {
+      title: 'Transfers & settlements (not spending)',
+      stats: [{ label: 'Entries', value: String(transfers.length) }],
+      headers: ['Date / time', 'Movement', 'From', 'To / purpose', 'Reference', 'Amount'],
+      rows: transfers.map((transfer) => ({
+        cells: [
+          `${this.displayDate(transfer.transferDate)}${
+            transfer.transferTime ? ` ${transfer.transferTime.slice(0, 5)}` : ''
+          }`,
+          transfer.description || transferLabel(transfer.kind),
+          this.transferFrom(transfer),
+          this.transferTo(transfer),
+          transfer.reference ?? '',
+          this.money(transfer.amountMinor),
+        ],
+      })),
+    };
+  }
+
+  private transferFrom(transfer: SourceTransfer): string {
+    return `${this.store.sourceName(transfer.fromSourceId)} (${this.store.sourceDetail(transfer.fromSourceId)})`;
+  }
+
+  private transferTo(transfer: SourceTransfer): string {
+    if (transfer.toSourceId) {
+      return `${this.store.sourceName(transfer.toSourceId)} (${this.store.sourceDetail(transfer.toSourceId)})`;
+    }
+    if (transfer.cardId)
+      return `${transferLabel(transfer.kind)}: ${this.store.sourceName(transfer.cardId)}`;
+    return transferLabel(transfer.kind);
+  }
+
+  private transactionsCsv(
+    transactions: readonly CardTransaction[],
+    transfers: readonly SourceTransfer[],
+  ): string {
     const rows: readonly (readonly string[])[] = [
       [
         'Date',
@@ -267,8 +330,8 @@ export class ExportService {
         'Transaction',
         'Type',
         'Category',
-        'Payment source',
-        'Institution / card',
+        'Payment source / From',
+        'Institution / card / To or purpose',
         'Amount',
         'Direction',
         'Currency',
@@ -287,20 +350,14 @@ export class ExportService {
         item.currencyCode,
         item.notes ?? '',
       ]),
-      ...this.transfersFor(transactions).map((transfer) => [
+      ...transfers.map((transfer) => [
         transfer.transferDate,
         transfer.transferTime ?? '',
-        transfer.description ?? transferLabel(transfer.kind),
+        transfer.description || transferLabel(transfer.kind),
         transferLabel(transfer.kind),
-        'Transfer (not spending)',
-        this.store.sourceName(transfer.fromSourceId),
-        `${this.store.sourceDetail(transfer.fromSourceId)} → ${
-          transfer.toSourceId
-            ? this.store.sourceDetail(transfer.toSourceId)
-            : transfer.cardId
-              ? this.store.sourceName(transfer.cardId)
-              : 'Loan repayment'
-        }`,
+        'Transfer / settlement (not spending)',
+        this.transferFrom(transfer),
+        this.transferTo(transfer),
         (transfer.amountMinor / 100).toFixed(2),
         'Transfer',
         transfer.currencyCode,
@@ -310,20 +367,38 @@ export class ExportService {
     return `\uFEFF${rows.map((row) => row.map((cell) => this.csvCell(cell)).join(',')).join('\r\n')}`;
   }
 
-  /** Own-account movements in the exported date range, shown once and never as spending. */
-  private transfersFor(transactions: readonly CardTransaction[]): readonly SourceTransfer[] {
-    if (!transactions.length) return [];
-    const dates = transactions.map((item) => item.transactionDate).sort();
-    const sources = new Set(transactions.map((item) => item.cardId));
+  /**
+   * Own-account movements selected by the requested range and source filter directly (not by
+   * the dates of exported purchases), plus funding linked to any exported payment. Each
+   * transfer appears once.
+   */
+  private transfersIn(
+    range: ExportRange | null,
+    sourceId: string,
+    transactions: readonly CardTransaction[],
+  ): readonly SourceTransfer[] {
+    const selected = new Map<string, SourceTransfer>();
+    for (const transfer of this.store.transfers()) {
+      const inRange =
+        !range ||
+        (transfer.transferDate >= range.startDate && transfer.transferDate <= range.endDate);
+      const matchesSource =
+        sourceId === 'ALL' ||
+        transfer.fromSourceId === sourceId ||
+        transfer.toSourceId === sourceId ||
+        transfer.cardId === sourceId;
+      if (inRange && matchesSource) selected.set(transfer.id, transfer);
+    }
+    for (const transfer of this.linkedFunding(transactions)) selected.set(transfer.id, transfer);
+    return [...selected.values()];
+  }
+
+  private linkedFunding(transactions: readonly CardTransaction[]): readonly SourceTransfer[] {
+    const ids = new Set(transactions.map((item) => item.id));
     return this.store
       .transfers()
       .filter(
-        (transfer) =>
-          transfer.transferDate >= dates[0] &&
-          transfer.transferDate <= dates[dates.length - 1] &&
-          (sources.has(transfer.fromSourceId) ||
-            (!!transfer.toSourceId && sources.has(transfer.toSourceId)) ||
-            (!!transfer.cardId && sources.has(transfer.cardId))),
+        (transfer) => !!transfer.paymentTransactionId && ids.has(transfer.paymentTransactionId),
       );
   }
 

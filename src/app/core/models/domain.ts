@@ -122,7 +122,13 @@ export interface CardTransaction {
   origin?: 'SMS' | 'MANUAL';
   /** Exact Bank/Cash balance change applied by this entry, so edits and deletes reverse it once. */
   balanceEffect?: AppliedBalanceEffect;
+  /** User's answer for an untimed entry on the balance-confirmation day. */
+  balanceTiming?: BalanceTiming;
+  /** When `balanceTiming` was answered; an answer older than the current balance is stale. */
+  balanceTimingAt?: string;
 }
+
+export type BalanceTiming = 'AFTER_BASELINE' | 'INCLUDED_IN_BASELINE';
 
 export interface AppliedBalanceEffect {
   sourceId: string;
@@ -149,6 +155,8 @@ export interface SourceTransfer {
   reference?: string;
   origin: 'SMS' | 'MANUAL';
   effects?: readonly AppliedBalanceEffect[];
+  balanceTiming?: BalanceTiming;
+  balanceTimingAt?: string;
   createdAt: string;
   updatedAt: string;
 }

@@ -133,6 +133,8 @@ export class ExportDialog {
   readonly transactions = input.required<readonly CardTransaction[]>();
   readonly statementChoices = input<readonly TransactionExportChoice[]>([]);
   readonly monthChoices = input<readonly TransactionExportChoice[]>([]);
+  /** Payment-source filter applied on the page; transfers are scoped by it directly. */
+  readonly sourceFilter = input('ALL');
   readonly initialFormat = input<ExportFormat>('PDF');
   readonly closed = output<void>();
   readonly format = linkedSignal(() => this.initialFormat());
@@ -172,6 +174,7 @@ export class ExportDialog {
         this.format(),
         this.range() as ExportPeriod,
         this.transactions(),
+        this.sourceFilter(),
       );
       this.closed.emit();
       return;
@@ -183,7 +186,16 @@ export class ExportDialog {
       choice.transactions,
       choice.label,
       choice.value,
+      this.scope() === 'MONTH'
+        ? { range: monthRange(choice.value), sourceId: this.sourceFilter() }
+        : {},
     );
     this.closed.emit();
   }
+}
+
+function monthRange(value: string): { startDate: string; endDate: string } {
+  const [year, month] = value.split('-').map(Number);
+  const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return { startDate: `${value}-01`, endDate: `${value}-${String(lastDay).padStart(2, '0')}` };
 }

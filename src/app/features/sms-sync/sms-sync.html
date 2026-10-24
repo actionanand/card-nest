@@ -788,6 +788,30 @@
                   >Only an account you choose is deducted, once. The card payment is never counted
                   as a purchase.</small
                 >
+                @if (fundingTimingNeeded()) {
+                  <fieldset class="timing-choice">
+                    <legend>
+                      This message has no time and is dated on the day the bank balance was
+                      confirmed.
+                    </legend>
+                    <label class="check"
+                      ><input
+                        type="radio"
+                        formControlName="fundingTiming"
+                        value="AFTER_BASELINE"
+                      /><span>Paid after the balance was confirmed — deduct it</span></label
+                    >
+                    <label class="check"
+                      ><input
+                        type="radio"
+                        formControlName="fundingTiming"
+                        value="INCLUDED_IN_BASELINE"
+                      /><span
+                        >Already included in the confirmed balance — do not deduct again</span
+                      ></label
+                    >
+                  </fieldset>
+                }
               }
               @if (matches().length) {
                 <p class="match-note">
@@ -1027,6 +1051,28 @@
               @if (bankDeductionNotice(); as deduction) {
                 <p class="review-notice-text">{{ deduction }}</p>
               }
+              @if (bankTimingNeeded()) {
+                <fieldset class="timing-choice">
+                  <legend>
+                    This message has no time and is dated on the day a selected balance was
+                    confirmed.
+                  </legend>
+                  <label class="check"
+                    ><input type="radio" formControlName="timing" value="AFTER_BASELINE" /><span
+                      >It happened after the balance was confirmed — update the balance</span
+                    ></label
+                  >
+                  <label class="check"
+                    ><input
+                      type="radio"
+                      formControlName="timing"
+                      value="INCLUDED_IN_BASELINE"
+                    /><span
+                      >It is already included in the confirmed balance — record only</span
+                    ></label
+                  >
+                </fieldset>
+              }
               @if (bankPurpose()) {
                 <label class="check"
                   ><input type="checkbox" formControlName="separate" /><span
@@ -1034,7 +1080,15 @@
                   ></label
                 >
               }
-              <button class="btn btn-primary" type="submit" [disabled]="saving() || !bankPurpose()">
+              <button
+                class="btn btn-primary"
+                type="submit"
+                [disabled]="
+                  saving() ||
+                  !bankPurpose() ||
+                  (bankTimingNeeded() && !bankEditor.controls.timing.value)
+                "
+              >
                 {{ bankSubmitLabel() }}
               </button>
             </form>
