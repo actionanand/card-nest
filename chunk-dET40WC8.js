@@ -1,0 +1,1 @@
+function o(e,n,t){if(!n||!e||!/^(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?$/.test(e))return "";let[r,i]=e.split(":").map(Number);return new Intl.DateTimeFormat(t,{hour:"numeric",minute:"2-digit",timeZone:"UTC"}).format(new Date(Date.UTC(2e3,0,1,r,i)))}export{o};
