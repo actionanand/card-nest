@@ -27,7 +27,11 @@ object SmsTransactionParser {
     val eventTime: String, val timeZone: String, val cardNetwork: String?, val confidence: String,
     val earnedForPeriod: String?, val statementDate: String?, val merchantEvidence: String? = null,
     val balancePosition: String = "UNKNOWN", val eventTimeExplicit: Boolean = false,
-    val parserVersion: Int = 3, val legacyId: String? = null, val standingInstructionReference: String? = null
+    val parserVersion: Int = 3, val legacyId: String? = null, val standingInstructionReference: String? = null,
+    /** Movement of the customer's own (primary) account, never the counterparty's. */
+    val direction: String? = null, val counterpartyAccountDigits: String? = null,
+    /** Review hint only: PURCHASE, INCOMING, ACCOUNT_TRANSFER, CARD_REPAYMENT, LOAN_REPAYMENT, CASH_WITHDRAWAL. */
+    val purposeHint: String? = null
   )
   private fun rx(s: String) = Regex(s, RegexOption.IGNORE_CASE)
   private const val NUMBER = "([0-9][0-9,]*(?:\\.[0-9]{1,2})?)(?![0-9]|\\.[0-9])"
@@ -60,6 +64,14 @@ object SmsTransactionParser {
     val card = !meal && !tag && has("card") && !has("debit card")
     val debit = has("\\b(spent|debited|charged|sent|toll paid)\\b") || has("transaction of.+was made using|thank you for using.+card")
     val credit = has("\\b(credited|received)\\b")
+    // The first money verb describes the primary account ("A/c X debited ...; PAYEE credited").
+    val debitAt = rx("\\b(?:debited|spent|sent|withdrawn|charged|paid)\\b").find(flat)?.range?.first
+    val creditAt = rx("\\b(?:credited|received|deposited)\\b|\\b(?:neft|imps|rtgs|upi)\\s+credit\\b|\\bcredit of\\b").find(flat)?.range?.first
+    val direction = if (!bank) null else when {
+      debitAt != null && (creditAt == null || debitAt < creditAt) -> "DEBIT"
+      creditAt != null -> "CREDIT"
+      else -> null
+    }
     val mealTopup = has("\\b(credited|received|loaded|recharged|topped up)\\b")
     val mealDebit = has("\\b(spent|debited)\\b")
     val due = has("is due|due on|due by|payable by|amount due|minimum due|emi reminder")
@@ -91,9 +103,9 @@ object SmsTransactionParser {
       loan && debit && bank -> Kind.LOAN_DEBIT
       card && purchase && (!bank || has("(?:spent|charged).{0,40}(?:your|using|on).{0,20}card|(?:credit card|card)[x*0-9\\s]{0,20}debited")) -> Kind.PURCHASE
       bank && debit && has("\\bcred\\b|cheq|ccbp") -> Kind.PAYMENT_INITIATED
-      bank && has("sent from|credited.+debited from") -> Kind.BANK_TRANSFER
-      bank && debit -> Kind.BANK_DEBIT
-      bank && credit -> Kind.BANK_CREDIT
+      bank && has("sent from|credited.+debited from|debited.+credited to (?:your )?(?:a/c|acct|acc|account)\\b") -> Kind.BANK_TRANSFER
+      bank && direction == "DEBIT" -> Kind.BANK_DEBIT
+      bank && direction == "CREDIT" -> Kind.BANK_CREDIT
       else -> return null
     }
     val total = value(flat, "total (?:statement amount|amount due|amt|due)(?: of)?|statement total(?: due)?|total(?: of)?")
@@ -111,14 +123,25 @@ object SmsTransactionParser {
     val digits = rx("\\b(?:credit card|card|bobcard)(?:\\s+(?:no\\.?|ending(?: with)?))?\\s*[x*]*\\s*([0-9]{4,5})\\b")
       .find(flat)?.groupValues?.get(1)
       ?: if (meal) rx("\\b(?:meal card|wallet|card)(?:\\s+(?:number|no\\.?|ending(?:\\s+(?:with|in))?))?\\s*[:#-]?\\s*(?:[x*]\\s*)*([0-9]{4})\\b").find(flat)?.groupValues?.get(1) else null
-    val account = rx("\\b(?:acct|acc|a/c|account)\\s*(?:no\\.?\\s*)?(?:[0-9]*[x*]+)([0-9]{3,5})\\b").find(flat)?.groupValues?.get(1)
+    val accounts = rx("\\b(?:acct|acc|a/c|account)\\s*(?:no\\.?\\s*)?(?:[0-9]*[x*]+)([0-9]{3,5})\\b").findAll(flat).map { it.groupValues[1] }.toList()
+    val account = accounts.firstOrNull()
+    val counterpartyAccount = accounts.drop(1).firstOrNull { it != account }
     val issuer = listOf("Pluxee" to "pluxee|sodexo", "Axis" to "axis", "ICICI" to "icici",
       "HDFC" to "hdfc", "PNB" to "pnb", "AMEX" to "amex|american express", "Standard Chartered" to "stanchart|standard chartered",
       "Federal" to "federal", "BOBCARD" to "bobcard", "IDFC FIRST" to "idfc", "AU Bank" to "au bank", "Slice" to "slice")
       .firstOrNull { has(it.second) }?.first
-    val ref = rx("\\b(?:UPI\\s*(?:ref(?:erence)?\\s*(?:no\\.?)?)?|RRN|UTR|Ref(?:erence)?\\s*(?:No\\.?)?)\\s*[:#.]?\\s*([A-Z0-9]{9,30})\\b")
+    val ref = rx("\\b(?:UPI\\s*(?:ref(?:erence)?\\s*(?:no\\.?)?)?|RRN|UTR|Ref(?:erence)?\\s*(?:No\\.?|ID)?)\\s*[:#.]?\\s*([A-Z0-9]{9,30})\\b")
       .find(flat)?.groupValues?.get(1)
-    val merchant = rx("\\bfor (.+?) has been charged").find(flat)?.groupValues?.get(1)
+    val bankEvent = kind in setOf(Kind.BANK_DEBIT, Kind.BANK_CREDIT, Kind.BANK_TRANSFER)
+    // Counterparty names are descriptions only; an account mention is never a payee name.
+    val accountWords = rx("\\b(?:a/c|acct|acc|account|savings)\\b")
+    fun payee(pattern: String) = rx(pattern).find(flat)?.groupValues?.get(1)?.takeIf { !accountWords.containsMatchIn(it) }
+    val counterparty = if (!bankEvent) null else
+      payee(";\\s*(.+?)\\s+credited\\b")
+        ?: payee("\\bfrom\\s+(?!(?:your\\s+)?(?:a/c|acct|acc|account)\\b)([A-Za-z][^.;(]*?)(?=\\s+(?:via|on|ref|upi|through)\\b|\\s*[.;(]|$)")
+        ?: payee("\\bto\\s+(?!(?:your\\s+)?(?:a/c|acct|acc|account)\\b)([A-Za-z][^.;(]*?)(?=\\s+(?:via|on|ref|upi|through)\\b|\\s*[.;(]|$)")
+        ?: payee("\\btowards\\s+([A-Za-z][^.;(]*?)(?=\\s+for\\b|\\s*[.;(]|$)")
+    val merchant = if (bankEvent) counterparty else rx("\\bfor (.+?) has been charged").find(flat)?.groupValues?.get(1)
       ?: rx("\\bby (.+?) on [0-9]{1,2}[-/]").find(flat)?.groupValues?.get(1)
       ?: rx("\\bat\\s+(.+?)(?=\\s+(?:on|via|through|avl|wallet bal)\\b|\\s*\\.\\s*Avl|$)").find(flat)?.groupValues?.get(1)
       ?: safe.lines().getOrNull(3)?.takeIf { has("spent") && !it.contains("limit", true) }
@@ -135,8 +158,8 @@ object SmsTransactionParser {
       ?.trim()?.trimEnd('.', ',', ';')?.takeIf { it.isNotBlank() && !rx("^(?:[0-9\\W]+|(?:[a-z0-9-]+\\.)+[a-z]{2,}(?:/.*)?|[a-z0-9]{18,})$").matches(it) }?.take(100)
     return Result(kind, amount, event.first.toLocalDate().toString(), cleanMerchant,
       digits, account, issuer, ref, value(flat, if (meal)
-        "(?:(?:current\\s+)?meal wallet balance|current balance|(?:avl|available|wallet) bal(?:ance)?)(?:\\s+is)?"
-        else "current meal wallet balance is|current balance|(?:avl|available|wallet) bal(?:ance)?"),
+        "(?:(?:current\\s+)?meal wallet balance|current balance|(?:avl|available|wallet)\\.?\\s*bal(?:ance)?\\.?)(?:\\s+is)?"
+        else "current meal wallet balance is|current balance|(?:avl|available|wallet)\\.?\\s*bal(?:ance)?\\.?"),
       if (tag) rx("\\b[A-Z]{2}\\s?[0-9]{1,2}\\s?[A-Z]{1,3}\\s?[0-9]{4}\\b").find(flat)?.value?.replace(" ", "")?.uppercase(Locale.ROOT) else null,
       eventAt = event.first.toInstant().toString(), receivedAt = receivedAtMillis, dateFallback = event.second,
       availableLimitMinor = value(flat, "(?:avl|available) limit"), statementTotalMinor = total,
@@ -152,6 +175,18 @@ object SmsTransactionParser {
       balancePosition = if (meal && has("(?:current\\s+)?meal wallet balance|current balance|(?:available|avl|wallet) bal(?:ance)?") && !has("before|opening balance")) "AFTER" else "UNKNOWN",
       eventTimeExplicit = event.third,
       standingInstructionReference = rx("\\bSI Hub Id\\s+([A-Z0-9]{6,40})\\b").find(flat)?.groupValues?.get(1),
+      direction = direction, counterpartyAccountDigits = counterpartyAccount,
+      purposeHint = when {
+        !bank -> null
+        kind == Kind.LOAN_DEBIT -> "LOAN_REPAYMENT"
+        kind == Kind.PAYMENT_INITIATED -> "CARD_REPAYMENT"
+        direction == "DEBIT" && has("credit\\s*card\\s*(?:bill|payment|dues?)|towards.{0,40}\\bcard\\b|\\bbbps\\b") -> "CARD_REPAYMENT"
+        direction == "DEBIT" && has("\\batm\\b|cash withdrawal|withdrawn") -> "CASH_WITHDRAWAL"
+        kind == Kind.BANK_TRANSFER && counterpartyAccount != null -> "ACCOUNT_TRANSFER"
+        direction == "CREDIT" -> "INCOMING"
+        direction == "DEBIT" -> "PURCHASE"
+        else -> null
+      },
       legacyId = if (kind == Kind.STATEMENT || kind == Kind.PAYMENT_REMINDER) fingerprint(text) else null)
   }
 

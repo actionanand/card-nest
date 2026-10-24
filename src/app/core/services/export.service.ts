@@ -1,7 +1,8 @@
 import { Service, inject } from '@angular/core';
 import { Capacitor } from '@capacitor/core';
 import { NativeExport } from './native-export';
-import { CardTransaction, TransactionType } from '../models/domain';
+import { CardTransaction, SourceTransfer, TransactionType } from '../models/domain';
+import { transferLabel } from './source-balance';
 import {
   ExportDocument,
   ExportFormat,
@@ -286,8 +287,44 @@ export class ExportService {
         item.currencyCode,
         item.notes ?? '',
       ]),
+      ...this.transfersFor(transactions).map((transfer) => [
+        transfer.transferDate,
+        transfer.transferTime ?? '',
+        transfer.description ?? transferLabel(transfer.kind),
+        transferLabel(transfer.kind),
+        'Transfer (not spending)',
+        this.store.sourceName(transfer.fromSourceId),
+        `${this.store.sourceDetail(transfer.fromSourceId)} → ${
+          transfer.toSourceId
+            ? this.store.sourceDetail(transfer.toSourceId)
+            : transfer.cardId
+              ? this.store.sourceName(transfer.cardId)
+              : 'Loan repayment'
+        }`,
+        (transfer.amountMinor / 100).toFixed(2),
+        'Transfer',
+        transfer.currencyCode,
+        transfer.reference ? `Ref ${transfer.reference}` : '',
+      ]),
     ];
     return `\uFEFF${rows.map((row) => row.map((cell) => this.csvCell(cell)).join(',')).join('\r\n')}`;
+  }
+
+  /** Own-account movements in the exported date range, shown once and never as spending. */
+  private transfersFor(transactions: readonly CardTransaction[]): readonly SourceTransfer[] {
+    if (!transactions.length) return [];
+    const dates = transactions.map((item) => item.transactionDate).sort();
+    const sources = new Set(transactions.map((item) => item.cardId));
+    return this.store
+      .transfers()
+      .filter(
+        (transfer) =>
+          transfer.transferDate >= dates[0] &&
+          transfer.transferDate <= dates[dates.length - 1] &&
+          (sources.has(transfer.fromSourceId) ||
+            (!!transfer.toSourceId && sources.has(transfer.toSourceId)) ||
+            (!!transfer.cardId && sources.has(transfer.cardId))),
+      );
   }
 
   private breakdown(

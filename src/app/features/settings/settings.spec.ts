@@ -57,7 +57,14 @@ describe('Explicit backup destination choice', () => {
     fixture.detectChanges();
     fixture.componentInstance.backupPassphrase.set('synthetic-unsaved');
     const before = location.href;
-    for (const id of ['security', 'appearance', 'defaults', 'notifications', 'data'] as const) {
+    for (const id of [
+      'security',
+      'appearance',
+      'defaults',
+      'bank-cash',
+      'notifications',
+      'data',
+    ] as const) {
       const section = fixture.nativeElement.querySelector(`#${id}`) as HTMLElement;
       const scroll = vi.fn();
       section.scrollIntoView = scroll;

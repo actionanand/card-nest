@@ -1,0 +1,138 @@
+import { PaymentSource, CardTransaction } from '../../core/models/domain';
+import {
+  SmsEvidence,
+  accountSuffixMatches,
+  bankDirection,
+  bankExistingSuggestions,
+  bankPurposes,
+  bankSourceConflict,
+  defaultBankCategory,
+  defaultBankPurpose,
+  ledgerType,
+  matchingBankAccounts,
+  suggestedBankSources,
+  validEvidence,
+} from './sms-model';
+
+/** Fictional identifiers only. */
+describe('Bank/UPI review model', () => {
+  const on = { enabled: true, askCardSettlementFunding: true };
+  const off = { enabled: false, askCardSettlementFunding: false };
+  const evidence = (changes: Partial<SmsEvidence> = {}): SmsEvidence => ({
+    id: 'b'.repeat(64),
+    providerId: '7',
+    parserVersion: 3,
+    kind: 'BANK_DEBIT',
+    direction: 'DEBIT',
+    purposeHint: 'PURCHASE',
+    amountMinor: 45000,
+    currency: 'INR',
+    eventDate: '2026-10-21',
+    eventAt: '2026-10-20T18:30:00Z',
+    receivedAt: 1792540800000,
+    dateFallback: false,
+    issuer: 'ICICI',
+    accountDigits: '417',
+    merchant: 'HILL FARM MEATS',
+    reference: '735182094619',
+    evidence: 'Synthetic',
+    ...changes,
+  });
+  const account = (changes: Partial<PaymentSource>): PaymentSource => ({
+    id: 'account',
+    nickname: 'Account',
+    kind: 'DEBIT',
+    noLimit: true,
+    autoLoad: false,
+    archived: false,
+    ...changes,
+  });
+  const sources = [
+    account({ id: 'source-debit', nickname: 'Bank / UPI', institution: 'Primary bank' }),
+    account({ id: 'icici', institution: 'ICICI Bank', lastDigits: '417' }),
+    account({ id: 'other-bank', institution: 'Federal Bank', lastDigits: '417' }),
+    account({ id: 'scb', institution: 'Standard Chartered', lastDigits: '6042' }),
+  ];
+
+  it('offers purchase review for a plain debit even with tracking off, never auto-ledgered', () => {
+    const item = evidence();
+    expect(ledgerType(item)).toBeUndefined();
+    expect(bankPurposes(item, off)).toEqual(['PURCHASE']);
+    expect(defaultBankPurpose(item, off)).toBe('PURCHASE');
+    expect(bankPurposes(item, on)).toEqual(['PURCHASE', 'TRANSFER', 'CARD_SETTLEMENT']);
+  });
+
+  it('never defaults credits, transfers or repayments to spending', () => {
+    const credit = evidence({ kind: 'BANK_CREDIT', direction: 'CREDIT', purposeHint: 'INCOMING' });
+    expect(bankPurposes(credit, off)).toEqual(['INCOME']);
+    expect(defaultBankPurpose(credit, on)).toBe('');
+    const transfer = evidence({ kind: 'BANK_TRANSFER', purposeHint: 'ACCOUNT_TRANSFER' });
+    expect(defaultBankPurpose(transfer, off)).toBe('');
+    expect(bankPurposes(transfer, off)).toEqual(['PURCHASE']);
+    const card = evidence({ purposeHint: 'CARD_REPAYMENT' });
+    expect(bankPurposes(card, off)).toEqual([]);
+    expect(bankPurposes(card, on)).not.toContain('PURCHASE');
+    const loan = evidence({ kind: 'LOAN_DEBIT', purposeHint: 'LOAN_REPAYMENT' });
+    expect(bankPurposes(loan, on)).toEqual(['LOAN_REPAYMENT']);
+    expect(bankPurposes(evidence({ kind: 'BANK_TRANSFER', direction: undefined }), on)).toEqual([]);
+    expect(bankDirection(evidence({ kind: 'BANK_CREDIT', direction: undefined }))).toBe('CREDIT');
+  });
+
+  it('matches accounts by suffix and bank, never by suffix alone across banks', () => {
+    expect(accountSuffixMatches('417', '0417')).toBe(true);
+    expect(accountSuffixMatches('6042', '56042')).toBe(true);
+    expect(accountSuffixMatches('417', '418')).toBe(false);
+    expect(matchingBankAccounts(evidence(), sources).map((source) => source.id)).toEqual(['icici']);
+    expect(
+      matchingBankAccounts(evidence({ issuer: undefined }), sources).map((source) => source.id),
+    ).toEqual(['icici', 'other-bank']);
+    expect(suggestedBankSources(evidence({ issuer: undefined }), sources, off)).toEqual([]);
+    expect(suggestedBankSources(evidence(), sources, on)).toEqual(['icici']);
+    expect(suggestedBankSources(evidence({ accountDigits: '999' }), sources, off)).toEqual([
+      'source-debit',
+    ]);
+    expect(suggestedBankSources(evidence({ accountDigits: '999' }), sources, on)).toEqual([]);
+    expect(bankSourceConflict(evidence({ accountDigits: '999' }), sources[1])).toContain('suffix');
+    expect(bankSourceConflict(evidence(), sources[2])).toContain('bank differs');
+    expect(bankSourceConflict(evidence(), sources[0])).toBe('');
+  });
+
+  it('suggests duplicates only without conflicting references and picks safe categories', () => {
+    const manual: CardTransaction = {
+      id: 'manual',
+      cardId: 'icici',
+      type: 'PURCHASE',
+      amountMinor: 45000,
+      currencyCode: 'INR',
+      transactionDate: '2026-10-21',
+      categoryId: 'other',
+      attachmentIds: [],
+      createdAt: 'now',
+      updatedAt: 'now',
+    };
+    expect(bankExistingSuggestions(evidence(), 'PURCHASE', 'icici', [manual])).toEqual([manual]);
+    expect(
+      bankExistingSuggestions(evidence(), 'PURCHASE', 'icici', [
+        { ...manual, reference: '735182099999' },
+      ]),
+    ).toEqual([]);
+    expect(bankExistingSuggestions(evidence(), 'CREDIT', 'icici', [manual])).toEqual([]);
+    const categories = [
+      { id: 'groceries', archived: false, appliesTo: 'BOTH' as const },
+      { id: 'dining', archived: false, appliesTo: 'BOTH' as const },
+      { id: 'income', archived: false, appliesTo: 'CREDIT' as const },
+      { id: 'other', archived: false, appliesTo: 'BOTH' as const },
+    ];
+    expect(defaultBankCategory('PURCHASE', 'HILL FARM MEATS', categories)).toBe('groceries');
+    expect(defaultBankCategory('PURCHASE', 'COFFEE STALL', categories)).toBe('dining');
+    expect(defaultBankCategory('PURCHASE', 'HOME RENT PORTAL', categories)).toBe('other');
+    expect(defaultBankCategory('INCOME', 'JAMIE RIVERS', categories)).toBe('income');
+    expect(defaultBankCategory('INCOME', undefined, [])).toBe('other');
+  });
+
+  it('validates bank evidence fields', () => {
+    expect(validEvidence(evidence())).toBe(true);
+    expect(validEvidence({ ...evidence(), direction: 'SIDEWAYS' })).toBe(false);
+    expect(validEvidence({ ...evidence(), counterpartyAccountDigits: '12' })).toBe(false);
+  });
+});

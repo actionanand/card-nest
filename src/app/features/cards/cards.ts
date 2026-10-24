@@ -79,6 +79,20 @@ export class CardsPage {
   readonly paymentAmount = signal('');
   readonly paymentError = signal<string | null>(null);
   readonly paymentConfirmationOpen = signal(false);
+  readonly paymentFundingSourceId = signal('');
+  readonly paymentSaving = signal(false);
+  readonly paymentFundingOptions = computed<readonly AppSelectOption[]>(() => [
+    { value: '', label: 'Do not deduct from a bank account' },
+    ...this.store.cardSettlementFundingAccounts().map((source) => ({
+      value: source.id,
+      label: this.store.sourceDetail(source.id),
+      detail: `Balance ${this.money(source.balanceMinor ?? 0, 'INR')}`,
+    })),
+  ]);
+  paymentFundingLabel(): string {
+    const id = this.paymentFundingSourceId();
+    return id ? this.store.sourceDetail(id) : '';
+  }
   readonly search = signal('');
   readonly formError = signal<string | null>(null);
   readonly draftBenefits = signal<readonly CardBenefit[]>([]);
@@ -922,6 +936,7 @@ export class CardsPage {
     this.paymentCard.set(card);
     this.paymentMode.set(mode);
     this.paymentAmount.set(String(amount / 100));
+    this.paymentFundingSourceId.set('');
     this.paymentError.set(null);
     this.actionMenuId.set(null);
   }
@@ -938,20 +953,38 @@ export class CardsPage {
   paymentMinor(): number {
     return parseMoneyToMinor(this.paymentAmount()) ?? 0;
   }
-  confirmPayment(): void {
+  async confirmPayment(): Promise<void> {
     const card = this.paymentCard();
     const amount = parseMoneyToMinor(this.paymentAmount());
-    if (!card || !amount) return;
+    if (!card || !amount || this.paymentSaving()) return;
     const label =
       this.paymentMode() === 'DUE'
         ? 'Due amount paid'
         : this.paymentMode() === 'OUTSTANDING'
           ? 'Outstanding paid'
           : 'Card payment';
-    this.store.recordPayment(card.id, amount, label);
+    const funding = this.paymentFundingSourceId();
+    if (funding) {
+      this.paymentSaving.set(true);
+      try {
+        await this.store.recordFundedPayment(card.id, amount, label, funding);
+      } catch (error: unknown) {
+        this.paymentConfirmationOpen.set(false);
+        this.paymentError.set(
+          error instanceof Error ? error.message : 'The payment could not be saved.',
+        );
+        return;
+      } finally {
+        this.paymentSaving.set(false);
+      }
+    } else this.store.recordPayment(card.id, amount, label);
     this.paymentConfirmationOpen.set(false);
     this.paymentCard.set(null);
-    this.snackbar.show(`${this.money(amount, card.currencyCode)} payment recorded.`);
+    this.snackbar.show(
+      funding
+        ? `${this.money(amount, card.currencyCode)} payment recorded and deducted from ${this.store.sourceDetail(funding)}.`
+        : `${this.money(amount, card.currencyCode)} payment recorded.`,
+    );
   }
   delete(card: CreditCard): void {
     this.deleteCandidate.set(card);

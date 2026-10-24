@@ -1,5 +1,6 @@
 import { Service, computed, inject, signal } from '@angular/core';
 import {
+  BankCashTrackingSettings,
   CardTransaction,
   CardStatement,
   Category,
@@ -11,9 +12,27 @@ import {
   MonthlyIncomeRecord,
   PaymentSource,
   RecurringRule,
+  SourceBalanceAdjustment,
+  SourceTransfer,
 } from '../models/domain';
 import { DatabaseSession, SqliteDatabase } from '../data/sqlite-database';
 import { walletEffectApplies } from './wallet-anchor';
+import {
+  BANK_CASH_TRACKING_KEY,
+  DEFAULT_BANK_CASH_TRACKING,
+  applyBankCashTransaction,
+  applyTransferEffects,
+  applyWalletTransaction,
+  bankAccountLabel,
+  bankCashTracked,
+  isBankOrCash,
+  liquidTotals,
+  parseBankCashTracking,
+  reverseBalanceEffect,
+  reverseTransferEffects,
+  transferKindFor,
+  validTransferDate,
+} from './source-balance';
 import {
   excludesStatementDayTransactions,
   isTransactionIncludedInStatement,
@@ -131,6 +150,7 @@ const CATEGORIES: readonly Category[] = [
   ['subscription', 'Subscription', 'subscriptions', '#65758b'],
   ['payment', 'Card Payment', 'payments', '#4e9d73'],
   ['contra-expenses', 'Contra-expenses', 'banknote_arrow_down', '#4e9d73'],
+  ['income', 'Income', 'banknote_arrow_up', '#3f8f63'],
   ['other', 'Other', 'category', '#7a8797'],
 ].map(
   ([id, name, icon, colour]) =>
@@ -139,7 +159,8 @@ const CATEGORIES: readonly Category[] = [
       name,
       icon,
       colour,
-      appliesTo: id === 'payment' || id === 'contra-expenses' ? 'CREDIT' : 'BOTH',
+      appliesTo:
+        id === 'payment' || id === 'contra-expenses' || id === 'income' ? 'CREDIT' : 'BOTH',
       archived: false,
     }) as Category,
 );
@@ -259,6 +280,22 @@ export class CardNestStore {
   readonly highlightDashboardSpending = signal(true);
   readonly flashTransactionSourceId = signal(readFlashSourcePreference() ?? '');
   readonly snoozedReminderCardIds = signal<readonly string[]>([]);
+  readonly bankCashTracking = signal<BankCashTrackingSettings>({ ...DEFAULT_BANK_CASH_TRACKING });
+  readonly transfers = signal<readonly SourceTransfer[]>([]);
+  readonly balanceAdjustments = signal<readonly SourceBalanceAdjustment[]>([]);
+  readonly liquidFunds = computed(() =>
+    liquidTotals(this.paymentSources(), this.bankCashTracking()),
+  );
+  readonly bankAccounts = computed(() =>
+    this.paymentSources().filter((source) => source.kind === 'DEBIT' && !source.archived),
+  );
+  /** Bank accounts that may fund a card settlement: both toggles on and a confirmed balance. */
+  readonly cardSettlementFundingAccounts = computed(() => {
+    const settings = this.bankCashTracking();
+    return settings.enabled && settings.askCardSettlementFunding
+      ? this.bankAccounts().filter((source) => bankCashTracked(source, settings))
+      : [];
+  });
   readonly profileDisplayName = computed(() => {
     const name = this.profileName().trim();
     return name ? [this.profileTitle(), name].filter(Boolean).join(' ') : '';
@@ -331,7 +368,7 @@ export class CardNestStore {
     );
     const preferences = await this.database.query<{ key: string; encrypted_value: string }>(
       `SELECT key, encrypted_value FROM app_preferences
-       WHERE key IN ('budget_cycle_start_day', 'monthly_budget_minor', 'profile_title', 'profile_name', 'default_country_code', 'default_currency_code', 'emi_minimum_minor', 'spend_highlight_threshold_minor', 'highlight_dashboard_spending', 'flash_transaction_source_id', 'snoozed_reminder_card_ids', 'payment_sources', 'data_cleared')`,
+       WHERE key IN ('budget_cycle_start_day', 'monthly_budget_minor', 'profile_title', 'profile_name', 'default_country_code', 'default_currency_code', 'emi_minimum_minor', 'spend_highlight_threshold_minor', 'highlight_dashboard_spending', 'flash_transaction_source_id', 'snoozed_reminder_card_ids', 'payment_sources', 'data_cleared', '${BANK_CASH_TRACKING_KEY}')`,
     );
     const values = new Map(preferences.map((item) => [item.key, item.encrypted_value]));
     this.dataWasCleared = values.get('data_cleared') === '1';
@@ -411,10 +448,12 @@ export class CardNestStore {
       });
       this.paymentSources.set(sources);
     }
+    await this.loadBankCashTracking(values.get(BANK_CASH_TRACKING_KEY));
     await Promise.all([this.loadCurrentIncome(), this.loadCards()]);
     await this.loadCategories();
     await this.loadCategoryLimits();
     await this.loadTransactions();
+    await this.loadTransfers();
     const statementRows = await this.database.query<{ payload: string }>(
       'SELECT payload FROM statements',
     );
@@ -1013,6 +1052,414 @@ export class CardNestStore {
       updatedAt: timestamp,
     });
   }
+
+  /** One atomic card payment plus its explicit bank deduction; never a second purchase. */
+  async recordFundedPayment(
+    cardId: string,
+    amountMinor: number,
+    label: string,
+    fundingSourceId: string,
+  ): Promise<void> {
+    if (!Number.isSafeInteger(amountMinor) || amountMinor <= 0)
+      throw new Error('Enter a valid payment amount.');
+    if (!this.cards().some((card) => card.id === cardId && !card.deletedAt))
+      throw new Error('Choose an existing credit card.');
+    const timestamp = new Date().toISOString();
+    const payment: CardTransaction = {
+      id: crypto.randomUUID(),
+      cardId,
+      type: 'PAYMENT',
+      amountMinor,
+      currencyCode: 'INR',
+      transactionDate: indiaTodayIso(),
+      merchant: label,
+      categoryId: 'payment',
+      attachmentIds: [],
+      origin: 'MANUAL',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    const result = await this.database.atomic(async (tx) => {
+      const settings = await this.readTrackingSettings(tx);
+      if (!settings.enabled || !settings.askCardSettlementFunding)
+        throw new Error('Turn on bank deduction for card payments in Settings first.');
+      const sources = await this.readStoredSources(tx);
+      const funding = sources.find((source) => source.id === fundingSourceId);
+      if (!funding || funding.kind !== 'DEBIT' || !bankCashTracked(funding, settings))
+        throw new Error('Choose a tracked bank account with a confirmed balance.');
+      await this.upsertTransactionRow(tx, payment);
+      const transfer = applyTransferEffects(
+        sources,
+        null,
+        {
+          id: crypto.randomUUID(),
+          kind: 'CARD_SETTLEMENT',
+          fromSourceId: funding.id,
+          cardId,
+          paymentTransactionId: payment.id,
+          amountMinor,
+          currencyCode: 'INR',
+          transferDate: payment.transactionDate,
+          description: label,
+          origin: 'MANUAL',
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        },
+        settings,
+        timestamp,
+      );
+      await this.writeTransferRow(tx, transfer);
+      await this.writeStoredSources(tx, sources);
+      return { transfer, sources };
+    });
+    this.transactions.update((items) => {
+      const next = [payment, ...items];
+      this.cacheTransactions(next);
+      return next;
+    });
+    this.acceptCommittedTransfer(result.transfer, result.sources);
+  }
+
+  fundingFor(paymentTransactionId: string): SourceTransfer | undefined {
+    return this.transfers().find((item) => item.paymentTransactionId === paymentTransactionId);
+  }
+
+  /** SMS review and store writes publish only after the transfer and balances commit. */
+  acceptCommittedTransfer(
+    transfer: SourceTransfer | null,
+    sources: readonly PaymentSource[],
+  ): void {
+    if (transfer)
+      this.transfers.update((items) => [
+        transfer,
+        ...items.filter((item) => item.id !== transfer.id),
+      ]);
+    this.paymentSources.set(sources);
+  }
+
+  async enableBankCashTracking(balances: Readonly<Record<string, number | null>>): Promise<void> {
+    const now = new Date().toISOString();
+    const result = await this.database.atomic(async (tx) => {
+      const stored = await this.readStoredSources(tx);
+      const sources = stored.length ? stored : this.paymentSources().map((item) => ({ ...item }));
+      const previous = await this.readTrackingSettings(tx);
+      const adjustments: SourceBalanceAdjustment[] = [];
+      for (const source of sources.filter(isBankOrCash)) {
+        const value = balances[source.id];
+        // Unconfirmed balances stay unknown; the previous value is kept for reference only.
+        if (value === null || value === undefined) {
+          source.balanceCutoverAt = undefined;
+          continue;
+        }
+        this.assertBalanceValue(source, value);
+        const adjustment: SourceBalanceAdjustment = {
+          id: crypto.randomUUID(),
+          sourceId: source.id,
+          reason: previous.activatedAt ? 'REBASE' : 'OPENING',
+          previousMinor: source.balanceMinor,
+          newMinor: value,
+          correctionMinor: value - (source.balanceMinor ?? 0),
+          createdAt: now,
+        };
+        await this.insertBalanceAdjustment(tx, adjustment);
+        adjustments.push(adjustment);
+        source.balanceMinor = value;
+        source.balanceSnapshotMinor = value;
+        source.balanceCutoverAt = now;
+      }
+      const settings: BankCashTrackingSettings = {
+        enabled: true,
+        askCardSettlementFunding: previous.askCardSettlementFunding,
+        activatedAt: now,
+      };
+      await this.writeTrackingSettings(tx, settings);
+      await this.writeStoredSources(tx, sources);
+      return { sources, settings, adjustments };
+    });
+    this.paymentSources.set(result.sources);
+    this.bankCashTracking.set(result.settings);
+    this.balanceAdjustments.update((items) => [...result.adjustments, ...items]);
+  }
+
+  /** Keeps balances, baselines and history; re-enabling requires a fresh balance confirmation. */
+  async disableBankCashTracking(): Promise<void> {
+    const settings = await this.database.atomic(async (tx) => {
+      const previous = await this.readTrackingSettings(tx);
+      const next: BankCashTrackingSettings = {
+        ...previous,
+        enabled: false,
+        disabledAt: new Date().toISOString(),
+      };
+      await this.writeTrackingSettings(tx, next);
+      return next;
+    });
+    this.bankCashTracking.set(settings);
+  }
+
+  async setCardSettlementFunding(enabled: boolean): Promise<void> {
+    const settings = await this.database.atomic(async (tx) => {
+      const previous = await this.readTrackingSettings(tx);
+      if (enabled && !previous.enabled)
+        throw new Error('Turn on Bank & Cash tracking before enabling bank deductions.');
+      const next = { ...previous, askCardSettlementFunding: enabled };
+      await this.writeTrackingSettings(tx, next);
+      return next;
+    });
+    this.bankCashTracking.set(settings);
+  }
+
+  /** Explicit, audited balance setting. It is never recorded as income or spending. */
+  async setSourceBalance(sourceId: string, newMinor: number, note?: string): Promise<void> {
+    const now = new Date().toISOString();
+    const result = await this.database.atomic(async (tx) => {
+      const settings = await this.readTrackingSettings(tx);
+      if (!settings.enabled) throw new Error('Turn on Bank & Cash tracking first.');
+      const sources = await this.readStoredSources(tx);
+      const source = sources.find((item) => item.id === sourceId);
+      if (!source || !isBankOrCash(source)) throw new Error('Choose a bank account or cash.');
+      this.assertBalanceValue(source, newMinor);
+      const tracked = bankCashTracked(source, settings);
+      const adjustment: SourceBalanceAdjustment = {
+        id: crypto.randomUUID(),
+        sourceId,
+        reason: tracked ? 'CORRECTION' : 'OPENING',
+        previousMinor: tracked ? source.balanceMinor : undefined,
+        newMinor,
+        correctionMinor: newMinor - (tracked ? (source.balanceMinor ?? 0) : 0),
+        note: note?.trim().slice(0, 200) || undefined,
+        createdAt: now,
+      };
+      await this.insertBalanceAdjustment(tx, adjustment);
+      source.balanceMinor = newMinor;
+      source.balanceSnapshotMinor = newMinor;
+      source.balanceCutoverAt = now;
+      await this.writeStoredSources(tx, sources);
+      return { sources, adjustment };
+    });
+    this.paymentSources.set(result.sources);
+    this.balanceAdjustments.update((items) => [result.adjustment, ...items]);
+  }
+
+  /** Explicit enrollment only; reading an SMS never creates a source. */
+  async addBankAccount(input: {
+    nickname: string;
+    institution: string;
+    lastDigits: string;
+  }): Promise<PaymentSource> {
+    const nickname = input.nickname.trim().slice(0, 80);
+    const institution = input.institution.trim().slice(0, 80);
+    const lastDigits = input.lastDigits.trim();
+    if (!nickname || !institution) throw new Error('Enter the account name and bank.');
+    if (!/^\d{3,5}$/.test(lastDigits))
+      throw new Error('Enter the last 3 to 5 digits shown in your bank messages.');
+    const account: PaymentSource = {
+      id: `bank-${crypto.randomUUID()}`,
+      nickname,
+      kind: 'DEBIT',
+      institution,
+      lastDigits,
+      noLimit: true,
+      autoLoad: false,
+      archived: false,
+    };
+    const sources = await this.database.atomic(async (tx) => {
+      const stored = await this.readStoredSources(tx);
+      const current = stored.length ? stored : this.paymentSources().map((item) => ({ ...item }));
+      const sameBank = (value?: string) =>
+        (value ?? '')
+          .toLowerCase()
+          .replace(/[^a-z0-9]/g, '')
+          .replace(/bank$/, '') ===
+        institution
+          .toLowerCase()
+          .replace(/[^a-z0-9]/g, '')
+          .replace(/bank$/, '');
+      if (
+        current.some(
+          (item) =>
+            item.kind === 'DEBIT' &&
+            !item.archived &&
+            item.lastDigits === lastDigits &&
+            sameBank(item.institution),
+        )
+      )
+        throw new Error('This bank account is already enrolled.');
+      const next = [...current, account];
+      await this.writeStoredSources(tx, next);
+      return next;
+    });
+    this.paymentSources.set(sources);
+    return account;
+  }
+
+  /** Records or edits an own-account movement; both balances change in one SQLite transaction. */
+  async saveTransfer(
+    input: {
+      id: string;
+      fromSourceId: string;
+      toSourceId: string;
+      amountMinor: number;
+      transferDate: string;
+      transferTime?: string;
+      description?: string;
+    },
+    mode: 'CREATE' | 'UPDATE',
+  ): Promise<SourceTransfer> {
+    if (!validTransferDate(input.transferDate, input.transferTime))
+      throw new Error('Enter a valid date and time.');
+    const now = new Date().toISOString();
+    const result = await this.database.atomic(async (tx) => {
+      const settings = await this.readTrackingSettings(tx);
+      const sources = await this.readStoredSources(tx);
+      const [row] = await tx.query<{ payload: string }>(
+        'SELECT payload FROM source_transfers WHERE id=?',
+        [input.id],
+      );
+      if (mode === 'CREATE' && row) throw new Error('This transfer was already saved.');
+      if (mode === 'UPDATE' && !row) throw new Error('This transfer no longer exists.');
+      const previous = row ? (JSON.parse(row.payload) as SourceTransfer) : null;
+      if (previous && previous.kind === 'CARD_SETTLEMENT')
+        throw new Error('Edit the card payment to change its bank deduction.');
+      const loan = previous?.kind === 'LOAN_REPAYMENT';
+      const from = sources.find((item) => item.id === input.fromSourceId);
+      const to = loan ? undefined : sources.find((item) => item.id === input.toSourceId);
+      if (!from || (!loan && !to)) throw new Error('Choose both accounts.');
+      reverseTransferEffects(sources, previous, settings);
+      const transfer = applyTransferEffects(
+        sources,
+        previous,
+        {
+          id: input.id,
+          kind: loan ? 'LOAN_REPAYMENT' : transferKindFor(from, to),
+          fromSourceId: from.id,
+          toSourceId: to?.id,
+          amountMinor: input.amountMinor,
+          currencyCode: 'INR',
+          transferDate: input.transferDate,
+          transferTime: input.transferTime || undefined,
+          description: input.description?.trim().slice(0, 100) || undefined,
+          reference: previous?.reference,
+          origin: previous?.origin ?? 'MANUAL',
+          createdAt: previous?.createdAt ?? now,
+          updatedAt: now,
+        },
+        settings,
+        now,
+      );
+      await this.writeTransferRow(tx, transfer);
+      await this.writeStoredSources(tx, sources);
+      return { transfer, sources };
+    });
+    this.acceptCommittedTransfer(result.transfer, result.sources);
+    return result.transfer;
+  }
+
+  /** Reverses both recorded sides together. A card payment itself is kept. */
+  async deleteTransfer(id: string): Promise<void> {
+    const sources = await this.database.atomic(async (tx) => {
+      const [row] = await tx.query<{ payload: string }>(
+        'SELECT payload FROM source_transfers WHERE id=?',
+        [id],
+      );
+      if (!row) throw new Error('This transfer no longer exists.');
+      const settings = await this.readTrackingSettings(tx);
+      const stored = await this.readStoredSources(tx);
+      reverseTransferEffects(stored, JSON.parse(row.payload) as SourceTransfer, settings);
+      await tx.run(
+        "UPDATE sms_reconciliation SET target_id=NULL,decision=decision || '; TRANSFER_DELETED' WHERE target_id=?",
+        [id],
+      );
+      await tx.run('DELETE FROM source_transfers WHERE id=?', [id]);
+      await this.writeStoredSources(tx, stored);
+      return stored;
+    });
+    this.transfers.update((items) => items.filter((item) => item.id !== id));
+    this.paymentSources.set(sources);
+  }
+
+  private assertBalanceValue(source: PaymentSource, value: number): void {
+    if (!Number.isSafeInteger(value) || (source.kind === 'CASH' && value < 0))
+      throw new Error(
+        source.kind === 'CASH' ? 'Cash balance cannot be negative.' : 'Enter a valid balance.',
+      );
+  }
+
+  private async loadBankCashTracking(raw: string | undefined): Promise<void> {
+    if (raw !== undefined) {
+      this.bankCashTracking.set(parseBankCashTracking(raw));
+      await this.loadBalanceAdjustments();
+      return;
+    }
+    // Earlier versions tracked Bank/Cash per source. Keep those balances as a confirmed
+    // baseline so older entries are never replayed, and keep their tracking on.
+    const result = await this.database.atomic(async (tx) => {
+      const [existing] = await tx.query<{ encrypted_value: string }>(
+        'SELECT encrypted_value FROM app_preferences WHERE key=?',
+        [BANK_CASH_TRACKING_KEY],
+      );
+      if (existing)
+        return { settings: parseBankCashTracking(existing.encrypted_value), sources: null };
+      const sources = await this.readStoredSources(tx);
+      const legacy = sources.filter(
+        (source) =>
+          isBankOrCash(source) && !source.noLimit && Number.isSafeInteger(source.balanceMinor),
+      );
+      const now = new Date().toISOString();
+      const settings: BankCashTrackingSettings = legacy.length
+        ? { enabled: true, askCardSettlementFunding: false, activatedAt: now }
+        : { ...DEFAULT_BANK_CASH_TRACKING };
+      for (const source of legacy) {
+        await this.insertBalanceAdjustment(tx, {
+          id: crypto.randomUUID(),
+          sourceId: source.id,
+          reason: 'MIGRATION',
+          previousMinor: source.balanceMinor,
+          newMinor: source.balanceMinor ?? 0,
+          correctionMinor: 0,
+          note: 'Existing tracked balance kept as the confirmed baseline.',
+          createdAt: now,
+        });
+        source.balanceSnapshotMinor = source.balanceMinor;
+        source.balanceCutoverAt = now;
+      }
+      await this.writeTrackingSettings(tx, settings);
+      if (legacy.length) await this.writeStoredSources(tx, sources);
+      return { settings, sources: legacy.length ? sources : null };
+    });
+    this.bankCashTracking.set(result.settings);
+    if (result.sources) this.paymentSources.set(result.sources);
+    await this.loadBalanceAdjustments();
+  }
+
+  private async loadTransfers(): Promise<void> {
+    const rows = await this.database.query<{ payload: string }>(
+      'SELECT payload FROM source_transfers ORDER BY transfer_date DESC, created_at DESC',
+    );
+    this.transfers.set(
+      rows.flatMap((row) => {
+        try {
+          return [JSON.parse(row.payload) as SourceTransfer];
+        } catch {
+          return [];
+        }
+      }),
+    );
+  }
+
+  private async loadBalanceAdjustments(): Promise<void> {
+    const rows = await this.database.query<{ payload: string }>(
+      'SELECT payload FROM source_balance_adjustments ORDER BY created_at DESC LIMIT 500',
+    );
+    this.balanceAdjustments.set(
+      rows.flatMap((row) => {
+        try {
+          return [JSON.parse(row.payload) as SourceBalanceAdjustment];
+        } catch {
+          return [];
+        }
+      }),
+    );
+  }
   archiveCard(cardId: string): void {
     const card = this.cards().find((item) => item.id === cardId);
     if (card) {
@@ -1058,6 +1505,9 @@ export class CardNestStore {
     this.flashTransactionSourceId.set('');
     clearFlashSourcePreference();
     this.snoozedReminderCardIds.set([]);
+    this.bankCashTracking.set({ ...DEFAULT_BANK_CASH_TRACKING });
+    this.transfers.set([]);
+    this.balanceAdjustments.set([]);
     writeCachedTransactions([]);
     for (const category of CATEGORIES) await this.persistCategory(category);
     this.dataWasCleared = true;
@@ -1201,6 +1651,7 @@ export class CardNestStore {
     if (card)
       return `${card.nickname} •••• ${card.lastDigits} · ${card.issuerName}${card.deletedAt ? ' · Deleted card' : ''}`;
     const source = this.paymentSources().find((item) => item.id === sourceId);
+    if (source?.kind === 'DEBIT' && source.lastDigits) return bankAccountLabel(source);
     return source
       ? `${source.nickname}${source.lastDigits ? ` · ${source.lastDigits}` : ''}${source.institution ? ` · ${source.institution}` : ''}`
       : 'Unknown source';
@@ -1277,7 +1728,9 @@ export class CardNestStore {
 
   private adjustPaymentSourceBalance(transaction: CardTransaction, direction: 1 | -1): void {
     const source = this.paymentSources().find((item) => item.id === transaction.cardId);
-    if (!source || source.noLimit || source.balanceMinor === undefined) return;
+    // Bank/Cash balances are published only after their SQLite effect commits.
+    if (!source || isBankOrCash(source) || source.noLimit || source.balanceMinor === undefined)
+      return;
     if (!walletEffectApplies(source, transaction)) return;
     const balanceEffect = -transactionEffect(transaction) * direction;
     this.paymentSources.update((sources) =>
@@ -1400,7 +1853,12 @@ export class CardNestStore {
         archived: Boolean(row.archived),
       }));
       const missingDefaults = CATEGORIES.filter(
-        (category) => !storedCategories.some((stored) => stored.id === category.id),
+        (category) =>
+          !storedCategories.some(
+            (stored) =>
+              stored.id === category.id ||
+              stored.name.localeCompare(category.name, undefined, { sensitivity: 'base' }) === 0,
+          ),
       );
       this.categories.set([...storedCategories, ...missingDefaults]);
       for (const category of missingDefaults) await this.persistCategory(category);
@@ -1519,41 +1977,20 @@ export class CardNestStore {
 
   private async persistTransaction(transaction: CardTransaction): Promise<void> {
     if (!this.database.ready()) return;
-    const sources = await this.database.atomic(async (tx) => {
+    const result = await this.database.atomic(async (tx) => {
       const [stored] = await tx.query<{ payload: string }>(
         'SELECT payload FROM card_transactions WHERE id = ?',
         [transaction.id],
       );
       const previous = stored ? (JSON.parse(stored.payload) as CardTransaction) : null;
-      const creditCardId = this.cards().some((card) => card.id === transaction.cardId)
-        ? transaction.cardId
-        : null;
-      await tx.run(
-        `INSERT INTO card_transactions
-       (id, card_id, category_id, type, amount_minor, currency_code, transaction_date, payload, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET
-         card_id = excluded.card_id,
-         category_id = excluded.category_id,
-         type = excluded.type,
-         amount_minor = excluded.amount_minor,
-         currency_code = excluded.currency_code,
-         transaction_date = excluded.transaction_date,
-         payload = excluded.payload,
-         updated_at = excluded.updated_at`,
-        [
-          transaction.id,
-          creditCardId,
-          transaction.categoryId,
-          transaction.type,
-          transaction.amountMinor,
-          transaction.currencyCode,
-          transaction.transactionDate,
-          JSON.stringify(transaction),
-          transaction.createdAt,
-          transaction.updatedAt,
-        ],
-      );
+      const wallets = await this.readStoredSources(tx);
+      const settings = await this.readTrackingSettings(tx);
+      const now = new Date().toISOString();
+      applyWalletTransaction(wallets, previous, -1);
+      applyWalletTransaction(wallets, transaction, 1);
+      reverseBalanceEffect(wallets, previous?.balanceEffect, settings);
+      const persisted = applyBankCashTransaction(wallets, previous, transaction, settings, now);
+      await this.upsertTransactionRow(tx, persisted);
       await tx.run('DELETE FROM transaction_links WHERE transaction_id = ?', [transaction.id]);
       if (
         transaction.relatedTransactionId &&
@@ -1571,13 +2008,85 @@ export class CardNestStore {
           ],
         );
       }
-      const wallets = await this.readStoredSources(tx);
-      this.applyStoredSourceEffect(wallets, previous, -1);
-      this.applyStoredSourceEffect(wallets, transaction, 1);
+      const fundingChanged = await this.syncCardFunding(tx, wallets, settings, persisted, now);
       if (wallets.length) await this.writeStoredSources(tx, wallets);
-      return wallets;
+      return { wallets, fundingChanged };
     });
-    this.publishStoredBalances(sources);
+    this.publishStoredBalances(result.wallets);
+    if (result.fundingChanged) await this.loadTransfers();
+  }
+
+  private async upsertTransactionRow(
+    tx: DatabaseSession,
+    transaction: CardTransaction,
+  ): Promise<void> {
+    const creditCardId = this.cards().some((card) => card.id === transaction.cardId)
+      ? transaction.cardId
+      : null;
+    await tx.run(
+      `INSERT INTO card_transactions
+       (id, card_id, category_id, type, amount_minor, currency_code, transaction_date, payload, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         card_id = excluded.card_id,
+         category_id = excluded.category_id,
+         type = excluded.type,
+         amount_minor = excluded.amount_minor,
+         currency_code = excluded.currency_code,
+         transaction_date = excluded.transaction_date,
+         payload = excluded.payload,
+         updated_at = excluded.updated_at`,
+      [
+        transaction.id,
+        creditCardId,
+        transaction.categoryId,
+        transaction.type,
+        transaction.amountMinor,
+        transaction.currencyCode,
+        transaction.transactionDate,
+        JSON.stringify(transaction),
+        transaction.createdAt,
+        transaction.updatedAt,
+      ],
+    );
+  }
+
+  /** Keeps a card payment's bank funding equal to the payment, or removes it if no longer a payment. */
+  private async syncCardFunding(
+    tx: DatabaseSession,
+    sources: PaymentSource[],
+    settings: BankCashTrackingSettings,
+    payment: CardTransaction,
+    now: string,
+  ): Promise<boolean> {
+    const [row] = await tx.query<{ payload: string }>(
+      'SELECT payload FROM source_transfers WHERE payment_transaction_id = ?',
+      [payment.id],
+    );
+    if (!row) return false;
+    const funding = JSON.parse(row.payload) as SourceTransfer;
+    reverseTransferEffects(sources, funding, settings);
+    if (payment.type !== 'PAYMENT' || !this.cards().some((card) => card.id === payment.cardId)) {
+      await tx.run('DELETE FROM source_transfers WHERE id = ?', [funding.id]);
+      return true;
+    }
+    const next = applyTransferEffects(
+      sources,
+      funding,
+      {
+        ...funding,
+        cardId: payment.cardId,
+        amountMinor: payment.amountMinor,
+        transferDate: payment.transactionDate,
+        transferTime: payment.transactionTime,
+        updatedAt: now,
+      },
+      settings,
+      now,
+      false,
+    );
+    await this.writeTransferRow(tx, next);
+    return true;
   }
 
   private async readStoredSources(tx: DatabaseSession): Promise<PaymentSource[]> {
@@ -1597,18 +2106,71 @@ export class CardNestStore {
     );
   }
 
-  private applyStoredSourceEffect(
-    sources: PaymentSource[],
-    transaction: CardTransaction | null,
-    direction: 1 | -1,
-  ): void {
-    if (!transaction) return;
-    const source = sources.find((item) => item.id === transaction.cardId);
-    if (!source || source.noLimit || source.balanceMinor === undefined) return;
-    if (!walletEffectApplies(source, transaction)) return;
-    source.balanceMinor -= transactionEffect(transaction) * direction;
-    if (!Number.isSafeInteger(source.balanceMinor))
-      throw new Error('Wallet balance would overflow.');
+  private async readTrackingSettings(tx: DatabaseSession): Promise<BankCashTrackingSettings> {
+    const [row] = await tx.query<{ encrypted_value: string }>(
+      'SELECT encrypted_value FROM app_preferences WHERE key=?',
+      [BANK_CASH_TRACKING_KEY],
+    );
+    return parseBankCashTracking(row?.encrypted_value);
+  }
+
+  private async writeTrackingSettings(
+    tx: DatabaseSession,
+    settings: BankCashTrackingSettings,
+  ): Promise<void> {
+    await tx.run(
+      `INSERT INTO app_preferences(key,encrypted_value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET encrypted_value=excluded.encrypted_value`,
+      [BANK_CASH_TRACKING_KEY, JSON.stringify(settings)],
+    );
+  }
+
+  private async writeTransferRow(tx: DatabaseSession, transfer: SourceTransfer): Promise<void> {
+    await tx.run(
+      `INSERT INTO source_transfers
+       (id, kind, from_source_id, to_source_id, payment_transaction_id, amount_minor, transfer_date, payload, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         kind = excluded.kind,
+         from_source_id = excluded.from_source_id,
+         to_source_id = excluded.to_source_id,
+         amount_minor = excluded.amount_minor,
+         transfer_date = excluded.transfer_date,
+         payload = excluded.payload,
+         updated_at = excluded.updated_at`,
+      [
+        transfer.id,
+        transfer.kind,
+        transfer.fromSourceId,
+        transfer.toSourceId ?? null,
+        transfer.paymentTransactionId ?? null,
+        transfer.amountMinor,
+        transfer.transferDate,
+        JSON.stringify(transfer),
+        transfer.createdAt,
+        transfer.updatedAt,
+      ],
+    );
+  }
+
+  private async insertBalanceAdjustment(
+    tx: DatabaseSession,
+    adjustment: SourceBalanceAdjustment,
+  ): Promise<void> {
+    await tx.run(
+      `INSERT INTO source_balance_adjustments
+       (id, source_id, reason, previous_minor, new_minor, correction_minor, payload, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        adjustment.id,
+        adjustment.sourceId,
+        adjustment.reason,
+        adjustment.previousMinor ?? null,
+        adjustment.newMinor,
+        adjustment.correctionMinor,
+        JSON.stringify(adjustment),
+        adjustment.createdAt,
+      ],
+    );
   }
 
   private publishStoredBalances(sources: readonly PaymentSource[]): void {
@@ -1621,22 +2183,30 @@ export class CardNestStore {
   }
 
   private async removePersistedTransaction(id: string): Promise<void> {
-    const sources = await this.database.atomic(async (tx) => {
+    const result = await this.database.atomic(async (tx) => {
       const [row] = await tx.query<{ payload: string }>(
         'SELECT payload FROM card_transactions WHERE id=?',
         [id],
       );
       const wallets = await this.readStoredSources(tx);
-      this.applyStoredSourceEffect(
-        wallets,
-        row ? (JSON.parse(row.payload) as CardTransaction) : null,
-        -1,
+      const settings = await this.readTrackingSettings(tx);
+      const previous = row ? (JSON.parse(row.payload) as CardTransaction) : null;
+      applyWalletTransaction(wallets, previous, -1);
+      reverseBalanceEffect(wallets, previous?.balanceEffect, settings);
+      const [funding] = await tx.query<{ payload: string }>(
+        'SELECT payload FROM source_transfers WHERE payment_transaction_id=?',
+        [id],
       );
+      if (funding) {
+        reverseTransferEffects(wallets, JSON.parse(funding.payload) as SourceTransfer, settings);
+        await tx.run('DELETE FROM source_transfers WHERE payment_transaction_id=?', [id]);
+      }
       await tx.run('DELETE FROM card_transactions WHERE id=?', [id]);
       if (wallets.length) await this.writeStoredSources(tx, wallets);
-      return wallets;
+      return { wallets, funding: !!funding };
     });
-    this.publishStoredBalances(sources);
+    this.publishStoredBalances(result.wallets);
+    if (result.funding) await this.loadTransfers();
   }
 
   private async persistRecurringRule(rule: RecurringRule): Promise<void> {

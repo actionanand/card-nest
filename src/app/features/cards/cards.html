@@ -1272,6 +1272,20 @@
             (input)="paymentAmount.set($any($event.target).value)"
         /></label>
         <small>You can reduce the suggested amount or enter an additional payment.</small>
+        @if (store.cardSettlementFundingAccounts().length) {
+          <app-select-picker
+            label="Paid from bank account (optional)"
+            [options]="paymentFundingOptions()"
+            [value]="paymentFundingSourceId()"
+            (valueChange)="paymentFundingSourceId.set($event)"
+          />
+          @if (paymentFundingSourceId()) {
+            <small
+              >{{ money(paymentMinor(), card.currencyCode) }} will be deducted once from
+              {{ paymentFundingLabel() }}. It is not recorded as a new purchase.</small
+            >
+          }
+        }
         @if (paymentError(); as error) {
           <p class="validation-error" role="alert">{{ error }}</p>
         }
@@ -1292,7 +1306,14 @@
       money(paymentMinor(), card.currencyCode) +
       ' for ' +
       card.nickname +
-      '? This will reduce the current outstanding.'
+      '? This will reduce the current outstanding.' +
+      (paymentFundingSourceId()
+        ? ' ' +
+          money(paymentMinor(), card.currencyCode) +
+          ' will be deducted from ' +
+          paymentFundingLabel() +
+          '.'
+        : '')
     "
     confirmLabel="Record payment"
     (confirmed)="confirmPayment()"

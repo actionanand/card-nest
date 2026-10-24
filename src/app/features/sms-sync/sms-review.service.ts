@@ -10,9 +10,20 @@ import {
   Category,
   EmiInstallment,
   PaymentSource,
+  SourceTransfer,
   WalletBalanceReconciliation,
 } from '../../core/models/domain';
 import { walletAnchorPosition } from '../../core/services/wallet-anchor';
+import {
+  BANK_CASH_TRACKING_KEY,
+  applyBankCashTransaction,
+  applyTransferEffects,
+  bankCashTracked,
+  isBankOrCash,
+  parseBankCashTracking,
+  transferKindFor,
+  validTransferDate,
+} from '../../core/services/source-balance';
 import { environment } from '../../../environments/environment';
 import { matchExisting, walletComparison } from './sms-matching';
 import {
@@ -37,7 +48,33 @@ import {
   isPluxeeSource,
   normalizedIssuer,
   defaultPluxeeCategory,
+  BankPurpose,
+  accountSuffixMatches,
+  bankDirection,
+  bankDisplayName,
+  bankExistingSuggestions,
+  bankPurposes,
+  bankSourceConflict,
+  defaultBankCategory,
+  isBankEvidence,
 } from './sms-model';
+
+export interface BankApproval {
+  purpose: BankPurpose;
+  /** The bank account named in the message. */
+  sourceId: string;
+  amountMinor: number;
+  description: string;
+  transactionDate: string;
+  categoryId?: string;
+  /** Existing ledger entry (purchase/receipt) or card payment to link instead of creating one. */
+  existingId?: string;
+  /** Other owned account for a transfer. Counterparty names never establish ownership. */
+  counterpartySourceId?: string;
+  existingTransferId?: string;
+  cardId?: string;
+  allowSeparate?: boolean;
+}
 
 interface NativeSms {
   status(): Promise<ScanStatus>;
@@ -1275,6 +1312,70 @@ export class SmsReviewService {
           );
         }
       }
+      let fundingTransfer: SourceTransfer | null = null;
+      if (edits.fundingSourceId) {
+        if (type !== 'PAYMENT' || !card)
+          throw new Error('Only a card payment can be funded from a bank account.');
+        const [trackingRow] = await tx.query<{ encrypted_value: string }>(
+          'SELECT encrypted_value FROM app_preferences WHERE key=?',
+          [BANK_CASH_TRACKING_KEY],
+        );
+        const settings = parseBankCashTracking(trackingRow?.encrypted_value);
+        if (!settings.enabled || !settings.askCardSettlementFunding)
+          throw new Error('Turn on bank deduction for card payments in Settings first.');
+        const bank = sources.find((entry) => entry.id === edits.fundingSourceId);
+        if (!bank || bank.kind !== 'DEBIT' || !bankCashTracked(bank, settings))
+          throw new Error('Choose a tracked bank account with a confirmed balance.');
+        const payment = existingId
+          ? ledger.find((entry) => entry.id === existingId)
+          : (transaction ?? undefined);
+        if (!payment) throw new Error('Card payment unavailable.');
+        const [funded] = await tx.query<{ id: string }>(
+          'SELECT id FROM source_transfers WHERE payment_transaction_id=?',
+          [payment.id],
+        );
+        if (funded) throw new Error('This card payment already has a bank deduction.');
+        fundingTransfer = applyTransferEffects(
+          sources,
+          null,
+          {
+            id: `sms-funding-${item.id}`,
+            kind: 'CARD_SETTLEMENT',
+            fromSourceId: bank.id,
+            cardId: payment.cardId,
+            paymentTransactionId: payment.id,
+            amountMinor: payment.amountMinor,
+            currencyCode: 'INR',
+            transferDate: payment.transactionDate,
+            transferTime: payment.transactionTime,
+            description: payment.merchant,
+            reference: item.reference,
+            origin: 'SMS',
+            createdAt: now,
+            updatedAt: now,
+          },
+          settings,
+          now,
+        );
+        await tx.run(
+          `INSERT INTO source_transfers(id,kind,from_source_id,to_source_id,payment_transaction_id,amount_minor,transfer_date,payload,created_at,updated_at) VALUES (?,?,?,NULL,?,?,?,?,?,?)`,
+          [
+            fundingTransfer.id,
+            fundingTransfer.kind,
+            fundingTransfer.fromSourceId,
+            payment.id,
+            fundingTransfer.amountMinor,
+            fundingTransfer.transferDate,
+            JSON.stringify(fundingTransfer),
+            now,
+            now,
+          ],
+        );
+        await tx.run(
+          `INSERT INTO app_preferences(key,encrypted_value) VALUES ('payment_sources',?) ON CONFLICT(key) DO UPDATE SET encrypted_value=excluded.encrypted_value`,
+          [JSON.stringify(sources)],
+        );
+      }
       if (reconcileTopupSnapshot && source && comparison) {
         this.reconcilePluxeeBalance(source, item, transactionId, comparison, now);
         await tx.run(
@@ -1431,13 +1532,15 @@ export class SmsReviewService {
           ],
         );
       }
-      return { transaction, sources, statement, balanceAdjustment };
+      return { transaction, sources, statement, balanceAdjustment, fundingTransfer };
     });
     if (result) {
       this.store.acceptCommittedImport(result.transaction, result.sources);
       if (result.balanceAdjustment)
         this.store.acceptCommittedImport(result.balanceAdjustment, result.sources);
       if (result.statement) this.store.acceptCommittedStatement(result.statement);
+      if (result.fundingTransfer)
+        this.store.acceptCommittedTransfer(result.fundingTransfer, result.sources);
     }
     ++this.refreshRevision;
     this.notice.set(
@@ -1556,5 +1659,376 @@ export class SmsReviewService {
         items.map((i) => (i.id === installment.id ? installment : i)),
       );
     await this.refresh();
+  }
+
+  /**
+   * Explicit Bank/UPI review. Ledger rows, balances, transfers, funding links and the SMS decision
+   * commit together; nothing here runs from discovery or background scanning.
+   */
+  async approveBank(candidate: SmsCandidate, approval: BankApproval): Promise<void> {
+    this.assertUnlocked();
+    const result = await this.database.atomic(async (tx) => {
+      const [row] = await tx.query<{ state: string; payload: string | null }>(
+        'SELECT state, payload FROM sms_candidates WHERE id = ?',
+        [candidate.id],
+      );
+      if (!row)
+        throw new Error('Saved suggestion is unavailable. Refresh the inbox before reviewing.');
+      if (['IMPORTED', 'MATCHED_EXISTING'].includes(row.state)) return null;
+      if (!row.payload || !['PENDING', 'DEFERRED'].includes(row.state))
+        throw new Error('Reopen this item for review first.');
+      const item: unknown = JSON.parse(row.payload);
+      if (!validEvidence(item) || !isBankEvidence(item))
+        throw new Error('This message cannot record a bank event.');
+      const [pref] = await tx.query<{ encrypted_value: string }>(
+        'SELECT encrypted_value FROM app_preferences WHERE key=?',
+        [BANK_CASH_TRACKING_KEY],
+      );
+      const settings = parseBankCashTracking(pref?.encrypted_value);
+      if (!bankPurposes(item, settings).includes(approval.purpose))
+        throw new Error('Choose how this bank message should be recorded.');
+      const direction = bankDirection(item);
+      const amountMinor = approval.amountMinor;
+      if (!Number.isSafeInteger(amountMinor) || amountMinor <= 0)
+        throw new Error('Enter a valid amount.');
+      const date = approval.transactionDate;
+      if (!validTransferDate(date)) throw new Error('Enter a valid event date.');
+      const [stored] = await tx.query<{ encrypted_value: string }>(
+        "SELECT encrypted_value FROM app_preferences WHERE key='payment_sources'",
+      );
+      const sources = stored
+        ? (JSON.parse(stored.encrypted_value) as PaymentSource[])
+        : this.store.paymentSources().map((source) => ({ ...source }));
+      const source = sources.find((item) => item.id === approval.sourceId && !item.archived);
+      if (!source) throw new Error('Choose the bank account named in this message.');
+      const conflict = bankSourceConflict(item, source);
+      if (conflict) throw new Error(conflict);
+      const ledger = (
+        await tx.query<{ payload: string }>('SELECT payload FROM card_transactions')
+      ).map((entry) => JSON.parse(entry.payload) as CardTransaction);
+      const now = new Date().toISOString();
+      const time =
+        item.eventTimeExplicit === true && date === item.eventDate ? item.eventTime : undefined;
+      // An unknown issuer stays unknown unless the user explicitly enrolled this account's bank.
+      const bankName =
+        bankDisplayName(item.issuer) ?? (source.lastDigits ? source.institution : undefined);
+      const accountSuffix = item.accountDigits ?? source.lastDigits;
+      const description = approval.description.trim().slice(0, 100);
+      let transaction: CardTransaction | null = null;
+      let transfer: SourceTransfer | null = null;
+      let linkedTransactionId: string | null = null;
+      let targetId: string;
+      let state: 'IMPORTED' | 'MATCHED_EXISTING' = 'IMPORTED';
+      const insertLedger = async (entry: CardTransaction, creditCardId: string | null) => {
+        await tx.run(
+          `INSERT INTO card_transactions(id,card_id,category_id,type,amount_minor,currency_code,transaction_date,payload,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+          [
+            entry.id,
+            creditCardId,
+            entry.categoryId,
+            entry.type,
+            entry.amountMinor,
+            'INR',
+            entry.transactionDate,
+            JSON.stringify(entry),
+            now,
+            now,
+          ],
+        );
+      };
+      const assertUnclaimed = async (transactionId: string) => {
+        const [claimed] = await tx.query<{ id: string }>(
+          "SELECT id FROM sms_candidates WHERE transaction_id=? AND state IN ('IMPORTED','MATCHED_EXISTING') AND id<>?",
+          [transactionId, item.id],
+        );
+        if (claimed) throw new Error('That entry is already linked to another message.');
+      };
+      if (approval.purpose === 'PURCHASE' || approval.purpose === 'INCOME') {
+        const type = approval.purpose === 'PURCHASE' ? 'PURCHASE' : 'CREDIT';
+        if ((type === 'PURCHASE') !== (direction === 'DEBIT'))
+          throw new Error('The message direction does not match this choice.');
+        if (approval.existingId) {
+          const existing = ledger.find((entry) => entry.id === approval.existingId);
+          if (
+            !existing ||
+            existing.cardId !== source.id ||
+            existing.type !== type ||
+            existing.amountMinor !== amountMinor
+          )
+            throw new Error(
+              'Choose an existing entry with the same account, direction and amount.',
+            );
+          await assertUnclaimed(existing.id);
+          targetId = linkedTransactionId = existing.id;
+          state = 'MATCHED_EXISTING';
+        } else {
+          if (
+            !approval.allowSeparate &&
+            bankExistingSuggestions(item, type, source.id, ledger, amountMinor, date).length
+          )
+            throw new Error(
+              'Possible existing transaction. Match it or explicitly confirm a separate event.',
+            );
+          if (item.reference) {
+            const bindings = await tx.query<{ payload: string }>(
+              "SELECT payload FROM sms_candidates WHERE state IN ('IMPORTED','MATCHED_EXISTING') AND payload IS NOT NULL AND id<>?",
+              [item.id],
+            );
+            if (
+              bindings.some((binding) => {
+                const other = JSON.parse(binding.payload) as SmsEvidence;
+                return (
+                  other.reference === item.reference &&
+                  other.amountMinor === item.amountMinor &&
+                  bankDirection(other) === direction &&
+                  accountSuffixMatches(other.accountDigits, item.accountDigits)
+                );
+              })
+            )
+              throw new Error('This referenced bank event is already recorded. Match it instead.');
+          }
+          const categoryId =
+            approval.categoryId ||
+            defaultBankCategory(approval.purpose, description, this.store.categories());
+          if (!(await tx.query('SELECT id FROM categories WHERE id=?', [categoryId])).length)
+            throw new Error('Choose an existing category.');
+          transaction = applyBankCashTransaction(
+            sources,
+            null,
+            {
+              id: `sms-${item.id}`,
+              cardId: source.id,
+              type,
+              amountMinor,
+              currencyCode: 'INR',
+              transactionDate: date,
+              transactionTime: time,
+              reference: item.reference,
+              merchant: description || undefined,
+              categoryId,
+              notes: `Approved bank SMS${item.dateFallback ? '; received date used' : ''}`,
+              bankName,
+              accountSuffix,
+              origin: 'SMS',
+              attachmentIds: [],
+              createdAt: now,
+              updatedAt: now,
+            },
+            settings,
+            now,
+          );
+          await insertLedger(transaction, null);
+          targetId = linkedTransactionId = transaction.id;
+        }
+      } else if (approval.purpose === 'TRANSFER') {
+        const other = sources.find(
+          (entry) => entry.id === approval.counterpartySourceId && !entry.archived,
+        );
+        if (!other || !isBankOrCash(other) || other.id === source.id)
+          throw new Error('Choose the other account or cash that you own.');
+        if (
+          other.kind === 'DEBIT' &&
+          other.lastDigits &&
+          item.counterpartyAccountDigits &&
+          !accountSuffixMatches(other.lastDigits, item.counterpartyAccountDigits)
+        )
+          throw new Error('The other account suffix differs from the message.');
+        const from = direction === 'DEBIT' ? source : other;
+        const to = direction === 'DEBIT' ? other : source;
+        const existing = (
+          await tx.query<{ payload: string }>(
+            'SELECT payload FROM source_transfers WHERE from_source_id=? AND to_source_id=? AND amount_minor=?',
+            [from.id, to.id, amountMinor],
+          )
+        )
+          .map((entry) => JSON.parse(entry.payload) as SourceTransfer)
+          .filter(
+            (entry) => !(entry.reference && item.reference && entry.reference !== item.reference),
+          );
+        if (approval.existingTransferId) {
+          const linked = existing.find((entry) => entry.id === approval.existingTransferId);
+          if (!linked)
+            throw new Error('Choose an existing transfer between these accounts with this amount.');
+          targetId = linked.id;
+          state = 'MATCHED_EXISTING';
+        } else {
+          if (
+            !approval.allowSeparate &&
+            existing.some(
+              (entry) =>
+                (!!entry.reference && entry.reference === item.reference) ||
+                Math.abs(Date.parse(entry.transferDate) - Date.parse(date)) <= 86400000,
+            )
+          )
+            throw new Error('Possible existing transfer. Link it so the money moves only once.');
+          transfer = applyTransferEffects(
+            sources,
+            null,
+            {
+              id: `sms-transfer-${item.id}`,
+              kind: transferKindFor(from, to),
+              fromSourceId: from.id,
+              toSourceId: to.id,
+              amountMinor,
+              currencyCode: 'INR',
+              transferDate: date,
+              transferTime: time,
+              description: description || undefined,
+              reference: item.reference,
+              origin: 'SMS',
+              createdAt: now,
+              updatedAt: now,
+            },
+            settings,
+            now,
+          );
+          targetId = transfer.id;
+        }
+      } else {
+        if (direction !== 'DEBIT') throw new Error('Only an outgoing bank debit can fund this.');
+        if (source.kind !== 'DEBIT' || !bankCashTracked(source, settings))
+          throw new Error("Set this bank account's current balance first.");
+        let fundedPayment: CardTransaction | null = null;
+        if (approval.purpose === 'CARD_SETTLEMENT') {
+          if (approval.existingId) {
+            const payment = ledger.find((entry) => entry.id === approval.existingId);
+            if (
+              !payment ||
+              payment.type !== 'PAYMENT' ||
+              !this.store.cards().some((card) => card.id === payment.cardId) ||
+              payment.amountMinor !== amountMinor
+            )
+              throw new Error('Choose the recorded card payment with the same amount.');
+            const [funded] = await tx.query<{ id: string }>(
+              'SELECT id FROM source_transfers WHERE payment_transaction_id=?',
+              [payment.id],
+            );
+            if (funded) throw new Error('This card payment already has a bank deduction.');
+            fundedPayment = payment;
+            state = 'MATCHED_EXISTING';
+          } else {
+            const card = this.store
+              .cards()
+              .find((entry) => entry.id === approval.cardId && !entry.deletedAt);
+            if (!card) throw new Error('Choose the credit card that was paid.');
+            if (
+              !approval.allowSeparate &&
+              ledger.some(
+                (entry) =>
+                  entry.cardId === card.id &&
+                  entry.type === 'PAYMENT' &&
+                  entry.amountMinor === amountMinor &&
+                  Math.abs(Date.parse(entry.transactionDate) - Date.parse(date)) <= 3 * 86400000,
+              )
+            )
+              throw new Error(
+                'Possible existing card payment. Match it so the payment is counted once.',
+              );
+            fundedPayment = transaction = {
+              id: `sms-${item.id}`,
+              cardId: card.id,
+              type: 'PAYMENT',
+              amountMinor,
+              currencyCode: 'INR',
+              transactionDate: date,
+              transactionTime: time,
+              reference: item.reference,
+              merchant: description || `Card payment from ${bankName ?? source.nickname}`,
+              categoryId: 'payment',
+              notes: 'Approved bank SMS; paid from a tracked bank account',
+              bankName,
+              accountSuffix,
+              origin: 'SMS',
+              attachmentIds: [],
+              createdAt: now,
+              updatedAt: now,
+            };
+            await insertLedger(transaction, card.id);
+          }
+          await assertUnclaimed(fundedPayment.id);
+          linkedTransactionId = fundedPayment.id;
+        }
+        transfer = applyTransferEffects(
+          sources,
+          null,
+          {
+            id: `sms-${approval.purpose === 'CARD_SETTLEMENT' ? 'funding' : 'loan'}-${item.id}`,
+            kind: approval.purpose,
+            fromSourceId: source.id,
+            cardId: fundedPayment?.cardId,
+            paymentTransactionId: fundedPayment?.id,
+            amountMinor: fundedPayment?.amountMinor ?? amountMinor,
+            currencyCode: 'INR',
+            transferDate: fundedPayment?.transactionDate ?? date,
+            transferTime: fundedPayment ? fundedPayment.transactionTime : time,
+            description: description || undefined,
+            reference: item.reference,
+            origin: 'SMS',
+            createdAt: now,
+            updatedAt: now,
+          },
+          settings,
+          now,
+        );
+        targetId = fundedPayment?.id ?? transfer.id;
+      }
+      if (transfer)
+        await tx.run(
+          `INSERT INTO source_transfers(id,kind,from_source_id,to_source_id,payment_transaction_id,amount_minor,transfer_date,payload,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+          [
+            transfer.id,
+            transfer.kind,
+            transfer.fromSourceId,
+            transfer.toSourceId ?? null,
+            transfer.paymentTransactionId ?? null,
+            transfer.amountMinor,
+            transfer.transferDate,
+            JSON.stringify(transfer),
+            now,
+            now,
+          ],
+        );
+      const decision = `BANK_${approval.purpose}${state === 'MATCHED_EXISTING' ? '_LINKED' : ''}`;
+      await tx.run(
+        `UPDATE sms_candidates SET state=?,transaction_id=?,decision=?,updated_at=?,read_at=COALESCE(read_at,?) WHERE id=?`,
+        [state, linkedTransactionId, decision, now, now, item.id],
+      );
+      await tx.run(
+        `INSERT INTO sms_reconciliation(id,candidate_id,target_id,decision,amount_minor,created_at) VALUES (?,?,?,?,?,?)
+         ON CONFLICT(candidate_id) DO UPDATE SET target_id=excluded.target_id,decision=excluded.decision,amount_minor=excluded.amount_minor,created_at=excluded.created_at`,
+        [crypto.randomUUID(), item.id, targetId, decision, amountMinor, now],
+      );
+      await tx.run(
+        `INSERT INTO app_preferences(key,encrypted_value) VALUES ('payment_sources',?) ON CONFLICT(key) DO UPDATE SET encrypted_value=excluded.encrypted_value`,
+        [JSON.stringify(sources)],
+      );
+      return { transaction, transfer, sources, state };
+    });
+    if (result) {
+      this.store.acceptCommittedImport(result.transaction, result.sources);
+      this.store.acceptCommittedTransfer(result.transfer, result.sources);
+    }
+    ++this.refreshRevision;
+    this.notice.set(
+      !result
+        ? 'This suggestion was already resolved. Nothing was added again.'
+        : result.state === 'MATCHED_EXISTING'
+          ? 'Linked to the existing record. No money was counted again.'
+          : 'Bank event approved and saved.',
+    );
+    if (this.candidates().some((item) => item.id === candidate.id))
+      this.total.update((total) => Math.max(0, total - 1));
+    if (result && candidate.state === 'PENDING')
+      this.pendingTotal.update((total) => Math.max(0, total - 1));
+    this.candidates.update((items) => items.filter((item) => item.id !== candidate.id));
+    try {
+      await this.refresh();
+    } catch {
+      this.notice.set(
+        result
+          ? 'Bank event saved. Review inbox could not refresh; retry refresh safely.'
+          : 'Review decision retained. Nothing was added again. Retry inbox refresh safely.',
+      );
+    }
   }
 }

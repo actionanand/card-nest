@@ -38,6 +38,46 @@
     </div>
   </details>
 
+  <details class="panel fastag-create" [open]="bankOpen()" (toggle)="bankToggled($event)">
+    <summary>
+      <app-icon name="landmark" /><span
+        ><strong>Enrol a bank account</strong
+        ><small>Identify Bank/UPI messages by bank and masked account digits.</small></span
+      ><app-icon class="wallet-chevron" name="chevron_down" />
+    </summary>
+    <div class="wallet-body">
+      <p>
+        Add only accounts you own. Use the 3 to 5 trailing digits shown in your bank messages; never
+        enter a full account number.
+      </p>
+      <form [formGroup]="bankForm" (submit)="addBankAccount($event)">
+        <label>Account name<input formControlName="nickname" maxlength="80" required /></label>
+        <label
+          >Bank<input
+            formControlName="institution"
+            maxlength="80"
+            placeholder="For example, ICICI Bank"
+            required
+        /></label>
+        <label
+          >Masked account digits<input
+            formControlName="lastDigits"
+            inputmode="numeric"
+            autocomplete="off"
+            maxlength="5"
+            placeholder="For example, 417"
+            required
+        /></label>
+        @if (bankError()) {
+          <p role="alert">{{ bankError() }}</p>
+        }
+        <button type="submit" class="btn btn-primary" [disabled]="!bankForm.valid || bankSaving()">
+          {{ bankSaving() ? 'Enrolling…' : 'Enrol account' }}
+        </button>
+      </form>
+    </div>
+  </details>
+
   <div class="source-tabs" role="tablist" aria-label="Money source views">
     <button
       id="accounts-tab"
@@ -89,15 +129,137 @@
               </p>
             </div>
           </div>
-          @if (!source.noLimit) {
-            <div class="balance-copy">
-              <small>Available now</small
-              ><strong class="source-balance">{{ money(source.balanceMinor) }}</strong>
-            </div>
-          } @else {
-            <span class="untracked-balance">Balance not tracked</span>
-          }
-          @if (source.kind !== 'MEAL') {
+          @if (isBankOrCash(source)) {
+            @switch (balanceState(source)) {
+              @case ('TRACKED') {
+                <div class="balance-copy">
+                  <small>Available now</small
+                  ><strong class="source-balance">{{ money(source.balanceMinor) }}</strong>
+                </div>
+              }
+              @case ('NOT_SET') {
+                <span class="untracked-balance">Balance not set</span>
+              }
+              @default {
+                <span class="untracked-balance">Balance not tracked</span>
+              }
+            }
+            @if (isEnrolled(source)) {
+              <details class="account-edit">
+                <summary>Edit account details</summary>
+                <label
+                  >Account name<input
+                    maxlength="80"
+                    [value]="source.nickname"
+                    (change)="updateBankField(source, 'nickname', $event)"
+                /></label>
+                <label
+                  >Bank<input
+                    maxlength="80"
+                    [value]="source.institution ?? ''"
+                    (change)="updateBankField(source, 'institution', $event)"
+                /></label>
+                <label
+                  >Masked account digits<input
+                    inputmode="numeric"
+                    maxlength="5"
+                    [value]="source.lastDigits ?? ''"
+                    (change)="updateBankField(source, 'lastDigits', $event)"
+                /></label>
+                <button class="btn btn-quiet" type="button" (click)="archiveAccount(source)">
+                  <app-icon name="archive" /> Archive account
+                </button>
+              </details>
+            }
+            @if (tracking().enabled) {
+              <div class="source-actions movement-actions">
+                @if (source.kind === 'CASH') {
+                  <button
+                    class="btn"
+                    type="button"
+                    [disabled]="!tracked(source)"
+                    (click)="openMovement({ mode: 'RECEIPT', sourceId: source.id })"
+                  >
+                    <app-icon name="incoming" /> Add cash
+                  </button>
+                  <button
+                    class="btn"
+                    type="button"
+                    [disabled]="!tracked(source) || !firstTrackedBank()"
+                    (click)="
+                      openMovement({
+                        mode: 'TRANSFER',
+                        sourceId: source.id,
+                        presetFrom: firstTrackedBank(),
+                        presetTo: source.id,
+                      })
+                    "
+                  >
+                    <app-icon name="banknote_arrow_down" /> Withdraw from bank
+                  </button>
+                  <button
+                    class="btn"
+                    type="button"
+                    [disabled]="!tracked(source) || !firstTrackedBank()"
+                    (click)="
+                      openMovement({
+                        mode: 'TRANSFER',
+                        sourceId: source.id,
+                        presetFrom: source.id,
+                        presetTo: firstTrackedBank(),
+                      })
+                    "
+                  >
+                    <app-icon name="banknote_arrow_up" /> Deposit into bank
+                  </button>
+                } @else {
+                  <button
+                    class="btn"
+                    type="button"
+                    [disabled]="!tracked(source)"
+                    (click)="openMovement({ mode: 'RECEIPT', sourceId: source.id })"
+                  >
+                    <app-icon name="incoming" /> Record incoming money
+                  </button>
+                  <button
+                    class="btn"
+                    type="button"
+                    [disabled]="!tracked(source)"
+                    (click)="
+                      openMovement({
+                        mode: 'TRANSFER',
+                        sourceId: source.id,
+                        presetFrom: source.id,
+                      })
+                    "
+                  >
+                    <app-icon name="repeat" /> Transfer
+                  </button>
+                }
+                <button
+                  class="btn"
+                  type="button"
+                  (click)="openMovement({ mode: 'BALANCE', sourceId: source.id })"
+                >
+                  <app-icon name="edit" />
+                  {{ source.kind === 'CASH' ? 'Set current cash balance' : 'Set current balance' }}
+                </button>
+              </div>
+            } @else {
+              <small class="tracking-hint"
+                >Spending is still recorded. Turn on balance tracking in Settings › Bank &
+                Cash.</small
+              >
+            }
+          } @else if (source.kind !== 'MEAL') {
+            @if (!source.noLimit) {
+              <div class="balance-copy">
+                <small>Available now</small
+                ><strong class="source-balance">{{ money(source.balanceMinor) }}</strong>
+              </div>
+            } @else {
+              <span class="untracked-balance">Balance not tracked</span>
+            }
             <label class="toggle-row"
               ><span
                 ><strong>No tracked balance</strong
@@ -116,6 +278,14 @@
               /></label>
             }
           } @else {
+            @if (!source.noLimit) {
+              <div class="balance-copy">
+                <small>Available now</small
+                ><strong class="source-balance">{{ money(source.balanceMinor) }}</strong>
+              </div>
+            } @else {
+              <span class="untracked-balance">Balance not tracked</span>
+            }
             <div class="meal-cycle-summary" aria-label="Current Pluxee cycle summary">
               <span
                 ><small>Used this cycle</small
@@ -158,7 +328,7 @@
               routerLink="/transactions"
               [queryParams]="{ add: true, source: source.id }"
             >
-              <app-icon name="plus" /> Add
+              <app-icon name="plus" /> {{ source.kind === 'CASH' ? 'Spend cash' : 'Add' }}
             </a>
           </div>
         </article>
@@ -212,7 +382,123 @@
           <small>Transactions this cycle</small
           ><strong>{{ currentCycleTransactions().length }}</strong>
         </article>
+        @if (tracking().enabled) {
+          <article class="panel">
+            <small>Bank + Cash</small>
+            <strong>{{
+              store.liquidFunds().bankMinor === null && store.liquidFunds().cashMinor === null
+                ? 'Not set'
+                : money((store.liquidFunds().bankMinor ?? 0) + (store.liquidFunds().cashMinor ?? 0))
+            }}</strong>
+            <small
+              >Bank
+              {{
+                store.liquidFunds().bankMinor === null
+                  ? 'not set'
+                  : money(store.liquidFunds().bankMinor ?? 0)
+              }}
+              · Cash
+              {{
+                store.liquidFunds().cashMinor === null
+                  ? 'not set'
+                  : money(store.liquidFunds().cashMinor ?? 0)
+              }}</small
+            >
+          </article>
+        }
       </div>
+
+      @if (visibleTransfers().length || visibleAdjustments().length) {
+        <section class="panel source-ledger" aria-labelledby="source-movements-title">
+          <div class="ledger-heading">
+            <div>
+              <p class="eyebrow">Bank & Cash</p>
+              <h2 id="source-movements-title">Transfers and balance settings</h2>
+            </div>
+            <small>Transfers move money between your accounts; they are not spending.</small>
+          </div>
+          <div class="source-transactions">
+            @for (transfer of visibleTransfers(); track transfer.id) {
+              <article>
+                <span
+                  class="transaction-direction"
+                  [class.credit]="transferIncoming(transfer)"
+                  aria-hidden="true"
+                >
+                  <app-icon [name]="transferIncoming(transfer) ? 'incoming' : 'outgoing'" />
+                </span>
+                <div>
+                  <strong>{{ transferTitle(transfer) }}</strong>
+                  <small
+                    >{{
+                      transfer.description || (transfer.origin === 'SMS' ? 'From SMS' : 'Manual')
+                    }}
+                    @if (transfer.reference) {
+                      · Ref {{ transfer.reference }}
+                    }
+                  </small>
+                </div>
+                <span class="transaction-value">
+                  <time [attr.datetime]="transfer.transferDate">{{
+                    transfer.transferDate | appDate
+                  }}</time>
+                  @if (transfer.transferTime) {
+                    <small class="transaction-time">{{ transfer.transferTime.slice(0, 5) }}</small>
+                  }
+                  <strong class="transaction-amount" [class.credit]="transferIncoming(transfer)">
+                    {{ transferIncoming(transfer) ? '+' : '−' }}{{ money(transfer.amountMinor) }}
+                  </strong>
+                </span>
+                @if (transfer.kind !== 'CARD_SETTLEMENT') {
+                  <button
+                    class="edit-transaction"
+                    type="button"
+                    (click)="editTransfer(transfer)"
+                    [attr.aria-label]="'Edit ' + transferTitle(transfer)"
+                  >
+                    <app-icon name="edit" />
+                  </button>
+                }
+              </article>
+            }
+            @for (adjustment of visibleAdjustments(); track adjustment.id) {
+              <article>
+                <span class="transaction-direction" aria-hidden="true"
+                  ><app-icon name="edit"
+                /></span>
+                <div>
+                  <strong
+                    >{{
+                      adjustment.reason === 'CORRECTION' ? 'Balance correction' : 'Balance set'
+                    }}
+                    · {{ sourceName(adjustment.sourceId) }}</strong
+                  >
+                  <small
+                    >Set to {{ money(adjustment.newMinor) }}
+                    @if (adjustment.correctionMinor) {
+                      · {{ adjustment.correctionMinor < 0 ? '−' : '+'
+                      }}{{
+                        money(
+                          adjustment.correctionMinor < 0
+                            ? -adjustment.correctionMinor
+                            : adjustment.correctionMinor
+                        )
+                      }}
+                      correction
+                    }
+                    · not income or spending</small
+                  >
+                </div>
+                <span class="transaction-value">
+                  <time [attr.datetime]="adjustment.createdAt">{{
+                    adjustment.createdAt.slice(0, 10) | appDate
+                  }}</time>
+                </span>
+              </article>
+            }
+          </div>
+        </section>
+      }
 
       <section class="panel source-ledger" aria-labelledby="source-ledger-title">
         <div class="ledger-heading">
@@ -299,3 +585,13 @@
     </section>
   }
 </div>
+@if (movement(); as request) {
+  <app-source-movement-dialog
+    [mode]="request.mode"
+    [sourceId]="request.sourceId"
+    [presetFrom]="request.presetFrom ?? ''"
+    [presetTo]="request.presetTo ?? ''"
+    [transfer]="request.transfer ?? null"
+    (closed)="movement.set(null)"
+  />
+}

@@ -721,6 +721,14 @@ label small {
 .month-entries article.menu-open {
   z-index: 12;
 }
+.transfer-row:hover {
+  background: transparent;
+}
+.transfer-actions {
+  display: flex;
+  gap: 0.25rem;
+  padding-right: 0.5rem;
+}
 .month-entries article:last-child {
   border-bottom: 0;
 }

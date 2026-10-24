@@ -504,6 +504,62 @@
   </section>
 
   <section class="month-ledger" aria-label="Transactions grouped by period">
+    @if (visibleTransfers().length) {
+      <details class="panel month-group transfer-group">
+        <summary>
+          <span>Transfers & settlements ({{ visibleTransfers().length }})</span>
+          <strong>Not spending</strong>
+          <app-icon name="chevron_right" />
+        </summary>
+        <div class="month-entries">
+          @for (transfer of visibleTransfers(); track transfer.id) {
+            <article>
+              <span class="transaction-open-button transfer-row">
+                <span class="tx-icon credit" aria-hidden="true"><app-icon name="repeat" /></span>
+                <span class="tx-main">
+                  <strong>{{ transferTitle(transfer) }}</strong>
+                  <small
+                    >{{
+                      transfer.description || (transfer.origin === 'SMS' ? 'From SMS' : 'Manual')
+                    }}
+                    @if (transfer.reference) {
+                      · Ref {{ transfer.reference }}
+                    }
+                  </small>
+                </span>
+                <span class="tx-date">
+                  <span>{{ transfer.transferDate | appDate }}</span
+                  ><small>{{ transfer.transferTime?.slice(0, 5) || 'Transfer' }}</small>
+                </span>
+                <strong class="tx-amount">{{
+                  money(transfer.amountMinor, transfer.currencyCode)
+                }}</strong>
+              </span>
+              <div class="transfer-actions">
+                @if (transfer.kind !== 'CARD_SETTLEMENT') {
+                  <button
+                    class="menu-button"
+                    type="button"
+                    (click)="editTransfer(transfer)"
+                    [attr.aria-label]="'Edit ' + transferTitle(transfer)"
+                  >
+                    <app-icon name="edit" />
+                  </button>
+                }
+                <button
+                  class="menu-button"
+                  type="button"
+                  (click)="deleteTransferCandidate.set(transfer)"
+                  [attr.aria-label]="'Delete ' + transferTitle(transfer)"
+                >
+                  <app-icon name="delete" />
+                </button>
+              </div>
+            </article>
+          }
+        </div>
+      </details>
+    }
     @for (group of groups(); track group.key) {
       <details class="panel month-group" [open]="group.key === defaultOpenGroupKey()">
         <summary>
@@ -538,7 +594,7 @@
                   />
                 </span>
                 <span class="tx-main">
-                  <strong>{{ transaction.merchant || transaction.type.replace('_', ' ') }}</strong>
+                  <strong>{{ transactionTitle(transaction) }}</strong>
                   <small class="tx-source-desktop"
                     >{{ categoryName(transaction.categoryId) }} ·
                     {{ store.sourceDetail(transaction.cardId) }}</small
@@ -563,9 +619,7 @@
                 </span>
                 <span class="tx-date">
                   <span>{{ transaction.transactionDate | appDate }}</span
-                  ><small>{{
-                    transaction.emiPlanId ? 'EMI' : transaction.type.replace('_', ' ')
-                  }}</small>
+                  ><small>{{ typeLabel(transaction) }}</small>
                 </span>
                 <strong class="tx-amount" [class.credit]="isCredit(transaction.type)"
                   >{{ isCredit(transaction.type) ? '+' : '−'
@@ -655,10 +709,12 @@
                 ? 'EMI installment'
                 : transaction.recurringRuleId
                   ? 'Recurring transaction'
-                  : transaction.type.replace('_', ' ')
+                  : typeLabel(transaction)
             }}
           </p>
-          <h2 id="transaction-detail-title">{{ transaction.merchant || 'Transaction details' }}</h2>
+          <h2 id="transaction-detail-title">
+            {{ transactionTitle(transaction) || 'Transaction details' }}
+          </h2>
         </div>
         <button type="button" (click)="closeDetails()" aria-label="Close transaction details">
           <app-icon name="close" />
@@ -686,6 +742,38 @@
           <dt>Payment source</dt>
           <dd>{{ store.sourceDetail(transaction.cardId) }}</dd>
         </div>
+        @if (transaction.bankName || transaction.accountSuffix) {
+          <div>
+            <dt>Bank</dt>
+            <dd>
+              {{ transaction.bankName || 'Bank not identified' }}
+              @if (transaction.accountSuffix) {
+                · A/c ••{{ transaction.accountSuffix }}
+              }
+            </dd>
+          </div>
+        }
+        @if (transaction.reference) {
+          <div>
+            <dt>Reference</dt>
+            <dd>{{ transaction.reference }}</dd>
+          </div>
+        }
+        @if (transaction.origin) {
+          <div>
+            <dt>Origin</dt>
+            <dd>{{ transaction.origin === 'SMS' ? 'Approved from SMS' : 'Manual' }}</dd>
+          </div>
+        }
+        @if (store.fundingFor(transaction.id); as funding) {
+          <div class="detail-wide">
+            <dt>Paid from</dt>
+            <dd>
+              {{ store.sourceDetail(funding.fromSourceId) }} ·
+              {{ money(funding.amountMinor, funding.currencyCode) }} deducted once
+            </dd>
+          </div>
+        }
         @if (transaction.notes) {
           <div class="detail-wide">
             <dt>Notes</dt>
@@ -1033,12 +1121,29 @@
 @if (deleteCandidate(); as transaction) {
   <app-confirmation-dialog
     title="Delete transaction?"
-    [message]="
-      'Delete ' + (transaction.merchant || 'this transaction') + '? This action cannot be undone.'
-    "
+    [message]="deleteMessage(transaction)"
     confirmLabel="Delete transaction"
     (confirmed)="confirmDelete()"
     (cancelled)="deleteCandidate.set(null)"
+  />
+}
+
+@if (deleteTransferCandidate(); as transfer) {
+  <app-confirmation-dialog
+    title="Delete transfer?"
+    [message]="deleteTransferMessage(transfer)"
+    confirmLabel="Delete"
+    (confirmed)="confirmDeleteTransfer()"
+    (cancelled)="deleteTransferCandidate.set(null)"
+  />
+}
+
+@if (transferEditing(); as transfer) {
+  <app-source-movement-dialog
+    mode="TRANSFER"
+    [sourceId]="transfer.fromSourceId"
+    [transfer]="transfer"
+    (closed)="transferEditing.set(null)"
   />
 }
 

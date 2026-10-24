@@ -57,9 +57,13 @@ const BACKUP_TABLES = [
   'sms_candidates',
   'sms_reconciliation',
   'sms_sync_state',
+  'source_transfers',
+  'source_balance_adjustments',
 ] as const;
 
 const DELETE_TABLES = [
+  'source_balance_adjustments',
+  'source_transfers',
   'sms_reconciliation',
   'sms_candidates',
   'sms_sync_state',
@@ -406,6 +410,7 @@ export class SqliteDatabase {
          WHERE transaction_id IN (SELECT id FROM card_transactions WHERE transaction_date < '${cutoffIso}');
         DELETE FROM attachments
          WHERE transaction_id IN (SELECT id FROM card_transactions WHERE transaction_date < '${cutoffIso}');
+        DELETE FROM source_transfers WHERE transfer_date < '${cutoffIso}';
         DELETE FROM card_transactions WHERE transaction_date < '${cutoffIso}';
         DELETE FROM transaction_split_groups
          WHERE id NOT IN (SELECT DISTINCT group_id FROM transaction_split_members);

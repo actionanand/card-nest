@@ -116,6 +116,60 @@ export interface CardTransaction {
   updatedAt: string;
   /** Historical SMS rows can be recorded without replaying a balance already in the cutover snapshot. */
   sourceBalanceApplied?: boolean;
+  /** Originating bank identity for Bank/UPI entries; never a full account number. */
+  bankName?: string;
+  accountSuffix?: string;
+  origin?: 'SMS' | 'MANUAL';
+  /** Exact Bank/Cash balance change applied by this entry, so edits and deletes reverse it once. */
+  balanceEffect?: AppliedBalanceEffect;
+}
+
+export interface AppliedBalanceEffect {
+  sourceId: string;
+  deltaMinor: Money;
+  appliedAt: string;
+}
+
+export type SourceTransferKind =
+  'TRANSFER' | 'CASH_WITHDRAWAL' | 'CASH_DEPOSIT' | 'CARD_SETTLEMENT' | 'LOAN_REPAYMENT';
+
+/** One logical movement between owned sources, or bank funding for a card/loan repayment. */
+export interface SourceTransfer {
+  id: string;
+  kind: SourceTransferKind;
+  fromSourceId: string;
+  toSourceId?: string;
+  cardId?: string;
+  paymentTransactionId?: string;
+  amountMinor: Money;
+  currencyCode: string;
+  transferDate: string;
+  transferTime?: string;
+  description?: string;
+  reference?: string;
+  origin: 'SMS' | 'MANUAL';
+  effects?: readonly AppliedBalanceEffect[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Audit record for an explicit balance setting; never income or spending. */
+export interface SourceBalanceAdjustment {
+  id: string;
+  sourceId: string;
+  reason: 'OPENING' | 'CORRECTION' | 'REBASE' | 'MIGRATION' | 'SMS_RECONCILIATION';
+  previousMinor?: Money;
+  newMinor: Money;
+  correctionMinor: Money;
+  note?: string;
+  createdAt: string;
+}
+
+export interface BankCashTrackingSettings {
+  enabled: boolean;
+  askCardSettlementFunding: boolean;
+  activatedAt?: string;
+  disabledAt?: string;
 }
 
 export type PaymentSourceKind = 'CASH' | 'DEBIT' | 'MEAL' | 'FASTAG';

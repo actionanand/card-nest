@@ -1,6 +1,11 @@
 import { Component, ElementRef, computed, inject, signal, viewChild } from '@angular/core';
 import { ActivatedRoute, RouterLink } from '@angular/router';
-import { CardTransaction, PaymentSource, TransactionType } from '../../core/models/domain';
+import {
+  CardTransaction,
+  PaymentSource,
+  SourceTransfer,
+  TransactionType,
+} from '../../core/models/domain';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { formatMoney, parseMoneyToMinor } from '../../core/services/money';
 import { SnackbarService } from '../../core/services/snackbar.service';
@@ -10,6 +15,21 @@ import { AppDatePipe } from '../../core/services/date-format.service';
 import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { recordedTransactionTime } from '../../core/services/transaction-time';
+import {
+  bankCashTracked,
+  isBankOrCash,
+  isEnrolledBankAccount,
+  transferLabel,
+} from '../../core/services/source-balance';
+import { SourceMovementDialog, SourceMovementMode } from '../../shared/source-movement-dialog';
+
+interface MovementRequest {
+  readonly mode: SourceMovementMode;
+  readonly sourceId: string;
+  readonly presetFrom?: string;
+  readonly presetTo?: string;
+  readonly transfer?: SourceTransfer;
+}
 
 type SourceTab = 'ACCOUNTS' | 'ACTIVITY';
 
@@ -29,6 +49,7 @@ interface SourceCycleGroup {
     AppDatePipe,
     AppSelectPicker,
     ReactiveFormsModule,
+    SourceMovementDialog,
   ],
   templateUrl: './sources.html',
   styleUrl: './sources.scss',
@@ -89,6 +110,124 @@ export class SourcesPage {
     }
   }
   readonly store = inject(CardNestStore);
+  readonly movement = signal<MovementRequest | null>(null);
+  readonly bankOpen = signal(false);
+  readonly bankSaving = signal(false);
+  readonly bankError = signal('');
+  readonly bankForm = new FormGroup({
+    nickname: new FormControl('', {
+      nonNullable: true,
+      validators: [Validators.required, Validators.maxLength(80)],
+    }),
+    institution: new FormControl('', {
+      nonNullable: true,
+      validators: [Validators.required, Validators.maxLength(80)],
+    }),
+    lastDigits: new FormControl('', {
+      nonNullable: true,
+      validators: [Validators.required, Validators.pattern(/^\d{3,5}$/)],
+    }),
+  });
+  bankToggled(event: Event): void {
+    this.bankOpen.set((event.target as HTMLDetailsElement).open);
+  }
+  async addBankAccount(event: Event): Promise<void> {
+    event.preventDefault();
+    if (!this.bankForm.valid || this.bankSaving()) {
+      this.bankForm.markAllAsTouched();
+      return;
+    }
+    this.bankError.set('');
+    this.bankSaving.set(true);
+    try {
+      const account = await this.store.addBankAccount(this.bankForm.getRawValue());
+      this.bankForm.reset();
+      this.bankOpen.set(false);
+      this.snackbar.show(`${this.store.sourceDetail(account.id)} enrolled.`);
+    } catch (error: unknown) {
+      this.bankError.set(error instanceof Error ? error.message : 'Account could not be saved.');
+      this.snackbar.show(this.bankError(), 'WARNING');
+    } finally {
+      this.bankSaving.set(false);
+    }
+  }
+  readonly tracking = computed(() => this.store.bankCashTracking());
+  isBankOrCash(source: PaymentSource): boolean {
+    return isBankOrCash(source);
+  }
+  isEnrolled(source: PaymentSource): boolean {
+    return isEnrolledBankAccount(source);
+  }
+  tracked(source: PaymentSource): boolean {
+    return bankCashTracked(source, this.tracking());
+  }
+  balanceState(source: PaymentSource): 'TRACKED' | 'NOT_SET' | 'OFF' {
+    if (!this.tracking().enabled) return 'OFF';
+    return this.tracked(source) ? 'TRACKED' : 'NOT_SET';
+  }
+  openMovement(request: MovementRequest): void {
+    this.movement.set(request);
+  }
+  firstTrackedBank(excludeId = ''): string {
+    return (
+      this.store.bankAccounts().find((source) => source.id !== excludeId && this.tracked(source))
+        ?.id ?? ''
+    );
+  }
+  updateBankField(
+    source: PaymentSource,
+    field: 'nickname' | 'institution' | 'lastDigits',
+    event: Event,
+  ): void {
+    const input = event.target as HTMLInputElement;
+    const value = input.value.trim();
+    if (field === 'lastDigits' && !/^\d{3,5}$/.test(value)) {
+      input.setCustomValidity('Enter the last 3 to 5 digits.');
+      input.reportValidity();
+      return;
+    }
+    input.setCustomValidity('');
+    if (!value && field !== 'institution') return;
+    this.store.updatePaymentSource({ ...source, [field]: value.slice(0, 80) || undefined });
+    this.snackbar.show(`${source.nickname} updated.`);
+  }
+  archiveAccount(source: PaymentSource): void {
+    this.store.updatePaymentSource({ ...source, archived: true });
+    this.snackbar.show(`${source.nickname} archived. Its history is kept.`);
+  }
+  readonly visibleTransfers = computed(() =>
+    this.store
+      .transfers()
+      .filter(
+        (transfer) =>
+          this.selectedSourceId() === 'ALL' ||
+          transfer.fromSourceId === this.selectedSourceId() ||
+          transfer.toSourceId === this.selectedSourceId(),
+      ),
+  );
+  readonly visibleAdjustments = computed(() =>
+    this.store
+      .balanceAdjustments()
+      .filter(
+        (adjustment) =>
+          this.selectedSourceId() === 'ALL' || adjustment.sourceId === this.selectedSourceId(),
+      )
+      .slice(0, 20),
+  );
+  transferTitle(transfer: SourceTransfer): string {
+    const to = transfer.toSourceId
+      ? this.store.sourceDetail(transfer.toSourceId)
+      : transfer.cardId
+        ? this.store.sourceDetail(transfer.cardId)
+        : 'Loan repayment';
+    return `${transferLabel(transfer.kind)} · ${this.store.sourceDetail(transfer.fromSourceId)} → ${to}`;
+  }
+  transferIncoming(transfer: SourceTransfer): boolean {
+    return this.selectedSourceId() !== 'ALL' && transfer.toSourceId === this.selectedSourceId();
+  }
+  editTransfer(transfer: SourceTransfer): void {
+    this.openMovement({ mode: 'TRANSFER', sourceId: transfer.fromSourceId, transfer });
+  }
   private readonly route = inject(ActivatedRoute);
   private readonly snackbar = inject(SnackbarService);
   private readonly requestedSourceId = this.route.snapshot.fragment;
@@ -168,8 +307,10 @@ export class SourcesPage {
   );
   readonly remainingMinor = computed(() => {
     const selected = this.selectedSource();
-    if (selected) return selected.noLimit ? null : (selected.balanceMinor ?? 0);
-    const tracked = this.store.paymentSources().filter((source) => !source.noLimit);
+    const funds = (source: PaymentSource) =>
+      isBankOrCash(source) ? this.tracked(source) : !source.noLimit;
+    if (selected) return funds(selected) ? (selected.balanceMinor ?? 0) : null;
+    const tracked = this.store.paymentSources().filter(funds);
     return tracked.length
       ? tracked.reduce((sum, source) => sum + (source.balanceMinor ?? 0), 0)
       : null;
@@ -259,7 +400,8 @@ export class SourcesPage {
   }
 
   transactionLabel(transaction: CardTransaction): string {
-    return transaction.merchant || transaction.type.replace('_', ' ');
+    const label = transaction.merchant || transaction.type.replace('_', ' ');
+    return transaction.bankName ? `${transaction.bankName} · ${label}` : label;
   }
 
   monthlyUsed(source: PaymentSource): number {

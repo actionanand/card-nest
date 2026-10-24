@@ -1,4 +1,5 @@
 import {
+  BankCashTrackingSettings,
   CardTransaction,
   Category,
   CreditCard,
@@ -67,6 +68,16 @@ export interface SmsEvidence {
   minimumDueMinor?: number;
   dueDate?: string;
   evidence: string;
+  /** Movement of the customer's own account. Counterparty wording never sets this. */
+  direction?: 'DEBIT' | 'CREDIT';
+  counterpartyAccountDigits?: string;
+  purposeHint?:
+    | 'PURCHASE'
+    | 'INCOMING'
+    | 'ACCOUNT_TRANSFER'
+    | 'CARD_REPAYMENT'
+    | 'LOAN_REPAYMENT'
+    | 'CASH_WITHDRAWAL';
 }
 /** Before v3, extraction did not distinguish upcoming card charges from completed debits. */
 export function suspectEvidence(item: SmsEvidence): boolean {
@@ -83,6 +94,8 @@ export interface ApprovalEdits {
   transactionDate?: string;
   categoryId?: string;
   relatedTransactionId?: string;
+  /** Explicit paying bank account for a card payment; never inferred. */
+  fundingSourceId?: string;
 }
 export interface SmsCandidate {
   id: string;
@@ -166,6 +179,9 @@ export function validEvidence(value: unknown): value is SmsEvidence {
         item['reportedBalanceMinor'] >= 0)) &&
     (item['balancePosition'] === undefined ||
       ['AFTER', 'BEFORE', 'UNKNOWN'].includes(String(item['balancePosition']))) &&
+    (item['direction'] === undefined || ['DEBIT', 'CREDIT'].includes(String(item['direction']))) &&
+    (item['counterpartyAccountDigits'] === undefined ||
+      /^\d{3,5}$/.test(String(item['counterpartyAccountDigits']))) &&
     typeof item['receivedAt'] === 'number' &&
     typeof item['providerId'] === 'string'
   );
@@ -231,6 +247,195 @@ export function isPluxeeSource(source: PaymentSource): boolean {
     normalizedIssuer(source.institution) === 'pluxee' ||
     normalizedIssuer(source.nickname) === 'pluxee'
   );
+}
+
+export const BANK_EVIDENCE_KINDS: readonly SmsKind[] = [
+  'BANK_DEBIT',
+  'BANK_CREDIT',
+  'BANK_TRANSFER',
+  'PAYMENT_INITIATED',
+  'LOAN_DEBIT',
+];
+
+export type BankPurpose = 'PURCHASE' | 'INCOME' | 'TRANSFER' | 'CARD_SETTLEMENT' | 'LOAN_REPAYMENT';
+
+export function isBankEvidence(item: SmsEvidence | null | undefined): item is SmsEvidence {
+  return !!item && BANK_EVIDENCE_KINDS.includes(item.kind) && !suspectEvidence(item);
+}
+
+/** Older staged BANK_TRANSFER evidence has no reliable direction until it is reparsed. */
+export function bankDirection(item: SmsEvidence): 'DEBIT' | 'CREDIT' | undefined {
+  if (item.direction) return item.direction;
+  if (item.kind === 'BANK_CREDIT') return 'CREDIT';
+  if (['BANK_DEBIT', 'LOAN_DEBIT', 'PAYMENT_INITIATED'].includes(item.kind)) return 'DEBIT';
+  return undefined;
+}
+
+/** Purposes the user may explicitly choose. Repayments and loans never become spending. */
+export function bankPurposes(
+  item: SmsEvidence,
+  settings: BankCashTrackingSettings,
+): readonly BankPurpose[] {
+  if (!isBankEvidence(item)) return [];
+  const direction = bankDirection(item);
+  if (!direction) return [];
+  if (direction === 'CREDIT') return settings.enabled ? ['INCOME', 'TRANSFER'] : ['INCOME'];
+  const repayment =
+    item.kind === 'PAYMENT_INITIATED' ||
+    item.kind === 'LOAN_DEBIT' ||
+    item.purposeHint === 'CARD_REPAYMENT' ||
+    item.purposeHint === 'LOAN_REPAYMENT';
+  const purposes: BankPurpose[] = repayment ? [] : ['PURCHASE'];
+  if (settings.enabled && item.kind !== 'LOAN_DEBIT' && item.kind !== 'PAYMENT_INITIATED')
+    purposes.push('TRANSFER');
+  if (settings.enabled && settings.askCardSettlementFunding && item.kind !== 'LOAN_DEBIT')
+    purposes.push('CARD_SETTLEMENT');
+  if (settings.enabled && (item.kind === 'LOAN_DEBIT' || item.purposeHint === 'LOAN_REPAYMENT'))
+    purposes.push('LOAN_REPAYMENT');
+  return purposes;
+}
+
+/** Only a plain merchant debit defaults to spending; everything else needs an explicit choice. */
+export function defaultBankPurpose(
+  item: SmsEvidence,
+  settings: BankCashTrackingSettings,
+): BankPurpose | '' {
+  const purposes = bankPurposes(item, settings);
+  if (
+    item.kind === 'BANK_DEBIT' &&
+    bankDirection(item) === 'DEBIT' &&
+    (item.purposeHint === undefined || item.purposeHint === 'PURCHASE') &&
+    purposes.includes('PURCHASE')
+  )
+    return 'PURCHASE';
+  return '';
+}
+
+export function bankDisplayName(issuer: string | undefined): string | undefined {
+  if (!issuer) return undefined;
+  const names: Record<string, string> = {
+    icici: 'ICICI Bank',
+    hdfc: 'HDFC Bank',
+    axis: 'Axis Bank',
+    pnb: 'Punjab National Bank',
+    scb: 'Standard Chartered',
+    federal: 'Federal Bank',
+    idfc: 'IDFC FIRST Bank',
+    au: 'AU Small Finance Bank',
+    kotak: 'Kotak Mahindra Bank',
+    sbi: 'State Bank of India',
+    bob: 'Bank of Baroda',
+    slice: 'Slice',
+  };
+  return names[normalizedIssuer(issuer)] ?? issuer;
+}
+
+/** Masks expose 3–5 trailing digits; the shorter value must be the tail of the longer one. */
+export function accountSuffixMatches(left: string | undefined, right: string | undefined): boolean {
+  if (!left || !right) return false;
+  const [short, long] = left.length <= right.length ? [left, right] : [right, left];
+  return /^\d{3,5}$/.test(short) && /^\d{3,5}$/.test(long) && long.endsWith(short);
+}
+
+function bankConflicts(source: PaymentSource, issuer: string | undefined): boolean {
+  const institution = source.institution?.trim();
+  if (!issuer || !institution || institution === 'Primary bank') return false;
+  const left = normalizedIssuer(institution);
+  const right = normalizedIssuer(issuer);
+  return !!left && !!right && !left.includes(right) && !right.includes(left);
+}
+
+/**
+ * Enrolled accounts whose suffix and (when known) bank agree with the message.
+ * A shared suffix with a different bank is never treated as the same account.
+ */
+export function matchingBankAccounts(
+  item: Pick<SmsEvidence, 'accountDigits' | 'issuer'>,
+  sources: readonly PaymentSource[],
+): readonly PaymentSource[] {
+  return sources.filter(
+    (source) =>
+      source.kind === 'DEBIT' &&
+      !source.archived &&
+      !!source.lastDigits &&
+      accountSuffixMatches(item.accountDigits, source.lastDigits) &&
+      !bankConflicts(source, item.issuer),
+  );
+}
+
+/** Ids safe to preselect. With tracking on, nothing is guessed for the generic source. */
+export function suggestedBankSources(
+  item: SmsEvidence,
+  sources: readonly PaymentSource[],
+  settings: BankCashTrackingSettings,
+): readonly string[] {
+  const matches = matchingBankAccounts(item, sources);
+  if (matches.length) return matches.length === 1 ? [matches[0].id] : [];
+  if (settings.enabled) return [];
+  const generic = sources.filter(
+    (source) => source.kind === 'DEBIT' && !source.archived && !source.lastDigits,
+  );
+  return generic.length === 1 ? [generic[0].id] : [];
+}
+
+/** Message identity conflicts with the chosen account (different suffix or bank). */
+export function bankSourceConflict(item: SmsEvidence, source: PaymentSource): string {
+  if (source.kind !== 'DEBIT') return 'Choose a bank account for this message.';
+  if (
+    source.lastDigits &&
+    item.accountDigits &&
+    !accountSuffixMatches(item.accountDigits, source.lastDigits)
+  )
+    return 'The message account suffix differs from this bank account.';
+  if (bankConflicts(source, item.issuer)) return 'The message bank differs from this account.';
+  return '';
+}
+
+/** Possible manual duplicates; conflicting verified references are never the same event. */
+export function bankExistingSuggestions(
+  item: SmsEvidence,
+  type: TransactionType,
+  sourceId: string,
+  transactions: readonly CardTransaction[],
+  amountMinor = item.amountMinor,
+  eventDate = item.eventDate,
+): readonly CardTransaction[] {
+  return transactions.filter(
+    (entry) =>
+      entry.cardId === sourceId &&
+      entry.type === type &&
+      entry.currencyCode === item.currency &&
+      entry.amountMinor === amountMinor &&
+      Math.abs(Date.parse(entry.transactionDate) - Date.parse(eventDate)) <= 3 * 86400000 &&
+      !(entry.reference && item.reference && entry.reference !== item.reference),
+  );
+}
+
+const BANK_PURCHASE_CATEGORY_HINTS: readonly [RegExp, string][] = [
+  [/\b(?:mart|grocer\w*|supermarket|vegetables?|fruits?|meats?|fish|dairy|milk)\b/i, 'groceries'],
+  [/\b(?:cafe|coffee|restaurant|eatery|dining|bakery|food)\b/i, 'dining'],
+  [/\b(?:fuel|petrol|diesel)\b/i, 'fuel'],
+  [/\b(?:electricity|water bill|gas bill|broadband)\b/i, 'utilities'],
+];
+
+/** Existing usable category for a bank event; Other is the safe fallback. */
+export function defaultBankCategory(
+  purpose: BankPurpose | '',
+  merchant: string | undefined,
+  categories: readonly Pick<Category, 'id' | 'archived' | 'appliesTo'>[],
+): string {
+  const usable = (id: string, incompatible: Category['appliesTo']) =>
+    categories.some(
+      (category) => category.id === id && !category.archived && category.appliesTo !== incompatible,
+    );
+  if (purpose === 'INCOME')
+    return usable('income', 'EXPENSE')
+      ? 'income'
+      : usable('contra-expenses', 'EXPENSE')
+        ? 'contra-expenses'
+        : 'other';
+  const hint = BANK_PURCHASE_CATEGORY_HINTS.find(([pattern]) => pattern.test(merchant ?? ''))?.[1];
+  return hint && usable(hint, 'CREDIT') ? hint : 'other';
 }
 
 export function defaultPluxeeCategory(

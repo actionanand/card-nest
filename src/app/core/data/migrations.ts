@@ -81,4 +81,13 @@ export const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
       `CREATE INDEX idx_sms_read ON sms_candidates(read_at,event_at DESC)`,
     ],
   },
+  {
+    version: 9,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS source_transfers (id TEXT PRIMARY KEY NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('TRANSFER','CASH_WITHDRAWAL','CASH_DEPOSIT','CARD_SETTLEMENT','LOAN_REPAYMENT')), from_source_id TEXT NOT NULL, to_source_id TEXT, payment_transaction_id TEXT UNIQUE, amount_minor INTEGER NOT NULL CHECK(amount_minor > 0), transfer_date TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, CHECK(to_source_id IS NULL OR to_source_id <> from_source_id), FOREIGN KEY(payment_transaction_id) REFERENCES card_transactions(id) ON DELETE CASCADE)`,
+      `CREATE INDEX IF NOT EXISTS idx_source_transfers_date ON source_transfers(transfer_date DESC)`,
+      `CREATE TABLE IF NOT EXISTS source_balance_adjustments (id TEXT PRIMARY KEY NOT NULL, source_id TEXT NOT NULL, reason TEXT NOT NULL, previous_minor INTEGER, new_minor INTEGER NOT NULL, correction_minor INTEGER NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL)`,
+      `CREATE INDEX IF NOT EXISTS idx_source_balance_adjustments ON source_balance_adjustments(source_id, created_at DESC)`,
+    ],
+  },
 ];

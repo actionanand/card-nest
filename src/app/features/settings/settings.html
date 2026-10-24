@@ -51,6 +51,13 @@
       </button>
       <button
         type="button"
+        [attr.aria-pressed]="currentSection() === 'bank-cash'"
+        (click)="scrollSection('bank-cash')"
+      >
+        Bank & Cash
+      </button>
+      <button
+        type="button"
         [attr.aria-pressed]="currentSection() === 'notifications'"
         (click)="scrollSection('notifications')"
       >
@@ -343,6 +350,86 @@
             </ul>
           </details>
         }
+      </section>
+      <section id="bank-cash" class="panel">
+        <div class="setting-heading">
+          <span aria-hidden="true"><app-icon name="landmark" /></span>
+          <div>
+            <h2>Bank & Cash Tracking</h2>
+            <p>Spending from Bank/UPI and Cash is always recorded. Balances are optional.</p>
+          </div>
+        </div>
+        <label class="setting-row toggle"
+          ><span
+            ><strong>Track Bank/UPI & Cash balances</strong
+            ><small
+              >Keep track of your bank-account and physical-cash balances as you record purchases,
+              receipts and transfers.</small
+            ></span
+          ><input
+            type="checkbox"
+            [checked]="store.bankCashTracking().enabled"
+            [disabled]="!database.ready() || trackingSaving()"
+            (change)="toggleBankCashTracking($event)"
+        /></label>
+        @if (trackingSetupOpen()) {
+          <form class="tracking-setup" (submit)="confirmTrackingSetup($event)">
+            <p>
+              Enter each current balance. Older purchases are not replayed; this becomes the
+              starting point. Leave a balance empty if you do not know it yet.
+            </p>
+            @for (source of trackableSources(); track source.id) {
+              <label
+                >{{ sourceDetail(source.id) }} — current balance (INR)<input
+                  inputmode="decimal"
+                  [value]="trackingBalances()[source.id] ?? ''"
+                  placeholder="Unknown"
+                  (input)="updateTrackingBalance(source.id, $event)"
+              /></label>
+            }
+            @if (trackingError(); as error) {
+              <p class="setting-status" role="alert">{{ error }}</p>
+            }
+            <div class="pin-buttons">
+              <button class="btn" type="button" (click)="trackingSetupOpen.set(false)">
+                Cancel
+              </button>
+              <button class="btn btn-primary" type="submit" [disabled]="trackingSaving()">
+                Confirm balances and turn on
+              </button>
+            </div>
+          </form>
+        }
+        @if (store.bankCashTracking().enabled) {
+          <ul class="tracked-balances" aria-label="Tracked balances">
+            @for (source of trackableSources(); track source.id) {
+              <li>
+                <span>{{ sourceDetail(source.id) }}</span
+                ><strong>{{ trackedBalance(source.id) }}</strong>
+              </li>
+            }
+          </ul>
+        } @else if (store.bankCashTracking().activatedAt) {
+          <p class="setting-status">
+            Tracking is off. Saved balances are kept; turning it on again asks you to confirm
+            current balances so entries recorded meanwhile are not replayed.
+          </p>
+        }
+        <label class="setting-row toggle"
+          ><span
+            ><strong>Ask to deduct bank balance for credit-card payments</strong
+            ><small
+              >When you record a credit-card payment, ask whether to deduct the payment from a
+              tracked bank account.</small
+            ></span
+          ><input
+            type="checkbox"
+            [checked]="
+              store.bankCashTracking().enabled && store.bankCashTracking().askCardSettlementFunding
+            "
+            [disabled]="!database.ready() || !store.bankCashTracking().enabled"
+            (change)="toggleCardSettlementFunding($event)"
+        /></label>
       </section>
       <section id="notifications" class="panel">
         <div class="setting-heading">

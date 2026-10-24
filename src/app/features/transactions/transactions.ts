@@ -12,7 +12,13 @@ import { FormArray, FormControl, FormGroup, ReactiveFormsModule, Validators } fr
 import { ActivatedRoute, Router } from '@angular/router';
 import { Camera, CameraResultType, CameraSource } from '@capacitor/camera';
 import { Capacitor } from '@capacitor/core';
-import { CardTransaction, EmiPlan, RecurringRule, TransactionType } from '../../core/models/domain';
+import {
+  CardTransaction,
+  EmiPlan,
+  RecurringRule,
+  SourceTransfer,
+  TransactionType,
+} from '../../core/models/domain';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { formatMoney, parseMoneyToMinor, transactionEffect } from '../../core/services/money';
 import { SnackbarService } from '../../core/services/snackbar.service';
@@ -32,6 +38,8 @@ import { AppDatePicker } from '../../shared/app-date-picker';
 import { indiaCurrentMonth, indiaTodayIso } from '../../core/services/india-date';
 import { PlatformTools } from '../../shared/platform-tools';
 import { recordedTransactionTime } from '../../core/services/transaction-time';
+import { transferLabel } from '../../core/services/source-balance';
+import { SourceMovementDialog } from '../../shared/source-movement-dialog';
 
 type GroupingMode = 'MONTH' | 'CYCLE' | 'STATEMENT';
 type TransactionTypeFilter = TransactionType | 'ALL' | 'WITH_IMAGE';
@@ -65,6 +73,7 @@ function sanitizedMoneyInput(value: string): string {
     AppSelectPicker,
     AppDatePicker,
     PlatformTools,
+    SourceMovementDialog,
   ],
   templateUrl: './transactions.html',
   styleUrl: './transactions.scss',
@@ -418,6 +427,7 @@ export class TransactionsPage {
           (this.categoryFilter() === 'ALL' || item.categoryId === this.categoryFilter()) &&
           (!term ||
             item.merchant?.toLocaleLowerCase().includes(term) ||
+            item.bankName?.toLocaleLowerCase().includes(term) ||
             this.cardName(item.cardId).toLocaleLowerCase().includes(term) ||
             this.categoryName(item.categoryId).toLocaleLowerCase().includes(term) ||
             (numericTerm.length > 0 && (item.amountMinor / 100).toFixed(2).includes(numericTerm))),
@@ -1153,6 +1163,10 @@ export class TransactionsPage {
     });
   }
   closeOverlays(): void {
+    if (this.deleteTransferCandidate()) {
+      this.deleteTransferCandidate.set(null);
+      return;
+    }
     if (this.sourceFilterOpen()) {
       this.sourceFilterOpen.set(false);
       return;
@@ -1194,6 +1208,80 @@ export class TransactionsPage {
   delete(transaction: CardTransaction): void {
     this.deleteCandidate.set(transaction);
     this.closeMenus();
+  }
+  deleteMessage(transaction: CardTransaction): string {
+    const funding = this.store.fundingFor(transaction.id);
+    return `Delete ${transaction.merchant || 'this transaction'}? This action cannot be undone.${
+      funding
+        ? ` The linked ${formatMoney(funding.amountMinor, 'INR')} deduction from ${this.store.sourceDetail(funding.fromSourceId)} is reversed too.`
+        : ''
+    }`;
+  }
+  readonly transferEditing = signal<SourceTransfer | null>(null);
+  readonly deleteTransferCandidate = signal<SourceTransfer | null>(null);
+  readonly visibleTransfers = computed(() => {
+    const source = this.sourceFilter();
+    const term = this.search().trim().toLocaleLowerCase();
+    return this.store
+      .transfers()
+      .filter(
+        (transfer) =>
+          (source === 'ALL' ||
+            transfer.fromSourceId === source ||
+            transfer.toSourceId === source ||
+            transfer.cardId === source) &&
+          (!term || this.transferTitle(transfer).toLocaleLowerCase().includes(term)),
+      );
+  });
+  transferTitle(transfer: SourceTransfer): string {
+    const to = transfer.toSourceId
+      ? this.store.sourceDetail(transfer.toSourceId)
+      : transfer.cardId
+        ? this.store.sourceName(transfer.cardId)
+        : 'Loan repayment';
+    return `${transferLabel(transfer.kind)} · ${this.store.sourceDetail(transfer.fromSourceId)} → ${to}`;
+  }
+  editTransfer(transfer: SourceTransfer): void {
+    if (transfer.kind === 'CARD_SETTLEMENT') return;
+    this.transferEditing.set(transfer);
+  }
+  deleteTransferMessage(transfer: SourceTransfer): string {
+    return transfer.kind === 'CARD_SETTLEMENT'
+      ? `Remove the ${formatMoney(transfer.amountMinor, 'INR')} bank deduction? The card payment itself is kept.`
+      : `Delete this ${transferLabel(transfer.kind).toLowerCase()}? Both account balances are reversed together.`;
+  }
+  async confirmDeleteTransfer(): Promise<void> {
+    const transfer = this.deleteTransferCandidate();
+    if (!transfer) return;
+    this.deleteTransferCandidate.set(null);
+    try {
+      await this.store.deleteTransfer(transfer.id);
+      this.snackbar.show('Transfer deleted. Both balances were reversed.', 'WARNING');
+    } catch (error: unknown) {
+      this.snackbar.show(
+        error instanceof Error ? error.message : 'The transfer could not be deleted.',
+        'WARNING',
+      );
+    }
+  }
+  /** Readable kind: the payment source tells a bank purchase from a card purchase. */
+  typeLabel(transaction: CardTransaction): string {
+    if (transaction.emiPlanId) return 'EMI';
+    const source = this.store.paymentSources().find((item) => item.id === transaction.cardId);
+    if (this.store.fundingFor(transaction.id)) return 'Credit-card settlement';
+    if (source?.kind === 'DEBIT') {
+      if (transaction.type === 'PURCHASE') return 'Bank/UPI purchase';
+      if (transaction.type === 'CREDIT') return 'Bank receipt';
+    }
+    if (source?.kind === 'CASH') {
+      if (transaction.type === 'PURCHASE') return 'Cash purchase';
+      if (transaction.type === 'CREDIT') return 'Cash received';
+    }
+    return transaction.type.replace('_', ' ');
+  }
+  transactionTitle(transaction: CardTransaction): string {
+    const label = transaction.merchant || transaction.type.replace('_', ' ');
+    return transaction.bankName ? `${transaction.bankName} · ${label}` : label;
   }
   confirmDelete(): void {
     const transaction = this.deleteCandidate();

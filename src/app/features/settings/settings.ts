@@ -21,6 +21,7 @@ import { CardNestStore } from '../../core/services/card-nest-store';
 import { NotificationService } from '../../core/services/notification.service';
 import { AppTheme, ThemeService } from '../../core/services/theme.service';
 import { formatMoney, parseMoneyToMinor } from '../../core/services/money';
+import { bankCashTracked, isBankOrCash } from '../../core/services/source-balance';
 import { AppIcon } from '../../shared/app-icon';
 import { SnackbarService } from '../../core/services/snackbar.service';
 import { BackupService } from '../../core/services/backup.service';
@@ -85,7 +86,9 @@ export class SettingsPage {
     });
   })();
   readonly currentSection = signal('security');
-  scrollSection(id: 'security' | 'appearance' | 'defaults' | 'notifications' | 'data'): void {
+  scrollSection(
+    id: 'security' | 'appearance' | 'defaults' | 'bank-cash' | 'notifications' | 'data',
+  ): void {
     const section = document.getElementById(id);
     if (!section) return;
     this.currentSection.set(id);
@@ -292,6 +295,94 @@ export class SettingsPage {
 
   setTheme(theme: AppTheme): void {
     void this.themes.setTheme(theme);
+  }
+
+  readonly trackingSetupOpen = signal(false);
+  readonly trackingSaving = signal(false);
+  readonly trackingError = signal<string | null>(null);
+  readonly trackingBalances = signal<Readonly<Record<string, string>>>({});
+  readonly trackableSources = computed(() =>
+    this.store.activePaymentSources().filter((source) => isBankOrCash(source)),
+  );
+  sourceDetail(sourceId: string): string {
+    return this.store.sourceDetail(sourceId);
+  }
+  trackedBalance(sourceId: string): string {
+    const source = this.store.paymentSources().find((item) => item.id === sourceId);
+    return source && bankCashTracked(source, this.store.bankCashTracking())
+      ? this.money(source.balanceMinor ?? 0)
+      : 'Not set';
+  }
+  toggleBankCashTracking(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    const enabled = input.checked;
+    input.checked = this.store.bankCashTracking().enabled;
+    if (enabled) {
+      this.trackingBalances.set(
+        Object.fromEntries(
+          this.trackableSources().map((source) => [
+            source.id,
+            source.balanceMinor === undefined ? '' : String(source.balanceMinor / 100),
+          ]),
+        ),
+      );
+      this.trackingError.set(null);
+      this.trackingSetupOpen.set(true);
+      return;
+    }
+    void this.store
+      .disableBankCashTracking()
+      .then(() =>
+        this.snackbar.show('Bank & Cash tracking turned off. Saved balances and history kept.'),
+      )
+      .catch(() => this.snackbar.show('Tracking could not be updated. Please retry.', 'WARNING'));
+  }
+  updateTrackingBalance(sourceId: string, event: Event): void {
+    const value = (event.target as HTMLInputElement).value;
+    this.trackingBalances.update((balances) => ({ ...balances, [sourceId]: value }));
+  }
+  async confirmTrackingSetup(event: Event): Promise<void> {
+    event.preventDefault();
+    if (this.trackingSaving()) return;
+    const balances: Record<string, number | null> = {};
+    for (const source of this.trackableSources()) {
+      const raw = (this.trackingBalances()[source.id] ?? '').trim();
+      if (!raw) {
+        balances[source.id] = null;
+        continue;
+      }
+      const value = parseMoneyToMinor(raw);
+      if (value === null) {
+        this.trackingError.set(`Enter a valid current balance for ${source.nickname}.`);
+        return;
+      }
+      balances[source.id] = value;
+    }
+    this.trackingSaving.set(true);
+    try {
+      await this.store.enableBankCashTracking(balances);
+      this.trackingSetupOpen.set(false);
+      this.snackbar.show('Bank & Cash tracking is on. Older entries were not replayed.');
+    } catch (error: unknown) {
+      this.trackingError.set(
+        error instanceof Error ? error.message : 'Tracking could not be turned on.',
+      );
+    } finally {
+      this.trackingSaving.set(false);
+    }
+  }
+  toggleCardSettlementFunding(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    const enabled = input.checked;
+    input.checked = this.store.bankCashTracking().askCardSettlementFunding;
+    void this.store
+      .setCardSettlementFunding(enabled)
+      .catch((error: unknown) =>
+        this.snackbar.show(
+          error instanceof Error ? error.message : 'Preference could not be saved.',
+          'WARNING',
+        ),
+      );
   }
 
   openPinForm(action: PinAction = 'CHANGE'): void {

@@ -1,0 +1,145 @@
+package com.actionanand.cardnest.app.sms
+
+import org.junit.Assert.*
+import org.junit.Test
+import java.time.Instant
+
+/** Entirely fictional bank/UPI alerts: names, suffixes, references and balances are synthetic. */
+class SmsBankParserTest {
+  private val receipt = Instant.parse("2026-10-24T12:00:00Z").toEpochMilli()
+  private fun parse(text: String) = requireNotNull(SmsTransactionParser.parse(text, receipt)) { text }
+
+  @Test fun a1UpiCreditKeepsBalanceSeparateFromAmount() {
+    val r = parse("Rs. 8,100 received in slice A/c xx7316 on 22-Oct-26 from ALEX MORGAN via UPI (Ref ID: 735182094615). Avl. Bal. Rs. 74,320.50 - slice")
+    assertEquals(SmsTransactionParser.Kind.BANK_CREDIT, r.kind)
+    assertEquals("CREDIT", r.direction)
+    assertEquals(810000L, r.amountMinor)
+    assertEquals(7432050L, r.reportedBalanceMinor)
+    assertEquals("Slice", r.issuer)
+    assertEquals("7316", r.accountDigits)
+    assertEquals("ALEX MORGAN", r.merchant)
+    assertEquals("735182094615", r.reference)
+    assertEquals("2026-10-22", r.eventDate)
+    assertEquals("INCOMING", r.purposeHint)
+  }
+
+  @Test fun a2AndA6NeftCreditsKeepEventDateAndAvailableBalanceDistinct() {
+    val a2 = parse("Dear Customer, there is an NEFT credit of INR 96,271.00 in your account 456xxxx6042 on 22/10/2026.Available Balance:INR 96,285.18 -StanChart")
+    assertEquals(SmsTransactionParser.Kind.BANK_CREDIT, a2.kind)
+    assertEquals("CREDIT", a2.direction)
+    assertEquals(9627100L, a2.amountMinor)
+    assertEquals(9628518L, a2.reportedBalanceMinor)
+    assertEquals("Standard Chartered", a2.issuer)
+    assertEquals("6042", a2.accountDigits)
+    assertEquals("2026-10-22", a2.eventDate)
+    assertNull(a2.merchant)
+    val a6 = parse("Dear Customer, there is an NEFT credit of INR 98,270.00 in your account 456xxxx6042 on 24/07/2026.Available Balance:INR 98,274.00 -StanChart")
+    assertEquals(9827000L, a6.amountMinor)
+    assertEquals(9827400L, a6.reportedBalanceMinor)
+    assertEquals("2026-07-24", a6.eventDate)
+    assertFalse(a6.dateFallback)
+  }
+
+  @Test fun a3AccountDebitToAnotherAccountIsTransferEvidenceWithoutOwnershipClaim() {
+    val r = parse("Your a/c XX6042 is debited for Rs. 96280.00 on 22-10-2026 10:47 and credited to a/c XX7316 (UPI Ref no 735182094616).")
+    assertEquals(SmsTransactionParser.Kind.BANK_TRANSFER, r.kind)
+    assertEquals("DEBIT", r.direction)
+    assertEquals(9628000L, r.amountMinor)
+    assertEquals("6042", r.accountDigits)
+    assertEquals("7316", r.counterpartyAccountDigits)
+    assertEquals("735182094616", r.reference)
+    assertEquals("ACCOUNT_TRANSFER", r.purposeHint)
+    assertTrue(r.eventTimeExplicit)
+    assertNull(r.issuer)
+  }
+
+  @Test fun a4DebitToPersonIsCustomerDebitNotInternalTransfer() {
+    val r = parse("ICICI Bank Acct XX417 debited for Rs 8100.00 on 22-Oct-26; ALEX MORGAN credited. UPI:735182094615.")
+    assertEquals(SmsTransactionParser.Kind.BANK_DEBIT, r.kind)
+    assertEquals("DEBIT", r.direction)
+    assertEquals(810000L, r.amountMinor)
+    assertEquals("ICICI", r.issuer)
+    assertEquals("417", r.accountDigits)
+    assertEquals("ALEX MORGAN", r.merchant)
+    assertEquals("735182094615", r.reference)
+    assertEquals("PURCHASE", r.purposeHint)
+  }
+
+  @Test fun a5IncomingUpiCredit() {
+    val r = parse("Dear Customer, Acct XX417 is credited with Rs 7700.00 on 12-Oct-26 from JAMIE RIVERS. UPI:735182094617-ICICI Bank")
+    assertEquals(SmsTransactionParser.Kind.BANK_CREDIT, r.kind)
+    assertEquals("CREDIT", r.direction)
+    assertEquals(770000L, r.amountMinor)
+    assertEquals("ICICI", r.issuer)
+    assertEquals("JAMIE RIVERS", r.merchant)
+    assertEquals("735182094617", r.reference)
+  }
+
+  @Test fun a7PrimaryCreditIsNotTheSendersDebit() {
+    val r = parse("Your a/c no. XXXXXXX6042 is credited for Rs. 3000.00 on 31-08-2026 06:46 and debited from a/c no. XXXXXXXXXXXXX9081 (UPI Ref no 735182094618)")
+    assertEquals("CREDIT", r.direction)
+    assertEquals("6042", r.accountDigits)
+    assertEquals("9081", r.counterpartyAccountDigits)
+    assertEquals(300000L, r.amountMinor)
+    assertEquals("2026-08-31", r.eventDate)
+    assertNull(r.merchant)
+    assertNotEquals("PURCHASE", r.purposeHint)
+  }
+
+  @Test fun b1ToB7RecipientCreditedDoesNotBecomeIncome() {
+    val cases = listOf(
+      Triple("21-Oct-26", "450.00", "HILL FARM MEATS") to Pair(45000L, "735182094619"),
+      Triple("18-Oct-26", "217.00", "FRESH MART MARKET") to Pair(21700L, "735182094620"),
+      Triple("07-Oct-26", "1290.00", "HOME RENT PORTAL") to Pair(129000L, "735182094621"),
+      Triple("04-Oct-26", "150.00", "LOCAL SHOPKEEPER") to Pair(15000L, "735182094622"),
+      Triple("04-Oct-26", "60.00", "COFFEE STALL") to Pair(6000L, "735182094623"),
+      Triple("30-Sep-26", "503.00", "ONLINE WALLET SERVICES") to Pair(50300L, "735182094624"),
+      Triple("27-Sep-26", "285.00", "MERCHANT ALIAS") to Pair(28500L, "735182094625"),
+    )
+    val dates = listOf("2026-10-21", "2026-10-18", "2026-10-07", "2026-10-04", "2026-10-04", "2026-09-30", "2026-09-27")
+    cases.forEachIndexed { index, (input, expected) ->
+      val (date, amount, merchant) = input
+      val r = parse("ICICI Bank Acct XX417 debited for Rs $amount on $date; $merchant credited. UPI:${expected.second}.")
+      assertEquals(SmsTransactionParser.Kind.BANK_DEBIT, r.kind)
+      assertEquals("DEBIT", r.direction)
+      assertEquals(expected.first, r.amountMinor)
+      assertEquals(dates[index], r.eventDate)
+      assertEquals(merchant, r.merchant)
+      assertEquals(expected.second, r.reference)
+      assertEquals("ICICI", r.issuer)
+      assertEquals("417", r.accountDigits)
+      assertEquals("PURCHASE", r.purposeHint)
+      assertFalse(r.eventTimeExplicit)
+      assertTrue(r.requiresReview)
+    }
+  }
+
+  @Test fun caseSpacingGroupingAndMaskVariants() {
+    val lower = parse("icici bank acct xx417 debited for rs 1,00,290.00 on 07-oct-26;   home rent portal credited. upi:735182094621.")
+    assertEquals(SmsTransactionParser.Kind.BANK_DEBIT, lower.kind)
+    assertEquals(10029000L, lower.amountMinor)
+    assertEquals("home rent portal", lower.merchant)
+    assertEquals("2026-10-07", lower.eventDate)
+    for ((mask, suffix) in listOf("XX417" to "417", "XX6042" to "6042", "**12345" to "12345", "123xxxx6042" to "6042")) {
+      val r = parse("Bank Acct $mask debited for INR 60.00 on 04/10/2026; COFFEE STA credited.")
+      assertEquals(suffix, r.accountDigits)
+      assertEquals("COFFEE STA", r.merchant)
+    }
+  }
+
+  @Test fun repaymentsFailedAndAmbiguousEventsStayProtected() {
+    val card = parse("Bank account XX4321 debited INR 300 towards credit card payment on 18/10/26")
+    assertEquals(SmsTransactionParser.Kind.BANK_DEBIT, card.kind)
+    assertEquals("CARD_REPAYMENT", card.purposeHint)
+    val loan = parse("ICICI Bank Acc XX444 debited Rs. 17,277.00 on 10-Oct-26 towards Auto Loan.Avl Bal Rs. 14,852.37.")
+    assertEquals(SmsTransactionParser.Kind.LOAN_DEBIT, loan.kind)
+    assertEquals("LOAN_REPAYMENT", loan.purposeHint)
+    assertNull(SmsTransactionParser.parse("ICICI Bank Acct XX417 debit of Rs 450.00 on 21-Oct-26 to HILL FARM MEATS failed. UPI:735182094619.", receipt))
+    val unknown = parse("Acct XX999 debited for Rs 99.00 on 21-Oct-26; FICTIONAL PAYEE credited.")
+    assertNull(unknown.issuer)
+    assertEquals("SOURCE_SELECTION_REQUIRED", unknown.confidence)
+    val atm = parse("Rs 2000.00 withdrawn from A/c XX417 at ATM on 21-Oct-26")
+    assertEquals("DEBIT", atm.direction)
+    assertEquals("CASH_WITHDRAWAL", atm.purposeHint)
+  }
+}

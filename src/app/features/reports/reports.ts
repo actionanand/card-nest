@@ -4,6 +4,7 @@ import { ExportPeriod } from '../../core/models/export';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { ExportService } from '../../core/services/export.service';
 import { formatMoney } from '../../core/services/money';
+import { bankCashTracked, isBankOrCash } from '../../core/services/source-balance';
 import { AppIcon } from '../../shared/app-icon';
 import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
 import { ReportChart } from '../../shared/report-chart';
@@ -193,7 +194,11 @@ export class ReportsPage {
   readonly trackedSourceFunds = computed(() =>
     this.store
       .paymentSources()
-      .filter((source) => source.kind !== 'MEAL' && !source.noLimit)
+      .filter((source) =>
+        isBankOrCash(source)
+          ? bankCashTracked(source, this.store.bankCashTracking())
+          : source.kind !== 'MEAL' && !source.noLimit,
+      )
       .reduce((sum, source) => sum + (source.balanceMinor ?? 0), 0),
   );
   readonly periodIncome = computed(() =>

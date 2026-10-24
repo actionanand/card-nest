@@ -5,7 +5,7 @@ import { SmsReviewService } from './sms-review.service';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { ScanStatus, SmsCandidate } from './sms-model';
 import axe from 'axe-core';
-import { CreditCard } from '../../core/models/domain';
+import { Category, CreditCard, PaymentSource } from '../../core/models/domain';
 import { Router } from '@angular/router';
 import { By } from '@angular/platform-browser';
 import { AppSelectPicker } from '../../shared/app-select-picker';
@@ -109,17 +109,28 @@ describe('SMS review privacy and explicit approval UI', () => {
     cancel: vi.fn().mockResolvedValue(undefined),
     scan: vi.fn().mockResolvedValue(undefined),
     turnPage: vi.fn().mockResolvedValue(undefined),
+    approveBank: vi.fn().mockResolvedValue(undefined),
   };
+  const bankCashTracking = signal({ enabled: false, askCardSettlementFunding: false });
+  const paymentSources = signal<readonly PaymentSource[]>([]);
   const store = {
     cards: signal([]),
-    paymentSources: signal([]),
-    categories: signal([]),
+    paymentSources,
+    categories: signal<readonly Category[]>([]),
     transactions: signal([]),
     loans: signal([]),
     emiInstallments: signal([]),
     smsSwipeActionsEnabled: swipePreference,
     setDurableUiPreference,
     sourceDetail: () => 'DEMO',
+    bankCashTracking,
+    bankAccounts: computed(() => paymentSources().filter((source) => source.kind === 'DEBIT')),
+    activePaymentSources: computed(() => paymentSources()),
+    alphabeticalActiveCards: signal([]),
+    cardSettlementFundingAccounts: signal([]),
+    transfers: signal([]),
+    fundingFor: () => undefined,
+    addBankAccount: vi.fn(),
   };
   it('shows a seven-second dismissal Undo and keeps visible row actions together', async () => {
     const candidate = demoCandidate();
@@ -173,6 +184,7 @@ describe('SMS review privacy and explicit approval UI', () => {
     store.cards.set([]);
     store.paymentSources.set([]);
     store.categories.set([]);
+    bankCashTracking.set({ enabled: false, askCardSettlementFunding: false });
     store.transactions.set([]);
     store.loans.set([]);
     store.emiInstallments.set([]);
@@ -967,4 +979,75 @@ describe('SMS review privacy and explicit approval UI', () => {
     // Keep every rule/assertion and allow the awaited audit to finish before the next theme.
     30_000,
   );
+  it('reviews a Bank/UPI debit as a purchase with tracking off, without guessing a tracked account', async () => {
+    paymentSources.set([
+      {
+        id: 'source-debit',
+        nickname: 'Bank / UPI',
+        kind: 'DEBIT',
+        institution: 'Primary bank',
+        noLimit: true,
+        autoLoad: false,
+        archived: false,
+      },
+    ]);
+    store.categories.set([
+      { id: 'groceries', name: 'Groceries', icon: 'groceries', appliesTo: 'BOTH', archived: false },
+      { id: 'other', name: 'Other', icon: 'other', appliesTo: 'BOTH', archived: false },
+    ]);
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const bank = demoCandidate();
+    bank.kind = 'BANK_DEBIT';
+    bank.item = {
+      ...bank.item!,
+      kind: 'BANK_DEBIT',
+      direction: 'DEBIT',
+      purposeHint: 'PURCHASE',
+      cardDigits: undefined,
+      accountDigits: '417',
+      issuer: 'ICICI',
+      merchant: 'HILL FARM MEATS',
+      amountMinor: 45000,
+    };
+    fixture.componentInstance.open(bank);
+    fixture.detectChanges();
+    const dialog = fixture.nativeElement.querySelector('dialog') as HTMLElement;
+    expect(dialog.textContent).toContain('ICICI Bank');
+    expect(dialog.textContent).toContain('Record Bank/UPI purchase');
+    expect(dialog.querySelector('aside[aria-label="Evidence only"]')).toBeNull();
+    const page = fixture.componentInstance;
+    expect(page.bankEditor.getRawValue()).toMatchObject({
+      purpose: 'PURCHASE',
+      source: 'source-debit',
+      description: 'HILL FARM MEATS',
+      category: 'groceries',
+    });
+    page.approveBankEvent(new Event('submit'));
+    await fixture.whenStable();
+    expect(sync.approveBank).toHaveBeenCalledWith(
+      bank,
+      expect.objectContaining({
+        purpose: 'PURCHASE',
+        sourceId: 'source-debit',
+        amountMinor: 45000,
+        categoryId: 'groceries',
+      }),
+    );
+    expect(sync.approve).not.toHaveBeenCalled();
+    bankCashTracking.set({ enabled: true, askCardSettlementFunding: false });
+    page.open(bank);
+    expect(page.bankEditor.controls.source.value).toBe('');
+    const credit = demoCandidate();
+    credit.kind = 'BANK_CREDIT';
+    credit.item = {
+      ...bank.item,
+      kind: 'BANK_CREDIT',
+      direction: 'CREDIT',
+      purposeHint: 'INCOMING',
+    };
+    page.open(credit);
+    expect(page.bankEditor.controls.purpose.value).toBe('');
+  });
 });

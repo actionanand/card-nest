@@ -775,6 +775,20 @@
                   [searchable]="true"
                 />
               }
+              @if (
+                candidate.kind === 'CARD_PAYMENT_RECEIVED' &&
+                store.cardSettlementFundingAccounts().length
+              ) {
+                <app-select-picker
+                  label="Paid from bank account (optional)"
+                  formControlName="funding"
+                  [options]="fundingOptions()"
+                />
+                <small
+                  >Only an account you choose is deducted, once. The card payment is never counted
+                  as a purchase.</small
+                >
+              }
               @if (matches().length) {
                 <p class="match-note">
                   Possible existing transaction found. Select a match below to avoid adding it
@@ -886,6 +900,168 @@
                 }}
               </button>
             </form>
+          } @else if (
+            bankReviewable() && (candidate.state === 'PENDING' || candidate.state === 'DEFERRED')
+          ) {
+            <form class="bank-review" [formGroup]="bankEditor" (submit)="approveBankEvent($event)">
+              <aside class="review-notice" aria-label="Bank message">
+                <app-icon name="landmark" />
+                <div>
+                  <strong>{{ bankIdentity() }}</strong>
+                  <p>
+                    Nothing is recorded until you choose a purpose and approve. A recipient's
+                    "credited" wording never makes this incoming money, and names never prove
+                    account ownership.
+                  </p>
+                </div>
+              </aside>
+              <app-select-picker
+                label="How should this be recorded?"
+                [options]="bankPurposeOptions()"
+                [value]="bankEditor.controls.purpose.value"
+                (valueChange)="setBankPurpose($event)"
+              />
+              <app-select-picker
+                label="Bank account in this message (required)"
+                formControlName="source"
+                [options]="bankSourceOptions()"
+                [searchable]="true"
+              />
+              @if (needsEnrollment()) {
+                <div class="bank-enrol">
+                  <p>
+                    No enrolled account matches A/c ••{{ bankItem()?.accountDigits }}. Enrol it only
+                    if this account is yours.
+                  </p>
+                  <label
+                    >Bank name<input
+                      [formControl]="enrollBankName"
+                      maxlength="80"
+                      placeholder="For example, ICICI Bank"
+                  /></label>
+                  <button
+                    type="button"
+                    class="btn"
+                    [disabled]="!enrollBankName.valid || saving()"
+                    (click)="enrollFromMessage()"
+                  >
+                    Enrol A/c ••{{ bankItem()?.accountDigits }} as my account
+                  </button>
+                </div>
+              }
+              @if (selectedBankUntracked()) {
+                <p class="muted">
+                  This account's balance is not tracked yet. A purchase or receipt is recorded
+                  without changing any balance.
+                </p>
+              }
+              <label
+                >Amount (INR)<input formControlName="amount" inputmode="decimal" required
+              /></label>
+              <label
+                >Event date to record<input type="date" formControlName="transactionDate" required
+              /></label>
+              <label
+                >{{
+                  bankPurpose() === 'INCOME'
+                    ? 'Received from / description'
+                    : 'Merchant / recipient'
+                }}<input formControlName="description" maxlength="100"
+              /></label>
+              @if (bankPurpose() === 'PURCHASE' || bankPurpose() === 'INCOME') {
+                <app-select-picker
+                  label="Category"
+                  formControlName="category"
+                  [options]="categoryOptions()"
+                  [searchable]="true"
+                />
+              }
+              @if (bankPurpose() === 'TRANSFER') {
+                <app-select-picker
+                  label="Other account you own (required)"
+                  formControlName="counterparty"
+                  [options]="bankCounterpartyOptions()"
+                  [searchable]="true"
+                />
+                @if (bankTransferOptions().length > 1) {
+                  <p class="match-note">
+                    A transfer between these accounts with the same amount already exists. Link it
+                    so the money moves only once.
+                  </p>
+                  <app-select-picker
+                    label="Existing transfer"
+                    formControlName="existingTransfer"
+                    [options]="bankTransferOptions()"
+                  />
+                }
+              }
+              @if (bankPurpose() === 'CARD_SETTLEMENT' && !bankEditor.controls.existing.value) {
+                <app-select-picker
+                  label="Credit card paid (required)"
+                  formControlName="card"
+                  [options]="bankCardOptions()"
+                  [searchable]="true"
+                />
+              }
+              @if (bankPurpose() === 'LOAN_REPAYMENT') {
+                <p class="muted">
+                  Recorded as a repayment from this account, not a purchase. Loan schedules and EMI
+                  installments are not changed.
+                </p>
+              }
+              @if (bankMatchOptions().length > 1) {
+                <p class="match-note">
+                  {{
+                    bankPurpose() === 'CARD_SETTLEMENT'
+                      ? 'A recorded card payment may match. Link it so the payment is counted once.'
+                      : 'Possible existing transaction found. Match it to avoid adding it twice.'
+                  }}
+                </p>
+                <app-select-picker
+                  label="Match existing entry"
+                  formControlName="existing"
+                  [options]="bankMatchOptions()"
+                  [searchable]="true"
+                />
+              }
+              @if (bankDeductionNotice(); as deduction) {
+                <p class="review-notice-text">{{ deduction }}</p>
+              }
+              @if (bankPurpose()) {
+                <label class="check"
+                  ><input type="checkbox" formControlName="separate" /><span
+                    >I verified this is a separate event from any suggested existing record.</span
+                  ></label
+                >
+              }
+              <button class="btn btn-primary" type="submit" [disabled]="saving() || !bankPurpose()">
+                {{ bankSubmitLabel() }}
+              </button>
+            </form>
+            <details class="reconciliation">
+              <summary>
+                <span>Link to an existing card payment, EMI or loan</span
+                ><app-icon name="chevron_down" />
+              </summary>
+              <app-select-picker
+                label="Existing payment, installment or loan"
+                [formControl]="evidenceTarget"
+                [options]="evidenceOptions()"
+                [searchable]="true"
+              />
+              <button
+                type="button"
+                class="btn"
+                (click)="confirmEvidence()"
+                [disabled]="!evidenceTarget.value"
+              >
+                Confirm Payment / EMI match
+              </button>
+              <p class="muted">
+                Confirms evidence only; it does not change any balance. A bank debit is not issuer
+                confirmation.
+              </p>
+            </details>
           } @else {
             @if (importable()) {
               <aside class="review-notice" aria-label="Review history">
@@ -984,6 +1160,21 @@
               </dd>
               <dt>Extracted description</dt>
               <dd>{{ item.merchantEvidence || item.merchant || 'Not provided' }}</dd>
+              @if (item.direction || item.counterpartyAccountDigits) {
+                <dt>Account movement</dt>
+                <dd>
+                  {{
+                    item.direction === 'DEBIT'
+                      ? 'Your account debited'
+                      : item.direction === 'CREDIT'
+                        ? 'Your account credited'
+                        : 'Not identified'
+                  }}
+                  @if (item.counterpartyAccountDigits) {
+                    · Other account ••{{ item.counterpartyAccountDigits }} (ownership not assumed)
+                  }
+                </dd>
+              }
               <dt>Confidence</dt>
               <dd>{{ item.confidence || 'Verify manually' }}</dd>
               <dt>Statement / due dates</dt>

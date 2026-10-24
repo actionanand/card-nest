@@ -10,6 +10,7 @@ import {
   viewChild,
 } from '@angular/core';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
+import { toSignal } from '@angular/core/rxjs-interop';
 import { Router } from '@angular/router';
 import { Capacitor } from '@capacitor/core';
 import { SmsSwipe } from './sms-swipe';
@@ -23,6 +24,7 @@ import { SmsReviewService } from './sms-review.service';
 import { SmsTypePicker } from './sms-type-picker';
 import { INITIAL_MULTIPLE_KINDS, reviewFilters } from './sms-review-filters';
 import { matchExisting, walletComparison } from './sms-matching';
+import { bankCashTracked, isBankOrCash } from '../../core/services/source-balance';
 import {
   SmsCandidate,
   SmsKind,
@@ -33,7 +35,26 @@ import {
   merchantTitle,
   suspectEvidence,
   defaultPluxeeCategory,
+  BankPurpose,
+  accountSuffixMatches,
+  bankDirection,
+  bankDisplayName,
+  bankExistingSuggestions,
+  bankPurposes,
+  defaultBankCategory,
+  defaultBankPurpose,
+  isBankEvidence,
+  matchingBankAccounts,
+  suggestedBankSources,
 } from './sms-model';
+
+const BANK_PURPOSE_LABELS: Record<BankPurpose, string> = {
+  PURCHASE: 'Record Bank/UPI purchase',
+  INCOME: 'Record incoming money',
+  TRANSFER: 'Transfer between my own accounts',
+  CARD_SETTLEMENT: 'Credit-card payment from this bank',
+  LOAN_REPAYMENT: 'Loan / EMI repayment',
+};
 
 function isReviewEntry(info: unknown): boolean {
   return (
@@ -296,7 +317,18 @@ export class SmsSyncPage {
     transactionDate: new FormControl('', { nonNullable: true, validators: Validators.required }),
     category: new FormControl('other', { nonNullable: true, validators: Validators.required }),
     relatedPurchase: new FormControl('', { nonNullable: true }),
+    funding: new FormControl('', { nonNullable: true }),
   });
+  fundingOptions(): readonly AppSelectOption[] {
+    return [
+      { value: '', label: 'Do not deduct from a bank account' },
+      ...this.store.cardSettlementFundingAccounts().map((source) => ({
+        value: source.id,
+        label: this.store.sourceDetail(source.id),
+        detail: this.balanceDetail(source.id),
+      })),
+    ];
+  }
   readonly kinds: readonly SmsKind[] = [
     'PURCHASE',
     'CARD_PAYMENT_RECEIVED',
@@ -379,6 +411,13 @@ export class SmsSyncPage {
     if (candidate.state === 'IMPORTED') return 'Added from SMS · Recorded transaction';
     if (candidate.state === 'MATCHED_EXISTING')
       return 'Already added · Matched to existing transaction';
+    if (isBankEvidence(candidate.item)) {
+      const matches = matchingBankAccounts(candidate.item, this.store.paymentSources());
+      if (matches.length === 1) return this.store.sourceDetail(matches[0].id);
+      return matches.length > 1
+        ? `Ambiguous · ${matches.length} matching accounts; choose one`
+        : `${bankDisplayName(candidate.item.issuer) ?? 'Bank not identified'}${candidate.item.accountDigits ? ` · A/c ••${candidate.item.accountDigits}` : ''} · choose an account`;
+    }
     const ids = candidate.item
       ? eligibleSources(candidate.item, this.store.cards(), this.store.paymentSources())
       : [];
@@ -395,6 +434,282 @@ export class SmsSyncPage {
     const item = this.selected()?.item;
     return !!item && !!ledgerType(item);
   });
+  readonly bankEditor = new FormGroup({
+    purpose: new FormControl<BankPurpose | ''>('', { nonNullable: true }),
+    source: new FormControl('', { nonNullable: true }),
+    amount: new FormControl('', { nonNullable: true }),
+    description: new FormControl('', { nonNullable: true, validators: Validators.maxLength(100) }),
+    transactionDate: new FormControl('', { nonNullable: true }),
+    category: new FormControl('other', { nonNullable: true }),
+    existing: new FormControl('', { nonNullable: true }),
+    counterparty: new FormControl('', { nonNullable: true }),
+    existingTransfer: new FormControl('', { nonNullable: true }),
+    card: new FormControl('', { nonNullable: true }),
+    separate: new FormControl(false, { nonNullable: true }),
+  });
+  readonly enrollBankName = new FormControl('', {
+    nonNullable: true,
+    validators: [Validators.required, Validators.maxLength(80)],
+  });
+  private readonly bankEditorChanges = toSignal(this.bankEditor.valueChanges);
+  readonly bankItem = computed(() => {
+    const item = this.selected()?.item;
+    return isBankEvidence(item) ? item : null;
+  });
+  readonly bankReviewable = computed(() => {
+    const item = this.bankItem();
+    return !!item && bankPurposes(item, this.store.bankCashTracking()).length > 0;
+  });
+  readonly bankPurpose = computed(() => {
+    this.bankEditorChanges();
+    return this.bankEditor.controls.purpose.value;
+  });
+  bankPurposeOptions(): readonly AppSelectOption[] {
+    const item = this.bankItem();
+    if (!item) return [];
+    return [
+      { value: '', label: 'Choose how to record this message' },
+      ...bankPurposes(item, this.store.bankCashTracking()).map((purpose) => ({
+        value: purpose,
+        label: BANK_PURPOSE_LABELS[purpose],
+      })),
+    ];
+  }
+  bankSourceOptions(): readonly AppSelectOption[] {
+    const item = this.bankItem();
+    const matches = new Set(
+      item
+        ? matchingBankAccounts(item, this.store.paymentSources()).map((source) => source.id)
+        : [],
+    );
+    return [
+      { value: '', label: 'Select the bank account' },
+      ...this.store.bankAccounts().map((source) => ({
+        value: source.id,
+        label: this.store.sourceDetail(source.id),
+        detail: matches.has(source.id)
+          ? 'Matches the message suffix — verify before approval'
+          : this.balanceDetail(source.id),
+      })),
+    ];
+  }
+  bankCounterpartyOptions(): readonly AppSelectOption[] {
+    const settings = this.store.bankCashTracking();
+    const item = this.bankItem();
+    return [
+      { value: '', label: 'Select the other account you own' },
+      ...this.store
+        .activePaymentSources()
+        .filter(
+          (source) =>
+            isBankOrCash(source) &&
+            source.id !== this.bankEditor.controls.source.value &&
+            bankCashTracked(source, settings),
+        )
+        .map((source) => ({
+          value: source.id,
+          label: this.store.sourceDetail(source.id),
+          detail:
+            item?.counterpartyAccountDigits &&
+            accountSuffixMatches(source.lastDigits, item.counterpartyAccountDigits)
+              ? 'Matches the other account in the message — confirm you own it'
+              : this.balanceDetail(source.id),
+        })),
+    ];
+  }
+  bankMatchOptions(): readonly AppSelectOption[] {
+    this.bankEditorChanges();
+    const item = this.bankItem();
+    const value = this.bankEditor.getRawValue();
+    if (!item || !value.purpose) return [];
+    const amount = parseMoneyToMinor(value.amount) ?? item.amountMinor;
+    const date = value.transactionDate || item.eventDate;
+    const entries =
+      value.purpose === 'CARD_SETTLEMENT'
+        ? this.store
+            .transactions()
+            .filter(
+              (entry) =>
+                entry.type === 'PAYMENT' &&
+                entry.amountMinor === amount &&
+                this.store.cards().some((card) => card.id === entry.cardId) &&
+                !this.store.fundingFor(entry.id) &&
+                Math.abs(Date.parse(entry.transactionDate) - Date.parse(date)) <= 3 * 86400000,
+            )
+        : value.purpose === 'PURCHASE' || value.purpose === 'INCOME'
+          ? bankExistingSuggestions(
+              item,
+              value.purpose === 'PURCHASE' ? 'PURCHASE' : 'CREDIT',
+              value.source,
+              this.store.transactions(),
+              amount,
+              date,
+            )
+          : [];
+    return [
+      { value: '', label: 'Create a new entry' },
+      ...entries.map((entry) => ({
+        value: entry.id,
+        label: `${entry.transactionDate} · ${entry.merchant ?? entry.type} · ${this.money(entry.amountMinor)}`,
+        detail: this.store.sourceDetail(entry.cardId),
+      })),
+    ];
+  }
+  bankTransferOptions(): readonly AppSelectOption[] {
+    this.bankEditorChanges();
+    const item = this.bankItem();
+    const value = this.bankEditor.getRawValue();
+    if (!item || value.purpose !== 'TRANSFER' || !value.source || !value.counterparty) return [];
+    const debit = bankDirection(item) === 'DEBIT';
+    const from = debit ? value.source : value.counterparty;
+    const to = debit ? value.counterparty : value.source;
+    const amount = parseMoneyToMinor(value.amount) ?? item.amountMinor;
+    const date = value.transactionDate || item.eventDate;
+    return [
+      { value: '', label: 'Record a new transfer' },
+      ...this.store
+        .transfers()
+        .filter(
+          (transfer) =>
+            transfer.fromSourceId === from &&
+            transfer.toSourceId === to &&
+            transfer.amountMinor === amount &&
+            !(transfer.reference && item.reference && transfer.reference !== item.reference) &&
+            ((!!transfer.reference && transfer.reference === item.reference) ||
+              Math.abs(Date.parse(transfer.transferDate) - Date.parse(date)) <= 3 * 86400000),
+        )
+        .map((transfer) => ({
+          value: transfer.id,
+          label: `${transfer.transferDate} · ${this.money(transfer.amountMinor)}`,
+          detail: transfer.reference
+            ? `Same movement? Reference ${transfer.reference}`
+            : 'Same accounts and amount',
+        })),
+    ];
+  }
+  bankCardOptions(): readonly AppSelectOption[] {
+    return [
+      { value: '', label: 'Select the credit card that was paid' },
+      ...this.store.alphabeticalActiveCards().map((card) => ({
+        value: card.id,
+        label: card.nickname,
+        detail: `${card.issuerName} · ${card.lastDigits}`,
+      })),
+    ];
+  }
+  bankIdentity(): string {
+    const item = this.bankItem();
+    if (!item) return '';
+    const bank = bankDisplayName(item.issuer) ?? 'Bank not identified';
+    const account = item.accountDigits ? `A/c ••${item.accountDigits}` : 'Account not identified';
+    const direction = bankDirection(item);
+    return `${bank} · ${account} · ${
+      direction === 'DEBIT'
+        ? 'Money out'
+        : direction === 'CREDIT'
+          ? 'Money in'
+          : 'Direction unknown'
+    }`;
+  }
+  needsEnrollment(): boolean {
+    const item = this.bankItem();
+    return !!item?.accountDigits && !matchingBankAccounts(item, this.store.paymentSources()).length;
+  }
+  selectedBankUntracked(): boolean {
+    this.bankEditorChanges();
+    const source = this.store
+      .paymentSources()
+      .find((item) => item.id === this.bankEditor.controls.source.value);
+    return (
+      !!source &&
+      this.store.bankCashTracking().enabled &&
+      !bankCashTracked(source, this.store.bankCashTracking())
+    );
+  }
+  private balanceDetail(sourceId: string): string {
+    const source = this.store.paymentSources().find((item) => item.id === sourceId);
+    return source && bankCashTracked(source, this.store.bankCashTracking())
+      ? `Balance ${this.money(source.balanceMinor)}`
+      : 'Balance not tracked';
+  }
+  enrollFromMessage(): void {
+    const item = this.bankItem();
+    if (!item?.accountDigits || !this.enrollBankName.valid || this.saving()) return;
+    const bank = this.enrollBankName.value.trim();
+    void this.run(async () => {
+      const account = await this.store.addBankAccount({
+        nickname: `${bank} A/c`,
+        institution: bank,
+        lastDigits: item.accountDigits!,
+      });
+      this.bankEditor.controls.source.setValue(account.id);
+      this.snackbar.show(`${this.store.sourceDetail(account.id)} enrolled.`);
+    });
+  }
+  approveBankEvent(event: Event): void {
+    event.preventDefault();
+    const candidate = this.selected();
+    if (!candidate || this.saving()) return;
+    const value = this.bankEditor.getRawValue();
+    const amount = parseMoneyToMinor(value.amount);
+    if (!value.purpose) {
+      this.error.set('Choose how to record this bank message.');
+      return;
+    }
+    if (!value.source || !amount) {
+      this.error.set('Choose the bank account and enter a positive amount.');
+      return;
+    }
+    this.saving.set(true);
+    void this.run(async () => {
+      try {
+        await this.sync.approveBank(candidate, {
+          purpose: value.purpose as BankPurpose,
+          sourceId: value.source,
+          amountMinor: amount,
+          description: value.description,
+          transactionDate: value.transactionDate,
+          categoryId: value.category,
+          existingId: value.existing || undefined,
+          counterpartySourceId: value.counterparty || undefined,
+          existingTransferId: value.existingTransfer || undefined,
+          cardId: value.card || undefined,
+          allowSeparate: value.separate,
+        });
+        this.notice.set(this.sync.notice() || 'Bank event approved and saved.');
+        this.saving.set(false);
+        this.closeEditor();
+        this.snackbar.show(this.notice());
+      } finally {
+        this.saving.set(false);
+      }
+    });
+  }
+  bankSubmitLabel(): string {
+    const value = this.bankEditor.getRawValue();
+    if (value.existing || value.existingTransfer) return 'Link existing record';
+    return value.purpose ? BANK_PURPOSE_LABELS[value.purpose] : 'Choose a purpose';
+  }
+  bankDeductionNotice(): string {
+    this.bankEditorChanges();
+    const value = this.bankEditor.getRawValue();
+    const amount = parseMoneyToMinor(value.amount);
+    if (value.purpose !== 'CARD_SETTLEMENT' || !value.source || !amount) return '';
+    return `${this.money(amount)} will be deducted once from ${this.store.sourceDetail(value.source)}. The card payment reduces its outstanding and is not counted as spending.`;
+  }
+  setBankPurpose(value: string): void {
+    const item = this.bankItem();
+    this.bankEditor.patchValue({
+      purpose: value as BankPurpose | '',
+      existing: '',
+      existingTransfer: '',
+      category: defaultBankCategory(
+        value as BankPurpose | '',
+        item?.merchant,
+        this.store.categories(),
+      ),
+    });
+  }
   matchReason(candidate: SmsCandidate): string {
     if (candidate.item && suspectEvidence(candidate.item))
       return 'Possible statement or scheduled-charge misclassification. Recheck the original SMS before adding. If already imported, inspect and explicitly correct the linked transaction in Activity; no automatic reversal is made.';
@@ -422,6 +737,8 @@ export class SmsSyncPage {
       return 'Explicitly matched to an existing record. Your review decision and recorded financial details are retained.';
     if (candidate.decision) return candidate.decision.replace(/^AUTO_EXISTING: /, '');
     if (!candidate.item) return '';
+    if (isBankEvidence(candidate.item))
+      return 'Bank alert · review to choose how it is recorded. Nothing is added automatically.';
     const match = matchExisting(
       candidate.item,
       this.store.cards(),
@@ -742,6 +1059,26 @@ export class SmsSyncPage {
       if (this.selected()?.id === candidate.id) this.related.set(related);
     });
     this.evidenceTarget.reset();
+    if (isBankEvidence(candidate.item)) {
+      const item = candidate.item;
+      const settings = this.store.bankCashTracking();
+      const sources = suggestedBankSources(item, this.store.paymentSources(), settings);
+      const purpose = defaultBankPurpose(item, settings);
+      this.enrollBankName.reset(bankDisplayName(item.issuer) ?? '');
+      this.bankEditor.reset({
+        purpose,
+        source: sources.length === 1 ? sources[0] : '',
+        amount: String(item.amountMinor / 100),
+        description: item.merchant ? merchantTitle(item, candidate.kind) : '',
+        transactionDate: item.eventDate,
+        category: defaultBankCategory(purpose, item.merchant, this.store.categories()),
+        existing: '',
+        counterparty: '',
+        existingTransfer: '',
+        card: '',
+        separate: false,
+      });
+    }
     this.editor.reset({
       source: candidate.item
         ? (() => {
@@ -772,6 +1109,7 @@ export class SmsSyncPage {
             ? 'contra-expenses'
             : 'other',
       relatedPurchase: '',
+      funding: '',
     });
     queueMicrotask(() => document.getElementById('sms-review-heading')?.focus());
   }
@@ -888,6 +1226,7 @@ export class SmsSyncPage {
             transactionDate: value.transactionDate,
             categoryId: value.category,
             relatedTransactionId: value.relatedPurchase || undefined,
+            fundingSourceId: value.funding || undefined,
           },
         );
         this.notice.set(this.sync.notice() || 'Transaction approved and saved.');
