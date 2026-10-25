@@ -1,3 +1,5 @@
+import { DestroyRef, inject, Service, signal } from '@angular/core';
+
 const INDIA_TIME_ZONE = 'Asia/Kolkata';
 
 /** Returns the current calendar date in India, independent of the device time zone. */
@@ -35,4 +37,26 @@ export function indiaTimeOfDay(now = new Date()): string {
   const value = (type: Intl.DateTimeFormatPartTypes) =>
     parts.find((part) => part.type === type)?.value ?? '00';
   return `${value('hour')}:${value('minute')}:${value('second')}`;
+}
+
+@Service()
+export class IndiaTodayClock {
+  readonly today = signal(indiaTodayIso());
+  private readonly destroyRef = inject(DestroyRef);
+
+  constructor() {
+    const refresh = () => this.refresh();
+    const interval = globalThis.setInterval(refresh, 60_000);
+    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', refresh);
+    this.destroyRef.onDestroy(() => {
+      globalThis.clearInterval(interval);
+      if (typeof document !== 'undefined')
+        document.removeEventListener('visibilitychange', refresh);
+    });
+  }
+
+  refresh(): void {
+    const today = indiaTodayIso();
+    if (today !== this.today()) this.today.set(today);
+  }
 }

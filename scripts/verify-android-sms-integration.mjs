@@ -67,6 +67,14 @@ test('WhatsApp integration exposes only the two supported packages and validates
   assert.ok(activity.includes('com.whatsapp.w4b'));
 });
 
+test('native reminder scheduler retains utility titles and batches alarms', () => {
+  const scheduler = read(`${java}/CardNestReminderScheduler.java`);
+  assert.match(scheduler, /kind\.startsWith\("UTILITY_"\)/);
+  assert.match(scheduler, /return record\.optString\("title", "CardNest reminder"\)/);
+  assert.match(scheduler, /scheduleNextBatch\(context, valid, false\)/);
+  assert.match(scheduler, /scheduleAlarm\(context, nextAt, triggerAt\)/);
+});
+
 test('plugin registration precedes Capacitor bridge initialization', () => {
   const activity = read(`${java}/MainActivity.java`);
   const registration = 'registerPlugin(com.actionanand.cardnest.app.sms.CardNestSmsPlugin.class);';

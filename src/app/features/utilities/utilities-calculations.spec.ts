@@ -4,6 +4,7 @@ import {
   calendarDaysBetween,
   lpgUsageSummary,
   mobileActivitySummary,
+  mobileVoiceCoveragePeriods,
   suggestedVoicePlanStart,
 } from './utilities-calculations';
 
@@ -70,6 +71,31 @@ describe('Indian utility calendar calculations', () => {
     expect(summary.callingCoverageEnd).toBe('2026-11-13');
     expect(summary.daysUntilCallingEnd).toBe(19);
     expect(suggestedVoicePlanStart(plans, '2026-10-25')).toBe('2026-11-14');
+  });
+
+  it('keeps queued-only voice coverage and separate future coverage periods distinct', () => {
+    const today = '2026-10-26';
+    const firstStart = addCalendarDays(today, 5);
+    const firstEnd = addCalendarDays(today, 10);
+    const queuedEnd = addCalendarDays(today, 20);
+    const separateStart = addCalendarDays(today, 22);
+    const separateEnd = addCalendarDays(today, 27);
+    expect(
+      mobileVoiceCoveragePeriods(
+        [
+          recharge('queued-a', { startDate: firstStart, endDate: firstEnd }),
+          recharge('queued-b', {
+            startDate: addCalendarDays(firstEnd, 1),
+            endDate: queuedEnd,
+          }),
+          recharge('separate', { startDate: separateStart, endDate: separateEnd }),
+        ],
+        today,
+      ),
+    ).toEqual([
+      { startDate: firstStart, endDate: queuedEnd },
+      { startDate: separateStart, endDate: separateEnd },
+    ]);
   });
 
   it('reports elapsed calling-plan gaps and scheduled-only coverage with recorded wording', () => {

@@ -3,7 +3,7 @@ import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angula
 import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
 import { AppIcon } from '../../shared/app-icon';
 import { CardNestStore } from '../../core/services/card-nest-store';
-import { indiaTodayIso } from '../../core/services/india-date';
+import { IndiaTodayClock } from '../../core/services/india-date';
 import { BankActivityEvent, BankActivityProfile } from './bank-activity-model';
 import { BankActivityService } from './bank-activity.service';
 
@@ -16,7 +16,7 @@ import { BankActivityService } from './bank-activity.service';
 export class BankActivityPage {
   readonly activity = inject(BankActivityService);
   readonly store = inject(CardNestStore);
-  readonly today = indiaTodayIso();
+  private readonly dateClock = inject(IndiaTodayClock);
   readonly profileFormOpen = signal(false);
   readonly eventProfileId = signal<string | null>(null);
   readonly editingProfileId = signal<string | null>(null);
@@ -82,6 +82,10 @@ export class BankActivityPage {
     direction: new FormControl<'CREDIT' | 'DEBIT'>('DEBIT', { nonNullable: true }),
     reference: new FormControl('', { nonNullable: true, validators: Validators.maxLength(80) }),
   });
+
+  get today(): string {
+    return this.dateClock.today();
+  }
 
   statusLabel(profile: BankActivityProfile): string {
     const status = this.activity.summaryFor(profile.id, this.today).status;

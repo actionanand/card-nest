@@ -511,13 +511,25 @@ describe('Durable first-run data, additive read migration and private portable b
     ).toBe(false);
     expect(bankActivity.candidates()).toHaveLength(1);
 
+    const dismissedFingerprint = 'f'.repeat(64);
+    expect(
+      await bankActivity.ingestAndroidSms({ ...smsEvidence, fingerprint: dismissedFingerprint }),
+    ).toBe(false);
+    await bankActivity.dismissCandidate(dismissedFingerprint);
+    expect(
+      bankActivity.candidates().some((item) => item.fingerprint === dismissedFingerprint),
+    ).toBe(false);
+    expect(
+      await bankActivity.ingestAndroidSms({ ...smsEvidence, fingerprint: dismissedFingerprint }),
+    ).toBe(false);
+
     await utilities.setUtilityReminders(true);
     expect(
       utilities
         .reminderTargets(today)
         .map((target) => target.kind)
         .sort(),
-    ).toEqual(['LPG_ESTIMATE', 'MOBILE_PLAN', 'MOBILE_VOICE']);
+    ).toEqual(['LPG_ESTIMATE', 'MOBILE_PLAN', 'MOBILE_PLAN', 'MOBILE_VOICE', 'MOBILE_VOICE']);
     await utilities.setShowIndianUtilities(false);
     expect(utilities.reminderTargets(today)).toEqual([]);
     expect(utilities.mobileProfiles()).toHaveLength(1);
@@ -600,6 +612,11 @@ describe('Durable first-run data, additive read migration and private portable b
       expect(restoredBankActivity.candidates()).toMatchObject([
         { fingerprint: 'e'.repeat(64), activityDate: today, accountSuffix: '417' },
       ]);
+      const [dismissedCandidate] = await database.query<{ payload: string }>(
+        'SELECT payload FROM bank_activity_candidates WHERE fingerprint=?',
+        [dismissedFingerprint],
+      );
+      expect(JSON.parse(dismissedCandidate.payload)).toMatchObject({ dismissed: true });
       expect(restoredStore.bankCashTracking().enabled).toBe(false);
       expect(count('card_transactions')).toBe(0);
       expect(count('source_transfers')).toBe(0);

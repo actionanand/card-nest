@@ -39,7 +39,7 @@ describe('NotificationService combined card and utility schedule', () => {
     createdAt: '2026-01-01',
     updatedAt: '2026-01-01',
   };
-  let pending: { id: number; extra?: unknown }[] = [];
+  let pending: { id: number; extra?: unknown; at?: Date }[] = [];
   let service: NotificationService;
 
   beforeEach(() => {
@@ -53,7 +53,11 @@ describe('NotificationService combined card and utility schedule', () => {
       pending = pending.filter((item) => !ids.has(item.id));
     });
     vi.mocked(LocalNotifications.schedule).mockImplementation(async ({ notifications }) => {
-      pending = notifications.map((item) => ({ id: item.id, extra: item.extra }));
+      pending = notifications.map((item) => ({
+        id: item.id,
+        extra: item.extra,
+        at: item.schedule?.at,
+      }));
       return { notifications: pending as never };
     });
     vi.mocked(LocalNotifications.getPending).mockImplementation(async () => ({
@@ -80,13 +84,22 @@ describe('NotificationService combined card and utility schedule', () => {
 
   afterEach(() => vi.restoreAllMocks());
 
+  function localDateAfter(days: number): string {
+    const date = new Date();
+    date.setDate(date.getDate() + days);
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  }
+
   it('keeps card reminders when adding utilities and keeps utilities when card reminders are disabled', async () => {
     await service.initialise([card], () => 100_000);
+    const scheduleDate = localDateAfter(3);
+    const eventDate = localDateAfter(10);
     const utility: UtilityNotificationTarget = {
-      id: 'utility-profile:MOBILE_VOICE:2026-10-28',
+      id: `utility-profile:MOBILE_VOICE:${eventDate}:7`,
       profileId: 'utility-profile',
       kind: 'MOBILE_VOICE',
-      eventDate: '2026-10-28',
+      scheduleDate,
+      eventDate,
       title: 'Outgoing calling plan ending',
       body: 'Fictional Sam: recorded voice coverage ends soon.',
     };
@@ -98,6 +111,12 @@ describe('NotificationService combined card and utility schedule', () => {
     expect(
       pending.some((item) => (item.extra as { source?: string })?.source === 'card-nest-utility'),
     ).toBe(true);
+    const scheduledUtility = pending.find(
+      (item) => (item.extra as { source?: string })?.source === 'card-nest-utility',
+    );
+    expect(
+      `${scheduledUtility?.at?.getFullYear()}-${String((scheduledUtility?.at?.getMonth() ?? 0) + 1).padStart(2, '0')}-${String(scheduledUtility?.at?.getDate()).padStart(2, '0')}`,
+    ).toBe(scheduleDate);
     expect(new Set(pending.map((item) => item.id)).size).toBe(pending.length);
 
     await service.cancelAll([card]);
@@ -108,5 +127,29 @@ describe('NotificationService combined card and utility schedule', () => {
     service.setUtilityReminders([]);
     await service.reschedule([card], () => 100_000);
     expect(pending).toEqual([]);
+  });
+
+  it('limits plugin-backed utility targets below the Android alarm ceiling without dropping card reminders', async () => {
+    await service.initialise([card], () => 100_000);
+    const targets = Array.from({ length: 500 }, (_, index) => {
+      const scheduleDate = localDateAfter(10 + Math.floor(index / 4));
+      return {
+        id: `utility-profile-${index}:MOBILE_PLAN:${scheduleDate}:7`,
+        profileId: `utility-profile-${index}`,
+        kind: 'MOBILE_PLAN' as const,
+        scheduleDate,
+        eventDate: localDateAfter(17 + Math.floor(index / 4)),
+        title: 'Mobile plan reminder',
+        body: 'A recorded recharge plan is approaching its last active day. Check CardNest.',
+      };
+    });
+    service.setUtilityReminders(targets);
+    await service.reschedule([card], () => 100_000);
+
+    expect(pending).toHaveLength(450);
+    expect(
+      pending.some((item) => (item.extra as { source?: string })?.source === 'card-nest'),
+    ).toBe(true);
+    expect(new Set(pending.map((item) => item.id)).size).toBe(pending.length);
   });
 });

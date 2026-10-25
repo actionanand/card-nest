@@ -75,17 +75,43 @@ function hasData(plan: MobileRecharge): boolean {
   return plan.planType !== 'VOICE_ONLY';
 }
 
-function voiceCoverageEnd(plans: readonly MobileRecharge[], today: string): string | undefined {
+export interface MobileVoiceCoveragePeriod {
+  readonly startDate: string;
+  readonly endDate: string;
+}
+
+export function mobileVoiceCoveragePeriods(
+  plans: readonly MobileRecharge[],
+  today: string,
+): readonly MobileVoiceCoveragePeriod[] {
   const intervals = plans
-    .filter((plan) => hasVoice(plan) && plan.endDate >= today)
-    .sort((left, right) => left.startDate.localeCompare(right.startDate));
-  if (!intervals.length) return undefined;
-  let end = intervals[0].endDate;
-  for (const plan of intervals.slice(1)) {
-    if (plan.startDate > addCalendarDays(end, 1)) break;
-    if (plan.endDate > end) end = plan.endDate;
+    .filter(
+      (plan) =>
+        hasVoice(plan) &&
+        validCalendarDate(plan.startDate) &&
+        validCalendarDate(plan.endDate) &&
+        plan.endDate >= today,
+    )
+    .sort((left, right) =>
+      left.startDate === right.startDate
+        ? left.endDate.localeCompare(right.endDate)
+        : left.startDate.localeCompare(right.startDate),
+    );
+  const periods: MobileVoiceCoveragePeriod[] = [];
+  for (const plan of intervals) {
+    const previous = periods.at(-1);
+    if (previous && plan.startDate <= addCalendarDays(previous.endDate, 1)) {
+      if (plan.endDate > previous.endDate)
+        periods[periods.length - 1] = { ...previous, endDate: plan.endDate };
+      continue;
+    }
+    periods.push({ startDate: plan.startDate, endDate: plan.endDate });
   }
-  return end;
+  return periods;
+}
+
+function voiceCoverageEnd(plans: readonly MobileRecharge[], today: string): string | undefined {
+  return mobileVoiceCoveragePeriods(plans, today)[0]?.endDate;
 }
 
 export function mobileActivitySummary(

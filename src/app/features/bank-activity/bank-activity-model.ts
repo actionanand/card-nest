@@ -39,6 +39,7 @@ export interface BankActivityCandidate {
   readonly reference?: string;
   readonly purposeHint: string;
   readonly createdAt: string;
+  readonly dismissed?: boolean;
 }
 
 export type BankActivityStatus =

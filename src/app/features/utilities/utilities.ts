@@ -4,7 +4,7 @@ import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angula
 import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
 import { AppIcon } from '../../shared/app-icon';
 import { parseMoneyToMinor, formatMoney } from '../../core/services/money';
-import { indiaTodayIso } from '../../core/services/india-date';
+import { IndiaTodayClock } from '../../core/services/india-date';
 import { SnackbarService } from '../../core/services/snackbar.service';
 import { WhatsAppAppChooser } from '../../shared/whatsapp-app-chooser';
 import { WhatsAppPackage, WhatsAppService } from './whatsapp.service';
@@ -33,7 +33,7 @@ export class UtilitiesPage {
   readonly utilities = inject(UtilitiesService);
   private readonly whatsApp = inject(WhatsAppService);
   private readonly snackbar = inject(SnackbarService);
-  readonly today = indiaTodayIso();
+  private readonly dateClock = inject(IndiaTodayClock);
   readonly section = signal<UtilitySection>('MOBILE');
   readonly gasType = signal<GasServiceType>('LPG');
   readonly mobileFormOpen = signal(false);
@@ -146,6 +146,10 @@ export class UtilitiesPage {
     cylinderSize: new FormControl<LpgEvent['cylinderSize']>('NORMAL', { nonNullable: true }),
     comment: new FormControl('', { nonNullable: true, validators: Validators.maxLength(300) }),
   });
+
+  get today(): string {
+    return this.dateClock.today();
+  }
 
   money(amountMinor: number): string {
     return formatMoney(amountMinor, 'INR');

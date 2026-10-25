@@ -10,6 +10,7 @@ vi.hoisted(() => {
 });
 import { Capacitor } from '@capacitor/core';
 import { CapacitorSQLite } from '@capacitor-community/sqlite';
+import { DATABASE_MIGRATIONS } from './migrations';
 import { SqliteDatabase } from './sqlite-database';
 
 vi.mock('@capacitor-community/sqlite', () => ({
@@ -27,6 +28,7 @@ vi.mock('@capacitor-community/sqlite', () => ({
 }));
 
 describe('SQLite shared write queue', () => {
+  const currentSchemaVersion = DATABASE_MIGRATIONS.at(-1)!.version;
   let database: SqliteDatabase;
   beforeEach(() => {
     vi.clearAllMocks();
@@ -38,25 +40,34 @@ describe('SQLite shared write queue', () => {
     vi.mocked(CapacitorSQLite.query).mockResolvedValue({ values: [] });
   });
   afterEach(() => vi.restoreAllMocks());
-  it('initializes an Android version-6 database with only the additive SMS migration', async () => {
+  it('upgrades a version-6 Android database through every additive migration without dropping user data', async () => {
     database.ready.set(false);
     vi.mocked(CapacitorSQLite.query).mockResolvedValue({ values: [{ user_version: 6 }] });
     await database.initialise();
     expect(CapacitorSQLite.createConnection).toHaveBeenCalledWith(
-      expect.objectContaining({ database: 'cardnest', version: 9, readonly: false }),
+      expect.objectContaining({
+        database: 'cardnest',
+        version: currentSchemaVersion,
+        readonly: false,
+      }),
     );
     expect(CapacitorSQLite.open).toHaveBeenCalledOnce();
     const migrations = vi
       .mocked(CapacitorSQLite.execute)
       .mock.calls.map(([options]) => options)
       .filter((options) => options.transaction);
-    expect(migrations).toHaveLength(3);
-    expect(migrations[0].statements).toContain('CREATE TABLE IF NOT EXISTS sms_candidates');
-    expect(migrations[0].statements).toContain('PRAGMA user_version = 7');
-    expect(migrations[0].statements).not.toContain('DROP TABLE');
-    expect(migrations[1].statements).toContain('ADD COLUMN read_at');
-    expect(migrations[2].statements).toContain('CREATE TABLE IF NOT EXISTS source_transfers');
-    expect(migrations[2].statements).not.toContain('DROP TABLE');
+    const pendingMigrations = DATABASE_MIGRATIONS.filter((migration) => migration.version > 6);
+    expect(migrations).toHaveLength(pendingMigrations.length);
+    for (const [index, migration] of pendingMigrations.entries()) {
+      expect(migrations[index].statements).toContain(`PRAGMA user_version = ${migration.version}`);
+      for (const statement of migration.statements)
+        expect(migrations[index].statements).toContain(statement);
+      expect(migrations[index].statements).not.toMatch(/\bDROP\s+TABLE\b/i);
+      expect(migrations[index].statements).not.toMatch(/\bDELETE\s+FROM\b/i);
+    }
+    expect(pendingMigrations.map((migration) => migration.version)).toEqual(
+      Array.from({ length: currentSchemaVersion - 6 }, (_, index) => index + 7),
+    );
     expect(database.ready()).toBe(true);
   });
   it('does not expose a ready database after an SMS migration failure', async () => {

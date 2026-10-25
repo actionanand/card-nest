@@ -10,9 +10,9 @@ import {
   MobileSubscriptionType,
 } from './data/mobile-plan-types';
 import {
-  calendarDaysBetween,
   addCalendarDays,
   lpgUsageSummary,
+  mobileVoiceCoveragePeriods,
   mobileActivitySummary,
   suggestedVoicePlanStart,
   validCalendarDate,
@@ -36,30 +36,54 @@ export interface UtilityReminderTarget {
   readonly eventDate: string;
   readonly title: string;
   readonly body: string;
+  readonly scheduleDate: string;
 }
 
 export function normalizeIndianMobileNumber(value: string): string | undefined {
   const trimmed = value.trim();
-  const national = trimmed.match(/^\+?91[\s().-]*(\d{5})[\s.-]?(\d{5})$/)?.[1];
-  const rest = trimmed.match(/^\+?91[\s().-]*(\d{5})[\s.-]?(\d{5})$/);
-  const digitsOnly = trimmed.replace(/\D/g, '');
-  const tenDigits = rest
-    ? `${rest[1]}${rest[2]}`
-    : /^\d{10}$/.test(digitsOnly)
-      ? digitsOnly
+  if (!trimmed) return undefined;
+  const national = /^([6-9]\d{9})$/.exec(trimmed);
+  const international =
+    /^\+91(?:[\s.-]*([6-9]\d{4})[\s.-]?(\d{5})|[\s.-]*\(([6-9]\d{4})\)[\s.-]*(\d{5}))$/.exec(
+      trimmed,
+    );
+  const tenDigits = national
+    ? national[1]
+    : international
+      ? `${international[1] ?? international[3]}${international[2] ?? international[4]}`
       : undefined;
-  if (!tenDigits || (national === undefined && digitsOnly.length !== 10 && !rest)) {
-    if (trimmed)
-      throw new Error('Enter a ten-digit Indian mobile number, optionally prefixed by +91.');
-    return undefined;
-  }
-  if (!/^[6-9]\d{9}$/.test(tenDigits))
-    throw new Error('Enter a valid ten-digit Indian mobile number.');
+  if (!tenDigits)
+    throw new Error('Enter a ten-digit Indian mobile number, optionally prefixed by +91.');
   return `+91-${tenDigits}`;
 }
 
-function reminderId(profileId: string, kind: UtilityReminderTarget['kind'], date: string): string {
-  return `${profileId}:${kind}:${date}`;
+export const UTILITY_REMINDER_OFFSETS = [7, 3, 1, 0] as const;
+
+function reminderTargetsFor(
+  profileId: string,
+  kind: UtilityReminderTarget['kind'],
+  eventDate: string,
+  today: string,
+  title: string,
+  body: string,
+  notBefore = today,
+): UtilityReminderTarget[] {
+  return UTILITY_REMINDER_OFFSETS.flatMap((daysBefore) => {
+    const scheduleDate = addCalendarDays(eventDate, -daysBefore);
+    return scheduleDate < today || scheduleDate < notBefore
+      ? []
+      : [
+          {
+            id: `${profileId}:${kind}:${eventDate}:${daysBefore}`,
+            profileId,
+            kind,
+            scheduleDate,
+            eventDate,
+            title,
+            body,
+          },
+        ];
+  });
 }
 
 @Service()
@@ -126,43 +150,38 @@ export class UtilitiesService {
     const targets: UtilityReminderTarget[] = [];
     for (const profile of this.mobileProfiles().filter((item) => !item.archived)) {
       const plans = this.rechargesFor(profile.id);
-      const summary = mobileActivitySummary(plans, profile.subscriptionType, today);
-      const upcomingPlanDates = new Set(
-        plans
-          .filter((plan) => plan.planType === 'DATA_ONLY')
-          .filter((plan) => plan.endDate >= today)
-          .filter((plan) => {
-            const days = calendarDaysBetween(today, plan.endDate);
-            return days >= 0 && days <= 3;
-          })
-          .map((plan) => plan.endDate),
-      );
-      for (const date of upcomingPlanDates) {
-        targets.push({
-          id: reminderId(profile.id, 'MOBILE_PLAN', date),
-          profileId: profile.id,
-          kind: 'MOBILE_PLAN',
-          eventDate: date,
-          title: 'Mobile plan reminder',
-          body: 'A recorded recharge plan is approaching its last active day. Check CardNest.',
-        });
+      const dataPlanDates = new Map<string, string>();
+      for (const plan of plans.filter(
+        (item) => item.planType === 'DATA_ONLY' && item.endDate >= today,
+      )) {
+        const existingStart = dataPlanDates.get(plan.endDate);
+        if (!existingStart || plan.startDate < existingStart)
+          dataPlanDates.set(plan.endDate, plan.startDate);
       }
-      const endDate = summary.callingCoverageEnd;
-      if (
-        endDate &&
-        summary.daysUntilCallingEnd !== null &&
-        summary.daysUntilCallingEnd >= 0 &&
-        summary.daysUntilCallingEnd <= 3
-      ) {
-        targets.push({
-          id: reminderId(profile.id, 'MOBILE_VOICE', endDate),
-          profileId: profile.id,
-          kind: 'MOBILE_VOICE',
-          eventDate: endDate,
-          title: 'Outgoing calling plan reminder',
-          body: 'A recorded calling plan is nearing its last active day. Check CardNest.',
-        });
-      }
+      for (const [date, startDate] of dataPlanDates)
+        targets.push(
+          ...reminderTargetsFor(
+            profile.id,
+            'MOBILE_PLAN',
+            date,
+            today,
+            'Mobile plan reminder',
+            'A recorded recharge plan is approaching its last active day. Check CardNest.',
+            startDate,
+          ),
+        );
+      for (const period of mobileVoiceCoveragePeriods(plans, today))
+        targets.push(
+          ...reminderTargetsFor(
+            profile.id,
+            'MOBILE_VOICE',
+            period.endDate,
+            today,
+            'Outgoing calling plan reminder',
+            'A recorded calling plan is nearing its last active day. Check CardNest.',
+            period.startDate,
+          ),
+        );
     }
     for (const profile of this.lpgProfiles().filter((item) => !item.archived)) {
       const summary = lpgUsageSummary(
@@ -172,20 +191,19 @@ export class UtilitiesService {
       );
       if (
         summary.estimatedCheckDate &&
-        summary.estimatedDaysToCheck !== null &&
-        summary.estimatedDaysToCheck >= 0 &&
-        summary.estimatedDaysToCheck <= 3 &&
+        summary.estimatedCheckDate >= today &&
         !summary.currentCylinderEmpty
-      ) {
-        targets.push({
-          id: reminderId(profile.id, 'LPG_ESTIMATE', summary.estimatedCheckDate),
-          profileId: profile.id,
-          kind: 'LPG_ESTIMATE',
-          eventDate: summary.estimatedCheckDate,
-          title: 'Estimated LPG check',
-          body: 'Check whether a refill is needed in CardNest. This is an estimate only.',
-        });
-      }
+      )
+        targets.push(
+          ...reminderTargetsFor(
+            profile.id,
+            'LPG_ESTIMATE',
+            summary.estimatedCheckDate,
+            today,
+            'Estimated LPG check',
+            'Check whether a refill is needed in CardNest. This is an estimate only.',
+          ),
+        );
     }
     return targets;
   }

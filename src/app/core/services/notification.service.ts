@@ -31,10 +31,16 @@ interface ReminderTarget {
   readonly repeatDaily?: boolean;
 }
 
+const MAX_UTILITY_REMINDER_TARGETS = 400;
+const MAX_PLUGIN_REMINDER_TARGETS = 450;
+const UTILITY_NOTIFICATION_ID_START = 100_000_000;
+const UTILITY_NOTIFICATION_ID_RANGE = 100_000_000;
+
 export interface UtilityNotificationTarget {
   readonly id: string;
   readonly profileId: string;
   readonly kind: 'MOBILE_VOICE' | 'MOBILE_PLAN' | 'LPG_ESTIMATE';
+  readonly scheduleDate: string;
   readonly eventDate: string;
   readonly title: string;
   readonly body: string;
@@ -210,27 +216,39 @@ export class NotificationService {
             .filter(({ card }) => !card.archived)
             .flatMap(({ card, dueMinor }) => this.targetsForCard(card, dueMinor, now))
         : [];
+      const nativeBridge = this.nativeReminderBridge();
+      const utilityLimit = nativeBridge
+        ? MAX_UTILITY_REMINDER_TARGETS
+        : Math.max(0, MAX_PLUGIN_REMINDER_TARGETS - cardTargets.length);
+      const usedIds = new Set(cardTargets.map((target) => target.id));
       const utilityTargets =
         this.permission() === 'granted'
-          ? this.utilityTargets.map((target) => ({
-              id: this.utilityNotificationId(target.id),
-              title: target.title,
-              body: target.body,
-              at: this.utilityDate(target.eventDate),
-              eventDate: this.utilityDate(target.eventDate),
-              cardId: `utility:${target.profileId}`,
-              kind:
-                target.kind === 'LPG_ESTIMATE'
-                  ? ('UTILITY_LPG' as const)
-                  : ('UTILITY_MOBILE' as const),
-              source: 'card-nest-utility' as const,
-              repeatDaily: false,
-            }))
+          ? this.utilityTargets
+              .slice()
+              .sort((left, right) =>
+                left.scheduleDate === right.scheduleDate
+                  ? left.id.localeCompare(right.id)
+                  : left.scheduleDate.localeCompare(right.scheduleDate),
+              )
+              .slice(0, utilityLimit)
+              .map((target) => ({
+                id: this.utilityNotificationId(target.id, usedIds),
+                title: target.title,
+                body: target.body,
+                at: this.utilityDate(target.scheduleDate),
+                eventDate: this.utilityDate(target.eventDate),
+                cardId: `utility:${target.profileId}`,
+                kind:
+                  target.kind === 'LPG_ESTIMATE'
+                    ? ('UTILITY_LPG' as const)
+                    : ('UTILITY_MOBILE' as const),
+                source: 'card-nest-utility' as const,
+                repeatDaily: false,
+              }))
           : [];
       const targets = [...cardTargets, ...utilityTargets].filter(
         (target) => target.at.getTime() > now.getTime() + 30_000,
       );
-      const nativeBridge = this.nativeReminderBridge();
       if (nativeBridge) {
         const accepted = nativeBridge.replaceReminderSchedule(
           JSON.stringify(
@@ -462,10 +480,19 @@ export class NotificationService {
     return target;
   }
 
-  private utilityNotificationId(value: string): number {
+  private utilityNotificationId(value: string, usedIds: Set<number>): number {
     let hash = 0;
     for (const character of value) hash = (Math.imul(hash, 31) + character.charCodeAt(0)) | 0;
-    return 2_000_000_000 + (Math.abs(hash) % 100_000_000);
+    let offset = (hash >>> 0) % UTILITY_NOTIFICATION_ID_RANGE;
+    for (let attempt = 0; attempt < UTILITY_NOTIFICATION_ID_RANGE; attempt++) {
+      const id = UTILITY_NOTIFICATION_ID_START + offset;
+      if (!usedIds.has(id)) {
+        usedIds.add(id);
+        return id;
+      }
+      offset = (offset + 1) % UTILITY_NOTIFICATION_ID_RANGE;
+    }
+    throw new Error('No unique Android notification IDs are available for utilities.');
   }
 
   private baseId(cardId: string): number {

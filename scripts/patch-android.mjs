@@ -515,6 +515,9 @@ final class CardNestReminderScheduler {
       return record.optString("title", "CardNest reminder");
     }
     String kind = record.optString("kind");
+    if (kind.startsWith("UTILITY_")) {
+      return record.optString("title", "CardNest reminder");
+    }
     String subject = "PAYMENT".equals(kind)
       ? "Payment due"
       : "ANNUAL_FEE".equals(kind) ? "Annual fee due" : "Card expires";

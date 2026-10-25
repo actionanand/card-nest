@@ -89,7 +89,11 @@ export class BankActivityService {
     ]);
     this.profiles.set(profiles.map((row) => JSON.parse(row.payload) as BankActivityProfile));
     this.events.set(events.map((row) => JSON.parse(row.payload) as BankActivityEvent));
-    this.candidates.set(candidates.map((row) => JSON.parse(row.payload) as BankActivityCandidate));
+    this.candidates.set(
+      candidates
+        .map((row) => JSON.parse(row.payload) as BankActivityCandidate)
+        .filter((candidate) => !candidate.dismissed),
+    );
   }
 
   eventsFor(profileId: string): readonly BankActivityEvent[] {
@@ -252,27 +256,35 @@ export class BankActivityService {
       [input.fingerprint],
     );
     if (recorded) return false;
+    const activeProfiles = this.profiles().filter((profile) => !profile.archived);
     const userSuffix = finalThree(input.accountDigits);
+    const sources = this.store.paymentSources();
+    const relevantProfiles = activeProfiles.filter((profile) => {
+      const bankMatches = input.issuer ? matchesBank(profile.bankName, input.issuer) : false;
+      const suffix =
+        profile.accountSuffix ??
+        finalThree(sources.find((source) => source.id === profile.paymentSourceId)?.lastDigits);
+      return input.issuer ? bankMatches : !!userSuffix && suffix === userSuffix;
+    });
+    if (!relevantProfiles.length) return false;
     if (!userSuffix || !input.issuer) {
       await this.queueCandidate(validatedInput, userSuffix);
       return false;
     }
-    const sources = this.store.paymentSources();
     const sourceMatches = sources.filter(
       (source) =>
         source.kind === 'DEBIT' &&
         finalThree(source.lastDigits) === userSuffix &&
         matchesBank(source.institution, input.issuer),
     );
-    if (sourceMatches.length > 1) return false;
-    const matches = this.profiles().filter((profile) => {
-      if (profile.archived || !matchesBank(profile.bankName, input.issuer)) return false;
+    const matches = relevantProfiles.filter((profile) => {
       const suffix =
         profile.accountSuffix ??
         finalThree(sources.find((source) => source.id === profile.paymentSourceId)?.lastDigits);
       return suffix === userSuffix;
     });
     if (
+      sourceMatches.length > 1 ||
       matches.length !== 1 ||
       (sourceMatches.length === 1 && matches[0]?.paymentSourceId !== sourceMatches[0].id)
     ) {
@@ -313,6 +325,8 @@ export class BankActivityService {
       );
       if (!candidateRow) throw new Error('This activity suggestion is no longer available.');
       const candidate = JSON.parse(candidateRow.payload) as BankActivityCandidate;
+      if (candidate.dismissed)
+        throw new Error('This activity suggestion was dismissed and cannot be confirmed.');
       const [profileRow] = await tx.query<{ payload: string; archived: number }>(
         'SELECT payload,archived FROM bank_activity_profiles WHERE id=?',
         [profileId],
@@ -363,9 +377,17 @@ export class BankActivityService {
   }
 
   async dismissCandidate(fingerprint: string): Promise<void> {
-    await this.database.run('DELETE FROM bank_activity_candidates WHERE fingerprint=?', [
-      fingerprint,
-    ]);
+    const [row] = await this.database.query<{ payload: string }>(
+      'SELECT payload FROM bank_activity_candidates WHERE fingerprint=?',
+      [fingerprint],
+    );
+    if (!row) return;
+    const candidate = JSON.parse(row.payload) as BankActivityCandidate;
+    if (!candidate.dismissed)
+      await this.database.run('UPDATE bank_activity_candidates SET payload=? WHERE fingerprint=?', [
+        JSON.stringify({ ...candidate, dismissed: true }),
+        fingerprint,
+      ]);
     this.candidates.update((items) => items.filter((item) => item.fingerprint !== fingerprint));
   }
 
@@ -432,10 +454,11 @@ export class BankActivityService {
       purposeHint: input.purposeHint ?? 'UNKNOWN',
       createdAt,
     };
-    await this.database.run(
+    const inserted = await this.database.run(
       'INSERT OR IGNORE INTO bank_activity_candidates(fingerprint,payload,created_at) VALUES(?,?,?)',
       [candidate.fingerprint, JSON.stringify(candidate), createdAt],
     );
+    if (!inserted) return;
     this.candidates.update((items) =>
       items.some((item) => item.fingerprint === candidate.fingerprint)
         ? items
