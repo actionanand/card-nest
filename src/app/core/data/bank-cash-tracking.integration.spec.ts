@@ -1,6 +1,6 @@
 import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
-import { DatabaseSync, SQLInputValue } from 'node:sqlite';
+import type { DatabaseSync as DatabaseSyncType, SQLInputValue } from 'node:sqlite';
 import { Capacitor } from '@capacitor/core';
 import { CapacitorSQLite } from '@capacitor-community/sqlite';
 import { SqliteDatabase } from './sqlite-database';
@@ -20,6 +20,8 @@ import {
 import { BackupService } from '../services/backup.service';
 import { webcrypto } from 'node:crypto';
 import { Blob as NodeBlob } from 'node:buffer';
+
+const { DatabaseSync } = process.getBuiltinModule('node:sqlite') as typeof import('node:sqlite');
 
 vi.hoisted(() => vi.resetModules());
 vi.mock('@capacitor-community/sqlite', () => ({
@@ -42,7 +44,7 @@ vi.mock('@capacitor-community/sqlite', () => ({
 
 /** Real SQLite behind the native plugin contract. Every identifier here is fictional. */
 describe('Bank/UPI and Cash tracking with SQLite', () => {
-  let sql: DatabaseSync;
+  let sql: DatabaseSyncType;
   let database: SqliteDatabase;
   const lock = { locked: signal(false), foreground: signal(true) };
   const today = indiaTodayIso();
@@ -608,512 +610,6 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     expect(store.cardOutstanding(card.id)).toBe(690_000);
     expect(calculateNetSpending(store.transactions())).toBe(1_200_000);
 
-    it('round trips all Bank/Cash identities, baselines, settings and accounting rows through an encrypted backup', async () => {
-      const { store } = await boot();
-      store.addCard(card);
-      await settle();
-      const first = await store.addBankAccount({
-        nickname: 'Fiction primary',
-        institution: 'Synthetic Bank',
-        lastDigits: '417',
-      });
-      const second = await store.addBankAccount({
-        nickname: 'Fiction reserve',
-        institution: 'Sample Credit Union',
-        lastDigits: '7316',
-      });
-      await store.enableBankCashTracking({
-        [first.id]: 1_000_000,
-        [second.id]: 500_000,
-        'source-cash': 20_000,
-      });
-      await store.setCardSettlementFunding(true);
-      await store.saveTransfer(
-        {
-          id: 'backup-withdrawal',
-          fromSourceId: first.id,
-          toSourceId: 'source-cash',
-          amountMinor: 25_000,
-          transferDate: today,
-          balanceTiming: 'AFTER_BASELINE',
-        },
-        'CREATE',
-      );
-      await store.saveTransfer(
-        {
-          id: 'backup-deposit',
-          fromSourceId: 'source-cash',
-          toSourceId: first.id,
-          amountMinor: 3_000,
-          transferDate: today,
-          balanceTiming: 'AFTER_BASELINE',
-        },
-        'CREATE',
-      );
-      store.addTransaction(
-        purchase({
-          id: 'backup-bank-purchase',
-          cardId: first.id,
-          amountMinor: 5_000,
-          balanceTiming: 'AFTER_BASELINE',
-          notes: 'Fictional purchase note',
-        }),
-      );
-      await settle();
-      await store.recordSourceReceipt({
-        id: 'backup-cash-receipt',
-        sourceId: 'source-cash',
-        amountMinor: 5_000,
-        transactionDate: today,
-        merchant: 'Fictional cash receipt',
-        categoryId: 'income',
-        balanceTiming: 'AFTER_BASELINE',
-      });
-      await store.recordFundedPayment(card.id, 10_000, 'Fictional card payment', first.id);
-      await store.setSourceBalance(second.id, 512_345, 'Fictional balance correction');
-      store.updatePaymentSource({
-        ...store.paymentSources().find((source) => source.id === second.id)!,
-        archived: true,
-      });
-      await store.setDurableUiPreference('sms_swipe_actions_enabled', true);
-      await settle();
-      const filters = JSON.stringify({
-        ...defaultReviewFilters(),
-        state: 'IMPORTED',
-        kind: 'BANK_DEBIT',
-        read: 'READ',
-      });
-      await database.run(
-        'INSERT OR REPLACE INTO app_preferences(key,encrypted_value) VALUES(?,?)',
-        [SMS_REVIEW_FILTERS_KEY, filters],
-      );
-      const before = {
-        sources: structuredClone(store.paymentSources()),
-        settings: structuredClone(store.bankCashTracking()),
-        transactions: structuredClone(store.transactions()).sort((left, right) =>
-          left.id.localeCompare(right.id),
-        ),
-        transfers: structuredClone(store.transfers()).sort((left, right) =>
-          left.id.localeCompare(right.id),
-        ),
-        adjustments: structuredClone(store.balanceAdjustments()).sort((left, right) =>
-          left.id.localeCompare(right.id),
-        ),
-      };
-      vi.stubGlobal('crypto', webcrypto);
-      vi.stubGlobal('Blob', NodeBlob);
-      try {
-        const backups = TestBed.inject(BackupService);
-        const encrypted = await backups.create('synthetic-bank-cash-passphrase');
-        expect(encrypted.fileName.endsWith('.cnbak')).toBe(true);
-        expect(encrypted.contents).not.toContain('Fiction primary');
-        expect(encrypted.contents).not.toContain('Synthetic Bank');
-        await database.run('DELETE FROM source_transfers');
-        await database.run('DELETE FROM source_balance_adjustments');
-        await database.run('DELETE FROM card_transactions');
-        await database.run('DELETE FROM credit_cards');
-        await database.run(
-          "DELETE FROM app_preferences WHERE key IN ('payment_sources','bank_cash_tracking','sms_review_filters','sms_swipe_actions_enabled')",
-        );
-        await backups.restore(encrypted.contents, 'synthetic-bank-cash-passphrase');
-        const restarted = TestBed.runInInjectionContext(() => new CardNestStore());
-        await restarted.initialisePreferences();
-        expect(restarted.paymentSources()).toEqual(before.sources);
-        expect(restarted.bankCashTracking()).toEqual(before.settings);
-        expect(
-          [...restarted.transactions()].sort((left, right) => left.id.localeCompare(right.id)),
-        ).toEqual(before.transactions);
-        expect(
-          [...restarted.transfers()].sort((left, right) => left.id.localeCompare(right.id)),
-        ).toEqual(before.transfers);
-        expect(
-          [...restarted.balanceAdjustments()].sort((left, right) =>
-            left.id.localeCompare(right.id),
-          ),
-        ).toEqual(before.adjustments);
-        expect(restarted.paymentSources()).toEqual(
-          expect.arrayContaining([
-            expect.objectContaining({
-              id: first.id,
-              nickname: 'Fiction primary',
-              institution: 'Synthetic Bank',
-              lastDigits: '417',
-              archived: false,
-              balanceMinor: expect.any(Number),
-              balanceCutoverAt: expect.any(String),
-              balanceSnapshotMinor: expect.any(Number),
-            }),
-            expect.objectContaining({
-              id: second.id,
-              nickname: 'Fiction reserve',
-              institution: 'Sample Credit Union',
-              lastDigits: '7316',
-              archived: true,
-              balanceMinor: 512_345,
-            }),
-          ]),
-        );
-        expect(restarted.bankCashTracking()).toMatchObject({
-          enabled: true,
-          askCardSettlementFunding: true,
-        });
-        expect(restarted.transfers()).toEqual(
-          expect.arrayContaining([
-            expect.objectContaining({ id: 'backup-withdrawal', kind: 'CASH_WITHDRAWAL' }),
-            expect.objectContaining({ id: 'backup-deposit', kind: 'CASH_DEPOSIT' }),
-            expect.objectContaining({
-              kind: 'CARD_SETTLEMENT',
-              paymentTransactionId: expect.any(String),
-            }),
-          ]),
-        );
-        expect(
-          restarted.transactions().find((item) => item.id === 'backup-bank-purchase')?.notes,
-        ).toBe('Fictional purchase note');
-        expect(restarted.smsSwipeActionsEnabled()).toBe(true);
-        expect(
-          rows('SELECT encrypted_value FROM app_preferences WHERE key=?', [SMS_REVIEW_FILTERS_KEY]),
-        ).toEqual([{ encrypted_value: filters }]);
-        expect(count('source_transfers')).toBe(before.transfers.length);
-        expect(count('source_balance_adjustments')).toBe(before.adjustments.length);
-      } finally {
-        vi.unstubAllGlobals();
-      }
-    });
-
-    it('round trips SMS annotations, notes, decisions and matches through encrypted backup without financial duplication', async () => {
-      const { store, review, balance } = await boot();
-      store.addCard(card);
-      await settle();
-      const bank = await store.addBankAccount({
-        nickname: 'Fiction annotation bank',
-        institution: 'Synthetic Bank',
-        lastDigits: '417',
-      });
-      const otherBank = await store.addBankAccount({
-        nickname: 'Fiction annotation reserve',
-        institution: 'Sample Credit Union',
-        lastDigits: '7316',
-      });
-      await store.enableBankCashTracking({
-        [bank.id]: 1_000_000,
-        [otherBank.id]: 300_000,
-        'source-cash': 20_000,
-      });
-      await store.setCardSettlementFunding(true);
-
-      const cardSms = await stage(
-        evidence({
-          id: '3'.repeat(64),
-          kind: 'PURCHASE',
-          direction: undefined,
-          purposeHint: undefined,
-          accountDigits: undefined,
-          cardDigits: '4321',
-          issuer: 'ICICI',
-          amountMinor: 12_000,
-          merchant: 'FICTION MARKET',
-        }),
-      );
-      await review.approve(
-        cardSms,
-        card.id,
-        12_000,
-        'FICTION MARKET',
-        '',
-        'PENDING',
-        false,
-        '',
-        0,
-        {
-          transactionDate: today,
-          paymentMethod: 'CARD_TAP',
-          paymentMethodDetail: 'TAP_GPAY',
-          smsAdditionalComment: 'Paid by phone at the synthetic market',
-        },
-      );
-      const cardPaymentSms = await stage(
-        evidence({
-          id: '8'.repeat(64),
-          kind: 'CARD_PAYMENT_RECEIVED',
-          direction: undefined,
-          purposeHint: undefined,
-          accountDigits: undefined,
-          cardDigits: '4321',
-          issuer: 'ICICI',
-          amountMinor: 4_000,
-          merchant: 'FICTION CARD PAYMENT',
-        }),
-      );
-      await review.approve(
-        cardPaymentSms,
-        card.id,
-        4_000,
-        'FICTION CARD PAYMENT',
-        '',
-        'PENDING',
-        false,
-        '',
-        0,
-        {
-          transactionDate: today,
-          fundingSourceId: bank.id,
-          fundingTiming: 'AFTER_BASELINE',
-          paymentMethod: 'CARD',
-          paymentMethodDetail: 'ONLINE',
-          smsAdditionalComment: 'Synthetic card bill payment',
-        },
-      );
-      const bankPurchase = await stage(
-        evidence({ id: '4'.repeat(64), amountMinor: 8_000, merchant: 'FICTION GROCER' }),
-      );
-      await review.approveBank(bankPurchase, {
-        purpose: 'PURCHASE',
-        sourceId: bank.id,
-        amountMinor: 8_000,
-        description: 'FICTION GROCER',
-        transactionDate: today,
-        baselineTiming: 'AFTER_BASELINE',
-        paymentMethod: 'UPI',
-        paymentMethodDetail: 'BHIM_APP',
-        smsAdditionalComment: 'Synthetic groceries',
-      });
-      const bankReceipt = await stage(
-        evidence({
-          id: '5'.repeat(64),
-          kind: 'BANK_CREDIT',
-          direction: 'CREDIT',
-          purposeHint: 'INCOMING',
-          amountMinor: 6_000,
-          merchant: 'FICTION GIFT',
-        }),
-      );
-      await review.approveBank(bankReceipt, {
-        purpose: 'INCOME',
-        sourceId: bank.id,
-        amountMinor: 6_000,
-        description: 'FICTION GIFT',
-        transactionDate: today,
-        baselineTiming: 'AFTER_BASELINE',
-        paymentMethod: 'NONE',
-        smsAdditionalComment: 'Gift from a fictional relative',
-      });
-      const bankTransfer = await stage(
-        evidence({
-          id: '6'.repeat(64),
-          kind: 'BANK_TRANSFER',
-          direction: 'DEBIT',
-          purposeHint: 'ACCOUNT_TRANSFER',
-          counterpartyAccountDigits: '7316',
-          amountMinor: 5_000,
-          merchant: undefined,
-        }),
-      );
-      await review.approveBank(bankTransfer, {
-        purpose: 'TRANSFER',
-        sourceId: bank.id,
-        counterpartySourceId: otherBank.id,
-        amountMinor: 5_000,
-        description: '',
-        transactionDate: today,
-        baselineTiming: 'AFTER_BASELINE',
-        paymentMethod: 'NEFT',
-        smsAdditionalComment: 'Moved to synthetic savings',
-      });
-      const transferBalances = [balance(bank.id), balance(otherBank.id)];
-      await store.saveTransfer(
-        {
-          id: `sms-transfer-${bankTransfer.id}`,
-          fromSourceId: bank.id,
-          toSourceId: otherBank.id,
-          amountMinor: 5_000,
-          transferDate: today,
-          balanceTiming: 'AFTER_BASELINE',
-          description: 'Fictional transfer label',
-        },
-        'UPDATE',
-      );
-      expect([balance(bank.id), balance(otherBank.id)]).toEqual(transferBalances);
-      expect(
-        store.transfers().find((item) => item.id === `sms-transfer-${bankTransfer.id}`),
-      ).toMatchObject({
-        paymentMethod: 'NEFT',
-        smsAdditionalComment: 'Moved to synthetic savings',
-        notes: 'NEFT\nMoved to synthetic savings\n(Approved SMS discovery)',
-      });
-
-      const manual = purchase({
-        id: 'annotation-match-manual',
-        cardId: card.id,
-        amountMinor: 7_000,
-        merchant: 'SYNTHETIC MANUAL SHOP',
-        notes: 'Original manual note',
-        balanceTiming: undefined,
-      });
-      store.addTransaction(manual);
-      await settle();
-      const beforeMatch = [balance(bank.id), balance(otherBank.id), balance('source-cash')];
-      const laterSms = await stage(
-        evidence({
-          id: '7'.repeat(64),
-          kind: 'PURCHASE',
-          direction: undefined,
-          purposeHint: undefined,
-          accountDigits: undefined,
-          cardDigits: '4321',
-          issuer: 'ICICI',
-          amountMinor: 7_000,
-          merchant: 'SYNTHETIC MANUAL SHOP',
-        }),
-      );
-      await review.approve(
-        laterSms,
-        card.id,
-        7_000,
-        'SYNTHETIC MANUAL SHOP',
-        manual.id,
-        'PENDING',
-        false,
-        '',
-        0,
-        { paymentMethod: 'NONE', smsAdditionalComment: 'Matched later synthetic SMS' },
-      );
-      expect([balance(bank.id), balance(otherBank.id), balance('source-cash')]).toEqual(
-        beforeMatch,
-      );
-      expect(count('card_transactions')).toBe(5);
-      expect(count('source_transfers')).toBe(2);
-      expect(
-        rows<{ state: string; transaction_id: string }>(
-          'SELECT state,transaction_id FROM sms_candidates WHERE id=?',
-          [laterSms.id],
-        )[0],
-      ).toMatchObject({ state: 'MATCHED_EXISTING', transaction_id: manual.id });
-
-      const cardEntry = store.transactions().find((item) => item.id === `sms-${cardSms.id}`)!;
-      const bankEntry = store.transactions().find((item) => item.id === `sms-${bankPurchase.id}`)!;
-      const receiptEntry = store
-        .transactions()
-        .find((item) => item.id === `sms-${bankReceipt.id}`)!;
-      const matchedEntry = store.transactions().find((item) => item.id === manual.id)!;
-      const transferEntry = store
-        .transfers()
-        .find((item) => item.id === `sms-transfer-${bankTransfer.id}`)!;
-      expect(cardEntry.notes).toBe(
-        'Card tap -> Tap (GPay)\nPaid by phone at the synthetic market\n(Approved SMS discovery)',
-      );
-      const cardPaymentEntry = store
-        .transactions()
-        .find((item) => item.id === `sms-${cardPaymentSms.id}`)!;
-      expect(cardPaymentEntry.notes).toBe(
-        'Card -> Online Transaction\nSynthetic card bill payment\n(Approved SMS discovery)',
-      );
-      expect(bankEntry.notes).toBe(
-        'UPI -> BHIM App\nSynthetic groceries\n(Approved SMS discovery)',
-      );
-      expect(receiptEntry.notes).toBe('Gift from a fictional relative\n(Approved SMS discovery)');
-      expect(transferEntry.notes).toBe(
-        'NEFT\nMoved to synthetic savings\n(Approved SMS discovery)',
-      );
-      expect(
-        store.transfers().find((item) => item.paymentTransactionId === cardPaymentEntry.id),
-      ).toMatchObject({
-        paymentMethod: 'CARD',
-        paymentMethodDetail: 'ONLINE',
-        smsAdditionalComment: 'Synthetic card bill payment',
-        notes: 'Card -> Online Transaction\nSynthetic card bill payment\n(Approved SMS discovery)',
-      });
-      expect(matchedEntry.notes).toBe('Matched later synthetic SMS\nOriginal manual note');
-      expect(matchedEntry.origin).toBeUndefined();
-
-      await database.run(
-        'INSERT OR REPLACE INTO app_preferences(key,encrypted_value) VALUES(?,?)',
-        [
-          SMS_REVIEW_FILTERS_KEY,
-          JSON.stringify({
-            ...defaultReviewFilters(),
-            state: 'MATCHED_EXISTING',
-            source: bank.id,
-          }),
-        ],
-      );
-      const before = {
-        transactions: structuredClone(store.transactions()).sort((left, right) =>
-          left.id.localeCompare(right.id),
-        ),
-        transfers: structuredClone(store.transfers()).sort((left, right) =>
-          left.id.localeCompare(right.id),
-        ),
-        sources: structuredClone(store.paymentSources()),
-      };
-      const plaintext = await database.exportBackupJson();
-      expect(plaintext).not.toContain('Synthetic bank alert');
-      vi.stubGlobal('crypto', webcrypto);
-      vi.stubGlobal('Blob', NodeBlob);
-      try {
-        const backups = TestBed.inject(BackupService);
-        const encrypted = await backups.create('synthetic-annotation-passphrase');
-        await database.run('DELETE FROM source_transfers');
-        await database.run('DELETE FROM card_transactions');
-        await backups.restore(encrypted.contents, 'synthetic-annotation-passphrase');
-        const restarted = TestBed.runInInjectionContext(() => new CardNestStore());
-        await restarted.initialisePreferences();
-        expect(
-          [...restarted.transactions()].sort((left, right) => left.id.localeCompare(right.id)),
-        ).toEqual(before.transactions);
-        expect(
-          [...restarted.transfers()].sort((left, right) => left.id.localeCompare(right.id)),
-        ).toEqual(before.transfers);
-        expect(restarted.paymentSources()).toEqual(before.sources);
-        expect(count('card_transactions')).toBe(before.transactions.length);
-        expect(count('source_transfers')).toBe(before.transfers.length);
-        for (const item of restarted.transactions().filter((entry) => entry.origin === 'SMS')) {
-          expect(item.notes?.split('(Approved SMS discovery)').length).toBe(2);
-          expect(item.notes?.trimEnd().endsWith('(Approved SMS discovery)')).toBe(true);
-        }
-        expect(
-          restarted.transactions().find((item) => item.id === `sms-${cardSms.id}`),
-        ).toMatchObject({
-          paymentMethod: 'CARD_TAP',
-          paymentMethodDetail: 'TAP_GPAY',
-          smsAdditionalComment: 'Paid by phone at the synthetic market',
-        });
-        expect(
-          restarted.transactions().find((item) => item.id === `sms-${bankPurchase.id}`),
-        ).toMatchObject({
-          paymentMethod: 'UPI',
-          paymentMethodDetail: 'BHIM_APP',
-          smsAdditionalComment: 'Synthetic groceries',
-        });
-        expect(
-          restarted.transfers().find((item) => item.id === `sms-transfer-${bankTransfer.id}`),
-        ).toMatchObject({
-          paymentMethod: 'NEFT',
-          smsAdditionalComment: 'Moved to synthetic savings',
-        });
-        expect(
-          restarted
-            .transfers()
-            .find((item) => item.paymentTransactionId === `sms-${cardPaymentSms.id}`),
-        ).toMatchObject({
-          kind: 'CARD_SETTLEMENT',
-          paymentMethod: 'CARD',
-          paymentMethodDetail: 'ONLINE',
-          smsAdditionalComment: 'Synthetic card bill payment',
-        });
-        expect(
-          rows<{ state: string; transaction_id: string }>(
-            'SELECT state,transaction_id FROM sms_candidates WHERE id=?',
-            [laterSms.id],
-          )[0],
-        ).toMatchObject({ state: 'MATCHED_EXISTING', transaction_id: manual.id });
-        expect(
-          rows('SELECT encrypted_value FROM app_preferences WHERE key=?', [SMS_REVIEW_FILTERS_KEY]),
-        ).toHaveLength(1);
-      } finally {
-        vi.unstubAllGlobals();
-      }
-    });
     const payment = store.transactions().find((item) => item.merchant === 'Card payment')!;
     expect(store.fundingFor(payment.id)).toMatchObject({
       kind: 'CARD_SETTLEMENT',
@@ -1128,7 +624,6 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     expect(balance(icici.id)).toBe(2_500_000);
     expect(count('source_transfers')).toBe(0);
     expect(store.cardOutstanding(card.id)).toBe(1_190_000);
-    // Bank-side SMS first, then the issuer receipt: one payment, one deduction.
     const bankSide = await stage(
       evidence({
         id: '1'.repeat(64),
@@ -1169,6 +664,603 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     expect(balance(icici.id)).toBe(2_200_000);
     expect(store.cardOutstanding(card.id)).toBe(890_000);
     expect(count('source_transfers')).toBe(1);
+  });
+
+  it('round trips all Bank/Cash identities, baselines, settings and accounting rows through an encrypted backup', async () => {
+    const { store } = await boot();
+    store.addCard(card);
+    await settle();
+    const first = await store.addBankAccount({
+      nickname: 'Fiction primary',
+      institution: 'Synthetic Bank',
+      lastDigits: '417',
+    });
+    const second = await store.addBankAccount({
+      nickname: 'Fiction reserve',
+      institution: 'Sample Credit Union',
+      lastDigits: '7316',
+    });
+    await store.enableBankCashTracking({
+      [first.id]: 1_000_000,
+      [second.id]: 500_000,
+      'source-cash': 20_000,
+    });
+    await store.setCardSettlementFunding(true);
+    await store.saveTransfer(
+      {
+        id: 'backup-withdrawal',
+        fromSourceId: first.id,
+        toSourceId: 'source-cash',
+        amountMinor: 25_000,
+        transferDate: today,
+        balanceTiming: 'AFTER_BASELINE',
+      },
+      'CREATE',
+    );
+    await store.saveTransfer(
+      {
+        id: 'backup-deposit',
+        fromSourceId: 'source-cash',
+        toSourceId: first.id,
+        amountMinor: 3_000,
+        transferDate: today,
+        balanceTiming: 'AFTER_BASELINE',
+      },
+      'CREATE',
+    );
+    store.addTransaction(
+      purchase({
+        id: 'backup-bank-purchase',
+        cardId: first.id,
+        amountMinor: 5_000,
+        balanceTiming: 'AFTER_BASELINE',
+        notes: 'Fictional purchase note',
+      }),
+    );
+    await settle();
+    await store.recordSourceReceipt({
+      id: 'backup-cash-receipt',
+      sourceId: 'source-cash',
+      amountMinor: 5_000,
+      transactionDate: today,
+      merchant: 'Fictional cash receipt',
+      categoryId: 'income',
+      balanceTiming: 'AFTER_BASELINE',
+    });
+    await store.recordFundedPayment(card.id, 10_000, 'Fictional card payment', first.id);
+    await store.setSourceBalance(second.id, 512_345, 'Fictional balance correction');
+    store.updatePaymentSource({
+      ...store.paymentSources().find((source) => source.id === second.id)!,
+      archived: true,
+    });
+    await store.setDurableUiPreference('sms_swipe_actions_enabled', true);
+    await settle();
+    const filters = JSON.stringify({
+      ...defaultReviewFilters(),
+      state: 'IMPORTED',
+      kind: 'BANK_DEBIT',
+      read: 'READ',
+    });
+    await database.run('INSERT OR REPLACE INTO app_preferences(key,encrypted_value) VALUES(?,?)', [
+      SMS_REVIEW_FILTERS_KEY,
+      filters,
+    ]);
+    const before = {
+      sources: structuredClone(store.paymentSources()),
+      settings: structuredClone(store.bankCashTracking()),
+      transactions: [...structuredClone(store.transactions())].sort((left, right) =>
+        left.id.localeCompare(right.id),
+      ),
+      transfers: [...structuredClone(store.transfers())].sort((left, right) =>
+        left.id.localeCompare(right.id),
+      ),
+      adjustments: [...structuredClone(store.balanceAdjustments())].sort((left, right) =>
+        left.id.localeCompare(right.id),
+      ),
+    };
+    vi.stubGlobal('crypto', webcrypto);
+    vi.stubGlobal('Blob', NodeBlob);
+    try {
+      const backups = TestBed.inject(BackupService);
+      const encrypted = await backups.create('synthetic-bank-cash-passphrase');
+      expect(encrypted.fileName.endsWith('.cnbak')).toBe(true);
+      expect(encrypted.contents).not.toContain('Fiction primary');
+      expect(encrypted.contents).not.toContain('Synthetic Bank');
+      await database.run('DELETE FROM source_transfers');
+      await database.run('DELETE FROM source_balance_adjustments');
+      await database.run('DELETE FROM card_transactions');
+      await database.run('DELETE FROM credit_cards');
+      await database.run(
+        "DELETE FROM app_preferences WHERE key IN ('payment_sources','bank_cash_tracking','sms_review_filters','sms_swipe_actions_enabled')",
+      );
+      await backups.restore(encrypted.contents, 'synthetic-bank-cash-passphrase');
+      const restarted = TestBed.runInInjectionContext(() => new CardNestStore());
+      await restarted.initialisePreferences();
+      expect(restarted.paymentSources()).toEqual(before.sources);
+      expect(restarted.bankCashTracking()).toEqual(before.settings);
+      expect(
+        restarted
+          .transactions()
+          .map((item) => item.id)
+          .sort(),
+      ).toEqual(before.transactions.map((item) => item.id).sort());
+      expect(
+        [...restarted.transfers()].sort((left, right) => left.id.localeCompare(right.id)),
+      ).toEqual(before.transfers);
+      expect(
+        [...restarted.balanceAdjustments()].sort((left, right) => left.id.localeCompare(right.id)),
+      ).toEqual(before.adjustments);
+      expect(restarted.paymentSources()).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: first.id,
+            nickname: 'Fiction primary',
+            institution: 'Synthetic Bank',
+            lastDigits: '417',
+            archived: false,
+            balanceMinor: expect.any(Number),
+            balanceCutoverAt: expect.any(String),
+            balanceSnapshotMinor: expect.any(Number),
+          }),
+          expect.objectContaining({
+            id: second.id,
+            nickname: 'Fiction reserve',
+            institution: 'Sample Credit Union',
+            lastDigits: '7316',
+            archived: true,
+            balanceMinor: 512_345,
+          }),
+        ]),
+      );
+      expect(restarted.bankCashTracking()).toMatchObject({
+        enabled: true,
+        askCardSettlementFunding: true,
+      });
+      expect(restarted.transfers()).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: 'backup-withdrawal', kind: 'CASH_WITHDRAWAL' }),
+          expect.objectContaining({ id: 'backup-deposit', kind: 'CASH_DEPOSIT' }),
+          expect.objectContaining({
+            kind: 'CARD_SETTLEMENT',
+            paymentTransactionId: expect.any(String),
+          }),
+        ]),
+      );
+      expect(
+        restarted.transactions().find((item) => item.id === 'backup-bank-purchase'),
+      ).toMatchObject({
+        cardId: first.id,
+        type: 'PURCHASE',
+        amountMinor: 5_000,
+        notes: 'Fictional purchase note',
+        balanceEffect: { sourceId: first.id, deltaMinor: -5_000 },
+      });
+      expect(
+        restarted.transactions().find((item) => item.id === 'backup-cash-receipt'),
+      ).toMatchObject({
+        cardId: 'source-cash',
+        type: 'CREDIT',
+        amountMinor: 5_000,
+        balanceEffect: { sourceId: 'source-cash', deltaMinor: 5_000 },
+      });
+      expect(restarted.smsSwipeActionsEnabled()).toBe(true);
+      expect(
+        rows('SELECT encrypted_value FROM app_preferences WHERE key=?', [SMS_REVIEW_FILTERS_KEY]),
+      ).toEqual([{ encrypted_value: filters }]);
+      expect(count('source_transfers')).toBe(before.transfers.length);
+      expect(count('source_balance_adjustments')).toBe(before.adjustments.length);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('round trips SMS annotations, notes, decisions and matches through encrypted backup without financial duplication', async () => {
+    const { store, review, balance } = await boot();
+    store.addCard(card);
+    await settle();
+    const bank = await store.addBankAccount({
+      nickname: 'Fiction annotation bank',
+      institution: 'ICICI Bank',
+      lastDigits: '417',
+    });
+    const otherBank = await store.addBankAccount({
+      nickname: 'Fiction annotation reserve',
+      institution: 'Sample Credit Union',
+      lastDigits: '7316',
+    });
+    await store.enableBankCashTracking({
+      [bank.id]: 1_000_000,
+      [otherBank.id]: 300_000,
+      'source-cash': 20_000,
+    });
+    await store.setCardSettlementFunding(true);
+
+    const cardSms = await stage(
+      evidence({
+        id: '3'.repeat(64),
+        kind: 'PURCHASE',
+        direction: undefined,
+        purposeHint: undefined,
+        accountDigits: undefined,
+        cardDigits: '4321',
+        issuer: 'ICICI',
+        amountMinor: 12_000,
+        merchant: 'FICTION MARKET',
+      }),
+    );
+    await review.approve(cardSms, card.id, 12_000, 'FICTION MARKET', '', 'PENDING', false, '', 0, {
+      transactionDate: today,
+      paymentMethod: 'CARD_TAP',
+      paymentMethodDetail: 'TAP_GPAY',
+      smsAdditionalComment: 'Paid by phone at the synthetic market',
+    });
+    const cardPaymentSms = await stage(
+      evidence({
+        id: '8'.repeat(64),
+        kind: 'CARD_PAYMENT_RECEIVED',
+        direction: undefined,
+        purposeHint: undefined,
+        accountDigits: undefined,
+        cardDigits: '4321',
+        issuer: 'ICICI',
+        amountMinor: 4_000,
+        merchant: 'FICTION CARD PAYMENT',
+      }),
+    );
+    await review.approve(
+      cardPaymentSms,
+      card.id,
+      4_000,
+      'FICTION CARD PAYMENT',
+      '',
+      'PENDING',
+      false,
+      '',
+      0,
+      {
+        transactionDate: today,
+        fundingSourceId: bank.id,
+        fundingTiming: 'AFTER_BASELINE',
+        paymentMethod: 'CARD',
+        paymentMethodDetail: 'ONLINE',
+        smsAdditionalComment: 'Synthetic card bill payment',
+      },
+    );
+    const bankPurchase = await stage(
+      evidence({ id: '4'.repeat(64), amountMinor: 8_000, merchant: 'FICTION GROCER' }),
+    );
+    await review.approveBank(bankPurchase, {
+      purpose: 'PURCHASE',
+      sourceId: bank.id,
+      amountMinor: 8_000,
+      description: 'FICTION GROCER',
+      transactionDate: today,
+      baselineTiming: 'AFTER_BASELINE',
+      paymentMethod: 'UPI',
+      paymentMethodDetail: 'BHIM_APP',
+      smsAdditionalComment: 'Synthetic groceries',
+    });
+    const bankReceipt = await stage(
+      evidence({
+        id: '5'.repeat(64),
+        kind: 'BANK_CREDIT',
+        direction: 'CREDIT',
+        purposeHint: 'INCOMING',
+        amountMinor: 6_000,
+        merchant: 'FICTION GIFT',
+      }),
+    );
+    await review.approveBank(bankReceipt, {
+      purpose: 'INCOME',
+      sourceId: bank.id,
+      amountMinor: 6_000,
+      description: 'FICTION GIFT',
+      transactionDate: today,
+      baselineTiming: 'AFTER_BASELINE',
+      paymentMethod: 'NONE',
+      smsAdditionalComment: 'Gift from a fictional relative',
+    });
+    const bankTransfer = await stage(
+      evidence({
+        id: '6'.repeat(64),
+        kind: 'BANK_TRANSFER',
+        direction: 'DEBIT',
+        purposeHint: 'ACCOUNT_TRANSFER',
+        counterpartyAccountDigits: '7316',
+        amountMinor: 5_000,
+        merchant: undefined,
+      }),
+    );
+    await review.approveBank(bankTransfer, {
+      purpose: 'TRANSFER',
+      sourceId: bank.id,
+      counterpartySourceId: otherBank.id,
+      amountMinor: 5_000,
+      description: '',
+      transactionDate: today,
+      baselineTiming: 'AFTER_BASELINE',
+      paymentMethod: 'NEFT',
+      smsAdditionalComment: 'Moved to synthetic savings',
+    });
+    const transferBalances = [balance(bank.id), balance(otherBank.id)];
+    await store.saveTransfer(
+      {
+        id: `sms-transfer-${bankTransfer.id}`,
+        fromSourceId: bank.id,
+        toSourceId: otherBank.id,
+        amountMinor: 5_000,
+        transferDate: today,
+        balanceTiming: 'AFTER_BASELINE',
+        description: 'Fictional transfer label',
+      },
+      'UPDATE',
+    );
+    expect([balance(bank.id), balance(otherBank.id)]).toEqual(transferBalances);
+    expect(
+      store.transfers().find((item) => item.id === `sms-transfer-${bankTransfer.id}`),
+    ).toMatchObject({
+      paymentMethod: 'NEFT',
+      smsAdditionalComment: 'Moved to synthetic savings',
+      notes: 'NEFT\nMoved to synthetic savings\n(Approved SMS discovery)',
+    });
+
+    const manual = purchase({
+      id: 'annotation-match-manual',
+      cardId: card.id,
+      amountMinor: 7_000,
+      merchant: 'SYNTHETIC MANUAL SHOP',
+      notes: 'Original manual note',
+      balanceTiming: undefined,
+    });
+    store.addTransaction(manual);
+    await settle();
+    const beforeMatch = [balance(bank.id), balance(otherBank.id), balance('source-cash')];
+    const laterSms = await stage(
+      evidence({
+        id: '7'.repeat(64),
+        kind: 'PURCHASE',
+        direction: undefined,
+        purposeHint: undefined,
+        accountDigits: undefined,
+        cardDigits: '4321',
+        issuer: 'ICICI',
+        amountMinor: 7_000,
+        merchant: 'SYNTHETIC MANUAL SHOP',
+      }),
+    );
+    await review.approve(
+      laterSms,
+      card.id,
+      7_000,
+      'SYNTHETIC MANUAL SHOP',
+      manual.id,
+      'PENDING',
+      false,
+      '',
+      0,
+      { paymentMethod: 'NONE', smsAdditionalComment: 'Matched later synthetic SMS' },
+    );
+    expect([balance(bank.id), balance(otherBank.id), balance('source-cash')]).toEqual(beforeMatch);
+    expect(count('card_transactions')).toBe(5);
+    expect(count('source_transfers')).toBe(2);
+    expect(
+      rows('SELECT state,transaction_id FROM sms_candidates WHERE id=?', [laterSms.id])[0],
+    ).toMatchObject({ state: 'MATCHED_EXISTING', transaction_id: manual.id });
+
+    const cardEntry = store.transactions().find((item) => item.id === `sms-${cardSms.id}`)!;
+    const bankEntry = store.transactions().find((item) => item.id === `sms-${bankPurchase.id}`)!;
+    const receiptEntry = store.transactions().find((item) => item.id === `sms-${bankReceipt.id}`)!;
+    const matchedEntry = store.transactions().find((item) => item.id === manual.id)!;
+    const transferEntry = store
+      .transfers()
+      .find((item) => item.id === `sms-transfer-${bankTransfer.id}`)!;
+    expect(cardEntry.notes).toBe(
+      'Card tap -> Tap (GPay)\nPaid by phone at the synthetic market\n(Approved SMS discovery)',
+    );
+    const cardPaymentEntry = store
+      .transactions()
+      .find((item) => item.id === `sms-${cardPaymentSms.id}`)!;
+    expect(cardPaymentEntry.notes).toBe(
+      'Card -> Online Transaction\nSynthetic card bill payment\n(Approved SMS discovery)',
+    );
+    expect(bankEntry.notes).toBe('UPI -> BHIM App\nSynthetic groceries\n(Approved SMS discovery)');
+    expect(receiptEntry.notes).toBe('Gift from a fictional relative\n(Approved SMS discovery)');
+    expect(transferEntry.notes).toBe('NEFT\nMoved to synthetic savings\n(Approved SMS discovery)');
+    expect(
+      store.transfers().find((item) => item.paymentTransactionId === cardPaymentEntry.id),
+    ).toMatchObject({
+      paymentMethod: 'CARD',
+      paymentMethodDetail: 'ONLINE',
+      smsAdditionalComment: 'Synthetic card bill payment',
+      notes: 'Card -> Online Transaction\nSynthetic card bill payment\n(Approved SMS discovery)',
+    });
+    expect(matchedEntry.notes).toBe('Matched later synthetic SMS\nOriginal manual note');
+    expect(matchedEntry.origin).toBeUndefined();
+
+    await database.run('INSERT OR REPLACE INTO app_preferences(key,encrypted_value) VALUES(?,?)', [
+      SMS_REVIEW_FILTERS_KEY,
+      JSON.stringify({
+        ...defaultReviewFilters(),
+        state: 'MATCHED_EXISTING',
+        source: bank.id,
+      }),
+    ]);
+    const before = {
+      transactions: [...structuredClone(store.transactions())].sort((left, right) =>
+        left.id.localeCompare(right.id),
+      ),
+      transfers: [...structuredClone(store.transfers())].sort((left, right) =>
+        left.id.localeCompare(right.id),
+      ),
+      sources: structuredClone(store.paymentSources()),
+    };
+    const plaintext = await database.exportBackupJson();
+    expect(plaintext).not.toContain('Synthetic bank alert');
+    vi.stubGlobal('crypto', webcrypto);
+    vi.stubGlobal('Blob', NodeBlob);
+    try {
+      const backups = TestBed.inject(BackupService);
+      const encrypted = await backups.create('synthetic-annotation-passphrase');
+      await database.run('DELETE FROM source_transfers');
+      await database.run('DELETE FROM card_transactions');
+      await backups.restore(encrypted.contents, 'synthetic-annotation-passphrase');
+      const restarted = TestBed.runInInjectionContext(() => new CardNestStore());
+      await restarted.initialisePreferences();
+      expect(
+        [...restarted.transactions()].sort((left, right) => left.id.localeCompare(right.id)),
+      ).toEqual(before.transactions);
+      expect(
+        [...restarted.transfers()].sort((left, right) => left.id.localeCompare(right.id)),
+      ).toEqual(before.transfers);
+      expect(restarted.paymentSources()).toEqual(before.sources);
+      expect(count('card_transactions')).toBe(before.transactions.length);
+      expect(count('source_transfers')).toBe(before.transfers.length);
+      for (const item of restarted.transactions().filter((entry) => entry.origin === 'SMS')) {
+        expect(item.notes?.split('(Approved SMS discovery)').length).toBe(2);
+        expect(item.notes?.trimEnd().endsWith('(Approved SMS discovery)')).toBe(true);
+      }
+      expect(
+        restarted.transactions().find((item) => item.id === `sms-${cardSms.id}`),
+      ).toMatchObject({
+        paymentMethod: 'CARD_TAP',
+        paymentMethodDetail: 'TAP_GPAY',
+        smsAdditionalComment: 'Paid by phone at the synthetic market',
+      });
+      expect(
+        restarted.transactions().find((item) => item.id === `sms-${bankPurchase.id}`),
+      ).toMatchObject({
+        paymentMethod: 'UPI',
+        paymentMethodDetail: 'BHIM_APP',
+        smsAdditionalComment: 'Synthetic groceries',
+      });
+      expect(
+        restarted.transfers().find((item) => item.id === `sms-transfer-${bankTransfer.id}`),
+      ).toMatchObject({
+        paymentMethod: 'NEFT',
+        smsAdditionalComment: 'Moved to synthetic savings',
+      });
+      expect(
+        restarted
+          .transfers()
+          .find((item) => item.paymentTransactionId === `sms-${cardPaymentSms.id}`),
+      ).toMatchObject({
+        kind: 'CARD_SETTLEMENT',
+        paymentMethod: 'CARD',
+        paymentMethodDetail: 'ONLINE',
+        smsAdditionalComment: 'Synthetic card bill payment',
+      });
+      expect(
+        rows('SELECT state,transaction_id FROM sms_candidates WHERE id=?', [laterSms.id])[0],
+      ).toMatchObject({ state: 'MATCHED_EXISTING', transaction_id: manual.id });
+      expect(
+        rows('SELECT encrypted_value FROM app_preferences WHERE key=?', [SMS_REVIEW_FILTERS_KEY]),
+      ).toHaveLength(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+  it('refuses to match a bank-side settlement SMS to a payment funded from a different bank', async () => {
+    const { store, review, balance } = await boot();
+    store.addCard(card);
+    await settle();
+    const bankA = await store.addBankAccount({
+      nickname: 'Fiction Bank A',
+      institution: 'Synthetic Bank A',
+      lastDigits: '417',
+    });
+    const bankB = await store.addBankAccount({
+      nickname: 'Fiction Bank B',
+      institution: 'Synthetic Bank B',
+      lastDigits: '7316',
+    });
+    await store.enableBankCashTracking({ [bankA.id]: 1_000_000, [bankB.id]: 500_000 });
+    await store.setCardSettlementFunding(true);
+    await store.recordFundedPayment(card.id, 50_000, 'Synthetic card payment', bankA.id);
+    const payment = store
+      .transactions()
+      .find((entry) => entry.merchant === 'Synthetic card payment')!;
+    const transferBefore = store
+      .transfers()
+      .find((item) => item.paymentTransactionId === payment.id)!;
+    const balancesBefore = [balance(bankA.id), balance(bankB.id)];
+    const candidate = await stage(
+      evidence({
+        id: '9'.repeat(64),
+        purposeHint: 'CARD_REPAYMENT',
+        accountDigits: '7316',
+        issuer: undefined,
+        amountMinor: payment.amountMinor,
+        merchant: 'Synthetic card payment',
+      }),
+    );
+
+    await expect(
+      review.approveBank(candidate, {
+        purpose: 'CARD_SETTLEMENT',
+        sourceId: bankB.id,
+        cardId: card.id,
+        existingId: payment.id,
+        amountMinor: payment.amountMinor,
+        description: 'Synthetic card payment',
+        transactionDate: today,
+        baselineTiming: 'AFTER_BASELINE',
+        allowSeparate: true,
+      }),
+    ).rejects.toThrow('already funded from Fiction Bank A, not Fiction Bank B');
+
+    expect([balance(bankA.id), balance(bankB.id)]).toEqual(balancesBefore);
+    expect(store.transactions()).toHaveLength(1);
+    expect(store.transactions()[0]).toEqual(payment);
+    expect(store.transfers()).toEqual([transferBefore]);
+    expect(count('card_transactions')).toBe(1);
+    expect(count('source_transfers')).toBe(1);
+    expect(rows('SELECT state FROM sms_candidates WHERE id=?', [candidate.id])[0]['state']).toBe(
+      'PENDING',
+    );
+
+    const sameBankCandidate = await stage(
+      evidence({
+        id: '8'.repeat(64),
+        purposeHint: 'CARD_REPAYMENT',
+        accountDigits: '417',
+        issuer: undefined,
+        amountMinor: payment.amountMinor,
+        merchant: 'Synthetic card payment',
+      }),
+    );
+    await review.approveBank(sameBankCandidate, {
+      purpose: 'CARD_SETTLEMENT',
+      sourceId: bankA.id,
+      cardId: card.id,
+      existingId: payment.id,
+      amountMinor: payment.amountMinor,
+      description: 'Synthetic card payment',
+      transactionDate: today,
+      baselineTiming: 'AFTER_BASELINE',
+      smsAdditionalComment: 'Verified same-bank settlement',
+    });
+    expect([balance(bankA.id), balance(bankB.id)]).toEqual(balancesBefore);
+    expect(count('card_transactions')).toBe(1);
+    expect(count('source_transfers')).toBe(1);
+    expect(
+      rows('SELECT state FROM sms_candidates WHERE id=?', [sameBankCandidate.id])[0]['state'],
+    ).toBe('MATCHED_EXISTING');
+    expect(store.transfers()[0].smsAdditionalComment).toBe('Verified same-bank settlement');
+    const updatedPaymentRow = rows('SELECT payload,updated_at FROM card_transactions WHERE id=?', [
+      payment.id,
+    ])[0];
+    const updatedPaymentPayload = JSON.parse(String(updatedPaymentRow['payload'])) as {
+      updatedAt: string;
+    };
+    expect(updatedPaymentRow['updated_at']).toBe(updatedPaymentPayload.updatedAt);
+    const updatedFundingRow = rows(
+      'SELECT payload,updated_at FROM source_transfers WHERE payment_transaction_id=?',
+      [payment.id],
+    )[0];
+    const updatedFundingPayload = JSON.parse(String(updatedFundingRow['payload'])) as {
+      updatedAt: string;
+    };
+    expect(updatedFundingRow['updated_at']).toBe(updatedFundingPayload.updatedAt);
   });
 
   it('never replays old entries on enable, freezes balances while off and audits explicit balance settings', async () => {

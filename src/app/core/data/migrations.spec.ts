@@ -1,5 +1,6 @@
-import { DatabaseSync } from 'node:sqlite';
 import { DATABASE_MIGRATIONS } from './migrations';
+
+const { DatabaseSync } = process.getBuiltinModule('node:sqlite') as typeof import('node:sqlite');
 
 describe('SMS upgrade of an existing version-6 database', () => {
   it('preserves financial rows and preferences, supports replay, and enforces review constraints', () => {

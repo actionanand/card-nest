@@ -1,5 +1,5 @@
 import { TestBed } from '@angular/core/testing';
-import { DatabaseSync, SQLInputValue } from 'node:sqlite';
+import type { DatabaseSync as DatabaseSyncType, SQLInputValue } from 'node:sqlite';
 import { Capacitor } from '@capacitor/core';
 import { CapacitorSQLite } from '@capacitor-community/sqlite';
 import { SqliteDatabase } from './sqlite-database';
@@ -18,6 +18,8 @@ import { NATIVE_EXPORT } from '../services/native-export';
 import { AppLockService } from '../services/app-lock.service';
 import { SmsReviewService } from '../../features/sms-sync/sms-review.service';
 import { SmsCandidate, SmsEvidence } from '../../features/sms-sync/sms-model';
+
+const { DatabaseSync } = process.getBuiltinModule('node:sqlite') as typeof import('node:sqlite');
 
 vi.hoisted(() => vi.resetModules());
 const config = { smsPageSize: 200, seedDemoData: false };
@@ -41,7 +43,7 @@ vi.mock('@capacitor-community/sqlite', () => ({
 
 /** Native-plugin contract backed by real SQLite, including transactions and foreign keys. */
 describe('Durable first-run data, additive read migration and private portable backups', () => {
-  let sql: DatabaseSync;
+  let sql: DatabaseSyncType;
   let database: SqliteDatabase;
   it('persists default-off UI preferences through serialized writes, reload and encrypted backup restoration', async () => {
     await database.initialise();

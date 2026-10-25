@@ -3,7 +3,7 @@ import { EnvironmentInjector, Injector, runInInjectionContext, signal } from '@a
 import { ActivatedRoute, convertToParamMap, provideRouter } from '@angular/router';
 import { of } from 'rxjs';
 import { TransactionsPage } from '../transactions/transactions';
-import { DatabaseSync, SQLInputValue } from 'node:sqlite';
+import type { DatabaseSync as DatabaseSyncType, SQLInputValue } from 'node:sqlite';
 import { Capacitor } from '@capacitor/core';
 import { DATABASE_MIGRATIONS } from '../../core/data/migrations';
 import { DatabaseSession, SqliteDatabase } from '../../core/data/sqlite-database';
@@ -22,9 +22,11 @@ import {
   transferRelationship,
 } from './sms-model';
 
+const { DatabaseSync } = process.getBuiltinModule('node:sqlite') as typeof import('node:sqlite');
+
 /** Actual SQLite constraints/rollback, not an array pretending that ledger writes succeeded. */
 describe('SMS approved import integrity', () => {
-  let sql: DatabaseSync;
+  let sql: DatabaseSyncType;
   let service: SmsReviewService;
   let queue: Promise<unknown>;
   const card: CreditCard = {
@@ -1212,6 +1214,13 @@ describe('SMS approved import integrity', () => {
     const persisted = JSON.parse(
       String(rows<{ payload: string }>('SELECT payload FROM card_transactions')[0].payload),
     ) as CardTransaction;
+    const transactionRow = rows<{ payload: string; updated_at: string }>(
+      'SELECT payload,updated_at FROM card_transactions WHERE id=?',
+      [manual.id],
+    )[0];
+    const transactionPayload = JSON.parse(transactionRow.payload) as CardTransaction;
+    expect(transactionRow.updated_at).toBe(transactionPayload.updatedAt);
+    expect(transactionPayload.updatedAt).not.toBe(manual.updatedAt);
     expect(persisted).toMatchObject({
       amountMinor: 45000,
       transactionDate: '2026-10-18',

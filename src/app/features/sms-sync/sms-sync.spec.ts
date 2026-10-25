@@ -114,7 +114,7 @@ describe('SMS review privacy and explicit approval UI', () => {
   const bankCashTracking = signal({ enabled: false, askCardSettlementFunding: false });
   const paymentSources = signal<readonly PaymentSource[]>([]);
   const store = {
-    cards: signal([]),
+    cards: signal<readonly CreditCard[]>([]),
     paymentSources,
     categories: signal<readonly Category[]>([]),
     transactions: signal([]),
@@ -1061,6 +1061,11 @@ describe('SMS review privacy and explicit approval UI', () => {
     fixture.detectChanges();
     expect(page.cardAnnotationsVisible()).toBe(true);
     expect(page.editor.controls.paymentMethod.value).toBe('NONE');
+    page.editor.controls.source.setValue('');
+    fixture.detectChanges();
+    expect(page.cardAnnotationsVisible()).toBe(true);
+    expect(page.editor.controls.source.valid).toBe(false);
+    page.editor.controls.source.setValue(demoCard.id);
     expect(page.cardPaymentMethods.map((item) => item.label)).toEqual([
       'None',
       'UPI',

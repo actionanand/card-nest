@@ -457,14 +457,12 @@ export class SmsSyncPage {
   readonly cardAnnotationsVisible = computed(() => {
     this.editorChanges();
     const item = this.selected()?.item;
-    const sourceId = this.editor.controls.source.value;
     return (
       !!item &&
-      !isBankEvidence(item) &&
+      ['PURCHASE', 'CARD_PAYMENT_RECEIVED', 'CASHBACK', 'REFUND'].includes(item.kind) &&
       !item.kind.startsWith('PLUXEE') &&
       !item.kind.startsWith('FASTAG') &&
-      !!ledgerType(item) &&
-      this.store.cards().some((card) => card.id === sourceId)
+      !!ledgerType(item)
     );
   });
   readonly cardPaymentMethods = paymentMethodsFor('CARD').map(({ value, label }) => ({

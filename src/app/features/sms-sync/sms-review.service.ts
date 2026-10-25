@@ -100,10 +100,12 @@ function annotateSmsRecord<T extends CardTransaction | SourceTransfer>(
   record: T,
   annotation: ValidatedSmsPaymentAnnotation,
   newlyApprovedSms: boolean,
+  updatedAt: string,
   auditInformation: readonly string[] = [],
 ): T {
   return {
     ...record,
+    updatedAt,
     paymentMethod: annotation.paymentMethod,
     paymentMethodDetail: annotation.paymentMethodDetail,
     paymentMethodCustom: annotation.paymentMethodCustom,
@@ -1195,7 +1197,7 @@ export class SmsReviewService {
             );
           }
         } else if (hasAnnotationValues(annotation)) {
-          transaction = annotateSmsRecord(existing, annotation, false);
+          transaction = annotateSmsRecord(existing, annotation, false, now);
           await tx.run('UPDATE card_transactions SET payload=?,updated_at=? WHERE id=?', [
             JSON.stringify(transaction),
             now,
@@ -1211,6 +1213,7 @@ export class SmsReviewService {
                 JSON.parse(funded.payload) as SourceTransfer,
                 annotation,
                 false,
+                now,
               );
               await tx.run('UPDATE source_transfers SET payload=?,updated_at=? WHERE id=?', [
                 JSON.stringify(fundingTransfer),
@@ -1338,6 +1341,7 @@ export class SmsReviewService {
           },
           annotation,
           true,
+          now,
           item.dateFallback ? ['SMS event date unavailable; received date used.'] : [],
         );
         transaction.sourceBalanceApplied = !retainBalance;
@@ -1415,7 +1419,7 @@ export class SmsReviewService {
           if (existingFunding.fromSourceId !== bank.id)
             throw new Error('This card payment is already funded from another bank account.');
           if (hasAnnotationValues(annotation)) {
-            fundingTransfer = annotateSmsRecord(existingFunding, annotation, false);
+            fundingTransfer = annotateSmsRecord(existingFunding, annotation, false, now);
             await tx.run('UPDATE source_transfers SET payload=?,updated_at=? WHERE id=?', [
               JSON.stringify(fundingTransfer),
               now,
@@ -1449,6 +1453,7 @@ export class SmsReviewService {
             ),
             annotation,
             true,
+            now,
           );
           await tx.run(
             `INSERT INTO source_transfers(id,kind,from_source_id,to_source_id,payment_transaction_id,amount_minor,transfer_date,payload,created_at,updated_at) VALUES (?,?,?,NULL,?,?,?,?,?,?)`,
@@ -1858,7 +1863,7 @@ export class SmsReviewService {
           targetId = linkedTransactionId = existing.id;
           state = 'MATCHED_EXISTING';
           if (hasAnnotationValues(annotation)) {
-            transaction = annotateSmsRecord(existing, annotation, false);
+            transaction = annotateSmsRecord(existing, annotation, false, now);
             await tx.run('UPDATE card_transactions SET payload=?,updated_at=? WHERE id=?', [
               JSON.stringify(transaction),
               now,
@@ -1926,6 +1931,7 @@ export class SmsReviewService {
             ),
             annotation,
             true,
+            now,
             item.dateFallback ? ['SMS event date unavailable; received date used.'] : [],
           );
           await insertLedger(transaction, null);
@@ -1963,7 +1969,7 @@ export class SmsReviewService {
           targetId = linked.id;
           state = 'MATCHED_EXISTING';
           if (hasAnnotationValues(annotation)) {
-            transfer = annotateSmsRecord(linked, annotation, false);
+            transfer = annotateSmsRecord(linked, annotation, false, now);
             await tx.run('UPDATE source_transfers SET payload=?,updated_at=? WHERE id=?', [
               JSON.stringify(transfer),
               now,
@@ -2006,6 +2012,7 @@ export class SmsReviewService {
             ),
             annotation,
             true,
+            now,
           );
           targetId = transfer.id;
         }
@@ -2031,7 +2038,7 @@ export class SmsReviewService {
             );
             fundedPayment = payment;
             if (hasAnnotationValues(annotation)) {
-              transaction = annotateSmsRecord(payment, annotation, false);
+              transaction = annotateSmsRecord(payment, annotation, false, now);
               await tx.run('UPDATE card_transactions SET payload=?,updated_at=? WHERE id=?', [
                 JSON.stringify(transaction),
                 now,
@@ -2040,9 +2047,18 @@ export class SmsReviewService {
               fundedPayment = transaction;
             }
             if (funded) {
-              existingFunding = JSON.parse(funded.payload) as SourceTransfer;
-              if (hasAnnotationValues(annotation) && existingFunding.fromSourceId === source.id) {
-                transfer = annotateSmsRecord(existingFunding, annotation, false);
+              const matchedFunding = JSON.parse(funded.payload) as SourceTransfer;
+              existingFunding = matchedFunding;
+              if (matchedFunding.fromSourceId !== source.id) {
+                const existingFundingSource = sources.find(
+                  (entry) => entry.id === matchedFunding.fromSourceId,
+                );
+                throw new Error(
+                  `This card payment is already funded from ${existingFundingSource?.nickname ?? 'another bank account'}, not ${source.nickname}. Choose the matching bank account or review the payment separately.`,
+                );
+              }
+              if (hasAnnotationValues(annotation)) {
+                transfer = annotateSmsRecord(existingFunding, annotation, false, now);
                 await tx.run('UPDATE source_transfers SET payload=?,updated_at=? WHERE id=?', [
                   JSON.stringify(transfer),
                   now,
@@ -2091,6 +2107,7 @@ export class SmsReviewService {
               },
               annotation,
               true,
+              now,
               item.dateFallback ? ['SMS event date unavailable; received date used.'] : [],
             );
             await insertLedger(transaction, card.id);
@@ -2125,10 +2142,14 @@ export class SmsReviewService {
             ),
             annotation,
             true,
+            now,
             item.dateFallback ? ['SMS event date unavailable; received date used.'] : [],
           );
         }
-        targetId = fundedPayment?.id ?? transfer.id;
+        const resolvedTargetId = fundedPayment?.id ?? transfer?.id;
+        if (!resolvedTargetId)
+          throw new Error('Unable to resolve the approved bank settlement or loan repayment.');
+        targetId = resolvedTargetId;
       }
       if (transfer && !transferAlreadyStored)
         await tx.run(
