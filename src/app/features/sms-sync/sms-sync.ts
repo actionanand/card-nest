@@ -31,6 +31,12 @@ import {
 } from '../../core/services/source-balance';
 import { BalanceTiming } from '../../core/models/domain';
 import {
+  paymentMethodDetailConfig as getPaymentMethodDetailConfig,
+  paymentMethodsFor,
+  SmsPaymentContext,
+  validateSmsPaymentAnnotation,
+} from './sms-payment-method-options';
+import {
   SmsCandidate,
   SmsKind,
   ReconciliationChoice,
@@ -324,7 +330,15 @@ export class SmsSyncPage {
     relatedPurchase: new FormControl('', { nonNullable: true }),
     funding: new FormControl('', { nonNullable: true }),
     fundingTiming: new FormControl<BalanceTiming | ''>('', { nonNullable: true }),
+    paymentMethod: new FormControl('NONE', { nonNullable: true }),
+    paymentMethodDetail: new FormControl('', { nonNullable: true }),
+    paymentMethodCustom: new FormControl('', { nonNullable: true }),
+    smsAdditionalComment: new FormControl('', {
+      nonNullable: true,
+      validators: [Validators.maxLength(500)],
+    }),
   });
+  private readonly editorChanges = toSignal(this.editor.valueChanges);
   fundingOptions(): readonly AppSelectOption[] {
     return [
       { value: '', label: 'Do not deduct from a bank account' },
@@ -440,6 +454,27 @@ export class SmsSyncPage {
     const item = this.selected()?.item;
     return !!item && !!ledgerType(item);
   });
+  readonly cardAnnotationsVisible = computed(() => {
+    this.editorChanges();
+    const item = this.selected()?.item;
+    const sourceId = this.editor.controls.source.value;
+    return (
+      !!item &&
+      !isBankEvidence(item) &&
+      !item.kind.startsWith('PLUXEE') &&
+      !item.kind.startsWith('FASTAG') &&
+      !!ledgerType(item) &&
+      this.store.cards().some((card) => card.id === sourceId)
+    );
+  });
+  readonly cardPaymentMethods = paymentMethodsFor('CARD').map(({ value, label }) => ({
+    value,
+    label,
+  }));
+  readonly bankPaymentMethods = paymentMethodsFor('BANK').map(({ value, label }) => ({
+    value,
+    label,
+  }));
   readonly bankEditor = new FormGroup({
     purpose: new FormControl<BankPurpose | ''>('', { nonNullable: true }),
     source: new FormControl('', { nonNullable: true }),
@@ -453,6 +488,13 @@ export class SmsSyncPage {
     card: new FormControl('', { nonNullable: true }),
     separate: new FormControl(false, { nonNullable: true }),
     timing: new FormControl<BalanceTiming | ''>('', { nonNullable: true }),
+    paymentMethod: new FormControl('NONE', { nonNullable: true }),
+    paymentMethodDetail: new FormControl('', { nonNullable: true }),
+    paymentMethodCustom: new FormControl('', { nonNullable: true }),
+    smsAdditionalComment: new FormControl('', {
+      nonNullable: true,
+      validators: [Validators.maxLength(500)],
+    }),
   });
   readonly enrollBankName = new FormControl('', {
     nonNullable: true,
@@ -481,6 +523,57 @@ export class SmsSyncPage {
         label: BANK_PURPOSE_LABELS[purpose],
       })),
     ];
+  }
+  paymentMethodDetailOptions(method: string): readonly AppSelectOption[] {
+    return getPaymentMethodDetailConfig(method)?.options ?? [];
+  }
+  paymentMethodDetailLabel(method: string): string {
+    return getPaymentMethodDetailConfig(method)?.label ?? 'Payment method detail';
+  }
+  paymentMethodNeedsDetail(method: string): boolean {
+    return !!getPaymentMethodDetailConfig(method);
+  }
+  paymentMethodDetailConfig(method: string) {
+    return getPaymentMethodDetailConfig(method);
+  }
+  setCardPaymentMethod(method: string): void {
+    this.editor.controls.paymentMethod.setValue(method);
+    this.editor.controls.paymentMethodDetail.setValue('');
+    this.editor.controls.paymentMethodCustom.setValue('');
+  }
+  setCardPaymentMethodDetail(detail: string): void {
+    this.editor.controls.paymentMethodDetail.setValue(detail);
+    this.editor.controls.paymentMethodCustom.setValue('');
+  }
+  clearCardPresetForCustomApp(): void {
+    this.editor.controls.paymentMethodDetail.setValue('');
+  }
+  setBankPaymentMethod(method: string): void {
+    this.bankEditor.controls.paymentMethod.setValue(method);
+    this.bankEditor.controls.paymentMethodDetail.setValue('');
+    this.bankEditor.controls.paymentMethodCustom.setValue('');
+  }
+  setBankPaymentMethodDetail(detail: string): void {
+    this.bankEditor.controls.paymentMethodDetail.setValue(detail);
+    this.bankEditor.controls.paymentMethodCustom.setValue('');
+  }
+  clearBankPresetForCustomApp(): void {
+    this.bankEditor.controls.paymentMethodDetail.setValue('');
+  }
+  private annotationFrom(
+    form: typeof this.editor | typeof this.bankEditor,
+    context: SmsPaymentContext,
+  ) {
+    const value = form.getRawValue();
+    return validateSmsPaymentAnnotation(
+      {
+        paymentMethod: value.paymentMethod,
+        paymentMethodDetail: value.paymentMethodDetail,
+        paymentMethodCustom: value.paymentMethodCustom,
+        smsAdditionalComment: value.smsAdditionalComment,
+      },
+      context,
+    );
   }
   bankSourceOptions(): readonly AppSelectOption[] {
     const item = this.bankItem();
@@ -700,6 +793,13 @@ export class SmsSyncPage {
       this.error.set('Choose the bank account and enter a positive amount.');
       return;
     }
+    let annotation;
+    try {
+      annotation = this.annotationFrom(this.bankEditor, 'BANK');
+    } catch (error: unknown) {
+      this.error.set(error instanceof Error ? error.message : 'Choose a valid payment method.');
+      return;
+    }
     this.saving.set(true);
     void this.run(async () => {
       try {
@@ -716,6 +816,7 @@ export class SmsSyncPage {
           cardId: value.card || undefined,
           allowSeparate: value.separate,
           baselineTiming: value.timing || undefined,
+          ...annotation,
         });
         this.notice.set(this.sync.notice() || 'Bank event approved and saved.');
         this.saving.set(false);
@@ -1118,6 +1219,11 @@ export class SmsSyncPage {
         existingTransfer: '',
         card: '',
         separate: false,
+        timing: '',
+        paymentMethod: 'NONE',
+        paymentMethodDetail: '',
+        paymentMethodCustom: '',
+        smsAdditionalComment: '',
       });
     }
     this.editor.reset({
@@ -1152,6 +1258,10 @@ export class SmsSyncPage {
       relatedPurchase: '',
       funding: '',
       fundingTiming: '',
+      paymentMethod: 'NONE',
+      paymentMethodDetail: '',
+      paymentMethodCustom: '',
+      smsAdditionalComment: '',
     });
     queueMicrotask(() => document.getElementById('sms-review-heading')?.focus());
   }
@@ -1162,6 +1272,7 @@ export class SmsSyncPage {
     this.selected.set(null);
     this.related.set([]);
     this.editor.reset();
+    this.bankEditor.reset();
     this.evidenceTarget.reset();
     queueMicrotask(() =>
       (
@@ -1251,6 +1362,13 @@ export class SmsSyncPage {
       this.error.set('Choose a source and enter a positive amount.');
       return;
     }
+    let annotation;
+    try {
+      annotation = this.annotationFrom(this.editor, 'CARD');
+    } catch (error: unknown) {
+      this.error.set(error instanceof Error ? error.message : 'Choose a valid payment method.');
+      return;
+    }
     this.saving.set(true);
     void this.run(async () => {
       try {
@@ -1270,6 +1388,7 @@ export class SmsSyncPage {
             relatedTransactionId: value.relatedPurchase || undefined,
             fundingSourceId: value.funding || undefined,
             fundingTiming: value.fundingTiming || undefined,
+            ...annotation,
           },
         );
         this.notice.set(this.sync.notice() || 'Transaction approved and saved.');

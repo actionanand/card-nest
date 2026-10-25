@@ -1110,6 +1110,7 @@ describe('SMS approved import integrity', () => {
       transactionDate: '2026-10-18',
       merchant: 'Manual demo',
       categoryId: 'other',
+      notes: 'Original manually entered note',
       attachmentIds: [],
       createdAt: 'now',
       updatedAt: 'now',
@@ -1141,6 +1142,89 @@ describe('SMS approved import integrity', () => {
     await service.approve(candidate, card.id, 45000, 'Demo', manual.id);
     expect(count('card_transactions')).toBe(1);
     expect(transactions()).toEqual([manual]);
+    expect(
+      rows<{ state: string; transaction_id: string }>(
+        'SELECT state,transaction_id FROM sms_candidates',
+      )[0],
+    ).toMatchObject({ state: 'MATCHED_EXISTING', transaction_id: manual.id });
+    expect(transactions()[0].notes).toBe('Original manually entered note');
+  });
+  it('adds validated annotations to a matched manual transaction without changing its financial data or provenance', async () => {
+    const manual: CardTransaction = {
+      id: 'synthetic-annotated-match',
+      cardId: card.id,
+      type: 'PURCHASE',
+      amountMinor: 45000,
+      currencyCode: 'INR',
+      transactionDate: '2026-10-18',
+      merchant: 'Synthetic merchant',
+      categoryId: 'groceries',
+      notes: 'Manual note stays intact',
+      attachmentIds: [],
+      createdAt: '2026-10-18T12:00:00Z',
+      updatedAt: '2026-10-18T12:00:00Z',
+    };
+    run(
+      'INSERT INTO card_transactions(id,card_id,category_id,type,amount_minor,currency_code,transaction_date,payload,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
+      [
+        manual.id,
+        manual.cardId,
+        manual.categoryId,
+        manual.type,
+        manual.amountMinor,
+        manual.currencyCode,
+        manual.transactionDate,
+        JSON.stringify(manual),
+        manual.createdAt,
+        manual.updatedAt,
+      ],
+    );
+    transactions.set([manual]);
+    const candidate = stage(evidence());
+    await expect(
+      service.approve(candidate, card.id, 45000, 'Synthetic', manual.id, 'PENDING', false, '', 0, {
+        paymentMethod: 'UPI',
+      }),
+    ).rejects.toThrow('Choose a valid upi app');
+    expect(count('card_transactions')).toBe(1);
+    expect(
+      JSON.parse(
+        String(rows<{ payload: string }>('SELECT payload FROM card_transactions')[0].payload),
+      ).notes,
+    ).toBe('Manual note stays intact');
+
+    await service.approve(
+      candidate,
+      card.id,
+      45000,
+      'Synthetic',
+      manual.id,
+      'PENDING',
+      false,
+      '',
+      0,
+      {
+        paymentMethod: 'CARD_TAP',
+        paymentMethodDetail: 'TAP_GPAY',
+        smsAdditionalComment: 'Used at the synthetic market',
+      },
+    );
+    const persisted = JSON.parse(
+      String(rows<{ payload: string }>('SELECT payload FROM card_transactions')[0].payload),
+    ) as CardTransaction;
+    expect(persisted).toMatchObject({
+      amountMinor: 45000,
+      transactionDate: '2026-10-18',
+      merchant: 'Synthetic merchant',
+      paymentMethod: 'CARD_TAP',
+      paymentMethodDetail: 'TAP_GPAY',
+      smsAdditionalComment: 'Used at the synthetic market',
+      notes: 'Card tap -> Tap (GPay)\nUsed at the synthetic market\nManual note stays intact',
+    });
+    expect(persisted.origin).toBeUndefined();
+    expect(persisted.notes).not.toContain('(Approved SMS discovery)');
+    expect(count('card_transactions')).toBe(1);
+    expect(transactions()).toEqual([persisted]);
     expect(
       rows<{ state: string; transaction_id: string }>(
         'SELECT state,transaction_id FROM sms_candidates',

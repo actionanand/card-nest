@@ -11,9 +11,16 @@ import {
   Category,
   EmiInstallment,
   PaymentSource,
+  SmsPaymentMethod,
+  SmsPaymentMethodDetail,
   SourceTransfer,
   WalletBalanceReconciliation,
 } from '../../core/models/domain';
+import {
+  composeSmsApprovalNotes,
+  ValidatedSmsPaymentAnnotation,
+  validateSmsPaymentAnnotation,
+} from './sms-payment-method-options';
 import { walletAnchorPosition } from '../../core/services/wallet-anchor';
 import {
   BANK_CASH_TRACKING_KEY,
@@ -79,6 +86,37 @@ export interface BankApproval {
   allowSeparate?: boolean;
   /** Answer for a date-only event on the day this account's balance was confirmed. */
   baselineTiming?: BalanceTiming;
+  paymentMethod?: SmsPaymentMethod;
+  paymentMethodDetail?: SmsPaymentMethodDetail;
+  paymentMethodCustom?: string;
+  smsAdditionalComment?: string;
+}
+
+function hasAnnotationValues(annotation: ValidatedSmsPaymentAnnotation): boolean {
+  return annotation.paymentMethod !== 'NONE' || !!annotation.smsAdditionalComment;
+}
+
+function annotateSmsRecord<T extends CardTransaction | SourceTransfer>(
+  record: T,
+  annotation: ValidatedSmsPaymentAnnotation,
+  newlyApprovedSms: boolean,
+  auditInformation: readonly string[] = [],
+): T {
+  return {
+    ...record,
+    paymentMethod: annotation.paymentMethod,
+    paymentMethodDetail: annotation.paymentMethodDetail,
+    paymentMethodCustom: annotation.paymentMethodCustom,
+    smsAdditionalComment: annotation.smsAdditionalComment,
+    notes: composeSmsApprovalNotes({
+      existingNotes: record.notes,
+      previousAnnotation: record,
+      annotation,
+      newlyApprovedSms,
+      preserveSmsMarker: record.origin === 'SMS',
+      auditInformation,
+    }),
+  };
 }
 
 interface NativeSms {
@@ -1001,6 +1039,7 @@ export class SmsReviewService {
     edits: ApprovalEdits = {},
   ): Promise<void> {
     this.assertUnlocked();
+    const annotation = validateSmsPaymentAnnotation(edits, 'CARD');
     const result = await this.database.atomic(async (tx) => {
       const [row] = await tx.query<{ state: string; payload: string | null }>(
         'SELECT state, payload FROM sms_candidates WHERE id = ?',
@@ -1033,6 +1072,8 @@ export class SmsReviewService {
         : this.store.paymentSources().map((source) => ({ ...source }));
       const source = sources.find((s) => s.id === sourceId);
       const wallet = item.kind.startsWith('PLUXEE') || item.kind.startsWith('FASTAG');
+      if (wallet && hasAnnotationValues(annotation))
+        throw new Error('Payment method annotations are available only for card SMS reviews.');
       if (reconciliation === 'APPLY_EVENT' && !item.kind.startsWith('PLUXEE'))
         throw new Error('Explicit historical event application is only supported for Pluxee.');
       if (
@@ -1114,6 +1155,7 @@ export class SmsReviewService {
       let statement: CardStatement | null = null;
       let transaction: CardTransaction | null = null;
       let balanceAdjustment: CardTransaction | null = null;
+      let fundingTransfer: SourceTransfer | null = null;
       let transactionId = existingId;
       if (existingId) {
         const existing = ledger.find((t) => t.id === existingId);
@@ -1151,6 +1193,31 @@ export class SmsReviewService {
               `INSERT INTO app_preferences(key,encrypted_value) VALUES ('payment_sources',?) ON CONFLICT(key) DO UPDATE SET encrypted_value=excluded.encrypted_value`,
               [JSON.stringify(sources)],
             );
+          }
+        } else if (hasAnnotationValues(annotation)) {
+          transaction = annotateSmsRecord(existing, annotation, false);
+          await tx.run('UPDATE card_transactions SET payload=?,updated_at=? WHERE id=?', [
+            JSON.stringify(transaction),
+            now,
+            existing.id,
+          ]);
+          if (existing.type === 'PAYMENT') {
+            const [funded] = await tx.query<{ payload: string }>(
+              'SELECT payload FROM source_transfers WHERE payment_transaction_id=?',
+              [existing.id],
+            );
+            if (funded) {
+              fundingTransfer = annotateSmsRecord(
+                JSON.parse(funded.payload) as SourceTransfer,
+                annotation,
+                false,
+              );
+              await tx.run('UPDATE source_transfers SET payload=?,updated_at=? WHERE id=?', [
+                JSON.stringify(fundingTransfer),
+                now,
+                fundingTransfer.id,
+              ]);
+            }
           }
         }
       } else {
@@ -1238,36 +1305,41 @@ export class SmsReviewService {
             !reconcileTopupSnapshot &&
             reconciliation !== 'APPLY_EVENT');
         transactionId = `sms-${item.id}`;
-        transaction = {
-          id: transactionId,
-          cardId: sourceId,
-          type,
-          amountMinor,
-          currencyCode: 'INR',
-          transactionDate,
-          transactionTime: item.eventTimeExplicit === true ? item.eventTime : undefined,
-          reference: item.reference,
-          merchant: merchant.trim().slice(0, 100),
-          categoryId:
-            type === 'PAYMENT'
-              ? 'payment'
-              : item.kind.startsWith('PLUXEE')
-                ? defaultPluxeeCategory(
-                    item.kind,
-                    pluxeeCategories.map((category) => ({
-                      id: category.id,
-                      archived: !!category.archived,
-                      appliesTo: category.applies_to,
-                    })),
-                  )
-                : ['CASHBACK', 'REFUND', 'CREDIT'].includes(type)
-                  ? 'contra-expenses'
-                  : 'other',
-          notes: `Approved SMS discovery${item.dateFallback ? '; received date used' : ''}`,
-          attachmentIds: [],
-          createdAt: now,
-          updatedAt: now,
-        };
+        transaction = annotateSmsRecord(
+          {
+            id: transactionId,
+            cardId: sourceId,
+            type,
+            amountMinor,
+            currencyCode: 'INR',
+            transactionDate,
+            transactionTime: item.eventTimeExplicit === true ? item.eventTime : undefined,
+            reference: item.reference,
+            merchant: merchant.trim().slice(0, 100),
+            categoryId:
+              type === 'PAYMENT'
+                ? 'payment'
+                : item.kind.startsWith('PLUXEE')
+                  ? defaultPluxeeCategory(
+                      item.kind,
+                      pluxeeCategories.map((category) => ({
+                        id: category.id,
+                        archived: !!category.archived,
+                        appliesTo: category.applies_to,
+                      })),
+                    )
+                  : ['CASHBACK', 'REFUND', 'CREDIT'].includes(type)
+                    ? 'contra-expenses'
+                    : 'other',
+            attachmentIds: [],
+            createdAt: now,
+            updatedAt: now,
+            origin: 'SMS',
+          },
+          annotation,
+          true,
+          item.dateFallback ? ['SMS event date unavailable; received date used.'] : [],
+        );
         transaction.sourceBalanceApplied = !retainBalance;
         if (edits.categoryId) transaction.categoryId = edits.categoryId;
         // A verified SMS balance already contains earlier events; applying one would double-count.
@@ -1317,7 +1389,6 @@ export class SmsReviewService {
           );
         }
       }
-      let fundingTransfer: SourceTransfer | null = null;
       if (edits.fundingSourceId) {
         if (type !== 'PAYMENT' || !card)
           throw new Error('Only a card payment can be funded from a bank account.');
@@ -1335,52 +1406,69 @@ export class SmsReviewService {
           ? ledger.find((entry) => entry.id === existingId)
           : (transaction ?? undefined);
         if (!payment) throw new Error('Card payment unavailable.');
-        const [funded] = await tx.query<{ id: string }>(
-          'SELECT id FROM source_transfers WHERE payment_transaction_id=?',
+        const [funded] = await tx.query<{ payload: string }>(
+          'SELECT payload FROM source_transfers WHERE payment_transaction_id=?',
           [payment.id],
         );
-        if (funded) throw new Error('This card payment already has a bank deduction.');
-        fundingTransfer = applyTransferEffects(
-          sources,
-          null,
-          {
-            id: `sms-funding-${item.id}`,
-            kind: 'CARD_SETTLEMENT',
-            fromSourceId: bank.id,
-            cardId: payment.cardId,
-            paymentTransactionId: payment.id,
-            amountMinor: payment.amountMinor,
-            currencyCode: 'INR',
-            transferDate: payment.transactionDate,
-            transferTime: payment.transactionTime,
-            description: payment.merchant,
-            reference: item.reference,
-            origin: 'SMS',
-            balanceTiming: edits.fundingTiming,
-            createdAt: now,
-            updatedAt: now,
-          },
-          settings,
-          now,
-        );
-        await tx.run(
-          `INSERT INTO source_transfers(id,kind,from_source_id,to_source_id,payment_transaction_id,amount_minor,transfer_date,payload,created_at,updated_at) VALUES (?,?,?,NULL,?,?,?,?,?,?)`,
-          [
-            fundingTransfer.id,
-            fundingTransfer.kind,
-            fundingTransfer.fromSourceId,
-            payment.id,
-            fundingTransfer.amountMinor,
-            fundingTransfer.transferDate,
-            JSON.stringify(fundingTransfer),
-            now,
-            now,
-          ],
-        );
-        await tx.run(
-          `INSERT INTO app_preferences(key,encrypted_value) VALUES ('payment_sources',?) ON CONFLICT(key) DO UPDATE SET encrypted_value=excluded.encrypted_value`,
-          [JSON.stringify(sources)],
-        );
+        if (funded) {
+          const existingFunding = JSON.parse(funded.payload) as SourceTransfer;
+          if (existingFunding.fromSourceId !== bank.id)
+            throw new Error('This card payment is already funded from another bank account.');
+          if (hasAnnotationValues(annotation)) {
+            fundingTransfer = annotateSmsRecord(existingFunding, annotation, false);
+            await tx.run('UPDATE source_transfers SET payload=?,updated_at=? WHERE id=?', [
+              JSON.stringify(fundingTransfer),
+              now,
+              fundingTransfer.id,
+            ]);
+          }
+        } else {
+          fundingTransfer = annotateSmsRecord(
+            applyTransferEffects(
+              sources,
+              null,
+              {
+                id: `sms-funding-${item.id}`,
+                kind: 'CARD_SETTLEMENT',
+                fromSourceId: bank.id,
+                cardId: payment.cardId,
+                paymentTransactionId: payment.id,
+                amountMinor: payment.amountMinor,
+                currencyCode: 'INR',
+                transferDate: payment.transactionDate,
+                transferTime: payment.transactionTime,
+                description: payment.merchant,
+                reference: item.reference,
+                origin: 'SMS',
+                balanceTiming: edits.fundingTiming,
+                createdAt: now,
+                updatedAt: now,
+              },
+              settings,
+              now,
+            ),
+            annotation,
+            true,
+          );
+          await tx.run(
+            `INSERT INTO source_transfers(id,kind,from_source_id,to_source_id,payment_transaction_id,amount_minor,transfer_date,payload,created_at,updated_at) VALUES (?,?,?,NULL,?,?,?,?,?,?)`,
+            [
+              fundingTransfer.id,
+              fundingTransfer.kind,
+              fundingTransfer.fromSourceId,
+              payment.id,
+              fundingTransfer.amountMinor,
+              fundingTransfer.transferDate,
+              JSON.stringify(fundingTransfer),
+              now,
+              now,
+            ],
+          );
+          await tx.run(
+            `INSERT INTO app_preferences(key,encrypted_value) VALUES ('payment_sources',?) ON CONFLICT(key) DO UPDATE SET encrypted_value=excluded.encrypted_value`,
+            [JSON.stringify(sources)],
+          );
+        }
       }
       if (reconcileTopupSnapshot && source && comparison) {
         this.reconcilePluxeeBalance(source, item, transactionId, comparison, now);
@@ -1673,6 +1761,7 @@ export class SmsReviewService {
    */
   async approveBank(candidate: SmsCandidate, approval: BankApproval): Promise<void> {
     this.assertUnlocked();
+    const annotation = validateSmsPaymentAnnotation(approval, 'BANK');
     const result = await this.database.atomic(async (tx) => {
       const [row] = await tx.query<{ state: string; payload: string | null }>(
         'SELECT state, payload FROM sms_candidates WHERE id = ?',
@@ -1725,6 +1814,7 @@ export class SmsReviewService {
       let linkedTransactionId: string | null = null;
       let targetId: string;
       let state: 'IMPORTED' | 'MATCHED_EXISTING' = 'IMPORTED';
+      let transferAlreadyStored = false;
       const insertLedger = async (entry: CardTransaction, creditCardId: string | null) => {
         await tx.run(
           `INSERT INTO card_transactions(id,card_id,category_id,type,amount_minor,currency_code,transaction_date,payload,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)`,
@@ -1767,6 +1857,14 @@ export class SmsReviewService {
           await assertUnclaimed(existing.id);
           targetId = linkedTransactionId = existing.id;
           state = 'MATCHED_EXISTING';
+          if (hasAnnotationValues(annotation)) {
+            transaction = annotateSmsRecord(existing, annotation, false);
+            await tx.run('UPDATE card_transactions SET payload=?,updated_at=? WHERE id=?', [
+              JSON.stringify(transaction),
+              now,
+              existing.id,
+            ]);
+          }
         } else {
           if (
             !approval.allowSeparate &&
@@ -1800,31 +1898,35 @@ export class SmsReviewService {
             throw new Error('Choose an existing category.');
           if (!approval.baselineTiming && needsBaselineConfirmation(source, settings, date, time))
             throw new Error(TIMING_QUESTION);
-          transaction = applyBankCashTransaction(
-            sources,
-            null,
-            {
-              id: `sms-${item.id}`,
-              cardId: source.id,
-              type,
-              amountMinor,
-              currencyCode: 'INR',
-              transactionDate: date,
-              transactionTime: time,
-              reference: item.reference,
-              merchant: description || undefined,
-              categoryId,
-              notes: `Approved bank SMS${item.dateFallback ? '; received date used' : ''}`,
-              bankName,
-              accountSuffix,
-              origin: 'SMS',
-              balanceTiming: approval.baselineTiming,
-              attachmentIds: [],
-              createdAt: now,
-              updatedAt: now,
-            },
-            settings,
-            now,
+          transaction = annotateSmsRecord(
+            applyBankCashTransaction(
+              sources,
+              null,
+              {
+                id: `sms-${item.id}`,
+                cardId: source.id,
+                type,
+                amountMinor,
+                currencyCode: 'INR',
+                transactionDate: date,
+                transactionTime: time,
+                reference: item.reference,
+                merchant: description || undefined,
+                categoryId,
+                bankName,
+                accountSuffix,
+                origin: 'SMS',
+                balanceTiming: approval.baselineTiming,
+                attachmentIds: [],
+                createdAt: now,
+                updatedAt: now,
+              },
+              settings,
+              now,
+            ),
+            annotation,
+            true,
+            item.dateFallback ? ['SMS event date unavailable; received date used.'] : [],
           );
           await insertLedger(transaction, null);
           targetId = linkedTransactionId = transaction.id;
@@ -1860,6 +1962,15 @@ export class SmsReviewService {
             throw new Error('Choose an existing transfer between these accounts with this amount.');
           targetId = linked.id;
           state = 'MATCHED_EXISTING';
+          if (hasAnnotationValues(annotation)) {
+            transfer = annotateSmsRecord(linked, annotation, false);
+            await tx.run('UPDATE source_transfers SET payload=?,updated_at=? WHERE id=?', [
+              JSON.stringify(transfer),
+              now,
+              linked.id,
+            ]);
+            transferAlreadyStored = true;
+          }
         } else {
           if (
             !approval.allowSeparate &&
@@ -1870,27 +1981,31 @@ export class SmsReviewService {
             )
           )
             throw new Error('Possible existing transfer. Link it so the money moves only once.');
-          transfer = applyTransferEffects(
-            sources,
-            null,
-            {
-              id: `sms-transfer-${item.id}`,
-              kind: transferKindFor(from, to),
-              fromSourceId: from.id,
-              toSourceId: to.id,
-              amountMinor,
-              currencyCode: 'INR',
-              transferDate: date,
-              transferTime: time,
-              description: description || undefined,
-              reference: item.reference,
-              origin: 'SMS',
-              balanceTiming: approval.baselineTiming,
-              createdAt: now,
-              updatedAt: now,
-            },
-            settings,
-            now,
+          transfer = annotateSmsRecord(
+            applyTransferEffects(
+              sources,
+              null,
+              {
+                id: `sms-transfer-${item.id}`,
+                kind: transferKindFor(from, to),
+                fromSourceId: from.id,
+                toSourceId: to.id,
+                amountMinor,
+                currencyCode: 'INR',
+                transferDate: date,
+                transferTime: time,
+                description: description || undefined,
+                reference: item.reference,
+                origin: 'SMS',
+                balanceTiming: approval.baselineTiming,
+                createdAt: now,
+                updatedAt: now,
+              },
+              settings,
+              now,
+            ),
+            annotation,
+            true,
           );
           targetId = transfer.id;
         }
@@ -1899,6 +2014,7 @@ export class SmsReviewService {
         if (source.kind !== 'DEBIT' || !bankCashTracked(source, settings))
           throw new Error("Set this bank account's current balance first.");
         let fundedPayment: CardTransaction | null = null;
+        let existingFunding: SourceTransfer | null = null;
         if (approval.purpose === 'CARD_SETTLEMENT') {
           if (approval.existingId) {
             const payment = ledger.find((entry) => entry.id === approval.existingId);
@@ -1909,12 +2025,32 @@ export class SmsReviewService {
               payment.amountMinor !== amountMinor
             )
               throw new Error('Choose the recorded card payment with the same amount.');
-            const [funded] = await tx.query<{ id: string }>(
-              'SELECT id FROM source_transfers WHERE payment_transaction_id=?',
+            const [funded] = await tx.query<{ payload: string }>(
+              'SELECT payload FROM source_transfers WHERE payment_transaction_id=?',
               [payment.id],
             );
-            if (funded) throw new Error('This card payment already has a bank deduction.');
             fundedPayment = payment;
+            if (hasAnnotationValues(annotation)) {
+              transaction = annotateSmsRecord(payment, annotation, false);
+              await tx.run('UPDATE card_transactions SET payload=?,updated_at=? WHERE id=?', [
+                JSON.stringify(transaction),
+                now,
+                payment.id,
+              ]);
+              fundedPayment = transaction;
+            }
+            if (funded) {
+              existingFunding = JSON.parse(funded.payload) as SourceTransfer;
+              if (hasAnnotationValues(annotation) && existingFunding.fromSourceId === source.id) {
+                transfer = annotateSmsRecord(existingFunding, annotation, false);
+                await tx.run('UPDATE source_transfers SET payload=?,updated_at=? WHERE id=?', [
+                  JSON.stringify(transfer),
+                  now,
+                  existingFunding.id,
+                ]);
+                transferAlreadyStored = true;
+              }
+            }
             state = 'MATCHED_EXISTING';
           } else {
             const card = this.store
@@ -1934,56 +2070,67 @@ export class SmsReviewService {
               throw new Error(
                 'Possible existing card payment. Match it so the payment is counted once.',
               );
-            fundedPayment = transaction = {
-              id: `sms-${item.id}`,
-              cardId: card.id,
-              type: 'PAYMENT',
-              amountMinor,
-              currencyCode: 'INR',
-              transactionDate: date,
-              transactionTime: time,
-              reference: item.reference,
-              merchant: description || `Card payment from ${bankName ?? source.nickname}`,
-              categoryId: 'payment',
-              notes: 'Approved bank SMS; paid from a tracked bank account',
-              bankName,
-              accountSuffix,
-              origin: 'SMS',
-              attachmentIds: [],
-              createdAt: now,
-              updatedAt: now,
-            };
+            fundedPayment = transaction = annotateSmsRecord(
+              {
+                id: `sms-${item.id}`,
+                cardId: card.id,
+                type: 'PAYMENT',
+                amountMinor,
+                currencyCode: 'INR',
+                transactionDate: date,
+                transactionTime: time,
+                reference: item.reference,
+                merchant: description || `Card payment from ${bankName ?? source.nickname}`,
+                categoryId: 'payment',
+                bankName,
+                accountSuffix,
+                origin: 'SMS',
+                attachmentIds: [],
+                createdAt: now,
+                updatedAt: now,
+              },
+              annotation,
+              true,
+              item.dateFallback ? ['SMS event date unavailable; received date used.'] : [],
+            );
             await insertLedger(transaction, card.id);
           }
           await assertUnclaimed(fundedPayment.id);
           linkedTransactionId = fundedPayment.id;
         }
-        transfer = applyTransferEffects(
-          sources,
-          null,
-          {
-            id: `sms-${approval.purpose === 'CARD_SETTLEMENT' ? 'funding' : 'loan'}-${item.id}`,
-            kind: approval.purpose,
-            fromSourceId: source.id,
-            cardId: fundedPayment?.cardId,
-            paymentTransactionId: fundedPayment?.id,
-            amountMinor: fundedPayment?.amountMinor ?? amountMinor,
-            currencyCode: 'INR',
-            transferDate: fundedPayment?.transactionDate ?? date,
-            transferTime: fundedPayment ? fundedPayment.transactionTime : time,
-            description: description || undefined,
-            reference: item.reference,
-            origin: 'SMS',
-            balanceTiming: approval.baselineTiming,
-            createdAt: now,
-            updatedAt: now,
-          },
-          settings,
-          now,
-        );
+        if (!existingFunding) {
+          transfer = annotateSmsRecord(
+            applyTransferEffects(
+              sources,
+              null,
+              {
+                id: `sms-${approval.purpose === 'CARD_SETTLEMENT' ? 'funding' : 'loan'}-${item.id}`,
+                kind: approval.purpose,
+                fromSourceId: source.id,
+                cardId: fundedPayment?.cardId,
+                paymentTransactionId: fundedPayment?.id,
+                amountMinor: fundedPayment?.amountMinor ?? amountMinor,
+                currencyCode: 'INR',
+                transferDate: fundedPayment?.transactionDate ?? date,
+                transferTime: fundedPayment ? fundedPayment.transactionTime : time,
+                description: description || undefined,
+                reference: item.reference,
+                origin: 'SMS',
+                balanceTiming: approval.baselineTiming,
+                createdAt: now,
+                updatedAt: now,
+              },
+              settings,
+              now,
+            ),
+            annotation,
+            true,
+            item.dateFallback ? ['SMS event date unavailable; received date used.'] : [],
+          );
+        }
         targetId = fundedPayment?.id ?? transfer.id;
       }
-      if (transfer)
+      if (transfer && !transferAlreadyStored)
         await tx.run(
           `INSERT INTO source_transfers(id,kind,from_source_id,to_source_id,payment_transaction_id,amount_minor,transfer_date,payload,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)`,
           [

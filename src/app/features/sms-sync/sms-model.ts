@@ -4,6 +4,8 @@ import {
   Category,
   CreditCard,
   PaymentSource,
+  SmsPaymentMethod,
+  SmsPaymentMethodDetail,
   TransactionType,
 } from '../../core/models/domain';
 
@@ -98,6 +100,10 @@ export interface ApprovalEdits {
   fundingSourceId?: string;
   /** Answer for a date-only funding deduction on the bank's balance-confirmation day. */
   fundingTiming?: 'AFTER_BASELINE' | 'INCLUDED_IN_BASELINE';
+  paymentMethod?: SmsPaymentMethod;
+  paymentMethodDetail?: SmsPaymentMethodDetail;
+  paymentMethodCustom?: string;
+  smsAdditionalComment?: string;
 }
 export interface SmsCandidate {
   id: string;

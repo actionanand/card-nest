@@ -233,6 +233,94 @@ describe('Durable first-run data, additive read migration and private portable b
     sql.close();
     vi.restoreAllMocks();
   });
+  it('restores an encrypted backup created before optional SMS annotation fields existed', async () => {
+    await database.initialise();
+    const store = TestBed.inject(CardNestStore);
+    await store.initialisePreferences();
+    const legacyCard = {
+      id: 'legacy-annotation-card',
+      nickname: 'Legacy synthetic card',
+      issuerName: 'Fictional Bank',
+      lastDigits: '4321',
+      network: 'VISA',
+      theme: 'green',
+      statementDay: 1,
+      dueDateMode: 'DAYS_AFTER_STATEMENT',
+      daysAfterStatement: 20,
+      adjustDueDateOnWeekend: false,
+      currencyCode: 'INR',
+      openingBalanceMinor: 0,
+      remindToSettle: false,
+      annualFeeEnabled: false,
+      emergencyPhones: [],
+      supportEmails: [],
+      archived: false,
+      createdAt: '2026-10-01',
+      updatedAt: '2026-10-01',
+    };
+    const legacyTransaction = {
+      id: 'legacy-annotation-transaction',
+      cardId: legacyCard.id,
+      type: 'PURCHASE',
+      amountMinor: 12345,
+      currencyCode: 'INR',
+      transactionDate: '2026-10-02',
+      merchant: 'Fictional legacy merchant',
+      categoryId: 'other',
+      notes: 'Existing legacy note\nApproved SMS discovery',
+      attachmentIds: [],
+      createdAt: '2026-10-02T10:00:00Z',
+      updatedAt: '2026-10-02T10:00:00Z',
+    };
+    await database.run(
+      'INSERT INTO credit_cards(id,nickname,issuer_name,last_digits,network,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)',
+      [
+        legacyCard.id,
+        legacyCard.nickname,
+        legacyCard.issuerName,
+        legacyCard.lastDigits,
+        legacyCard.network,
+        JSON.stringify(legacyCard),
+        legacyCard.createdAt,
+        legacyCard.updatedAt,
+      ],
+    );
+    await database.run(
+      'INSERT INTO card_transactions(id,card_id,category_id,type,amount_minor,currency_code,transaction_date,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)',
+      [
+        legacyTransaction.id,
+        legacyCard.id,
+        'other',
+        'PURCHASE',
+        legacyTransaction.amountMinor,
+        'INR',
+        legacyTransaction.transactionDate,
+        JSON.stringify(legacyTransaction),
+        legacyTransaction.createdAt,
+        legacyTransaction.updatedAt,
+      ],
+    );
+    vi.stubGlobal('crypto', webcrypto);
+    vi.stubGlobal('Blob', NodeBlob);
+    try {
+      const backups = TestBed.inject(BackupService);
+      const backup = await backups.create('synthetic-legacy-passphrase');
+      await database.run('DELETE FROM card_transactions');
+      await database.run('DELETE FROM credit_cards');
+      await backups.restore(backup.contents, 'synthetic-legacy-passphrase');
+      const restarted = TestBed.runInInjectionContext(() => new CardNestStore());
+      await restarted.initialisePreferences();
+      const restored = restarted.transactions()[0];
+      expect(restored).toMatchObject(legacyTransaction);
+      expect(restored.paymentMethod).toBeUndefined();
+      expect(restored.paymentMethodDetail).toBeUndefined();
+      expect(restored.paymentMethodCustom).toBeUndefined();
+      expect(restored.smsAdditionalComment).toBeUndefined();
+      expect(count('card_transactions')).toBe(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
   it('deducts 15 actual meal purchases exactly once, preserves legacy snapshots and does not manufacture a fresh cutover', async () => {
     await database.initialise();
     const store = TestBed.inject(CardNestStore);

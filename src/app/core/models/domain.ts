@@ -126,9 +126,56 @@ export interface CardTransaction {
   balanceTiming?: BalanceTiming;
   /** When `balanceTiming` was answered; an answer older than the current balance is stale. */
   balanceTimingAt?: string;
+  paymentMethod?: SmsPaymentMethod;
+  paymentMethodDetail?: SmsPaymentMethodDetail;
+  paymentMethodCustom?: string;
+  smsAdditionalComment?: string;
 }
 
 export type BalanceTiming = 'AFTER_BASELINE' | 'INCLUDED_IN_BASELINE';
+
+export type SmsPaymentMethod =
+  'NONE' | 'UPI' | 'UPI_GLOBAL' | 'CARD' | 'CARD_TAP' | 'NEFT' | 'CHEQUE' | 'SWIFT_WIRE';
+
+export type SmsPaymentMethodDetail =
+  | 'BHIM_APP'
+  | 'GPAY'
+  | 'PHONEPE'
+  | 'KIWI'
+  | 'SLICE'
+  | 'CRED'
+  | 'AMAZON'
+  | 'PAYTM'
+  | 'PAYZAPP'
+  | 'BHUTAN'
+  | 'CAMBODIA'
+  | 'FRANCE'
+  | 'GREECE'
+  | 'MALDIVES'
+  | 'MAURITIUS'
+  | 'NEPAL'
+  | 'QATAR'
+  | 'SINGAPORE'
+  | 'SRI_LANKA'
+  | 'UAE'
+  | 'MAGNETIC_STRIPE'
+  | 'EMV_CHIP'
+  | 'KEYED_IN'
+  | 'ONLINE'
+  | 'ATM_WITHDRAWAL'
+  | 'INTERNATIONAL'
+  | 'INTERNATIONAL_ATM'
+  | 'INTERNATIONAL_ONLINE'
+  | 'TAP_CARD'
+  | 'TAP_WATCH'
+  | 'TAP_GPAY'
+  | 'TAP_APPLE'
+  | 'TAP_SAMSUNG'
+  | 'TAP_PAYTM'
+  | 'TAP_CRED'
+  | 'TAP_IMOBILE'
+  | 'TAP_PAYZAPP'
+  | 'TAP_RING';
 
 export interface AppliedBalanceEffect {
   sourceId: string;
@@ -152,11 +199,16 @@ export interface SourceTransfer {
   transferDate: string;
   transferTime?: string;
   description?: string;
+  notes?: string;
   reference?: string;
   origin: 'SMS' | 'MANUAL';
   effects?: readonly AppliedBalanceEffect[];
   balanceTiming?: BalanceTiming;
   balanceTimingAt?: string;
+  paymentMethod?: SmsPaymentMethod;
+  paymentMethodDetail?: SmsPaymentMethodDetail;
+  paymentMethodCustom?: string;
+  smsAdditionalComment?: string;
   createdAt: string;
   updatedAt: string;
 }

@@ -1050,4 +1050,101 @@ describe('SMS review privacy and explicit approval UI', () => {
     page.open(credit);
     expect(page.bankEditor.controls.purpose.value).toBe('');
   });
+
+  it('uses the configured card picker, keeps comments across method changes and resets a new SMS', async () => {
+    store.cards.set([demoCard]);
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const page = fixture.componentInstance;
+    page.open(demoCandidate());
+    fixture.detectChanges();
+    expect(page.cardAnnotationsVisible()).toBe(true);
+    expect(page.editor.controls.paymentMethod.value).toBe('NONE');
+    expect(page.cardPaymentMethods.map((item) => item.label)).toEqual([
+      'None',
+      'UPI',
+      'UPI Global',
+      'Card',
+      'Card tap',
+    ]);
+    expect(fixture.nativeElement.querySelectorAll('.sms-additional-comment textarea')).toHaveLength(
+      1,
+    );
+    expect(fixture.nativeElement.querySelector('dialog select')).toBeNull();
+
+    page.setCardPaymentMethod('UPI');
+    page.editor.controls.paymentMethodDetail.setValue('BHIM_APP');
+    page.clearCardPresetForCustomApp();
+    page.editor.controls.paymentMethodCustom.setValue('Custom Wallet');
+    expect(page.editor.controls.paymentMethodDetail.value).toBe('');
+    page.setCardPaymentMethodDetail('GPAY');
+    expect(page.editor.controls.paymentMethodCustom.value).toBe('');
+    page.editor.controls.paymentMethodCustom.setValue('Custom Wallet');
+    page.clearCardPresetForCustomApp();
+    page.editor.controls.smsAdditionalComment.setValue('Keep this comment');
+    page.setCardPaymentMethod('CARD_TAP');
+    fixture.detectChanges();
+    expect(page.editor.controls.paymentMethodDetail.value).toBe('');
+    expect(page.editor.controls.paymentMethodCustom.value).toBe('');
+    expect(page.editor.controls.smsAdditionalComment.value).toBe('Keep this comment');
+    expect(page.paymentMethodDetailConfig('CARD_TAP')?.label).toBe('Tap method');
+
+    const next = demoCandidate();
+    next.id = 'b'.repeat(64);
+    page.open(next);
+    fixture.detectChanges();
+    expect(page.editor.controls.paymentMethod.value).toBe('NONE');
+    expect(page.editor.controls.paymentMethodDetail.value).toBe('');
+    expect(page.editor.controls.paymentMethodCustom.value).toBe('');
+    expect(page.editor.controls.smsAdditionalComment.value).toBe('');
+  });
+
+  it('keeps Bank-only methods in Bank review and always renders its comment field', async () => {
+    paymentSources.set([
+      {
+        id: 'source-debit',
+        nickname: 'Synthetic bank',
+        kind: 'DEBIT',
+        institution: 'Fictional Bank',
+        lastDigits: '417',
+        noLimit: true,
+        autoLoad: false,
+        archived: false,
+      },
+    ]);
+    bankCashTracking.set({ enabled: true, askCardSettlementFunding: false });
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const candidate = demoCandidate();
+    candidate.kind = 'BANK_DEBIT';
+    candidate.item = {
+      ...candidate.item!,
+      kind: 'BANK_DEBIT',
+      direction: 'DEBIT',
+      purposeHint: 'PURCHASE',
+      accountDigits: '417',
+      issuer: 'ICICI',
+    };
+    const page = fixture.componentInstance;
+    page.open(candidate);
+    fixture.detectChanges();
+    expect(page.bankEditor.controls.paymentMethod.value).toBe('NONE');
+    expect(page.bankPaymentMethods).toHaveLength(8);
+    expect(page.bankPaymentMethods.slice(-3).map((item) => item.label)).toEqual([
+      'NEFT',
+      'Cheque',
+      'SWIFT/ WIRE',
+    ]);
+    expect(page.paymentMethodDetailConfig('NEFT')).toBeUndefined();
+    expect(fixture.nativeElement.querySelectorAll('.sms-additional-comment textarea')).toHaveLength(
+      1,
+    );
+    page.bankEditor.controls.smsAdditionalComment.setValue('Keep comment');
+    page.setBankPaymentMethod('CHEQUE');
+    expect(page.bankEditor.controls.paymentMethodDetail.value).toBe('');
+    expect(page.bankEditor.controls.paymentMethodCustom.value).toBe('');
+    expect(page.bankEditor.controls.smsAdditionalComment.value).toBe('Keep comment');
+  });
 });

@@ -724,6 +724,9 @@ label small {
 .transfer-row:hover {
   background: transparent;
 }
+.transfer-notes {
+  white-space: pre-line;
+}
 .baseline-timing {
   display: grid;
   gap: 0.4rem;

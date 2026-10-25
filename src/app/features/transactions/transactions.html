@@ -550,6 +550,9 @@
                       · Ref {{ transfer.reference }}
                     }
                   </small>
+                  @if (transfer.notes) {
+                    <small class="transfer-notes">{{ transfer.notes }}</small>
+                  }
                 </span>
                 <span class="tx-date">
                   <span>{{ transfer.transferDate | appDate }}</span

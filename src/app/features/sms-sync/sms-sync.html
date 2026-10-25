@@ -767,6 +767,37 @@
                 [options]="categoryOptions()"
                 [searchable]="true"
               />
+              @if (cardAnnotationsVisible()) {
+                <app-select-picker
+                  label="Payment Method"
+                  [options]="cardPaymentMethods"
+                  [value]="editor.controls.paymentMethod.value"
+                  (valueChange)="setCardPaymentMethod($event)"
+                />
+                @if (paymentMethodDetailConfig(editor.controls.paymentMethod.value); as detail) {
+                  <app-select-picker
+                    [label]="detail.label"
+                    [options]="detail.options"
+                    [value]="editor.controls.paymentMethodDetail.value"
+                    (valueChange)="setCardPaymentMethodDetail($event)"
+                  />
+                  @if (editor.controls.paymentMethod.value === 'UPI') {
+                    <label
+                      >Other UPI app (optional)<input
+                        formControlName="paymentMethodCustom"
+                        maxlength="80"
+                        (input)="clearCardPresetForCustomApp()"
+                    /></label>
+                  }
+                }
+                <label class="sms-additional-comment"
+                  >Additional Comment (optional)<textarea
+                    formControlName="smsAdditionalComment"
+                    maxlength="500"
+                    rows="2"
+                  ></textarea>
+                </label>
+              }
               @if (candidate.kind === 'REFUND') {
                 <app-select-picker
                   label="Original purchase (optional)"
@@ -992,6 +1023,35 @@
                     : 'Merchant / recipient'
                 }}<input formControlName="description" maxlength="100"
               /></label>
+              <app-select-picker
+                label="Payment Method"
+                [options]="bankPaymentMethods"
+                [value]="bankEditor.controls.paymentMethod.value"
+                (valueChange)="setBankPaymentMethod($event)"
+              />
+              @if (paymentMethodDetailConfig(bankEditor.controls.paymentMethod.value); as detail) {
+                <app-select-picker
+                  [label]="detail.label"
+                  [options]="detail.options"
+                  [value]="bankEditor.controls.paymentMethodDetail.value"
+                  (valueChange)="setBankPaymentMethodDetail($event)"
+                />
+                @if (bankEditor.controls.paymentMethod.value === 'UPI') {
+                  <label
+                    >Other UPI app (optional)<input
+                      formControlName="paymentMethodCustom"
+                      maxlength="80"
+                      (input)="clearBankPresetForCustomApp()"
+                  /></label>
+                }
+              }
+              <label class="sms-additional-comment"
+                >Additional Comment (optional)<textarea
+                  formControlName="smsAdditionalComment"
+                  maxlength="500"
+                  rows="2"
+                ></textarea>
+              </label>
               @if (bankPurpose() === 'PURCHASE' || bankPurpose() === 'INCOME') {
                 <app-select-picker
                   label="Category"

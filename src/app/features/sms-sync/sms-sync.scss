@@ -194,6 +194,10 @@ textarea {
   font-size: 1rem;
   min-height: 44px;
 }
+.sms-additional-comment textarea {
+  min-height: 3.5rem;
+  resize: vertical;
+}
 button,
 summary {
   min-height: 44px;
