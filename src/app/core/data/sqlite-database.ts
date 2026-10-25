@@ -54,6 +54,12 @@ const BACKUP_TABLES = [
   'loan_commitments',
   'monthly_income',
   'category_limits',
+  'utility_profiles',
+  'mobile_recharges',
+  'lpg_events',
+  'bank_activity_profiles',
+  'bank_activity_events',
+  'bank_activity_candidates',
   'sms_candidates',
   'sms_reconciliation',
   'sms_sync_state',
@@ -62,6 +68,12 @@ const BACKUP_TABLES = [
 ] as const;
 
 const DELETE_TABLES = [
+  'bank_activity_candidates',
+  'bank_activity_events',
+  'bank_activity_profiles',
+  'lpg_events',
+  'mobile_recharges',
+  'utility_profiles',
   'source_balance_adjustments',
   'source_transfers',
   'sms_reconciliation',

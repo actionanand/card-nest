@@ -35,6 +35,10 @@ import {
   validTransferDate,
 } from '../../core/services/source-balance';
 import { environment } from '../../../environments/environment';
+import {
+  AndroidBankActivityEvidence,
+  BankActivityService,
+} from '../bank-activity/bank-activity.service';
 import { matchExisting, walletComparison } from './sms-matching';
 import {
   defaultReviewFilters,
@@ -157,6 +161,7 @@ export interface SmsDismissal {
 @Service()
 export class SmsReviewService {
   private readonly database = inject(SqliteDatabase);
+  private readonly bankActivity = inject(BankActivityService);
   private readonly store = inject(CardNestStore);
   readonly lock = inject(AppLockService);
   readonly status = signal<ScanStatus | null>(null);
@@ -956,6 +961,7 @@ export class SmsReviewService {
     await this.refresh();
   }
   private async stage(items: readonly SmsEvidence[]): Promise<void> {
+    const activityCandidates: AndroidBankActivityEvidence[] = [];
     await this.database.atomic(async (tx) => {
       const [retention] = await tx.query<{ value: string }>(
         `SELECT value FROM sms_sync_state WHERE key='retention_cutoff'`,
@@ -969,6 +975,19 @@ export class SmsReviewService {
               ])
             : [];
         const item = old ? { ...incoming, id: old.id } : incoming;
+        activityCandidates.push({
+          fingerprint: item.id,
+          activityDate: item.eventDate,
+          kind: item.kind,
+          direction: bankDirection(item),
+          purposeHint: item.purposeHint,
+          accountDigits: item.accountDigits,
+          counterpartyAccountDigits: item.counterpartyAccountDigits,
+          issuer: item.issuer,
+          reference: item.reference,
+          dateFallback: item.dateFallback,
+          merchant: item.merchant,
+        });
         const changes = await tx.run(
           `INSERT OR IGNORE INTO sms_candidates(id, provider_id, event_at, kind, state, payload, updated_at)
           VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -992,6 +1011,9 @@ export class SmsReviewService {
         }
       }
     });
+    for (const candidate of activityCandidates) {
+      await this.bankActivity.ingestAndroidSms(candidate);
+    }
   }
   private async handoff(): Promise<void> {
     // A refresh cannot retain or drain an unbounded inbox; subsequent refreshes resume safely.

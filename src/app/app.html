@@ -57,6 +57,14 @@
         <a routerLink="/sources" routerLinkActive="active" (click)="mobileMenuOpen.set(false)"
           ><app-icon name="sources" /> Cash, Banks & Pluxee</a
         >
+        @if (utilities.showIndianUtilities()) {
+          <a routerLink="/utilities" routerLinkActive="active" (click)="mobileMenuOpen.set(false)"
+            ><app-icon name="mobile" /> Indian Utilities</a
+          >
+        }
+        <a routerLink="/bank-activity" routerLinkActive="active" (click)="mobileMenuOpen.set(false)"
+          ><app-icon name="landmark" /> Bank Activity</a
+        >
         <a routerLink="/categories" routerLinkActive="active" (click)="mobileMenuOpen.set(false)"
           ><app-icon name="categories" /> Categories</a
         >
@@ -125,6 +133,14 @@
       >
       <a routerLink="/sources" routerLinkActive="active"
         ><app-icon name="sources" /> Cash, Banks & Pluxee</a
+      >
+      @if (utilities.showIndianUtilities()) {
+        <a routerLink="/utilities" routerLinkActive="active"
+          ><app-icon name="mobile" /> Indian Utilities</a
+        >
+      }
+      <a routerLink="/bank-activity" routerLinkActive="active"
+        ><app-icon name="landmark" /> Bank Activity</a
       >
       <a routerLink="/loans" routerLinkActive="active"><app-icon name="loans" /> Loans & EMIs</a>
       <a routerLink="/payables" routerLinkActive="active"><app-icon name="schedule" /> Payables</a>

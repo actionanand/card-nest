@@ -55,6 +55,18 @@ test('SMS and persisted-job manifest entry points are permission protected', () 
   );
 });
 
+test('WhatsApp integration exposes only the two supported packages and validates native launches', () => {
+  assert.match(manifest, /<package android:name="com\.whatsapp"\s*\/>/);
+  assert.match(manifest, /<package android:name="com\.whatsapp\.w4b"\s*\/>/);
+  assert.ok(!manifest.includes('QUERY_ALL_PACKAGES'));
+  const activity = read(`${java}/MainActivity.java`);
+  assert.match(activity, /availableWhatsAppApps\(\)/);
+  assert.match(activity, /openWhatsAppIn\(String number, String message, String packageName\)/);
+  assert.match(activity, /openWhatsAppFallback\(String number, String message\)/);
+  assert.match(activity, /91\[6-9\]\[0-9\]\{9\}/);
+  assert.ok(activity.includes('com.whatsapp.w4b'));
+});
+
 test('plugin registration precedes Capacitor bridge initialization', () => {
   const activity = read(`${java}/MainActivity.java`);
   const registration = 'registerPlugin(com.actionanand.cardnest.app.sms.CardNestSmsPlugin.class);';

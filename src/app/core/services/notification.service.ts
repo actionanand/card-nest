@@ -26,8 +26,18 @@ interface ReminderTarget {
   readonly at: Date;
   readonly eventDate: Date;
   readonly cardId: string;
-  readonly kind: 'PAYMENT' | 'ANNUAL_FEE' | 'EXPIRY';
+  readonly kind: 'PAYMENT' | 'ANNUAL_FEE' | 'EXPIRY' | 'UTILITY_MOBILE' | 'UTILITY_LPG';
+  readonly source: 'card-nest' | 'card-nest-utility';
   readonly repeatDaily?: boolean;
+}
+
+export interface UtilityNotificationTarget {
+  readonly id: string;
+  readonly profileId: string;
+  readonly kind: 'MOBILE_VOICE' | 'MOBILE_PLAN' | 'LPG_ESTIMATE';
+  readonly eventDate: string;
+  readonly title: string;
+  readonly body: string;
 }
 
 interface NativeReminderBridge {
@@ -48,6 +58,9 @@ export class NotificationService {
   private readonly channelId = 'card-nest-reminders';
   private rescheduleVersion = 0;
   private rescheduleQueue: Promise<void> = Promise.resolve();
+  private lastCards: readonly CreditCard[] = [];
+  private lastOutstandingFor: (cardId: string) => number = () => 0;
+  private utilityTargets: readonly UtilityNotificationTarget[] = [];
   readonly permission = signal<'unavailable' | 'prompt' | 'denied' | 'granted'>('unavailable');
   readonly enabled = signal(false);
   readonly reminderDaysBefore = signal(DEFAULT_REMINDER_DAYS_BEFORE);
@@ -70,7 +83,7 @@ export class NotificationService {
     ]);
     this.reminderDaysBefore.set(reminderDaysBefore);
     this.enabled.set(status.display === 'granted' && (preference ?? true));
-    if (this.enabled()) await this.reschedule(cards, outstandingFor);
+    if (this.enabled() || this.utilityTargets.length) await this.reschedule(cards, outstandingFor);
   }
 
   async requestPermission(
@@ -117,11 +130,55 @@ export class NotificationService {
     }
   }
 
+  async refreshPermission(): Promise<boolean> {
+    if (!this.isAndroid()) {
+      this.permission.set('unavailable');
+      return false;
+    }
+    try {
+      const status = await LocalNotifications.checkPermissions();
+      const granted = status.display === 'granted';
+      this.permission.set(granted ? 'granted' : status.display === 'denied' ? 'denied' : 'prompt');
+      const savedCardReminderPreference = await this.readEnabledPreference();
+      this.enabled.set(granted && (savedCardReminderPreference ?? true));
+      await this.reschedule(this.lastCards, this.lastOutstandingFor);
+      return granted;
+    } catch {
+      this.lastError.set('Android notification permission could not be checked.');
+      return false;
+    }
+  }
+
+  async requestUtilityPermission(): Promise<boolean> {
+    if (!this.isAndroid()) {
+      this.permission.set('unavailable');
+      return false;
+    }
+    try {
+      const status = await LocalNotifications.requestPermissions();
+      const granted = status.display === 'granted';
+      this.permission.set(granted ? 'granted' : 'denied');
+      if (granted) await this.ensureChannel();
+      await this.reschedule(this.lastCards, this.lastOutstandingFor);
+      return granted;
+    } catch {
+      this.permission.set('denied');
+      this.lastError.set('Android notification permission could not be requested.');
+      return false;
+    }
+  }
+
+  setUtilityReminders(targets: readonly UtilityNotificationTarget[]): void {
+    this.utilityTargets = targets;
+  }
+
   async reschedule(
     cards: readonly CreditCard[],
     outstandingFor: (cardId: string) => number,
   ): Promise<void> {
-    if (!this.isAndroid() || this.permission() !== 'granted' || !this.enabled()) return;
+    this.lastCards = cards;
+    this.lastOutstandingFor = outstandingFor;
+    if (!this.isAndroid()) return;
     const version = ++this.rescheduleVersion;
     const cardBalances = cards.map((card) => ({ card, dueMinor: outstandingFor(card.id) }));
     const operation = this.rescheduleQueue.then(async () => {
@@ -148,10 +205,31 @@ export class NotificationService {
   ): Promise<void> {
     try {
       const now = new Date();
-      const targets = cardBalances
-        .filter(({ card }) => !card.archived)
-        .flatMap(({ card, dueMinor }) => this.targetsForCard(card, dueMinor, now))
-        .filter((target) => target.at.getTime() > now.getTime() + 30_000);
+      const cardTargets = this.enabled()
+        ? cardBalances
+            .filter(({ card }) => !card.archived)
+            .flatMap(({ card, dueMinor }) => this.targetsForCard(card, dueMinor, now))
+        : [];
+      const utilityTargets =
+        this.permission() === 'granted'
+          ? this.utilityTargets.map((target) => ({
+              id: this.utilityNotificationId(target.id),
+              title: target.title,
+              body: target.body,
+              at: this.utilityDate(target.eventDate),
+              eventDate: this.utilityDate(target.eventDate),
+              cardId: `utility:${target.profileId}`,
+              kind:
+                target.kind === 'LPG_ESTIMATE'
+                  ? ('UTILITY_LPG' as const)
+                  : ('UTILITY_MOBILE' as const),
+              source: 'card-nest-utility' as const,
+              repeatDaily: false,
+            }))
+          : [];
+      const targets = [...cardTargets, ...utilityTargets].filter(
+        (target) => target.at.getTime() > now.getTime() + 30_000,
+      );
       const nativeBridge = this.nativeReminderBridge();
       if (nativeBridge) {
         const accepted = nativeBridge.replaceReminderSchedule(
@@ -218,7 +296,7 @@ export class NotificationService {
             largeIcon: 'ic_launcher',
             autoCancel: true,
             schedule: { at: target.at, allowWhileIdle: true },
-            extra: { source: 'card-nest', cardId: target.cardId, kind: target.kind },
+            extra: { source: target.source, cardId: target.cardId, kind: target.kind },
           })),
         });
       }
@@ -256,22 +334,7 @@ export class NotificationService {
     this.scheduledCount.set(0);
     await this.writeEnabledPreference(false);
     if (!this.isAndroid()) return;
-    const nativeBridge = this.nativeReminderBridge();
-    if (nativeBridge && !nativeBridge.replaceReminderSchedule('[]')) {
-      this.lastError.set(
-        nativeBridge.reminderScheduleError() || 'Android reminders could not be cleared.',
-      );
-    }
-    const pending = await LocalNotifications.getPending();
-    const ids = [
-      ...new Set([
-        ...cards.flatMap((card) => this.notificationIds(card.id)),
-        ...pending.notifications
-          .filter((notification) => this.isCardNestExtra(notification.extra))
-          .map((notification) => notification.id),
-      ]),
-    ];
-    if (ids.length) await LocalNotifications.cancel({ notifications: ids.map((id) => ({ id })) });
+    await this.reschedule(cards, this.lastOutstandingFor);
   }
 
   private targetsForCard(
@@ -304,6 +367,7 @@ export class NotificationService {
               eventDate: due,
               cardId: card.id,
               kind: 'PAYMENT',
+              source: 'card-nest',
             };
           })
         : [];
@@ -325,6 +389,7 @@ export class NotificationService {
         eventDate: annualFeeDate,
         cardId: card.id,
         kind: 'ANNUAL_FEE',
+        source: 'card-nest',
       });
     }
 
@@ -341,6 +406,7 @@ export class NotificationService {
           eventDate: expires,
           cardId: card.id,
           kind: 'EXPIRY',
+          source: 'card-nest',
         });
       }
       if (expires <= now) {
@@ -358,6 +424,7 @@ export class NotificationService {
           eventDate: expires,
           cardId: card.id,
           kind: 'EXPIRY',
+          source: 'card-nest',
           repeatDaily: true,
         });
       }
@@ -383,11 +450,22 @@ export class NotificationService {
   }
 
   private isCardNestExtra(extra: unknown): boolean {
-    return (
-      typeof extra === 'object' &&
-      extra !== null &&
-      (extra as Record<string, unknown>)['source'] === 'card-nest'
-    );
+    if (typeof extra !== 'object' || extra === null) return false;
+    const source = (extra as Record<string, unknown>)['source'];
+    return source === 'card-nest' || source === 'card-nest-utility';
+  }
+
+  private utilityDate(value: string): Date {
+    const [year, month, day] = value.split('-').map(Number);
+    const target = new Date(year, month - 1, day, REMINDER_HOUR, 0, 0, 0);
+    if (target.getTime() <= Date.now()) target.setTime(Date.now() + 60_000);
+    return target;
+  }
+
+  private utilityNotificationId(value: string): number {
+    let hash = 0;
+    for (const character of value) hash = (Math.imul(hash, 31) + character.charCodeAt(0)) | 0;
+    return 2_000_000_000 + (Math.abs(hash) % 100_000_000);
   }
 
   private baseId(cardId: string): number {

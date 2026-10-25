@@ -176,6 +176,22 @@ ${missingTinkAnnotationRules.join('\n')}
 writeFileSync(proguardRulesPath, proguardRules);
 
 let manifest = readFileSync(manifestPath, 'utf8');
+const missingWhatsAppPackages = ['com.whatsapp', 'com.whatsapp.w4b'].filter(
+  (packageName) => !manifest.includes(`<package android:name="${packageName}"`),
+);
+if (missingWhatsAppPackages.length) {
+  const packageEntries = missingWhatsAppPackages
+    .map((packageName) => `        <package android:name="${packageName}" />`)
+    .join('\n');
+  if (manifest.includes('</queries>')) {
+    manifest = manifest.replace('</queries>', `${packageEntries}\n    </queries>`);
+  } else {
+    manifest = manifest.replace(
+      /(<application\b)/,
+      `    <queries>\n${packageEntries}\n    </queries>\n$1`,
+    );
+  }
+}
 if (!manifest.includes('android.permission.USE_BIOMETRIC')) {
   manifest = manifest.replace(
     /(<manifest\b[^>]*>)/,
@@ -651,6 +667,7 @@ writeFileSync(
 import android.content.res.Configuration;
 import android.app.Activity;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
@@ -675,6 +692,7 @@ import androidx.core.content.ContextCompat;
 
 import com.getcapacitor.BridgeActivity;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
@@ -765,6 +783,51 @@ public class MainActivity extends BridgeActivity {
   }
 
   public class CardNestNativeBridge {
+    @JavascriptInterface
+    public String availableWhatsAppApps() {
+      JSONArray packages = new JSONArray();
+      if (isWhatsAppInstalled("com.whatsapp")) packages.put("com.whatsapp");
+      if (isWhatsAppInstalled("com.whatsapp.w4b")) packages.put("com.whatsapp.w4b");
+      return packages.toString();
+    }
+
+    @JavascriptInterface
+    public void openWhatsAppIn(String number, String message, String packageName) {
+      if (!("com.whatsapp".equals(packageName) || "com.whatsapp.w4b".equals(packageName))) return;
+      openWhatsAppUrl(number, message, packageName);
+    }
+
+    @JavascriptInterface
+    public void openWhatsAppFallback(String number, String message) {
+      openWhatsAppUrl(number, message, null);
+    }
+
+    private boolean isWhatsAppInstalled(String packageName) {
+      try {
+        getPackageManager().getPackageInfo(packageName, 0);
+        return true;
+      } catch (PackageManager.NameNotFoundException ignored) {
+        return false;
+      }
+    }
+
+    private void openWhatsAppUrl(String number, String message, String packageName) {
+      String digits = number == null ? "" : number.replaceAll("[^0-9]", "");
+      if (!digits.matches("91[6-9][0-9]{9}")) return;
+      String safeMessage = message == null ? "" : message.substring(0, Math.min(message.length(), 500));
+      Uri uri = Uri.parse("https://wa.me/" + digits +
+        (safeMessage.isEmpty() ? "" : "?text=" + Uri.encode(safeMessage)));
+      Intent intent = new Intent(Intent.ACTION_VIEW, uri);
+      if (packageName != null) intent.setPackage(packageName);
+      runOnUiThread(() -> {
+        if (packageName == null || intent.resolveActivity(getPackageManager()) != null) {
+          startActivity(intent);
+        } else {
+          startActivity(new Intent(Intent.ACTION_VIEW, uri));
+        }
+      });
+    }
+
     @JavascriptInterface
     public boolean replaceReminderSchedule(String remindersJson) {
       try {

@@ -1,0 +1,250 @@
+<div class="page bank-activity-page">
+  <header class="page-header">
+    <div>
+      <p class="eyebrow">Account activity</p>
+      <h1>Bank Activity</h1>
+      <p class="subtitle">
+        See how long each monitored account has gone without a qualifying customer transaction.
+      </p>
+    </div>
+    <button class="btn btn-primary" type="button" (click)="startProfile()">
+      <app-icon name="plus" /> Add account
+    </button>
+  </header>
+  <aside class="activity-notice">
+    <app-icon name="help" />
+    <p>
+      Activity tracking is independent of Bank/Cash balances. Statuses are informational and do not
+      indicate legal dormancy or account restrictions.
+    </p>
+  </aside>
+
+  @if (activity.candidates().length) {
+    <section class="review-section" aria-labelledby="bank-activity-review-title">
+      <header>
+        <div>
+          <p class="eyebrow">Android SMS</p>
+          <h2 id="bank-activity-review-title">Activity needs review</h2>
+        </div>
+        <span class="status-badge attention">{{ activity.candidates().length }} pending</span>
+      </header>
+      <p class="form-note">
+        These alerts could not be matched uniquely. Select the monitored account only after
+        verifying the bank and masked suffix. No raw SMS text is stored.
+      </p>
+      @for (candidate of activity.candidates(); track candidate.fingerprint) {
+        <article class="review-candidate">
+          <div>
+            <strong
+              >{{ candidate.bankName || 'Bank not identified'
+              }}{{ candidate.accountSuffix ? ' · xx' + candidate.accountSuffix : '' }}</strong
+            ><small
+              >{{ candidate.activityDate }} ·
+              {{ candidate.direction === 'CREDIT' ? 'Credit' : 'Debit' }} ·
+              {{ candidate.purposeHint }}</small
+            >
+            @if (candidate.reference) {
+              <small>Ref {{ candidate.reference }}</small>
+            }
+          </div>
+          <app-select-picker
+            label="Choose monitored account"
+            [options]="reviewProfileOptions()"
+            [value]="reviewSelection()[candidate.fingerprint] ?? ''"
+            (valueChange)="setReviewProfile(candidate.fingerprint, $event)"
+          />
+          <div class="profile-actions">
+            <button
+              class="btn btn-primary"
+              type="button"
+              [disabled]="saving() || !reviewSelection()[candidate.fingerprint]"
+              (click)="approveCandidate(candidate.fingerprint)"
+            >
+              Confirm activity</button
+            ><button
+              class="btn"
+              type="button"
+              [disabled]="saving()"
+              (click)="activity.dismissCandidate(candidate.fingerprint)"
+            >
+              Dismiss
+            </button>
+          </div>
+        </article>
+      }
+    </section>
+  }
+
+  @if (profileFormOpen()) {
+    <form class="panel activity-form" [formGroup]="profileForm" (submit)="saveProfile($event)">
+      <header>
+        <h2>{{ editingProfileId() ? 'Edit monitored account' : 'Monitor a bank account' }}</h2>
+        <button class="btn" type="button" (click)="profileFormOpen.set(false)">Close</button>
+      </header>
+      <app-select-picker
+        label="Use existing CardNest bank account (optional)"
+        formControlName="paymentSourceId"
+        [options]="sourceOptions()"
+        [searchable]="true"
+      />
+      @if (!profileForm.controls.paymentSourceId.value) {
+        <label
+          >Bank name<input formControlName="bankName" maxlength="80" autocomplete="off" required
+        /></label>
+      } @else {
+        <p class="form-note">
+          The existing account is linked by source ID. Balance tracking remains unchanged.
+        </p>
+      }
+      <div class="form-grid">
+        <label
+          >Account nickname (optional)<input formControlName="nickname" maxlength="80"
+        /></label>
+        @if (!profileForm.controls.paymentSourceId.value) {
+          <label
+            >Final three account digits (optional)<input
+              formControlName="accountSuffix"
+              inputmode="numeric"
+              maxlength="5"
+              placeholder="310"
+          /></label>
+        }
+        <app-select-picker
+          label="Account holder"
+          formControlName="owner"
+          [options]="ownerOptions"
+        />
+        @if (profileForm.controls.owner.value === 'OTHERS') {
+          <label>Holder name<input formControlName="holderName" maxlength="80" required /></label>
+        }
+      </div>
+      <label
+        >Remarks (optional)<textarea formControlName="remarks" maxlength="300" rows="2"></textarea>
+      </label>
+      @if (error(); as message) {
+        <p class="form-error" role="alert">{{ message }}</p>
+      }
+      <button class="btn btn-primary" type="submit" [disabled]="saving()">
+        Save monitoring profile
+      </button>
+    </form>
+  }
+
+  @if (eventProfileId(); as profileId) {
+    <form class="panel activity-form" [formGroup]="eventForm" (submit)="saveEvent($event)">
+      <header>
+        <h2>{{ editingEventId() ? 'Correct activity date' : 'Record account activity' }}</h2>
+        <button class="btn" type="button" (click)="eventProfileId.set(null)">Close</button>
+      </header>
+      <p class="form-note">
+        This records activity history only. It does not change any balance or transaction.
+      </p>
+      <div class="form-grid">
+        <label>Activity date<input type="date" formControlName="activityDate" required /></label>
+        <app-select-picker
+          label="Direction"
+          formControlName="direction"
+          [options]="directionOptions"
+        />
+        <label
+          >Reference (optional)<input formControlName="reference" maxlength="80" autocomplete="off"
+        /></label>
+      </div>
+      @if (error(); as message) {
+        <p class="form-error" role="alert">{{ message }}</p>
+      }
+      <button class="btn btn-primary" type="submit" [disabled]="saving() || eventForm.invalid">
+        {{ editingEventId() ? 'Save correction' : 'Save activity' }}
+      </button>
+    </form>
+  }
+
+  @for (profile of activeProfiles(); track profile.id) {
+    <article class="panel activity-profile">
+      <header class="profile-heading">
+        <div>
+          <p class="eyebrow">
+            {{ profile.owner === 'OWN' ? 'Own account' : 'Other account'
+            }}{{ profile.holderName ? ' · ' + profile.holderName : '' }}
+          </p>
+          <h2>{{ profileLabel(profile) }}</h2>
+          <small>{{ profile.remarks || 'Activity only · no balances stored here' }}</small>
+        </div>
+        <span class="status-badge" [class]="statusClass(profile)">{{ statusLabel(profile) }}</span>
+      </header>
+      <p class="elapsed">{{ activityText(profile) }}</p>
+      <div class="profile-actions">
+        <button class="btn btn-primary" type="button" (click)="startEvent(profile)">
+          <app-icon name="plus" /> Record activity</button
+        ><button class="btn" type="button" (click)="editProfile(profile)">Edit</button
+        ><button class="btn" type="button" (click)="archive(profile)">Archive</button>
+      </div>
+      <details class="event-history" open>
+        <summary>
+          Qualifying activity history <span>({{ events(profile).length }})</span>
+        </summary>
+        @if (events(profile).length) {
+          <ol class="history-list">
+            @for (event of events(profile); track event.id) {
+              <li>
+                <div>
+                  <strong
+                    >{{ event.activityDate }} ·
+                    {{ event.direction === 'CREDIT' ? 'Credit' : 'Debit' }}</strong
+                  ><small
+                    >{{
+                      event.origin === 'ANDROID_SMS'
+                        ? 'Android SMS · account matched'
+                        : 'Manual · user confirmed'
+                    }}{{ event.reference ? ' · Ref ' + event.reference : '' }}</small
+                  >
+                </div>
+                <div class="history-actions">
+                  <button
+                    class="icon-action"
+                    type="button"
+                    [attr.aria-label]="'Correct activity on ' + event.activityDate"
+                    (click)="editEvent(event)"
+                  >
+                    <app-icon name="edit" /></button
+                  ><button
+                    class="icon-action"
+                    type="button"
+                    [attr.aria-label]="'Remove activity on ' + event.activityDate"
+                    (click)="deleteEvent(event)"
+                  >
+                    <app-icon name="delete" />
+                  </button>
+                </div>
+              </li>
+            }
+          </ol>
+        } @else {
+          <p class="empty-state">No qualifying activity has been recorded. Status is Unknown.</p>
+        }
+      </details>
+    </article>
+  } @empty {
+    <section class="panel empty-state">
+      <app-icon name="landmark" />
+      <h2>No monitored accounts</h2>
+      <p>
+        Add an existing CardNest bank account or create a standalone monitoring profile. No full
+        account number is collected.
+      </p>
+    </section>
+  }
+  @if (archivedProfiles().length) {
+    <details class="archived-list">
+      <summary>Archived accounts</summary>
+      @for (profile of archivedProfiles(); track profile.id) {
+        <div>
+          <span>{{ profileLabel(profile) }}</span
+          ><button class="btn" type="button" (click)="activity.setArchived(profile.id, false)">
+            Restore
+          </button>
+        </div>
+      }
+    </details>
+  }
+</div>

@@ -19,6 +19,7 @@ import { CardTransaction } from './core/models/domain';
 import { indiaTodayIso } from './core/services/india-date';
 import { parseMoneyToMinor } from './core/services/money';
 import { UiPreferencesService } from './core/services/ui-preferences.service';
+import { UtilitiesService } from './features/utilities/utilities.service';
 
 interface NativeLaunchBridge {
   hideSplash(): void;
@@ -41,6 +42,7 @@ function sanitizedMoneyInput(value: string): string {
   styleUrl: './app.scss',
   host: {
     '(document:keydown.escape)': 'dismissNotificationPermissionConfirmation()',
+    '(window:focus)': 'refreshNotificationPermission()',
   },
 })
 export class App {
@@ -50,6 +52,7 @@ export class App {
   readonly appLock = inject(AppLockService);
   readonly snackbar = inject(SnackbarService);
   readonly uiPreferences = inject(UiPreferencesService);
+  readonly utilities = inject(UtilitiesService);
 
   readonly showNotificationPermissionConfirmation = signal(false);
   readonly mobileMenuOpen = signal(false);
@@ -70,6 +73,7 @@ export class App {
     effect(() => {
       const cards = this.store.cards();
       this.store.transactions();
+      this.notifications.setUtilityReminders(this.utilities.reminderTargets());
       void this.notifications.reschedule(cards, (cardId) => this.store.cardDueAmount(cardId));
     });
 
@@ -98,6 +102,10 @@ export class App {
     if (!this.showNotificationPermissionConfirmation()) return;
     this.showNotificationPermissionConfirmation.set(false);
     queueMicrotask(() => this.mainContent()?.nativeElement.focus());
+  }
+
+  refreshNotificationPermission(): void {
+    void this.notifications.refreshPermission();
   }
 
   async confirmNotificationPermission(): Promise<void> {

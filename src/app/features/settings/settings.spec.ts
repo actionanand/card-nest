@@ -9,6 +9,7 @@ import { BackupService } from '../../core/services/backup.service';
 import { SnackbarService } from '../../core/services/snackbar.service';
 import { ApplicationPinService } from '../../core/services/application-pin.service';
 import { AppLockService } from '../../core/services/app-lock.service';
+import { UtilitiesService } from '../utilities/utilities.service';
 
 describe('Explicit backup destination choice', () => {
   const backup = { fileName: 'synthetic.cnbak', contents: 'synthetic-encrypted-file' };
@@ -62,6 +63,7 @@ describe('Explicit backup destination choice', () => {
       'appearance',
       'defaults',
       'bank-cash',
+      'utilities',
       'notifications',
       'data',
     ] as const) {
@@ -118,6 +120,22 @@ describe('Explicit backup destination choice', () => {
       ).toBe(true);
     expect(fixture.nativeElement.querySelector('.auto-lock-row app-select-picker')).toBeTruthy();
     fixture.nativeElement.remove();
+  });
+  it('defaults Utilities visible and Utility Reminders off, hiding only the reminder control', async () => {
+    TestBed.inject(SqliteDatabase).ready.set(true);
+    const fixture = TestBed.createComponent(SettingsPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const utilities = TestBed.inject(UtilitiesService);
+    expect(utilities.settings()).toEqual({ showIndianUtilities: true, utilityReminders: false });
+    expect(fixture.nativeElement.textContent).toContain('Show Indian Utilities');
+    expect(fixture.nativeElement.textContent).toContain('Utility Reminders');
+    await utilities.setShowIndianUtilities(false);
+    fixture.detectChanges();
+    expect(utilities.mobileProfiles()).toEqual([]);
+    expect(fixture.nativeElement.textContent).not.toContain('Utility Reminders');
+    expect(fixture.nativeElement.textContent).toContain('Show Indian Utilities');
+    fixture.destroy();
   });
   it('creates once, clears credentials, and waits for a destination before doing any delivery', async () => {
     const fixture = await create();

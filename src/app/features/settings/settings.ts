@@ -40,6 +40,7 @@ import {
   currencyLabel,
   currencySymbol,
 } from '../../core/services/currency-display';
+import { UtilitiesService } from '../utilities/utilities.service';
 
 type PinAction = 'CHANGE' | 'DISABLE';
 type BackupAction = 'CREATE' | 'RESTORE';
@@ -87,7 +88,8 @@ export class SettingsPage {
   })();
   readonly currentSection = signal('security');
   scrollSection(
-    id: 'security' | 'appearance' | 'defaults' | 'bank-cash' | 'notifications' | 'data',
+    id:
+      'security' | 'appearance' | 'defaults' | 'bank-cash' | 'utilities' | 'notifications' | 'data',
   ): void {
     const section = document.getElementById(id);
     if (!section) return;
@@ -103,6 +105,7 @@ export class SettingsPage {
   readonly database = inject(SqliteDatabase);
   readonly store = inject(CardNestStore);
   readonly notifications = inject(NotificationService);
+  readonly utilities = inject(UtilitiesService);
   readonly pin = inject(ApplicationPinService);
   readonly appLock = inject(AppLockService);
   readonly uiPreferences = inject(UiPreferencesService);
@@ -584,6 +587,68 @@ export class SettingsPage {
   async updateFlashSource(sourceId: string): Promise<void> {
     await this.store.setFlashTransactionSource(sourceId);
     this.preferenceMessage.set('Flash transaction source updated.');
+  }
+
+  async toggleIndianUtilities(event: Event): Promise<void> {
+    const input = event.target as HTMLInputElement;
+    const previous = this.utilities.showIndianUtilities();
+    try {
+      await this.utilities.setShowIndianUtilities(input.checked);
+      this.notifications.setUtilityReminders(this.utilities.reminderTargets());
+      if (input.checked && this.utilities.utilityReminders())
+        await this.notifications.refreshPermission();
+      this.preferenceMessage.set(
+        input.checked
+          ? 'Indian Utilities are visible.'
+          : 'Indian Utilities are hidden. Saved profiles and history are kept.',
+      );
+      await this.notifications.reschedule(this.store.cards(), (cardId) =>
+        this.store.cardDueAmount(cardId),
+      );
+    } catch {
+      input.checked = previous;
+      this.snackbar.show('Indian Utilities setting could not be saved.', 'WARNING');
+    }
+  }
+
+  async toggleUtilityReminders(event: Event): Promise<void> {
+    const input = event.target as HTMLInputElement;
+    const previous = this.utilities.utilityReminders();
+    try {
+      await this.utilities.setUtilityReminders(input.checked);
+      this.notifications.setUtilityReminders(this.utilities.reminderTargets());
+      if (input.checked && Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android')
+        await this.notifications.refreshPermission();
+      if (
+        input.checked &&
+        Capacitor.isNativePlatform() &&
+        Capacitor.getPlatform() === 'android' &&
+        this.notifications.permission() !== 'granted'
+      ) {
+        const granted = await this.notifications.requestUtilityPermission();
+        if (!granted) {
+          this.snackbar.show(
+            'Utility reminders are saved. Allow Android notifications to schedule them.',
+            'WARNING',
+          );
+          return;
+        }
+      }
+      await this.notifications.reschedule(this.store.cards(), (cardId) =>
+        this.store.cardDueAmount(cardId),
+      );
+      this.snackbar.show(
+        input.checked
+          ? Capacitor.isNativePlatform()
+            ? 'Utility reminders enabled.'
+            : 'Utility warnings are enabled in Utilities.'
+          : 'Utility reminders disabled. Card reminders are unchanged.',
+        'SUCCESS',
+      );
+    } catch {
+      input.checked = previous;
+      this.snackbar.show('Utility reminder setting could not be saved.', 'WARNING');
+    }
   }
 
   async toggleReminders(): Promise<void> {

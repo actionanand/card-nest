@@ -18,6 +18,14 @@ import { NATIVE_EXPORT } from '../services/native-export';
 import { AppLockService } from '../services/app-lock.service';
 import { SmsReviewService } from '../../features/sms-sync/sms-review.service';
 import { SmsCandidate, SmsEvidence } from '../../features/sms-sync/sms-model';
+import { indiaTodayIso } from '../services/india-date';
+import {
+  UtilitiesService,
+  SHOW_INDIAN_UTILITIES_KEY,
+  UTILITY_REMINDERS_KEY,
+} from '../../features/utilities/utilities.service';
+import { BankActivityService } from '../../features/bank-activity/bank-activity.service';
+import { addCalendarDays } from '../../features/utilities/utilities-calculations';
 
 const { DatabaseSync } = process.getBuiltinModule('node:sqlite') as typeof import('node:sqlite');
 
@@ -319,6 +327,327 @@ describe('Durable first-run data, additive read migration and private portable b
       expect(restored.paymentMethodCustom).toBeUndefined();
       expect(restored.smsAdditionalComment).toBeUndefined();
       expect(count('card_transactions')).toBe(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('persists Utilities and Bank Activity through reload and encrypted backup while keeping finance isolated', async () => {
+    const today = indiaTodayIso();
+    await database.initialise();
+    const store = TestBed.inject(CardNestStore);
+    await store.initialisePreferences();
+    const utilities = TestBed.inject(UtilitiesService);
+    const bankActivity = TestBed.inject(BankActivityService);
+    await Promise.all([utilities.initialise(), bankActivity.initialise()]);
+    expect(utilities.settings()).toEqual({ showIndianUtilities: true, utilityReminders: false });
+    expect(store.bankCashTracking().enabled).toBe(false);
+
+    const mobile = await utilities.saveMobileProfile({
+      personName: 'Fictional Sam',
+      subscriptionType: 'PREPAID',
+      operator: 'JIO',
+      mobileNumber: '+91 98765 43210',
+    });
+    expect(mobile.mobileNumber).toBe('+91-9876543210');
+    const queuedVoice = await utilities.saveRecharge({
+      profileId: mobile.id,
+      planType: 'VOICE_ONLY',
+      amountMinor: 19900,
+      startDate: today,
+      validityDays: 3,
+      comment: 'Synthetic queued voice plan',
+    });
+    const queuedData = await utilities.saveRecharge({
+      profileId: mobile.id,
+      planType: 'DATA_ONLY',
+      startDate: today,
+      validityDays: 2,
+    });
+    expect(queuedVoice.endDate).toBe(addCalendarDays(today, 2));
+    expect(queuedData.planType).toBe('DATA_ONLY');
+
+    const lpg = await utilities.saveLpgProfile({
+      connectionName: 'Fictional kitchen',
+      provider: 'INDANE',
+      commercial: false,
+      cylinderSize: 'NORMAL',
+      estimatedUsageDays: 25,
+    });
+    await utilities.saveLpgEvent({
+      profileId: lpg.id,
+      eventType: 'STARTED',
+      eventDate: '2026-08-01',
+    });
+    await utilities.saveLpgEvent({
+      profileId: lpg.id,
+      eventType: 'EMPTY',
+      eventDate: '2026-08-25',
+    });
+    await utilities.saveLpgEvent({
+      profileId: lpg.id,
+      eventType: 'REFILL_RECEIVED',
+      eventDate: '2026-08-27',
+      amountMinor: 95000,
+      cylinderSize: 'NORMAL',
+    });
+    const currentLpg = await utilities.saveLpgProfile({
+      connectionName: 'Fictional active cylinder',
+      provider: 'HPCL',
+      commercial: false,
+      cylinderSize: 'SMALL',
+      estimatedUsageDays: 25,
+    });
+    await utilities.saveLpgEvent({
+      profileId: currentLpg.id,
+      eventType: 'STARTED',
+      eventDate: addCalendarDays(today, -24),
+    });
+
+    const linkedBank = await store.addBankAccount({
+      nickname: 'Fiction activity bank',
+      institution: 'ICICI Bank',
+      lastDigits: '417',
+    });
+    const bankProfile = await bankActivity.saveProfile({
+      paymentSourceId: linkedBank.id,
+      bankName: '',
+      owner: 'OWN',
+      nickname: 'Household account',
+    });
+    const manualEvent = await bankActivity.saveManualEvent({
+      profileId: bankProfile.id,
+      activityDate: '2026-04-24',
+      direction: 'CREDIT',
+      reference: 'SYNTHREF123',
+    });
+    expect(manualEvent.verification).toBe('USER_CONFIRMED');
+    const temporaryEvent = await bankActivity.saveManualEvent({
+      profileId: bankProfile.id,
+      activityDate: '2026-04-20',
+      direction: 'DEBIT',
+    });
+    const correctedEvent = await bankActivity.saveManualEvent({
+      id: temporaryEvent.id,
+      profileId: bankProfile.id,
+      activityDate: '2026-04-21',
+      direction: 'CREDIT',
+    });
+    expect(correctedEvent.origin).toBe('MANUAL');
+    expect(correctedEvent.createdAt).toBe(temporaryEvent.createdAt);
+    await bankActivity.deleteEvent(correctedEvent.id);
+    const nativePlatform = vi.spyOn(Capacitor, 'isNativePlatform');
+    nativePlatform.mockReturnValue(false);
+    expect(
+      await bankActivity.ingestAndroidSms({
+        fingerprint: 'c'.repeat(64),
+        activityDate: today,
+        kind: 'BANK_DEBIT',
+        direction: 'DEBIT',
+        purposeHint: 'PURCHASE',
+        accountDigits: '417',
+        issuer: 'ICICI',
+      }),
+    ).toBe(false);
+    nativePlatform.mockReturnValue(true);
+    expect(store.bankCashTracking().enabled).toBe(false);
+    expect(
+      store.paymentSources().find((item) => item.id === linkedBank.id)?.balanceMinor,
+    ).toBeUndefined();
+
+    const smsEvidence = {
+      fingerprint: 'a'.repeat(64),
+      activityDate: today,
+      kind: 'BANK_DEBIT',
+      direction: 'DEBIT' as const,
+      purposeHint: 'PURCHASE',
+      accountDigits: '417',
+      issuer: 'ICICI',
+      reference: 'SYNTHRRN123',
+      merchant: 'Fictional market',
+    };
+    expect(
+      await bankActivity.ingestAndroidSms({
+        ...smsEvidence,
+        fingerprint: 'd'.repeat(64),
+        purposeHint: 'INCOMING',
+        direction: 'CREDIT',
+        merchant: 'Monthly interest credit',
+      }),
+    ).toBe(false);
+    expect(await bankActivity.ingestAndroidSms(smsEvidence)).toBe(true);
+    expect(await bankActivity.ingestAndroidSms(smsEvidence)).toBe(false);
+    expect(bankActivity.eventsFor(bankProfile.id)).toHaveLength(2);
+    expect(count('card_transactions')).toBe(0);
+    expect(count('source_transfers')).toBe(0);
+
+    const ambiguousProfile = await bankActivity.saveProfile({
+      bankName: 'ICICI Bank',
+      accountSuffix: '417',
+      owner: 'OTHERS',
+      holderName: 'Fictional Alex',
+    });
+    expect(
+      await bankActivity.ingestAndroidSms({ ...smsEvidence, fingerprint: 'b'.repeat(64) }),
+    ).toBe(false);
+    expect(bankActivity.candidates()).toMatchObject([
+      {
+        fingerprint: 'b'.repeat(64),
+        activityDate: today,
+        bankName: 'ICICI',
+        accountSuffix: '417',
+      },
+    ]);
+    await bankActivity.approveCandidate('b'.repeat(64), ambiguousProfile.id);
+    expect(bankActivity.eventsFor(ambiguousProfile.id)).toMatchObject([
+      { origin: 'ANDROID_SMS', verification: 'USER_CONFIRMED', fingerprint: 'b'.repeat(64) },
+    ]);
+    expect(
+      await bankActivity.ingestAndroidSms({
+        ...smsEvidence,
+        fingerprint: 'e'.repeat(64),
+        issuer: undefined,
+      }),
+    ).toBe(false);
+    expect(bankActivity.candidates()).toHaveLength(1);
+
+    await utilities.setUtilityReminders(true);
+    expect(
+      utilities
+        .reminderTargets(today)
+        .map((target) => target.kind)
+        .sort(),
+    ).toEqual(['LPG_ESTIMATE', 'MOBILE_PLAN', 'MOBILE_VOICE']);
+    await utilities.setShowIndianUtilities(false);
+    expect(utilities.reminderTargets(today)).toEqual([]);
+    expect(utilities.mobileProfiles()).toHaveLength(1);
+    await utilities.setShowIndianUtilities(true);
+    expect(utilities.utilityReminders()).toBe(true);
+    await database.run(
+      'INSERT INTO sms_candidates(id,provider_id,event_at,kind,state,payload,updated_at) VALUES(?,?,?,?,?,?,?)',
+      [
+        'synthetic-raw-exclusion',
+        'synthetic-provider',
+        today,
+        'BANK_DEBIT',
+        'PENDING',
+        JSON.stringify({ body: 'SYNTHETIC_RAW_SMS_MUST_NOT_BE_BACKED_UP' }),
+        new Date().toISOString(),
+      ],
+    );
+
+    vi.stubGlobal('crypto', webcrypto);
+    vi.stubGlobal('Blob', NodeBlob);
+    try {
+      const backups = TestBed.inject(BackupService);
+      const fullBackup = await backups.create('synthetic-utilities-passphrase');
+      const plaintext = await database.exportBackupJson();
+      expect(plaintext).not.toContain('SYNTHETIC_RAW_SMS_MUST_NOT_BE_BACKED_UP');
+      await database.run('DELETE FROM bank_activity_events');
+      await database.run('DELETE FROM bank_activity_profiles');
+      await database.run('DELETE FROM lpg_events');
+      await database.run('DELETE FROM mobile_recharges');
+      await database.run('DELETE FROM utility_profiles');
+      await database.run('DELETE FROM app_preferences WHERE key IN (?,?)', [
+        SHOW_INDIAN_UTILITIES_KEY,
+        UTILITY_REMINDERS_KEY,
+      ]);
+      await backups.restore(fullBackup.contents, 'synthetic-utilities-passphrase');
+      const restoredUtilities = TestBed.runInInjectionContext(() => new UtilitiesService());
+      const restoredBankActivity = TestBed.runInInjectionContext(() => new BankActivityService());
+      const restoredStore = TestBed.runInInjectionContext(() => new CardNestStore());
+      await Promise.all([
+        restoredStore.initialisePreferences(),
+        restoredUtilities.initialise(),
+        restoredBankActivity.initialise(),
+      ]);
+      expect(restoredUtilities.settings()).toEqual({
+        showIndianUtilities: true,
+        utilityReminders: true,
+      });
+      expect(restoredUtilities.mobileProfiles()).toEqual([mobile]);
+      expect(
+        restoredUtilities
+          .mobileRecharges()
+          .map((item) => item.id)
+          .sort(),
+      ).toEqual([queuedVoice.id, queuedData.id].sort());
+      expect(
+        restoredUtilities
+          .lpgProfiles()
+          .map((item) => item.id)
+          .sort(),
+      ).toEqual([lpg.id, currentLpg.id].sort());
+      expect(restoredUtilities.lpgEvents()).toHaveLength(4);
+      expect(
+        restoredBankActivity
+          .profiles()
+          .map((item) => item.id)
+          .sort(),
+      ).toEqual([bankProfile.id, ambiguousProfile.id].sort());
+      expect(restoredBankActivity.eventsFor(bankProfile.id)).toHaveLength(2);
+      expect(
+        restoredBankActivity.eventsFor(bankProfile.id).some((item) => item.origin === 'MANUAL'),
+      ).toBe(true);
+      expect(
+        restoredBankActivity
+          .eventsFor(bankProfile.id)
+          .some((item) => item.origin === 'ANDROID_SMS'),
+      ).toBe(true);
+      expect(restoredBankActivity.eventsFor(ambiguousProfile.id)).toMatchObject([
+        { origin: 'ANDROID_SMS', verification: 'USER_CONFIRMED', fingerprint: 'b'.repeat(64) },
+      ]);
+      expect(restoredBankActivity.candidates()).toMatchObject([
+        { fingerprint: 'e'.repeat(64), activityDate: today, accountSuffix: '417' },
+      ]);
+      expect(restoredStore.bankCashTracking().enabled).toBe(false);
+      expect(count('card_transactions')).toBe(0);
+      expect(count('source_transfers')).toBe(0);
+
+      const oldPortable = JSON.parse(await database.exportBackupJson()) as {
+        databaseVersion: number;
+        tables: { name: string; rows: Record<string, unknown>[] }[];
+      };
+      oldPortable.databaseVersion = 9;
+      oldPortable.tables = oldPortable.tables
+        .filter(
+          (table) =>
+            ![
+              'utility_profiles',
+              'mobile_recharges',
+              'lpg_events',
+              'bank_activity_profiles',
+              'bank_activity_events',
+              'bank_activity_candidates',
+            ].includes(table.name),
+        )
+        .map((table) =>
+          table.name === 'app_preferences'
+            ? {
+                ...table,
+                rows: table.rows.filter(
+                  (row) =>
+                    ![SHOW_INDIAN_UTILITIES_KEY, UTILITY_REMINDERS_KEY].includes(
+                      String(row['key']),
+                    ),
+                ),
+              }
+            : table,
+        );
+      const exportSpy = vi
+        .spyOn(database, 'exportBackupJson')
+        .mockResolvedValue(JSON.stringify(oldPortable));
+      const oldBackup = await backups.create('synthetic-old-utilities-passphrase');
+      exportSpy.mockRestore();
+      await backups.restore(oldBackup.contents, 'synthetic-old-utilities-passphrase');
+      const oldUtilities = TestBed.runInInjectionContext(() => new UtilitiesService());
+      await oldUtilities.initialise();
+      expect(oldUtilities.settings()).toEqual({
+        showIndianUtilities: true,
+        utilityReminders: false,
+      });
+      expect(oldUtilities.mobileProfiles()).toEqual([]);
+      expect(oldUtilities.lpgProfiles()).toEqual([]);
     } finally {
       vi.unstubAllGlobals();
     }
@@ -1226,6 +1555,6 @@ describe('Durable first-run data, additive read migration and private portable b
     ]);
     expect(vi.mocked(CapacitorSQLite.closeConnection)).toHaveBeenCalled();
     expect(CapacitorSQLite.createConnection).toHaveBeenCalledTimes(2);
-    expect(sql.prepare('PRAGMA user_version').get()?.['user_version']).toBe(9);
+    expect(sql.prepare('PRAGMA user_version').get()?.['user_version']).toBe(11);
   });
 });

@@ -58,6 +58,13 @@
       </button>
       <button
         type="button"
+        [attr.aria-pressed]="currentSection() === 'utilities'"
+        (click)="scrollSection('utilities')"
+      >
+        Indian Utilities
+      </button>
+      <button
+        type="button"
         [attr.aria-pressed]="currentSection() === 'notifications'"
         (click)="scrollSection('notifications')"
       >
@@ -430,6 +437,47 @@
             [disabled]="!database.ready() || !store.bankCashTracking().enabled"
             (change)="toggleCardSettlementFunding($event)"
         /></label>
+      </section>
+      <section id="utilities" class="panel">
+        <div class="setting-heading">
+          <span aria-hidden="true"><app-icon name="mobile" /></span>
+          <div>
+            <h2>Indian Utilities</h2>
+            <p>Mobile recharge and LPG records are separate from financial accounting.</p>
+          </div>
+        </div>
+        <label class="setting-row toggle">
+          <span
+            ><strong>Show Indian Utilities</strong
+            ><small
+              >Hide the Utilities route and suppress its reminders without deleting saved profiles
+              or history.</small
+            ></span
+          >
+          <input
+            type="checkbox"
+            [checked]="utilities.showIndianUtilities()"
+            [disabled]="!database.ready()"
+            (change)="toggleIndianUtilities($event)"
+          />
+        </label>
+        @if (utilities.showIndianUtilities()) {
+          <label class="setting-row toggle">
+            <span
+              ><strong>Utility Reminders</strong
+              ><small
+                >One setting for eligible mobile and LPG reminders. Android notifications use the
+                existing CardNest scheduler; Web shows in-app warnings.</small
+              ></span
+            >
+            <input
+              type="checkbox"
+              [checked]="utilities.utilityReminders()"
+              [disabled]="!database.ready()"
+              (change)="toggleUtilityReminders($event)"
+            />
+          </label>
+        }
       </section>
       <section id="notifications" class="panel">
         <div class="setting-heading">

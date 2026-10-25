@@ -90,4 +90,26 @@ export const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
       `CREATE INDEX IF NOT EXISTS idx_source_balance_adjustments ON source_balance_adjustments(source_id, created_at DESC)`,
     ],
   },
+  {
+    version: 10,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS utility_profiles (id TEXT PRIMARY KEY NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('MOBILE','LPG')), archived INTEGER NOT NULL DEFAULT 0, payload TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+      `CREATE INDEX IF NOT EXISTS idx_utility_profiles_kind ON utility_profiles(kind, archived)`,
+      `CREATE TABLE IF NOT EXISTS mobile_recharges (id TEXT PRIMARY KEY NOT NULL, profile_id TEXT NOT NULL, start_date TEXT NOT NULL, end_date TEXT NOT NULL, plan_type TEXT NOT NULL CHECK(plan_type IN ('VOICE_DATA','VOICE_ONLY','DATA_ONLY')), amount_minor INTEGER, payload TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, FOREIGN KEY(profile_id) REFERENCES utility_profiles(id) ON DELETE CASCADE)`,
+      `CREATE INDEX IF NOT EXISTS idx_mobile_recharges_profile_dates ON mobile_recharges(profile_id, start_date, end_date)`,
+      `CREATE TABLE IF NOT EXISTS lpg_events (id TEXT PRIMARY KEY NOT NULL, profile_id TEXT NOT NULL, event_type TEXT NOT NULL CHECK(event_type IN ('STARTED','EMPTY','REFILL_RECEIVED')), event_date TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, FOREIGN KEY(profile_id) REFERENCES utility_profiles(id) ON DELETE CASCADE)`,
+      `CREATE INDEX IF NOT EXISTS idx_lpg_events_profile_date ON lpg_events(profile_id, event_date)`,
+      `CREATE TABLE IF NOT EXISTS bank_activity_profiles (id TEXT PRIMARY KEY NOT NULL, payment_source_id TEXT, bank_name TEXT NOT NULL, archived INTEGER NOT NULL DEFAULT 0, payload TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_bank_activity_linked_source ON bank_activity_profiles(payment_source_id) WHERE payment_source_id IS NOT NULL`,
+      `CREATE TABLE IF NOT EXISTS bank_activity_events (id TEXT PRIMARY KEY NOT NULL, profile_id TEXT NOT NULL, activity_date TEXT NOT NULL, direction TEXT NOT NULL CHECK(direction IN ('CREDIT','DEBIT')), origin TEXT NOT NULL CHECK(origin IN ('MANUAL','ANDROID_SMS')), verification TEXT NOT NULL CHECK(verification IN ('USER_CONFIRMED','SOURCE_MATCHED')), fingerprint TEXT UNIQUE, payload TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, FOREIGN KEY(profile_id) REFERENCES bank_activity_profiles(id) ON DELETE CASCADE)`,
+      `CREATE INDEX IF NOT EXISTS idx_bank_activity_events_profile_date ON bank_activity_events(profile_id, activity_date DESC)`,
+    ],
+  },
+  {
+    version: 11,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS bank_activity_candidates (fingerprint TEXT PRIMARY KEY NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL)`,
+      `CREATE INDEX IF NOT EXISTS idx_bank_activity_candidates_created ON bank_activity_candidates(created_at DESC)`,
+    ],
+  },
 ];

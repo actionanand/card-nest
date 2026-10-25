@@ -70,6 +70,16 @@ export const routes: Routes = [
     loadComponent: () => import('./features/sources/sources').then((item) => item.SourcesPage),
   },
   {
+    path: 'utilities',
+    loadComponent: () =>
+      import('./features/utilities/utilities').then((item) => item.UtilitiesPage),
+  },
+  {
+    path: 'bank-activity',
+    loadComponent: () =>
+      import('./features/bank-activity/bank-activity').then((item) => item.BankActivityPage),
+  },
+  {
     path: 'loans',
     loadComponent: () => import('./features/loans/loans').then((item) => item.LoansPage),
   },

@@ -3,6 +3,43 @@ import { DATABASE_MIGRATIONS } from './migrations';
 const { DatabaseSync } = process.getBuiltinModule('node:sqlite') as typeof import('node:sqlite');
 
 describe('SMS upgrade of an existing version-6 database', () => {
+  it('adds Utilities and Bank Activity tables additively on top of schema v9', () => {
+    const sql = new DatabaseSync(':memory:');
+    try {
+      sql.exec('PRAGMA foreign_keys=ON');
+      for (const migration of DATABASE_MIGRATIONS.filter((item) => item.version <= 9))
+        for (const statement of migration.statements) sql.exec(statement);
+      sql.exec("INSERT INTO app_preferences VALUES ('bank_cash_tracking','{\"enabled\":true}')");
+      sql.exec(
+        "INSERT INTO source_transfers(id,kind,from_source_id,to_source_id,amount_minor,transfer_date,payload,created_at,updated_at) VALUES ('existing-transfer','TRANSFER','a','b',1,'2026-10-01','{}','before','before')",
+      );
+      const migration = DATABASE_MIGRATIONS.find((item) => item.version === 10)!;
+      for (const statement of migration.statements) sql.exec(statement);
+      const reviewQueueMigration = DATABASE_MIGRATIONS.find((item) => item.version === 11)!;
+      for (const statement of reviewQueueMigration.statements) sql.exec(statement);
+      sql.exec('PRAGMA user_version=11');
+      expect(sql.prepare('PRAGMA user_version').get()?.['user_version']).toBe(11);
+      expect(
+        sql
+          .prepare("SELECT encrypted_value FROM app_preferences WHERE key='bank_cash_tracking'")
+          .get()?.['encrypted_value'],
+      ).toBe('{"enabled":true}');
+      expect(sql.prepare('SELECT id FROM source_transfers').get()?.['id']).toBe(
+        'existing-transfer',
+      );
+      expect(
+        sql
+          .prepare(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('utility_profiles','mobile_recharges','lpg_events','bank_activity_profiles','bank_activity_events','bank_activity_candidates') ORDER BY name",
+          )
+          .all(),
+      ).toHaveLength(6);
+      expect(sql.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+    } finally {
+      sql.close();
+    }
+  });
+
   it('preserves financial rows and preferences, supports replay, and enforces review constraints', () => {
     const sql = new DatabaseSync(':memory:');
     try {

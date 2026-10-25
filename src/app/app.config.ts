@@ -15,6 +15,8 @@ import { SensitiveCardDataService } from './core/services/sensitive-card-data.se
 import { DateFormatService } from './core/services/date-format.service';
 import { CardExpiryService } from './core/services/card-expiry.service';
 import { routes } from './app.routes';
+import { UtilitiesService } from './features/utilities/utilities.service';
+import { BankActivityService } from './features/bank-activity/bank-activity.service';
 
 export const appConfig: ApplicationConfig = {
   providers: [
@@ -30,6 +32,8 @@ export const appConfig: ApplicationConfig = {
       const cardSecrets = inject(SensitiveCardDataService);
       const dateFormats = inject(DateFormatService);
       const cardExpiry = inject(CardExpiryService);
+      const utilities = inject(UtilitiesService);
+      const bankActivity = inject(BankActivityService);
       const initialiseStorage = database
         .initialise()
         .then(() =>
@@ -40,13 +44,16 @@ export const appConfig: ApplicationConfig = {
             dateFormats.initialise(),
             cardExpiry.initialise(),
             store.initialisePreferences(),
+            utilities.initialise(),
+            bankActivity.initialise(),
           ]),
         )
         .then(() => appLock.initialise());
       return initialiseStorage
-        .then(() =>
-          notifications.initialise(store.cards(), (cardId) => store.cardDueAmount(cardId)),
-        )
+        .then(() => {
+          notifications.setUtilityReminders(utilities.reminderTargets());
+          return notifications.initialise(store.cards(), (cardId) => store.cardDueAmount(cardId));
+        })
         .catch(() => undefined);
     }),
   ],

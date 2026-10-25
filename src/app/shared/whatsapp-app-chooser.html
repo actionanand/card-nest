@@ -1,0 +1,34 @@
+<button
+  class="modal-scrim"
+  type="button"
+  aria-label="Close WhatsApp app chooser"
+  (click)="closed.emit()"
+></button>
+<section class="app-chooser" role="dialog" aria-modal="true" aria-labelledby="whatsapp-app-title">
+  <header>
+    <div>
+      <p>Open chat with</p>
+      <h2 id="whatsapp-app-title">Choose WhatsApp</h2>
+    </div>
+    <button class="close-button" type="button" aria-label="Close" (click)="closed.emit()">
+      <app-icon name="close" />
+    </button>
+  </header>
+  <div class="app-options">
+    @for (packageName of packages(); track packageName) {
+      <button type="button" (click)="chosen.emit(packageName)">
+        <img
+          [ngSrc]="appIcon(packageName)"
+          width="48"
+          height="48"
+          [alt]="appName(packageName) + ' icon'"
+        />
+        <span
+          ><strong>{{ appName(packageName) }}</strong
+          ><small>Open this number here</small></span
+        >
+        <app-icon name="chevron_right" />
+      </button>
+    }
+  </div>
+</section>
