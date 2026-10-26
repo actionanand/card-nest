@@ -202,9 +202,9 @@ class SmsBankParserTest {
     assertNull(validPrimaryWithMalformedOptional.availableLimitMinor)
     assertNull(validPrimaryWithMalformedOptional.amountDueMinor)
 
-    assertNull(SmsTransactionParser.parse("HSBC Credit Card xx0379 used at FLIPKART for INR 3,38 on 26/10/26.", received))
-    assertNull(SmsTransactionParser.parse("HSBC Credit Card xx0379 used at FLIPKART for INR 3,0.88 on 26/10/26.", received))
-    assertNull(SmsTransactionParser.parse("HSBC Credit Card xx0379 statement balance is INR 10,486.66; available limit INR 63.34.", received))
+    assertNull(SmsTransactionParser.parse("HSBC Credit Card xx0379 used at FLIPKART for INR 3,38 on 26/10/26.", receipt))
+    assertNull(SmsTransactionParser.parse("HSBC Credit Card xx0379 used at FLIPKART for INR 3,0.88 on 26/10/26.", receipt))
+    assertNull(SmsTransactionParser.parse("HSBC Credit Card xx0379 statement balance is INR 10,486.66; available limit INR 63.34.", receipt))
   }
 
   @Test fun counterpartyAccountMentionedBeforeCustomerAccount() {
