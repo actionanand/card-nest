@@ -16,7 +16,8 @@ import {
   viewChild,
 } from '@angular/core';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
-import { toSignal } from '@angular/core/rxjs-interop';
+import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
+import { debounceTime, Observable } from 'rxjs';
 import { Router } from '@angular/router';
 import { Capacitor } from '@capacitor/core';
 import { SmsSwipe } from './sms-swipe';
@@ -30,6 +31,8 @@ import { parseMoneyToMinor } from '../../core/services/money';
 import { SmsReviewService } from './sms-review.service';
 import { SmsTypePicker } from './sms-type-picker';
 import { matchExisting, walletComparison } from './sms-matching';
+import { purchaseAnchor, purchaseTiming } from './sms-purchase-matching';
+import { PurchaseReviewMatch, SmsPurchaseComparison } from './sms-purchase-comparison';
 import {
   bankCashTracked,
   isBankOrCash,
@@ -46,6 +49,7 @@ import {
   SmsCandidate,
   SmsKind,
   ReconciliationChoice,
+  PurchaseReviewDraft,
   eligibleSources,
   existingSuggestions,
   ledgerType,
@@ -100,7 +104,14 @@ const CANDIDATE_MENU_ITEM_HEIGHT = 44;
 
 @Component({
   selector: 'app-sms-sync',
-  imports: [ReactiveFormsModule, AppIcon, AppSelectPicker, SmsTypePicker, SmsSwipe],
+  imports: [
+    ReactiveFormsModule,
+    AppIcon,
+    AppSelectPicker,
+    SmsTypePicker,
+    SmsSwipe,
+    SmsPurchaseComparison,
+  ],
   templateUrl: './sms-sync.html',
   styleUrl: './sms-sync.scss',
   host: {
@@ -324,6 +335,142 @@ export class SmsSyncPage {
     this.applyFilters();
   }
   readonly selected = signal<SmsCandidate | null>(null);
+  private hydratingReview = false;
+  private reviewRevision = 0;
+
+  purchaseReviewActive(bank = false): boolean {
+    return bank
+      ? !!this.bankItem() && this.bankEditor.controls.purpose.value === 'PURCHASE'
+      : this.selected()?.kind === 'PURCHASE';
+  }
+
+  purchaseMatches(bank = false): readonly PurchaseReviewMatch[] {
+    this.editorChanges();
+    this.bankEditorChanges();
+    const item = this.selected()?.item;
+    if (!item) return [];
+    const form = bank ? this.bankEditor : this.editor;
+    const value = form.getRawValue();
+    const ids = bank
+      ? [
+          ...bankExistingSuggestions(item, 'PURCHASE', value.source, this.store.transactions()),
+          ...bankExistingSuggestions(
+            item,
+            'PURCHASE',
+            value.source,
+            this.store.transactions(),
+            parseMoneyToMinor(value.amount) ?? -1,
+            value.transactionDate,
+          ),
+        ].map((entry) => entry.id)
+      : this.matches().map((entry) => entry.id);
+    return this.store
+      .transactions()
+      .filter((entry) => ids.includes(entry.id))
+      .map((entry) => {
+        const timing =
+          purchaseTiming(item, entry, value.transactionDate) ?? purchaseTiming(item, entry);
+        const minutes =
+          timing?.differenceMs === null || timing?.differenceMs === undefined
+            ? null
+            : Math.round(timing.differenceMs / 60000);
+        return {
+          id: entry.id,
+          label: `${entry.transactionDate} · ${entry.transactionTime ? `${entry.transactionTime} IST (recorded)` : 'Time not recorded'} · ${entry.merchant ?? 'Purchase'} · ${this.money(entry.amountMinor)}`,
+          source: this.store.sourceDetail(entry.cardId),
+          reason:
+            entry.amountMinor !== parseMoneyToMinor(value.amount)
+              ? 'The original SMS amount matches this record. Restore the matching amount to link, or verify a separate purchase.'
+              : (timing?.reason ??
+                'The verified transaction reference matches. Timing differs; inspect the original event before linking.'),
+          canMatch: entry.amountMinor === parseMoneyToMinor(value.amount),
+          timeDifference:
+            minutes === null
+              ? ''
+              : `${Math.floor(minutes / 60)}h ${minutes % 60}m apart${timing?.anchor.kind === 'SMS_RECEIVED_FALLBACK' ? ' from SMS receipt (approximate)' : ''}`,
+        };
+      });
+  }
+
+  purchaseTimingNote(bank = false): string {
+    const item = this.selected()?.item;
+    if (!item) return '';
+    const anchor = purchaseAnchor(
+      item,
+      (bank ? this.bankEditor : this.editor).controls.transactionDate.value,
+    );
+    return anchor.kind === 'EXPLICIT_TRANSACTION_TIME'
+      ? `SMS transaction time: ${item.eventDate} ${item.eventTime} IST.`
+      : anchor.kind === 'REVIEW_DATE_ONLY'
+        ? `Review date edited. Only same-date manual suggestions are shown. Original SMS event date: ${item.eventDate}.`
+        : `SMS received: ${anchor.timestamp === null ? 'time unavailable' : new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Kolkata' }).format(anchor.timestamp) + ' IST'}. This is approximate, not the purchase time. Original event date: ${item.eventDate}.${anchor.delayed ? ' Receipt was on a different local date; delivery-day purchases are excluded.' : ''}`;
+  }
+
+  choosePurchaseMatch(id: string, bank = false): void {
+    if (!this.purchaseMatches(bank).some((entry) => entry.id === id && entry.canMatch !== false))
+      return;
+    if (!bank) this.chooseExisting(id);
+    else this.bankEditor.patchValue({ existing: id, separate: false });
+    void this.savePurchaseChoice(bank);
+  }
+
+  confirmSeparatePurchase(bank = false): void {
+    (bank ? this.bankEditor : this.editor).patchValue({ existing: '', separate: true });
+    void this.savePurchaseChoice(bank);
+  }
+
+  private async savePurchaseChoice(bank = false): Promise<void> {
+    const candidate = this.selected();
+    if (!candidate || this.hydratingReview || !this.purchaseReviewActive(bank)) return;
+    const value = (bank ? this.bankEditor : this.editor).getRawValue();
+    const draft: PurchaseReviewDraft = {
+      mode: bank ? 'BANK' : 'CARD',
+      source: value.source,
+      amount: value.amount,
+      merchant: 'merchant' in value ? value.merchant : value.description,
+      transactionDate: value.transactionDate,
+      category: value.category,
+      existing: value.existing,
+      separate: value.separate,
+      paymentMethod: value.paymentMethod,
+      paymentMethodDetail: value.paymentMethodDetail,
+      paymentMethodCustom: value.paymentMethodCustom,
+      smsAdditionalComment: value.smsAdditionalComment,
+    };
+    try {
+      await this.sync.savePurchaseReview(candidate.id, draft);
+    } catch {
+      this.error.set(
+        'Review choice could not be saved. Keep this review open and retry before leaving.',
+      );
+    }
+  }
+
+  private async restorePurchaseReview(candidate: SmsCandidate, revision: number): Promise<void> {
+    try {
+      const draft = await this.sync.loadPurchaseReview(candidate.id);
+      if (!draft || this.selected()?.id !== candidate.id || this.reviewRevision !== revision)
+        return;
+      const bank = draft.mode === 'BANK';
+      if (!this.purchaseReviewActive(bank)) return;
+      this.hydratingReview = true;
+      const { mode, merchant, ...values } = draft;
+      if (mode === 'BANK') this.bankEditor.patchValue({ ...values, description: merchant });
+      else this.editor.patchValue({ ...values, merchant });
+      const form = bank ? this.bankEditor : this.editor;
+      if (
+        draft.existing &&
+        !this.purchaseMatches(bank).some(
+          (entry) => entry.id === draft.existing && entry.canMatch !== false,
+        )
+      )
+        form.patchValue({ existing: '', separate: false });
+      this.hydratingReview = false;
+    } catch {
+      this.hydratingReview = false;
+      this.error.set('Saved review choice could not be loaded. Verify this purchase again.');
+    }
+  }
   readonly related = signal<readonly SmsCandidate[]>([]);
   readonly error = signal('');
   readonly confirmBalance = signal(false);
@@ -452,6 +599,8 @@ export class SmsSyncPage {
     }));
   });
   sourceLabel(candidate: SmsCandidate): string {
+    this.editorChanges();
+    const smsDigits = candidate.item?.cardDigits;
     if (candidate.state === 'IMPORTED') return 'Added from SMS · Recorded transaction';
     if (candidate.state === 'MATCHED_EXISTING')
       return 'Already added · Matched to existing transaction';
@@ -465,10 +614,14 @@ export class SmsSyncPage {
     const ids = candidate.item
       ? eligibleSources(candidate.item, this.store.cards(), this.store.paymentSources())
       : [];
+    const selectedSource =
+      this.selected()?.id === candidate.id ? this.editor.controls.source.value : '';
+    if (selectedSource && (ids.length !== 1 || ids[0] !== selectedSource))
+      return `Manually selected: ${this.store.sourceDetail(selectedSource)}. ${smsDigits ? 'Verify the SMS card details against this source.' : 'This SMS did not contain identifiable card digits. Verify before approval.'}`;
     if (ids.length === 1) {
       const card = this.store.cards().find((card) => card.id === ids[0]);
       const wallet = this.store.paymentSources().find((source) => source.id === ids[0]);
-      return `${card?.nickname ?? wallet?.nickname} ${card?.lastDigits || wallet?.lastDigits ? `••${card?.lastDigits ?? wallet?.lastDigits}` : ''}${card?.archived ? ' · archived' : ''}`;
+      return `Source identified from SMS: ${card?.nickname ?? wallet?.nickname} ${card?.lastDigits || wallet?.lastDigits ? `••${card?.lastDigits ?? wallet?.lastDigits}` : ''}${card?.archived ? ' · archived' : ''}`;
     }
     return ids.length > 1
       ? `Ambiguous · ${ids.length} matching sources; choose one`
@@ -1035,6 +1188,35 @@ export class SmsSyncPage {
     return labels[status.permission] ?? 'SMS access unavailable';
   });
   constructor() {
+    const destroyRef = inject(DestroyRef);
+    for (const [mode, form] of [
+      ['CARD', this.editor],
+      ['BANK', this.bankEditor],
+    ] as const) {
+      let identity = '';
+      let wasPurchase = false;
+      const changes: Observable<unknown> = form.valueChanges;
+      changes.pipe(takeUntilDestroyed(destroyRef)).subscribe(() => {
+        const value = form.getRawValue();
+        const key = [
+          value.source,
+          value.amount,
+          value.transactionDate,
+          'purpose' in value ? value.purpose : '',
+        ].join('|');
+        const purchase = this.purchaseReviewActive(mode === 'BANK');
+        if (!this.hydratingReview && (purchase || wasPurchase) && key !== identity) {
+          form.controls.existing.setValue('', { emitEvent: false });
+          form.controls.separate.setValue(false, { emitEvent: false });
+        }
+        identity = key;
+        wasPurchase = purchase;
+        if (!this.hydratingReview) this.reviewRevision++;
+      });
+      changes.pipe(debounceTime(250), takeUntilDestroyed(destroyRef)).subscribe(() => {
+        void this.savePurchaseChoice(mode === 'BANK');
+      });
+    }
     inject(DestroyRef).onDestroy(() => {
       this.sync.candidates.set([]);
       this.selected.set(null);
@@ -1306,6 +1488,7 @@ export class SmsSyncPage {
     });
   }
   open(candidate: SmsCandidate): void {
+    this.hydratingReview = true;
     this.confirmBalance.set(false);
     this.error.set('');
     this.notice.set('');
@@ -1378,12 +1561,17 @@ export class SmsSyncPage {
       paymentMethodCustom: '',
       smsAdditionalComment: '',
     });
+    this.hydratingReview = false;
+    const revision = this.reviewRevision;
+    if (candidate.kind === 'PURCHASE' || isBankEvidence(candidate.item))
+      void this.restorePurchaseReview(candidate, revision);
     queueMicrotask(() => document.getElementById('sms-review-heading')?.focus());
   }
   closeEditor(): void {
     if (this.saving()) return;
     const id = this.selected()?.id;
     if (!id) return;
+    void this.savePurchaseChoice(!!this.bankItem());
     this.selected.set(null);
     this.related.set([]);
     this.editor.reset();
@@ -1396,7 +1584,27 @@ export class SmsSyncPage {
     );
   }
   matches(): readonly { id: string; label: string }[] {
+    this.editorChanges();
     const item = this.selected()?.item;
+    if (item?.kind === 'PURCHASE' && this.editor.controls.source.value)
+      return [
+        ...new Map(
+          [
+            ...existingSuggestions(
+              item,
+              this.editor.controls.source.value,
+              this.store.transactions(),
+            ),
+            ...existingSuggestions(
+              item,
+              this.editor.controls.source.value,
+              this.store.transactions(),
+              parseMoneyToMinor(this.editor.controls.amount.value) ?? -1,
+              this.editor.controls.transactionDate.value,
+            ),
+          ].map((entry) => [entry.id, entry]),
+        ).values(),
+      ].map((entry) => ({ id: entry.id, label: entry.merchant ?? entry.type }));
     if (this.editor.controls.reconciliation.value === 'REPAIR_EXISTING')
       return this.store
         .transactions()
@@ -1451,6 +1659,7 @@ export class SmsSyncPage {
     if (!entry) return;
     this.editor.controls.source.setValue(entry.cardId);
     this.editor.controls.existing.setValue(entry.id);
+    this.editor.controls.separate.setValue(false);
   }
   decide(candidate: SmsCandidate, state: 'REJECTED' | 'DEFERRED' | 'IGNORED' | 'PENDING'): void {
     void this.run(async () => {

@@ -8,6 +8,7 @@ import {
   SmsPaymentMethodDetail,
   TransactionType,
 } from '../../core/models/domain';
+import { purchaseCompatible } from './sms-purchase-matching';
 
 export type SmsKind =
   | 'PURCHASE'
@@ -105,6 +106,20 @@ export interface ApprovalEdits {
   paymentMethodDetail?: SmsPaymentMethodDetail;
   paymentMethodCustom?: string;
   smsAdditionalComment?: string;
+}
+export interface PurchaseReviewDraft {
+  mode: 'CARD' | 'BANK';
+  source: string;
+  amount: string;
+  merchant: string;
+  transactionDate: string;
+  category: string;
+  existing: string;
+  separate: boolean;
+  paymentMethod: string;
+  paymentMethodDetail: string;
+  paymentMethodCustom: string;
+  smsAdditionalComment: string;
 }
 export interface SmsCandidate {
   id: string;
@@ -420,7 +435,9 @@ export function bankExistingSuggestions(
       entry.type === type &&
       entry.currencyCode === item.currency &&
       entry.amountMinor === amountMinor &&
-      Math.abs(Date.parse(entry.transactionDate) - Date.parse(eventDate)) <= 3 * 86400000 &&
+      (type === 'PURCHASE'
+        ? purchaseCompatible(item, entry, sourceId, amountMinor, eventDate)
+        : Math.abs(Date.parse(entry.transactionDate) - Date.parse(eventDate)) <= 3 * 86400000) &&
       !(entry.reference && item.reference && entry.reference !== item.reference),
   );
 }
@@ -524,15 +541,21 @@ export function existingSuggestions(
   item: SmsEvidence,
   sourceId: string,
   transactions: readonly CardTransaction[],
+  amountMinor = item.amountMinor,
+  reviewDate = item.eventDate,
 ): readonly CardTransaction[] {
   const type = ledgerType(item);
+  if (item.kind === 'PURCHASE' && type === 'PURCHASE')
+    return transactions.filter((entry) =>
+      purchaseCompatible(item, entry, sourceId, amountMinor, reviewDate),
+    );
   return transactions.filter(
     (t) =>
       t.cardId === sourceId &&
       t.type === type &&
       t.currencyCode === item.currency &&
-      t.amountMinor === item.amountMinor &&
-      Math.abs(Date.parse(t.transactionDate) - Date.parse(item.eventDate)) <= 3 * 86400000,
+      t.amountMinor === amountMinor &&
+      Math.abs(Date.parse(t.transactionDate) - Date.parse(reviewDate)) <= 3 * 86400000,
   );
 }
 export function recurringRelationship(a: SmsEvidence, b: SmsEvidence): boolean {

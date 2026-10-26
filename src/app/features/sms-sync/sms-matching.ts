@@ -1,5 +1,6 @@
 import { CardTransaction, CreditCard, PaymentSource } from '../../core/models/domain';
 import { indiaTodayIso } from '../../core/services/india-date';
+import { purchaseCompatible, purchaseTiming } from './sms-purchase-matching';
 import {
   eligibleSources,
   isPluxeeSource,
@@ -93,23 +94,26 @@ export function matchExisting(
             )
             .map((card) => card.id)
         : [];
-    const suggestions = item.dateFallback
-      ? []
-      : ledger
-          .filter(
-            (entry) =>
-              possibleSources.includes(entry.cardId) &&
-              entry.type === type &&
-              entry.currencyCode === item.currency &&
-              entry.amountMinor === item.amountMinor &&
-              entry.transactionDate === item.eventDate,
-          )
-          .sort(
-            (a, b) =>
-              Number(merchantSimilarity(item.merchant, b.merchant)) -
-                Number(merchantSimilarity(item.merchant, a.merchant)) || a.id.localeCompare(b.id),
-          )
-          .slice(0, 20);
+    const suggestions =
+      item.dateFallback && item.kind !== 'PURCHASE'
+        ? []
+        : ledger
+            .filter(
+              (entry) =>
+                possibleSources.includes(entry.cardId) &&
+                entry.type === type &&
+                entry.currencyCode === item.currency &&
+                entry.amountMinor === item.amountMinor &&
+                (item.kind === 'PURCHASE'
+                  ? purchaseCompatible(item, entry, entry.cardId)
+                  : entry.transactionDate === item.eventDate),
+            )
+            .sort(
+              (a, b) =>
+                Number(merchantSimilarity(item.merchant, b.merchant)) -
+                  Number(merchantSimilarity(item.merchant, a.merchant)) || a.id.localeCompare(b.id),
+            )
+            .slice(0, 20);
     return {
       confidence: suggestions.length ? 'POSSIBLE_EXISTING' : ids.length ? 'AMBIGUOUS' : 'NO_MATCH',
       transactionIds: suggestions.map((entry) => entry.id),
@@ -121,6 +125,38 @@ export function matchExisting(
     };
   }
   const sourceId = ids[0];
+  if (item.kind === 'PURCHASE') {
+    const plausible = ledger.filter((entry) => purchaseCompatible(item, entry, sourceId));
+    const unique = plausible.length === 1 ? plausible[0] : undefined;
+    const timing = unique ? purchaseTiming(item, unique) : null;
+    const automatic =
+      !!unique &&
+      !claimed.has(unique.id) &&
+      timing?.anchor.kind === 'EXPLICIT_TRANSACTION_TIME' &&
+      timing.differenceMs !== null &&
+      !!item.cardDigits &&
+      !!item.reference &&
+      item.reference === unique.reference &&
+      (!unique.generatedOccurrenceDate || unique.generatedOccurrenceDate === item.eventDate);
+    return {
+      confidence: automatic
+        ? 'HIGH_CONFIDENCE_EXISTING'
+        : plausible.length > 1
+          ? 'AMBIGUOUS'
+          : plausible.length
+            ? 'POSSIBLE_EXISTING'
+            : 'NO_MATCH',
+      sourceId,
+      transactionIds: plausible.map((entry) => entry.id),
+      reason: automatic
+        ? 'Unique verified source and reference, matching amount and type, and explicit transaction timing.'
+        : plausible.some((entry) => !!entry.recurringRuleId)
+          ? 'Possible existing recurring transaction. Confirm the occurrence manually.'
+          : plausible.length
+            ? 'Possible matching purchase. Timing and merchant names alone do not prove identity.'
+            : 'No compatible purchase within 18 hours or on the same untimed local date.',
+    };
+  }
   const nearby = ledger.filter(
     (entry) =>
       entry.cardId === sourceId &&

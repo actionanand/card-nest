@@ -53,6 +53,7 @@ import {
   ReviewState,
   ReconciliationChoice,
   ApprovalEdits,
+  PurchaseReviewDraft,
   ledgerType,
   validEvidence,
   existingSuggestions,
@@ -362,7 +363,7 @@ export class SmsReviewService {
       }));
       const competingRows = dates.length
         ? await tx.query<{ payload: string }>(
-            "SELECT payload FROM sms_candidates WHERE state='PENDING' AND payload IS NOT NULL AND json_extract(payload,'$.eventDate') BETWEEN ? AND ? LIMIT 5001",
+            "SELECT payload FROM sms_candidates WHERE state='PENDING' AND payload IS NOT NULL AND json_extract(payload,'$.eventDate') BETWEEN date(?,'-1 day') AND date(?,'+1 day') LIMIT 5001",
             [dates[0], dates[dates.length - 1]],
           )
         : [];
@@ -371,16 +372,25 @@ export class SmsReviewService {
         const item: unknown = JSON.parse(row.payload);
         if (!validEvidence(item)) continue;
         const proposal = matchExisting(item, cards, sources, ledger, claimed);
-        // Weak nearby suggestions do not claim an exact existing occurrence.
-        if (proposal.confidence !== 'HIGH_CONFIDENCE_EXISTING') continue;
+        // Any competing purchase suggestion prevents an automatic identity decision.
+        if (item.kind !== 'PURCHASE' && proposal.confidence !== 'HIGH_CONFIDENCE_EXISTING')
+          continue;
         for (const target of proposal.transactionIds)
           competing.set(target, (competing.get(target) ?? 0) + 1);
       }
       let linked = 0;
+      const savedReviews = new Set(
+        (
+          await tx.query<{ key: string }>(
+            "SELECT key FROM app_preferences WHERE key LIKE 'sms_purchase_review:%'",
+          )
+        ).map((row) => row.key),
+      );
       for (const { item, match } of proposals) {
         this.assertUnlocked();
         if (!ledgerType(item) || ledgerRows.length > 5000 || competingRows.length > 5000) continue;
         if (
+          savedReviews.has(`sms_purchase_review:${item.id}`) ||
           match.confidence !== 'HIGH_CONFIDENCE_EXISTING' ||
           competing.get(match.transactionIds[0]) !== 1 ||
           claimed.has(match.transactionIds[0])
@@ -1063,6 +1073,58 @@ export class SmsReviewService {
     });
     await this.refresh();
   }
+  async loadPurchaseReview(id: string): Promise<PurchaseReviewDraft | null> {
+    this.assertUnlocked();
+    const [row] = await this.database.query<{ encrypted_value: string }>(
+      'SELECT encrypted_value FROM app_preferences WHERE key=?',
+      [`sms_purchase_review:${id}`],
+    );
+    if (!row) return null;
+    try {
+      const draft: unknown = JSON.parse(row.encrypted_value);
+      if (!draft || typeof draft !== 'object') return null;
+      const values = draft as Record<string, unknown>;
+      if (
+        !['CARD', 'BANK'].includes(String(values['mode'])) ||
+        typeof values['separate'] !== 'boolean' ||
+        ![
+          'source',
+          'amount',
+          'merchant',
+          'transactionDate',
+          'category',
+          'existing',
+          'paymentMethod',
+          'paymentMethodDetail',
+          'paymentMethodCustom',
+          'smsAdditionalComment',
+        ].every((key) => typeof values[key] === 'string' && values[key].length <= 500)
+      )
+        return null;
+      return draft as PurchaseReviewDraft;
+    } catch {
+      return null;
+    }
+  }
+
+  async savePurchaseReview(id: string, draft: PurchaseReviewDraft | null): Promise<void> {
+    this.assertUnlocked();
+    await this.database.atomic(async (tx) => {
+      const [row] = await tx.query<{ state: string }>(
+        'SELECT state FROM sms_candidates WHERE id=?',
+        [id],
+      );
+      if (!row || !['PENDING', 'DEFERRED'].includes(row.state)) return;
+      const key = `sms_purchase_review:${id}`;
+      if (!draft) await tx.run('DELETE FROM app_preferences WHERE key=?', [key]);
+      else
+        await tx.run(
+          'INSERT INTO app_preferences(key,encrypted_value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET encrypted_value=excluded.encrypted_value',
+          [key, JSON.stringify(draft)],
+        );
+    });
+  }
+
   async approve(
     candidate: SmsCandidate,
     sourceId: string,
@@ -1159,6 +1221,64 @@ export class SmsReviewService {
       const linkedTransaction = existingId
         ? ledger.find((entry) => entry.id === existingId)
         : undefined;
+      if (item.kind === 'PURCHASE') {
+        if (
+          existingId &&
+          ![
+            ...existingSuggestions(item, sourceId, ledger, amountMinor, transactionDate),
+            ...existingSuggestions(item, sourceId, ledger, amountMinor),
+          ].some((entry) => entry.id === existingId)
+        )
+          throw new Error(
+            'The selected purchase no longer matches its source, amount, currency, reference or timing. Review it again.',
+          );
+        const bindings = await tx.query<{ payload: string; transaction_id: string }>(
+          "SELECT payload,transaction_id FROM sms_candidates WHERE state IN ('IMPORTED','MATCHED_EXISTING') AND payload IS NOT NULL",
+        );
+        const referenced = item.reference
+          ? ledger.filter(
+              (entry) =>
+                entry.cardId === sourceId &&
+                entry.type === 'PURCHASE' &&
+                entry.reference === item.reference,
+            )
+          : [];
+        if (referenced.some((entry) => entry.id !== existingId))
+          throw new Error(
+            'This referenced purchase is already recorded. Match its existing entry.',
+          );
+        for (const binding of bindings) {
+          const other = JSON.parse(binding.payload) as SmsEvidence;
+          const sameSource = ledger.some(
+            (entry) => entry.id === binding.transaction_id && entry.cardId === sourceId,
+          );
+          if (
+            sameSource &&
+            item.reference &&
+            other.kind === 'PURCHASE' &&
+            other.reference === item.reference &&
+            binding.transaction_id !== existingId
+          )
+            throw new Error(
+              'This referenced purchase is already linked. Match its existing entry.',
+            );
+          if (
+            existingId &&
+            binding.transaction_id === existingId &&
+            item.reference &&
+            other.reference &&
+            other.reference !== item.reference
+          )
+            throw new Error(
+              'That purchase is already linked to other SMS evidence. Review its identity first.',
+            );
+        }
+        recordedDecision = existingId
+          ? 'EXPLICIT_MATCH'
+          : allowSeparate
+            ? 'CONFIRMED_SEPARATE_PURCHASE'
+            : 'NEW_PURCHASE';
+      }
       const comparison = source
         ? walletComparison(item, source, ledger, existingId || undefined, sources)
         : null;
@@ -1277,11 +1397,7 @@ export class SmsReviewService {
         if (
           !allowSeparate &&
           (existingSuggestions(item, sourceId, ledger).length ||
-            existingSuggestions(
-              { ...item, amountMinor, eventDate: transactionDate },
-              sourceId,
-              ledger,
-            ).length)
+            existingSuggestions(item, sourceId, ledger, amountMinor, transactionDate).length)
         )
           throw new Error(
             'Possible existing transaction. Match it or explicitly confirm a separate event.',
@@ -1351,7 +1467,11 @@ export class SmsReviewService {
             amountMinor,
             currencyCode: 'INR',
             transactionDate,
-            transactionTime: item.eventTimeExplicit === true ? item.eventTime : undefined,
+            transactionTime:
+              item.eventTimeExplicit === true &&
+              (item.kind !== 'PURCHASE' || transactionDate === item.eventDate)
+                ? item.eventTime
+                : undefined,
             reference: item.reference,
             merchant: merchant.trim().slice(0, 100),
             categoryId:
@@ -1619,6 +1739,7 @@ export class SmsReviewService {
         `INSERT INTO sms_reconciliation(id,candidate_id,target_id,decision,amount_minor,created_at) VALUES (?,?,?,?,?,?)`,
         [crypto.randomUUID(), item.id, transactionId, recordedDecision, amountMinor, now],
       );
+      await tx.run('DELETE FROM app_preferences WHERE key=?', [`sms_purchase_review:${item.id}`]);
       if (reconciliation === 'FULLY_PAID') {
         if (
           type !== 'PAYMENT' ||
@@ -1881,6 +2002,36 @@ export class SmsReviewService {
       };
       if (approval.purpose === 'PURCHASE' || approval.purpose === 'INCOME') {
         const type = approval.purpose === 'PURCHASE' ? 'PURCHASE' : 'CREDIT';
+        if (type === 'PURCHASE' && item.reference) {
+          if (
+            ledger.some(
+              (entry) =>
+                entry.cardId === source.id &&
+                entry.type === type &&
+                entry.reference === item.reference &&
+                entry.id !== approval.existingId,
+            )
+          )
+            throw new Error('This referenced bank purchase is already recorded. Match it instead.');
+          const bindings = await tx.query<{ payload: string; transaction_id: string }>(
+            "SELECT payload,transaction_id FROM sms_candidates WHERE state IN ('IMPORTED','MATCHED_EXISTING') AND payload IS NOT NULL AND id<>?",
+            [item.id],
+          );
+          if (
+            bindings.some((binding) => {
+              const other = JSON.parse(binding.payload) as SmsEvidence;
+              return (
+                other.reference === item.reference &&
+                bankDirection(other) === direction &&
+                ledger.some(
+                  (entry) => entry.id === binding.transaction_id && entry.cardId === source.id,
+                ) &&
+                binding.transaction_id !== approval.existingId
+              );
+            })
+          )
+            throw new Error('This referenced bank purchase is already linked. Match it instead.');
+        }
         if ((type === 'PURCHASE') !== (direction === 'DEBIT'))
           throw new Error('The message direction does not match this choice.');
         if (approval.existingId) {
@@ -1893,6 +2044,16 @@ export class SmsReviewService {
           )
             throw new Error(
               'Choose an existing entry with the same account, direction and amount.',
+            );
+          if (
+            type === 'PURCHASE' &&
+            ![
+              ...bankExistingSuggestions(item, type, source.id, ledger, amountMinor, date),
+              ...bankExistingSuggestions(item, type, source.id, ledger, amountMinor),
+            ].some((entry) => entry.id === existing.id)
+          )
+            throw new Error(
+              'The selected purchase no longer matches its currency, reference or timing. Review it again.',
             );
           await assertUnclaimed(existing.id);
           targetId = linkedTransactionId = existing.id;
@@ -1908,7 +2069,9 @@ export class SmsReviewService {
         } else {
           if (
             !approval.allowSeparate &&
-            bankExistingSuggestions(item, type, source.id, ledger, amountMinor, date).length
+            (bankExistingSuggestions(item, type, source.id, ledger, amountMinor, date).length ||
+              (type === 'PURCHASE' &&
+                bankExistingSuggestions(item, type, source.id, ledger).length))
           )
             throw new Error(
               'Possible existing transaction. Match it or explicitly confirm a separate event.',
@@ -2202,7 +2365,8 @@ export class SmsReviewService {
             now,
           ],
         );
-      const decision = `BANK_${approval.purpose}${state === 'MATCHED_EXISTING' ? '_LINKED' : ''}`;
+      const decision = `BANK_${approval.purpose}${state === 'MATCHED_EXISTING' ? '_LINKED' : approval.purpose === 'PURCHASE' && approval.allowSeparate ? '_CONFIRMED_SEPARATE' : ''}`;
+      await tx.run('DELETE FROM app_preferences WHERE key=?', [`sms_purchase_review:${item.id}`]);
       await tx.run(
         `UPDATE sms_candidates SET state=?,transaction_id=?,decision=?,updated_at=?,read_at=COALESCE(read_at,?) WHERE id=?`,
         [state, linkedTransactionId, decision, now, now, item.id],

@@ -926,6 +926,96 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     }
   });
 
+  it('matches an ordinary Bank/UPI purchase without another debit and confirms a separate purchase exactly once', async () => {
+    const { store, review, balance } = await boot();
+    // Keep explicit events after the confirmed balance regardless of the machine's clock time.
+    const eventDate = indiaTodayIso(new Date(Date.now() + 86400000));
+    const bank = await store.addBankAccount({
+      nickname: 'Daily bank',
+      institution: 'ICICI',
+      lastDigits: '417',
+    });
+    await store.enableBankCashTracking({ [bank.id]: 100000 });
+    const existing = purchase({
+      cardId: bank.id,
+      amountMinor: 5000,
+      transactionDate: eventDate,
+      transactionTime: '17:30',
+      balanceTiming: 'AFTER_BASELINE',
+    });
+    store.addTransaction(existing);
+    await settle();
+    const afterManual = balance(bank.id);
+    const item = evidence({
+      reference: undefined,
+      amountMinor: 5000,
+      eventTimeExplicit: true,
+      eventTime: '17:30:00',
+      eventDate,
+      eventAt: `${eventDate}T12:00:00Z`,
+    });
+    const candidate = await stage(item);
+    const approval = {
+      purpose: 'PURCHASE' as const,
+      sourceId: bank.id,
+      amountMinor: 5000,
+      description: 'Daily milk',
+      transactionDate: eventDate,
+      baselineTiming: 'AFTER_BASELINE' as const,
+    };
+    await review.approveBank(candidate, { ...approval, existingId: existing.id });
+    expect(count('card_transactions')).toBe(1);
+    expect(balance(bank.id)).toBe(afterManual);
+    const separate = await stage({ ...item, id: 'b'.repeat(64) });
+    await expect(review.approveBank(separate, approval)).rejects.toThrow('Match it');
+    await Promise.all([
+      review.approveBank(separate, { ...approval, allowSeparate: true }),
+      review.approveBank(separate, { ...approval, allowSeparate: true }),
+    ]);
+    expect(count('card_transactions')).toBe(2);
+    expect(balance(bank.id)).toBe(afterManual! - 5000);
+    expect(
+      rows('SELECT decision FROM sms_reconciliation WHERE candidate_id=?', [separate.id])[0][
+        'decision'
+      ],
+    ).toBe('BANK_PURCHASE_CONFIRMED_SEPARATE');
+    await review.approveBank(separate, { ...approval, allowSeparate: true });
+    expect(count('card_transactions')).toBe(2);
+    expect(balance(bank.id)).toBe(afterManual! - 5000);
+  });
+  it('never bypasses a recorded Bank/UPI reference using separate confirmation or edited amounts', async () => {
+    const { store, review, balance } = await boot();
+    const bank = await store.addBankAccount({
+      nickname: 'Daily bank',
+      institution: 'ICICI',
+      lastDigits: '417',
+    });
+    await store.enableBankCashTracking({ [bank.id]: 100000 });
+    store.addTransaction(
+      purchase({
+        cardId: bank.id,
+        amountMinor: 5000,
+        reference: 'VERIFIED_BANK_REF',
+        balanceTiming: 'AFTER_BASELINE',
+      }),
+    );
+    await settle();
+    const before = balance(bank.id);
+    const candidate = await stage(evidence({ reference: 'VERIFIED_BANK_REF', amountMinor: 5000 }));
+    await expect(
+      review.approveBank(candidate, {
+        purpose: 'PURCHASE',
+        sourceId: bank.id,
+        amountMinor: 5001,
+        description: 'Edited',
+        transactionDate: today,
+        allowSeparate: true,
+      }),
+    ).rejects.toThrow('referenced bank purchase');
+    expect(balance(bank.id)).toBe(before);
+    expect(count('card_transactions')).toBe(1);
+    expect(count('sms_reconciliation')).toBe(0);
+  });
   it('round trips SMS annotations, notes, decisions and matches through encrypted backup without financial duplication', async () => {
     const { store, review, balance } = await boot();
     store.addCard(card);
@@ -1090,6 +1180,7 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     const laterSms = await stage(
       evidence({
         id: '7'.repeat(64),
+        reference: '735182094617',
         kind: 'PURCHASE',
         direction: undefined,
         purposeHint: undefined,

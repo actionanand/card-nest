@@ -268,8 +268,8 @@ describe('SMS approved import integrity', () => {
         merchant: entry.merchant,
       }),
     );
-    expect(await service.reevaluatePending()).toBe(1);
-    await service.approve(confirmed, card.id, 45000, entry.merchant!);
+    expect(await service.reevaluatePending()).toBe(0);
+    await service.approve(confirmed, card.id, 45000, entry.merchant!, entry.id);
     expect(count('card_transactions')).toBe(1);
     expect(
       rows('SELECT transaction_id FROM sms_candidates WHERE id=?', [confirmed.id])[0][
@@ -376,9 +376,195 @@ describe('SMS approved import integrity', () => {
     return entry;
   }
   const confident = (overrides: Partial<SmsEvidence> = {}) =>
-    evidence({ cardDigits: '54321', issuer: 'AMEX', merchant: 'ORCHARD MARKET', ...overrides });
+    evidence({
+      cardDigits: '54321',
+      issuer: 'AMEX',
+      merchant: 'ORCHARD MARKET',
+      eventTimeExplicit: true,
+      eventTime: '17:30:00',
+      reference: 'SYNTHREF123456',
+      ...overrides,
+    });
+  const verifiedManual = () => manual({ reference: 'SYNTHREF123456', transactionTime: '17:30' });
+  it('allows explicit reference-based linking after delayed delivery without treating fallback timing as high confidence', async () => {
+    const entry = verifiedManual();
+    const candidate = stage(
+      confident({ eventTimeExplicit: false, receivedAt: Date.parse('2026-10-23T12:00:00Z') }),
+    );
+    expect(matchExisting(candidate.item!, [card], [], [entry]).confidence).toBe(
+      'POSSIBLE_EXISTING',
+    );
+    expect(await service.reevaluatePending()).toBe(0);
+    const before = rows('SELECT * FROM card_transactions');
+    await service.approve(candidate, card.id, 45000, 'Delayed delivery', entry.id);
+    expect(rows('SELECT * FROM card_transactions')).toEqual(before);
+    expect(rows('SELECT decision FROM sms_reconciliation')[0]['decision']).toBe('EXPLICIT_MATCH');
+  });
+  it('never automatically links same-day identical merchants and amounts without unique reference and explicit timing', async () => {
+    const entry = manual({ transactionTime: '17:30' });
+    const item = confident({ reference: undefined });
+    stage(item);
+    expect(matchExisting(item, [card], [], [entry]).confidence).toBe('POSSIBLE_EXISTING');
+    expect(await service.reevaluatePending()).toBe(0);
+    expect(
+      matchExisting(
+        { ...item, reference: 'VERIFIED', eventTimeExplicit: false },
+        [card],
+        [],
+        [{ ...entry, reference: 'VERIFIED' }],
+      ).confidence,
+    ).toBe('POSSIBLE_EXISTING');
+    expect(
+      matchExisting(
+        { ...item, reference: 'VERIFIED' },
+        [card],
+        [],
+        [{ ...entry, reference: 'VERIFIED', transactionTime: undefined }],
+      ).confidence,
+    ).toBe('POSSIBLE_EXISTING');
+  });
+  it('records an explicit match without another purchase and a confirmed separate purchase exactly once across double approval, restart and rescanning', async () => {
+    const entry = manual();
+    const linked = stage(evidence());
+    const before = rows('SELECT * FROM card_transactions');
+    await service.approve(linked, card.id, 45000, 'Edited description', entry.id);
+    expect(rows('SELECT * FROM card_transactions')).toEqual(before);
+    expect(
+      rows('SELECT decision FROM sms_reconciliation WHERE candidate_id=?', [linked.id])[0][
+        'decision'
+      ],
+    ).toBe('EXPLICIT_MATCH');
+    const separate = stage(evidence({ id: 'b'.repeat(64) }));
+    await expect(service.approve(separate, card.id, 45000, 'Breakfast')).rejects.toThrow(
+      'Match it',
+    );
+    await Promise.all([
+      service.approve(separate, card.id, 45000, 'Breakfast', '', 'PENDING', true, '', 0, {
+        categoryId: 'dining',
+        smsAdditionalComment: 'Different purchase',
+      }),
+      service.approve(separate, card.id, 45000, 'Breakfast', '', 'PENDING', true),
+    ]);
+    expect(count('card_transactions')).toBe(2);
+    expect(transactions().find((entry) => entry.id === `sms-${separate.id}`)).toMatchObject({
+      merchant: 'Breakfast',
+      categoryId: 'dining',
+      smsAdditionalComment: 'Different purchase',
+    });
+    expect(
+      rows('SELECT decision FROM sms_reconciliation WHERE candidate_id=?', [separate.id])[0][
+        'decision'
+      ],
+    ).toBe('CONFIRMED_SEPARATE_PURCHASE');
+    const restarted = runInInjectionContext(
+      TestBed.inject(EnvironmentInjector),
+      () => new SmsReviewService(),
+    );
+    await (restarted as unknown as { stage(items: readonly SmsEvidence[]): Promise<void> }).stage([
+      separate.item!,
+    ]);
+    await restarted.approve(separate, card.id, 45000, 'Again', '', 'PENDING', true);
+    expect(count('card_transactions')).toBe(2);
+    expect(count('sms_reconciliation')).toBe(2);
+  });
+  it('revalidates matching inside approval and never bypasses a proven reference using separate confirmation or edited amounts', async () => {
+    const entry = verifiedManual();
+    const candidate = stage(confident());
+    await expect(
+      service.approve(candidate, card.id, 45000, 'Same ref', '', 'PENDING', true),
+    ).rejects.toThrow('referenced purchase');
+    await expect(
+      service.approve(candidate, card.id, 45001, 'Edited amount', '', 'PENDING', true),
+    ).rejects.toThrow('referenced purchase');
+    run('UPDATE card_transactions SET payload=? WHERE id=?', [
+      JSON.stringify({
+        ...entry,
+        transactionDate: '2026-10-23',
+        reference: 'CONFLICTING_REFERENCE',
+      }),
+      entry.id,
+    ]);
+    await expect(
+      service.approve(candidate, card.id, 45000, 'Stale match', entry.id),
+    ).rejects.toThrow('no longer matches');
+    expect(count('card_transactions')).toBe(1);
+    expect(count('sms_reconciliation')).toBe(0);
+  });
+  it('excludes conflicting references from manual suggestions and rejects a forged link', async () => {
+    const entry = manual({ reference: 'OTHER_REFERENCE' });
+    const candidate = stage(confident());
+    expect(existingSuggestions(candidate.item!, card.id, [entry])).toEqual([]);
+    await expect(service.approve(candidate, card.id, 45000, 'Mismatch', entry.id)).rejects.toThrow(
+      'no longer matches',
+    );
+  });
+  it('rejects a cached proximity choice when the recorded time moves outside 18 hours', async () => {
+    const entry = manual({ transactionTime: '17:30' });
+    const candidate = stage(confident({ reference: undefined }));
+    expect(existingSuggestions(candidate.item!, card.id, [entry])).toHaveLength(1);
+    run('UPDATE card_transactions SET payload=? WHERE id=?', [
+      JSON.stringify({ ...entry, transactionDate: '2026-10-15' }),
+      entry.id,
+    ]);
+    await expect(
+      service.approve(candidate, card.id, 45000, 'Stale proximity', entry.id),
+    ).rejects.toThrow('no longer matches');
+    expect(count('card_transactions')).toBe(1);
+  });
+  it('stores review drafts across service restart without financial effects and removes the draft atomically after approval', async () => {
+    const candidate = stage(evidence());
+    const draft = {
+      mode: 'CARD' as const,
+      source: card.id,
+      amount: '450',
+      merchant: 'Milk',
+      transactionDate: '2026-10-18',
+      category: 'groceries',
+      existing: '',
+      separate: true,
+      paymentMethod: 'NONE',
+      paymentMethodDetail: '',
+      paymentMethodCustom: '',
+      smsAdditionalComment: 'Separate visit',
+    };
+    await service.savePurchaseReview(candidate.id, draft);
+    expect(count('card_transactions')).toBe(0);
+    const restarted = runInInjectionContext(
+      TestBed.inject(EnvironmentInjector),
+      () => new SmsReviewService(),
+    );
+    expect(await restarted.loadPurchaseReview(candidate.id)).toEqual(draft);
+    await restarted.approve(candidate, card.id, 45000, draft.merchant, '', 'PENDING', true);
+    expect(await restarted.loadPurchaseReview(candidate.id)).toBeNull();
+    await restarted.savePurchaseReview(candidate.id, draft);
+    expect(await restarted.loadPurchaseReview(candidate.id)).toBeNull();
+  });
+  it('keeps a saved matching choice pending until final approval even if background evidence would qualify for automatic linking', async () => {
+    const entry = verifiedManual();
+    const candidate = stage(confident());
+    await service.savePurchaseReview(candidate.id, {
+      mode: 'CARD',
+      source: card.id,
+      amount: '450',
+      merchant: 'Milk',
+      transactionDate: '2026-10-18',
+      category: 'groceries',
+      existing: entry.id,
+      separate: false,
+      paymentMethod: 'NONE',
+      paymentMethodDetail: '',
+      paymentMethodCustom: '',
+      smsAdditionalComment: '',
+    });
+    expect(await service.reevaluatePending()).toBe(0);
+    expect(rows('SELECT state FROM sms_candidates')[0]['state']).toBe('PENDING');
+    expect(count('sms_reconciliation')).toBe(0);
+    await service.approve(candidate, card.id, 45000, 'Milk', entry.id);
+    expect(count('card_transactions')).toBe(1);
+    expect(rows('SELECT state FROM sms_candidates')[0]['state']).toBe('MATCHED_EXISTING');
+  });
   it('automatically links a unique existing purchase atomically with zero financial writes and unchanged read flag', async () => {
-    manual();
+    verifiedManual();
     stage(confident());
     const before = rows('SELECT * FROM card_transactions');
     sql.exec(
@@ -401,7 +587,7 @@ describe('SMS approved import integrity', () => {
     expect(count('sms_reconciliation')).toBe(1);
   });
   it.each([
-    { merchant: undefined },
+    { reference: undefined },
     { cardDigits: undefined },
     { dateFallback: true },
     { kind: 'REFUND' as const },
@@ -417,7 +603,7 @@ describe('SMS approved import integrity', () => {
     expect(count('card_transactions')).toBe(1);
   });
   it('requires confirmation for duplicate purchases and refuses a second SMS claim on one existing entry', async () => {
-    manual();
+    verifiedManual();
     manual({ id: 'synthetic-second' });
     stage(confident());
     expect(await service.reevaluatePending()).toBe(0);
@@ -429,15 +615,15 @@ describe('SMS approved import integrity', () => {
     expect(count('card_transactions')).toBe(1);
   });
   it('does not arbitrarily assign one manual purchase between two competing SMS events in the same batch', async () => {
-    manual();
+    verifiedManual();
     stage(confident());
-    stage(confident({ id: 'b'.repeat(64), reference: 'SYNTHSECOND1234' }));
+    stage(confident({ id: 'b'.repeat(64), reference: 'SYNTHREF123456' }));
     expect(await service.reevaluatePending()).toBe(0);
     expect(count('sms_reconciliation')).toBe(0);
     expect(count('card_transactions')).toBe(1);
   });
   it('invalidates automatic links after amount/source changes but never undoes explicit review decisions', async () => {
-    const entry = manual();
+    const entry = verifiedManual();
     stage(confident());
     await service.reevaluatePending();
     run('UPDATE card_transactions SET payload=? WHERE id=?', [
@@ -483,7 +669,7 @@ describe('SMS approved import integrity', () => {
     ).toBe(90000);
   });
   it('rolls back an automatic match when reconciliation persistence fails', async () => {
-    manual();
+    verifiedManual();
     stage(confident());
     sql.exec(
       "CREATE TRIGGER fail_auto BEFORE INSERT ON sms_reconciliation BEGIN SELECT RAISE(ABORT,'Synthetic reconciliation failure'); END",
@@ -506,15 +692,22 @@ describe('SMS approved import integrity', () => {
   });
   it('links a verified unique reference without a merchant but refuses conflicting transaction times', async () => {
     manual({ merchant: undefined, reference: 'SYNTHREF123456', transactionTime: '12:15' });
-    stage(confident({ merchant: undefined, reference: 'SYNTHREF123456', eventTime: '12:15:00' }));
+    stage(
+      confident({
+        merchant: undefined,
+        reference: 'SYNTHREF123456',
+        eventTime: '12:15:00',
+        eventAt: '2026-10-18T06:45:00Z',
+      }),
+    );
     expect(await service.reevaluatePending()).toBe(1);
   });
   it.each(['JIO Postpaid', 'MYJIO'])(
-    'recognizes a provider alias %s as supporting merchant evidence without weakening source/date/amount checks',
+    'keeps provider alias %s as supporting evidence requiring manual confirmation without a unique reference',
     async (merchant) => {
       manual({ merchant: 'Jio fiber via a payment app', amountMinor: 47823 });
       stage(confident({ merchant, amountMinor: 47823 }));
-      expect(await service.reevaluatePending()).toBe(1);
+      expect(await service.reevaluatePending()).toBe(0);
       expect(count('card_transactions')).toBe(1);
     },
   );
@@ -1040,9 +1233,9 @@ describe('SMS approved import integrity', () => {
     expect(
       matchExisting({ ...item, accountDigits: '1234' }, [card], [], [entry]).transactionIds,
     ).toEqual([]);
-    expect(
-      matchExisting({ ...item, dateFallback: true }, [card], [], [entry]).transactionIds,
-    ).toEqual([]);
+    expect(matchExisting({ ...item, dateFallback: true }, [card], [], [entry]).confidence).toBe(
+      'POSSIBLE_EXISTING',
+    );
     expect(
       matchExisting(item, [card], [], [entry, { ...entry, id: 'another' }]).transactionIds,
     ).toHaveLength(2);

@@ -3,9 +3,9 @@ import { computed, signal } from '@angular/core';
 import { SmsSyncPage } from './sms-sync';
 import { SmsReviewService } from './sms-review.service';
 import { CardNestStore } from '../../core/services/card-nest-store';
-import { ScanStatus, SmsCandidate } from './sms-model';
+import { PurchaseReviewDraft, ScanStatus, SmsCandidate } from './sms-model';
 import axe from 'axe-core';
-import { Category, CreditCard, PaymentSource } from '../../core/models/domain';
+import { CardTransaction, Category, CreditCard, PaymentSource } from '../../core/models/domain';
 import { Router } from '@angular/router';
 import { By } from '@angular/platform-browser';
 import { AppSelectPicker } from '../../shared/app-select-picker';
@@ -110,6 +110,8 @@ describe('SMS review privacy and explicit approval UI', () => {
     scan: vi.fn().mockResolvedValue(undefined),
     turnPage: vi.fn().mockResolvedValue(undefined),
     approveBank: vi.fn().mockResolvedValue(undefined),
+    loadPurchaseReview: vi.fn<() => Promise<PurchaseReviewDraft | null>>().mockResolvedValue(null),
+    savePurchaseReview: vi.fn().mockResolvedValue(undefined),
   };
   const bankCashTracking = signal({ enabled: false, askCardSettlementFunding: false });
   const paymentSources = signal<readonly PaymentSource[]>([]);
@@ -117,7 +119,7 @@ describe('SMS review privacy and explicit approval UI', () => {
     cards: signal<readonly CreditCard[]>([]),
     paymentSources,
     categories: signal<readonly Category[]>([]),
-    transactions: signal([]),
+    transactions: signal<readonly CardTransaction[]>([]),
     loans: signal([]),
     emiInstallments: signal([]),
     smsSwipeActionsEnabled: swipePreference,
@@ -167,6 +169,8 @@ describe('SMS review privacy and explicit approval UI', () => {
     expect(buttons[1].textContent).toContain('Mark read');
   });
   beforeEach(() => {
+    sync.loadPurchaseReview.mockReset().mockResolvedValue(null);
+    sync.savePurchaseReview.mockClear();
     locked.set(false);
     foreground.set(true);
     candidates.set([]);
@@ -202,6 +206,120 @@ describe('SMS review privacy and explicit approval UI', () => {
           useValue: store,
         },
       ],
+    });
+  });
+  it('shows visible match and separate choices without opening reconciliation, preserves edits and only records a choice', async () => {
+    store.cards.set([demoCard]);
+    const candidate = demoCandidate();
+    store.transactions.set([
+      {
+        id: 'earlier',
+        cardId: demoCard.id,
+        type: 'PURCHASE',
+        amountMinor: 10000,
+        currencyCode: 'INR',
+        transactionDate: '2026-10-18',
+        merchant: 'Earlier shop',
+        categoryId: 'other',
+        attachmentIds: [],
+        createdAt: 'before',
+        updatedAt: 'before',
+      },
+    ]);
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const page = fixture.componentInstance;
+    page.open(candidate);
+    page.editor.patchValue({
+      merchant: 'Milk',
+      category: 'groceries',
+      smsAdditionalComment: 'Second visit',
+      paymentMethod: 'CARD',
+    });
+    fixture.detectChanges();
+    const panel = fixture.nativeElement.querySelector('app-sms-purchase-comparison') as HTMLElement;
+    expect(panel).not.toBeNull();
+    expect(panel.closest('details')).toBeNull();
+    expect(panel.textContent).toContain('Time not recorded');
+    expect(panel.textContent).toContain('Earlier shop');
+    const approve = sync.approve.mock.calls.length;
+    (panel.querySelector('button') as HTMLButtonElement).click();
+    fixture.detectChanges();
+    expect(page.editor.controls.existing.value).toBe('earlier');
+    expect(panel.querySelector('[aria-pressed="true"]')?.textContent).toContain(
+      'Match earlier entry',
+    );
+    Array.from(panel.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Confirm separate'))!
+      .click();
+    fixture.detectChanges();
+    expect(page.editor.getRawValue()).toMatchObject({
+      existing: '',
+      separate: true,
+      merchant: 'Milk',
+      category: 'groceries',
+      smsAdditionalComment: 'Second visit',
+      paymentMethod: 'CARD',
+    });
+    expect(sync.approve.mock.calls.length).toBe(approve);
+    expect(store.transactions()).toHaveLength(1);
+    expect(panel.textContent).toContain('Confirmed separate purchase');
+    expect(sync.savePurchaseReview).toHaveBeenLastCalledWith(
+      candidate.id,
+      expect.objectContaining({ separate: true, merchant: 'Milk' }),
+    );
+  });
+  it('invalidates a purchase choice on source, amount or date edits and distinguishes a manually selected card', async () => {
+    store.cards.set([demoCard]);
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const page = fixture.componentInstance;
+    const candidate = demoCandidate();
+    candidate.item!.cardDigits = undefined;
+    page.open(candidate);
+    page.editor.controls.source.setValue(demoCard.id);
+    expect(page.sourceLabel(candidate)).toContain('Manually selected:');
+    expect(page.sourceLabel(candidate)).toContain('did not contain identifiable card digits');
+    for (const update of [
+      { amount: '101' },
+      { transactionDate: '2026-10-19' },
+      { source: 'different-card' },
+    ]) {
+      page.confirmSeparatePurchase();
+      page.editor.patchValue(update);
+      expect(page.editor.controls.separate.value).toBe(false);
+      expect(page.editor.controls.existing.value).toBe('');
+    }
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('app-sms-purchase-comparison')).toBeNull();
+  });
+  it('restores a saved separate choice and edited review fields after reopening', async () => {
+    store.cards.set([demoCard]);
+    sync.loadPurchaseReview.mockResolvedValueOnce({
+      mode: 'CARD',
+      source: demoCard.id,
+      amount: '100',
+      merchant: 'Saved milk',
+      transactionDate: '2026-10-18',
+      category: 'groceries',
+      existing: '',
+      separate: true,
+      paymentMethod: 'CARD',
+      paymentMethodDetail: '',
+      paymentMethodCustom: '',
+      smsAdditionalComment: 'Second visit',
+    });
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.componentInstance.open(demoCandidate());
+    await fixture.whenStable();
+    expect(fixture.componentInstance.editor.getRawValue()).toMatchObject({
+      merchant: 'Saved milk',
+      separate: true,
+      smsAdditionalComment: 'Second visit',
     });
   });
   it('uses compact icon-labelled swipe actions and keeps explicit row buttons when swipe is off', async () => {
@@ -1171,6 +1289,33 @@ describe('SMS review privacy and explicit approval UI', () => {
       description: 'HILL FARM MEATS',
       category: 'groceries',
     });
+    store.transactions.set([
+      {
+        id: 'bank-earlier',
+        cardId: 'source-debit',
+        type: 'PURCHASE',
+        amountMinor: 45000,
+        currencyCode: 'INR',
+        transactionDate: bank.item.eventDate,
+        merchant: 'Earlier bank purchase',
+        categoryId: 'other',
+        attachmentIds: [],
+        createdAt: 'before',
+        updatedAt: 'before',
+      },
+    ]);
+    fixture.detectChanges();
+    const comparison = dialog.querySelector('app-sms-purchase-comparison') as HTMLElement;
+    expect(comparison.textContent).toContain('Earlier bank purchase');
+    page.choosePurchaseMatch('bank-earlier', true);
+    expect(page.bankEditor.controls.existing.value).toBe('bank-earlier');
+    page.confirmSeparatePurchase(true);
+    expect(page.bankEditor.getRawValue()).toMatchObject({
+      existing: '',
+      separate: true,
+      description: 'HILL FARM MEATS',
+      category: 'groceries',
+    });
     page.approveBankEvent(new Event('submit'));
     await fixture.whenStable();
     expect(sync.approveBank).toHaveBeenCalledWith(
@@ -1180,6 +1325,7 @@ describe('SMS review privacy and explicit approval UI', () => {
         sourceId: 'source-debit',
         amountMinor: 45000,
         categoryId: 'groceries',
+        allowSeparate: true,
       }),
     );
     expect(sync.approve).not.toHaveBeenCalled();

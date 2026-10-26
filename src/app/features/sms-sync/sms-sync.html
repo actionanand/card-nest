@@ -758,7 +758,7 @@
                   <app-icon name="help" />
                   <div>
                     <strong>Confirm the source</strong>
-                    <p>{{ sourceLabel(candidate) }}. Verify before approval.</p>
+                    <p>{{ sourceLabel(candidate) }}</p>
                   </div>
                 </aside>
               }
@@ -860,27 +860,40 @@
                   </fieldset>
                 }
               }
-              @if (matches().length) {
-                <p class="match-note">
-                  Possible existing transaction found. Select a match below to avoid adding it
-                  twice, or confirm a separate event after checking.
-                </p>
-                @if (!editor.controls.source.value) {
-                  <div class="possible-matches" aria-label="Possible existing transactions">
-                    @for (match of matches(); track match.id) {
-                      <button class="btn" type="button" (click)="chooseExisting(match.id)">
-                        {{ match.label }} · Match this transaction
-                      </button>
-                    }
-                  </div>
+              @if (purchaseReviewActive()) {
+                @if (purchaseMatches().length) {
+                  <app-sms-purchase-comparison
+                    [matches]="purchaseMatches()"
+                    [selected]="editor.controls.existing.value"
+                    [separate]="editor.controls.separate.value"
+                    [timing]="purchaseTimingNote()"
+                    (match)="choosePurchaseMatch($event)"
+                    (confirmSeparate)="confirmSeparatePurchase()"
+                  />
                 }
+              } @else {
+                @if (matches().length) {
+                  <p class="match-note">
+                    Possible existing transaction found. Select a match below to avoid adding it
+                    twice, or confirm a separate event after checking.
+                  </p>
+                  @if (!editor.controls.source.value) {
+                    <div class="possible-matches" aria-label="Possible existing transactions">
+                      @for (match of matches(); track match.id) {
+                        <button class="btn" type="button" (click)="chooseExisting(match.id)">
+                          {{ match.label }} · Match this transaction
+                        </button>
+                      }
+                    </div>
+                  }
+                }
+                <app-select-picker
+                  label="Match existing entry"
+                  formControlName="existing"
+                  [options]="matchOptions()"
+                  [searchable]="true"
+                />
               }
-              <app-select-picker
-                label="Match existing entry"
-                formControlName="existing"
-                [options]="matchOptions()"
-                [searchable]="true"
-              />
               @if (walletInfo(); as balance) {
                 <aside class="review-notice" aria-label="Meal wallet balance comparison">
                   <app-icon name="help" />
@@ -927,7 +940,7 @@
               }
               <details class="reconciliation">
                 <summary>
-                  <span>Reconciliation and duplicate controls</span><app-icon name="chevron_down" />
+                  <span>Advanced reconciliation</span><app-icon name="chevron_down" />
                 </summary>
                 <app-select-picker
                   label="Reconciliation"
@@ -957,11 +970,13 @@
                   overpayments. Statement settlement is a separate decision. Pluxee balance
                   reconciliation requires verified source evidence and event order.
                 </p>
-                <label class="check"
-                  ><input type="checkbox" formControlName="separate" /><span
-                    >I verified this is a separate event from any suggested existing entry.</span
-                  ></label
-                >
+                @if (!purchaseReviewActive()) {
+                  <label class="check"
+                    ><input type="checkbox" formControlName="separate" /><span
+                      >I verified this is a separate event from any suggested existing entry.</span
+                    ></label
+                  >
+                }
               </details>
               <button class="btn btn-primary" type="submit" [disabled]="saving() || !editor.valid">
                 {{
@@ -1109,7 +1124,18 @@
                   installments are not changed.
                 </p>
               }
-              @if (bankMatchOptions().length > 1) {
+              @if (purchaseReviewActive(true)) {
+                @if (purchaseMatches(true).length) {
+                  <app-sms-purchase-comparison
+                    [matches]="purchaseMatches(true)"
+                    [selected]="bankEditor.controls.existing.value"
+                    [separate]="bankEditor.controls.separate.value"
+                    [timing]="purchaseTimingNote(true)"
+                    (match)="choosePurchaseMatch($event, true)"
+                    (confirmSeparate)="confirmSeparatePurchase(true)"
+                  />
+                }
+              } @else if (bankMatchOptions().length > 1) {
                 <p class="match-note">
                   {{
                     bankPurpose() === 'CARD_SETTLEMENT'
@@ -1149,7 +1175,7 @@
                   >
                 </fieldset>
               }
-              @if (bankPurpose()) {
+              @if (bankPurpose() && !purchaseReviewActive(true)) {
                 <label class="check"
                   ><input type="checkbox" formControlName="separate" /><span
                     >I verified this is a separate event from any suggested existing record.</span
