@@ -31,10 +31,12 @@ object SmsTransactionParser {
     /** Movement of the customer's own (primary) account, never the counterparty's. */
     val direction: String? = null, val counterpartyAccountDigits: String? = null,
     /** Review hint only: PURCHASE, INCOMING, ACCOUNT_TRANSFER, CARD_REPAYMENT, LOAN_REPAYMENT, CASH_WITHDRAWAL. */
-    val purposeHint: String? = null
+    val purposeHint: String? = null,
+    /** Informational card balance field; never the primary transaction amount. */
+    val amountDueMinor: Long? = null
   )
   private fun rx(s: String) = Regex(s, RegexOption.IGNORE_CASE)
-  private const val NUMBER = "([0-9][0-9,]*(?:\\.[0-9]{1,2})?)(?![0-9]|\\.[0-9])"
+  private const val NUMBER = "((?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+|[0-9]{1,2}(?:,[0-9]{2})+,[0-9]{3})(?:\\.[0-9]{1,2})?)(?![0-9]|\\.[0-9]|,[0-9])"
   private const val MONEY = "(?:₹|\\bINR\\b|\\bRs\\.?)[\\s:.]*(?:Dr\\.?\\s*)?"
   private const val ACCOUNT_MENTION = "\\b(?:acct|acc|a/c|account)\\s*(?:no\\.?\\s*)?(?:[0-9]*[x*]+)([0-9]{3,5})\\b"
   private val money = rx(MONEY + NUMBER)
@@ -117,9 +119,10 @@ object SmsTransactionParser {
     val loan = has("loan|\\bemi\\b|\\becs\\b|merchantmandate")
     val aggregator = has("\\bcred\\b|cheq|ccbp")
     val confirmed = card && !aggregator && has("payment of.{0,100}(received|credited)|online payment.{0,100}credited")
+    val completedCardUse = card && has("\\b(?:credit\\s+)?card\\b.{0,50}\\b(?:(?:was|has been|has)\\s+)?used\\s+at\\b.{0,100}\\bfor\\s+$MONEY$NUMBER")
     val statement = card && (has("statement.{0,120}\\b(?:sent|generated|issued|available|ready|emailed|delivered)\\b|your\\s+(?:credit\\s+)?card\\s+statement|statement\\s+(?:total|amount)") ||
       (has("\\bstatement\\b") && due && has("total|minimum") && !has("reminder")))
-    val purchase = has("\\b(spent|debited|charged)\\b|transaction of.+was made using|thank you for using.+card")
+    val purchase = has("\\b(spent|debited|charged)\\b|transaction of.+was made using|thank you for using.+card") || completedCardUse
     val scheduled = card && has("will be (?:charged|debited)|is scheduled to be (?:charged|debited)|standing instruction.{0,60}registered")
     // A failed attempt is not a debit; a reversal remains refund evidence below.
     if (has("failed|declined|unsuccessful|has not been charged|will not be charged") && !has("refunded|reversed|reversal")) return null
@@ -133,7 +136,7 @@ object SmsTransactionParser {
       tag && debit -> Kind.FASTAG_TOLL
       tag && has("recharged|loaded|credited|topped up") -> Kind.FASTAG_TOPUP
       confirmed -> Kind.CARD_PAYMENT_RECEIVED
-      aggregator && has("payment.{0,80}(received|processed)|sent|debited") && !due && !loan -> Kind.PAYMENT_INITIATED
+      aggregator && has("payment.{0,80}(received|processed)|sent|debited|paid") && !due && !loan -> Kind.PAYMENT_INITIATED
       statement && !purchase && !confirmed && !credit -> Kind.STATEMENT
       card && due && !purchase && !confirmed -> Kind.PAYMENT_REMINDER
       has("statement.+generated") && !purchase && !credit -> Kind.STATEMENT
@@ -152,10 +155,11 @@ object SmsTransactionParser {
     if (balanceOnly && kind in setOf(Kind.BANK_DEBIT, Kind.BANK_CREDIT)) return null
     val total = value(flat, "total (?:statement amount|amount due|amt|due)(?: of)?|statement total(?: due)?|total(?: of)?")
     val minimum = value(flat, "min(?:imum)? (?:amount |amt )?due(?: of)?|minimum(?: of)?")
+    val amountDue = value(flat, "(?:amount\\s+due|due\\s+amount|(?<!minimum )due)")
     // Prefer verb-scoped monetary events; statement amounts and balance are separate evidence.
     val eventText = flat.split(rx(if (meal)
-      "(?:current\\s+)?meal wallet balance|current balance|avl|available|wallet bal|statement total|minimum|total due"
-      else "avl|available|wallet bal|current meal|statement total|minimum|total due"))[0]
+      "(?:current\\s+)?meal wallet balance|current balance|avl|available|wallet bal|statement total|minimum|total due|\\bdue\\b"
+      else "avl|available|wallet bal|current meal|statement total|minimum|total due|\\bdue\\b"))[0]
     val amount = if (kind == Kind.STATEMENT || (kind == Kind.PAYMENT_REMINDER && total != null)) total ?: minimum ?: money.find(flat)?.groupValues?.get(1)?.let(::minor) else {
       val matches = money.findAll(eventText).map { minor(it.groupValues[1]) }.toList()
       if (matches.size > 1 && kind !in setOf(Kind.PAYMENT_REMINDER, Kind.LOAN_REMINDER)) return null
@@ -169,12 +173,13 @@ object SmsTransactionParser {
     val account = primaryMention?.groupValues?.get(1)
     val counterpartyAccount = accounts.firstOrNull { it != account }
     val issuer = listOf("Pluxee" to "pluxee|sodexo", "Axis" to "axis", "ICICI" to "icici",
-      "HDFC" to "hdfc", "PNB" to "pnb", "AMEX" to "amex|american express", "Standard Chartered" to "stanchart|standard chartered",
+      "HDFC" to "hdfc", "HSBC" to "hsbc", "PNB" to "pnb", "AMEX" to "amex|american express", "Standard Chartered" to "stanchart|standard chartered",
       "Federal" to "federal", "BOBCARD" to "bobcard", "IDFC FIRST" to "idfc", "AU Bank" to "au bank", "Slice" to "slice")
       .firstOrNull { has(it.second) }?.first
     val ref = rx("\\b(?:UPI\\s*(?:ref(?:erence)?\\s*(?:no\\.?)?)?|RRN|UTR|Ref(?:erence)?\\s*(?:No\\.?|ID)?)\\s*[:#.]?\\s*([A-Z0-9]{9,30})\\b")
       .find(flat)?.groupValues?.get(1)
-    val bankEvent = kind in setOf(Kind.BANK_DEBIT, Kind.BANK_CREDIT, Kind.BANK_TRANSFER)
+    val bankEvent = kind in setOf(Kind.BANK_DEBIT, Kind.BANK_CREDIT, Kind.BANK_TRANSFER) ||
+      (kind == Kind.PAYMENT_INITIATED && bank)
     // Counterparty names are descriptions only; an account mention is never a payee name.
     val accountWords = rx("\\b(?:a/c|acct|acc|account|savings)\\b")
     fun payee(pattern: String) = rx(pattern).find(flat)?.groupValues?.get(1)?.takeIf { !accountWords.containsMatchIn(it) }
@@ -183,7 +188,8 @@ object SmsTransactionParser {
         ?: payee("\\bfrom\\s+(?!(?:your\\s+)?(?:a/c|acct|acc|account)\\b)([A-Za-z][^.;(]*?)(?=\\s+(?:via|on|ref|upi|through)\\b|\\s*[.;(]|$)")
         ?: payee("\\bto\\s+(?!(?:your\\s+)?(?:a/c|acct|acc|account)\\b)([A-Za-z][^.;(]*?)(?=\\s+(?:via|on|ref|upi|through)\\b|\\s*[.;(]|$)")
         ?: payee("\\btowards\\s+([A-Za-z][^.;(]*?)(?=\\s+for\\b|\\s*[.;(]|$)")
-    val merchant = if (bankEvent) counterparty else rx("\\bfor (.+?) has been charged").find(flat)?.groupValues?.get(1)
+    val cardUseMerchant = rx("\\b(?:credit\\s+)?card\\b.{0,50}\\b(?:(?:was|has been|has)\\s+)?used\\s+at\\s+(.+?)\\s+for\\s+(?:₹|\\bINR\\b|\\bRs\\.?)").find(flat)?.groupValues?.get(1)
+    val merchant = if (bankEvent) counterparty else cardUseMerchant ?: rx("\\bfor (.+?) has been charged").find(flat)?.groupValues?.get(1)
       ?: rx("\\bby (.+?) on [0-9]{1,2}[-/]").find(flat)?.groupValues?.get(1)
       ?: rx("\\bat\\s+(.+?)(?=\\s+(?:on|via|through|avl|wallet bal)\\b|\\s*\\.\\s*Avl|$)").find(flat)?.groupValues?.get(1)
       ?: safe.lines().getOrNull(3)?.takeIf { has("spent") && !it.contains("limit", true) }
@@ -229,6 +235,7 @@ object SmsTransactionParser {
         direction == "DEBIT" -> "PURCHASE"
         else -> null
       },
+      amountDueMinor = amountDue,
       legacyId = if (kind == Kind.STATEMENT || kind == Kind.PAYMENT_REMINDER) fingerprint(text) else null)
   }
 

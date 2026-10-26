@@ -68,6 +68,7 @@ export interface SmsEvidence {
   availableLimitMinor?: number;
   statementTotalMinor?: number;
   minimumDueMinor?: number;
+  amountDueMinor?: number;
   dueDate?: string;
   evidence: string;
   /** Movement of the customer's own account. Counterparty wording never sets this. */
@@ -185,6 +186,10 @@ export function validEvidence(value: unknown): value is SmsEvidence {
       (typeof item['reportedBalanceMinor'] === 'number' &&
         Number.isSafeInteger(item['reportedBalanceMinor']) &&
         item['reportedBalanceMinor'] >= 0)) &&
+    (item['amountDueMinor'] === undefined ||
+      (typeof item['amountDueMinor'] === 'number' &&
+        Number.isSafeInteger(item['amountDueMinor']) &&
+        item['amountDueMinor'] >= 0)) &&
     (item['balancePosition'] === undefined ||
       ['AFTER', 'BEFORE', 'UNKNOWN'].includes(String(item['balancePosition']))) &&
     (item['direction'] === undefined || ['DEBIT', 'CREDIT'].includes(String(item['direction']))) &&
@@ -322,6 +327,7 @@ export function defaultBankPurpose(
 export function bankDisplayName(issuer: string | undefined): string | undefined {
   if (!issuer) return undefined;
   const names: Record<string, string> = {
+    hsbc: 'HSBC',
     icici: 'ICICI Bank',
     hdfc: 'HDFC Bank',
     axis: 'Axis Bank',
@@ -464,6 +470,7 @@ export function defaultPluxeeCategory(
 export function normalizedIssuer(value: string | undefined): string {
   const compact = (value ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
   const aliases: readonly [RegExp, string][] = [
+    [/hsbc/, 'hsbc'],
     [/amex|americanexpress/, 'amex'],
     [/standardchartered|stanchart|^scb$/, 'scb'],
     [/bankofbaroda|bobcard|^bob$/, 'bob'],

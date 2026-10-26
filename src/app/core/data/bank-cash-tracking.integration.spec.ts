@@ -666,6 +666,78 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     expect(count('source_transfers')).toBe(1);
   });
 
+  it('approves HSBC CRED repayment only explicitly and links later issuer receipt without a second payment', async () => {
+    const { store, review, balance } = await boot();
+    store.addCard(card);
+    await settle();
+    const hsbc = await store.addBankAccount({
+      nickname: 'Fictional HSBC',
+      institution: 'HSBC Bank',
+      lastDigits: '2006',
+    });
+    await store.enableBankCashTracking({ [hsbc.id]: 2_000_000 });
+    await store.setCardSettlementFunding(true);
+    const bankMessage = await stage(
+      evidence({
+        id: '3'.repeat(64),
+        providerId: 'synthetic-hsbc-provider',
+        kind: 'PAYMENT_INITIATED',
+        issuer: 'HSBC',
+        accountDigits: '2006',
+        direction: 'DEBIT',
+        purposeHint: 'CARD_REPAYMENT',
+        merchant: 'CRED Club',
+        reference: '735182094701',
+        amountMinor: 652066,
+        eventTimeExplicit: false,
+      }),
+    );
+    expect(count('card_transactions')).toBe(0);
+    expect(count('source_transfers')).toBe(0);
+    expect(balance(hsbc.id)).toBe(2_000_000);
+
+    await review.approveBank(bankMessage, {
+      purpose: 'CARD_SETTLEMENT',
+      sourceId: hsbc.id,
+      cardId: card.id,
+      amountMinor: 652066,
+      description: 'CRED Club',
+      transactionDate: today,
+      baselineTiming: 'AFTER_BASELINE',
+    });
+    expect(count('card_transactions')).toBe(1);
+    expect(rows('SELECT type,amount_minor FROM card_transactions')).toEqual([
+      { type: 'PAYMENT', amount_minor: 652066 },
+    ]);
+    expect(balance(hsbc.id)).toBe(1_347_934);
+
+    const receipt = await stage(
+      evidence({
+        id: '4'.repeat(64),
+        kind: 'CARD_PAYMENT_RECEIVED',
+        providerId: 'synthetic-issuer-provider',
+        issuer: 'ICICI',
+        accountDigits: undefined,
+        cardDigits: card.lastDigits,
+        direction: undefined,
+        purposeHint: undefined,
+        merchant: 'Payment received',
+        reference: undefined,
+        amountMinor: 652066,
+        eventTimeExplicit: false,
+      }),
+    );
+    await expect(review.approve(receipt, card.id, 652066, 'Payment received')).rejects.toThrow(
+      'Possible existing transaction',
+    );
+    await review.approve(receipt, card.id, 652066, 'Payment received', `sms-${bankMessage.id}`);
+    expect(rows('SELECT type,amount_minor FROM card_transactions')).toEqual([
+      { type: 'PAYMENT', amount_minor: 652066 },
+    ]);
+    expect(balance(hsbc.id)).toBe(1_347_934);
+    expect(count('source_transfers')).toBe(1);
+  });
+
   it('round trips all Bank/Cash identities, baselines, settings and accounting rows through an encrypted backup', async () => {
     const { store } = await boot();
     store.addCard(card);

@@ -143,6 +143,70 @@ class SmsBankParserTest {
     assertEquals("CASH_WITHDRAWAL", atm.purposeHint)
   }
 
+  @Test fun hsbcPaymentToCredIsRepaymentIntentEvidenceNotASale() {
+    val r = parse("INR 6520.66 is paid from HSBC account XXXXXX2006 to CRED Club on 26-Oct-26 with ref 735182094701. If this is not done by you, call 18005550123 to report.")
+    assertEquals(SmsTransactionParser.Kind.PAYMENT_INITIATED, r.kind)
+    assertEquals("HSBC", r.issuer)
+    assertEquals("2006", r.accountDigits)
+    assertEquals(652066L, r.amountMinor)
+    assertEquals("DEBIT", r.direction)
+    assertEquals("CRED Club", r.merchant)
+    assertEquals("735182094701", r.reference)
+    assertEquals("2026-10-26", r.eventDate)
+    assertEquals("CARD_REPAYMENT", r.purposeHint)
+    assertFalse(r.dateFallback)
+    assertFalse(r.eventTimeExplicit)
+    val queued = SmsQueue.json(r, "synthetic-provider")
+    assertEquals("PAYMENT_INITIATED", queued.getString("kind"))
+    assertEquals("HSBC", queued.getString("issuer"))
+    assertEquals("2006", queued.getString("accountDigits"))
+    assertEquals("CRED Club", queued.getString("merchant"))
+    assertEquals(652066L, queued.getLong("amountMinor"))
+  }
+
+  @Test fun hsbcCardUseExtractsPrimaryPurchaseAndKeepsLimitAndDueInformational() {
+    val r = parse("HSBC Credit Card xx0379 used at FLIPKART for INR 1018.00 on 26/10/26. Avl limit INR 63.34; due INR 10486.66. Call +910000000000 to report fraud.")
+    assertEquals(SmsTransactionParser.Kind.PURCHASE, r.kind)
+    assertEquals("HSBC", r.issuer)
+    assertEquals("0379", r.cardDigits)
+    assertEquals("FLIPKART", r.merchant)
+    assertEquals(101800L, r.amountMinor)
+    assertEquals(6334L, r.availableLimitMinor)
+    assertEquals(1048666L, r.amountDueMinor)
+    assertEquals("2026-10-26", r.eventDate)
+    assertFalse(r.dateFallback)
+    assertFalse(r.eventTimeExplicit)
+    val queued = SmsQueue.json(r, "synthetic-provider")
+    assertEquals("PURCHASE", queued.getString("kind"))
+    assertEquals("0379", queued.getString("cardDigits"))
+    assertEquals(101800L, queued.getLong("amountMinor"))
+    assertEquals(6334L, queued.getLong("availableLimitMinor"))
+    assertEquals(1048666L, queued.getLong("amountDueMinor"))
+
+    val equivalent = parse("Your HSBC credit card xx0379 has been used at AMAZON for Rs 999.00 on 26/10/26.")
+    assertEquals(SmsTransactionParser.Kind.PURCHASE, equivalent.kind)
+    assertEquals("HSBC", equivalent.issuer)
+    assertEquals("0379", equivalent.cardDigits)
+    assertEquals("AMAZON", equivalent.merchant)
+    assertEquals(99900L, equivalent.amountMinor)
+  }
+
+  @Test fun strictPrimaryAndOptionalMoneyParsingAcceptsValidGroupingsButRejectsMalformedTokens() {
+    val grouped = parse("HSBC Credit Card xx0379 used at FLIPKART for INR 1,23,456.78 on 26/10/26. Avl limit INR 63.34; due INR 10,486.66.")
+    assertEquals(12345678L, grouped.amountMinor)
+    assertEquals(6334L, grouped.availableLimitMinor)
+    assertEquals(1048666L, grouped.amountDueMinor)
+
+    val validPrimaryWithMalformedOptional = parse("HSBC Credit Card xx0379 used at FLIPKART for INR 1018.00 on 26/10/26. Avl limit INR 3,0.88; due INR 3,38.")
+    assertEquals(101800L, validPrimaryWithMalformedOptional.amountMinor)
+    assertNull(validPrimaryWithMalformedOptional.availableLimitMinor)
+    assertNull(validPrimaryWithMalformedOptional.amountDueMinor)
+
+    assertNull(SmsTransactionParser.parse("HSBC Credit Card xx0379 used at FLIPKART for INR 3,38 on 26/10/26.", received))
+    assertNull(SmsTransactionParser.parse("HSBC Credit Card xx0379 used at FLIPKART for INR 3,0.88 on 26/10/26.", received))
+    assertNull(SmsTransactionParser.parse("HSBC Credit Card xx0379 statement balance is INR 10,486.66; available limit INR 63.34.", received))
+  }
+
   @Test fun counterpartyAccountMentionedBeforeCustomerAccount() {
     val r = parse("Rs 500.00 debited from a/c XX9081 has been credited to your a/c XX6042 on 12-10-2026. UPI Ref 735182094630")
     assertEquals("CREDIT", r.direction)

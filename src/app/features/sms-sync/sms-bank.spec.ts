@@ -1,4 +1,4 @@
-import { PaymentSource, CardTransaction } from '../../core/models/domain';
+import { CreditCard, PaymentSource, CardTransaction } from '../../core/models/domain';
 import {
   SmsEvidence,
   accountSuffixMatches,
@@ -8,8 +8,11 @@ import {
   bankSourceConflict,
   defaultBankCategory,
   defaultBankPurpose,
+  eligibleSources,
+  bankDisplayName,
   ledgerType,
   matchingBankAccounts,
+  normalizedIssuer,
   suggestedBankSources,
   validEvidence,
 } from './sms-model';
@@ -97,6 +100,61 @@ describe('Bank/UPI review model', () => {
     expect(bankSourceConflict(evidence(), sources[0])).toBe('');
   });
 
+  it('matches HSBC bank repayment and card-purchase evidence without defaulting repayment to spending', () => {
+    const hsbcAccount = account({
+      id: 'hsbc-2006',
+      institution: 'HSBC Bank',
+      lastDigits: '2006',
+    });
+    const repayment = evidence({
+      kind: 'PAYMENT_INITIATED',
+      issuer: 'HSBC',
+      accountDigits: '2006',
+      merchant: 'CRED Club',
+      purposeHint: 'CARD_REPAYMENT',
+      amountMinor: 652066,
+    });
+    expect(normalizedIssuer('HSBC Bank')).toBe('hsbc');
+    expect(bankDisplayName('HSBC')).toBe('HSBC');
+    expect(matchingBankAccounts(repayment, [hsbcAccount])).toEqual([hsbcAccount]);
+    expect(suggestedBankSources(repayment, [hsbcAccount], on)).toEqual(['hsbc-2006']);
+    expect(bankPurposes(repayment, off)).toEqual([]);
+    expect(defaultBankPurpose(repayment, on)).toBe('');
+    expect(bankPurposes(repayment, on)).toEqual(['CARD_SETTLEMENT']);
+
+    const hsbcCard: CreditCard = {
+      id: 'hsbc-card-0379',
+      nickname: 'Synthetic HSBC card',
+      issuerName: 'HSBC',
+      lastDigits: '0379',
+      network: 'VISA',
+      theme: 'green',
+      statementDay: 1,
+      dueDateMode: 'DAYS_AFTER_STATEMENT',
+      daysAfterStatement: 20,
+      adjustDueDateOnWeekend: false,
+      currencyCode: 'INR',
+      openingBalanceMinor: 0,
+      remindToSettle: false,
+      annualFeeEnabled: false,
+      emergencyPhones: [],
+      supportEmails: [],
+      archived: false,
+      createdAt: '2026-01-01',
+      updatedAt: '2026-01-01',
+    };
+    const purchase = evidence({
+      kind: 'PURCHASE',
+      issuer: 'HSBC',
+      cardDigits: '0379',
+      accountDigits: undefined,
+      merchant: 'FLIPKART',
+      amountMinor: 101800,
+      purposeHint: undefined,
+    });
+    expect(eligibleSources(purchase, [hsbcCard], [])).toEqual([hsbcCard.id]);
+  });
+
   it('suggests duplicates only without conflicting references and picks safe categories', () => {
     const manual: CardTransaction = {
       id: 'manual',
@@ -131,7 +189,9 @@ describe('Bank/UPI review model', () => {
   });
 
   it('validates bank evidence fields', () => {
-    expect(validEvidence(evidence())).toBe(true);
+    expect(validEvidence(evidence({ amountDueMinor: 1048666 }))).toBe(true);
+    expect(validEvidence(evidence({ amountDueMinor: -1 }))).toBe(false);
+    expect(validEvidence(evidence({ amountDueMinor: 104.5 }))).toBe(false);
     expect(validEvidence({ ...evidence(), direction: 'SIDEWAYS' })).toBe(false);
     expect(validEvidence({ ...evidence(), counterpartyAccountDigits: '12' })).toBe(false);
   });

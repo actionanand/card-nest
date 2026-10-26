@@ -1,3 +1,7 @@
+vi.hoisted(() => {
+  vi.resetModules();
+});
+
 import { TestBed } from '@angular/core/testing';
 import { Capacitor } from '@capacitor/core';
 import { SqliteDatabase, DatabaseSession } from '../../core/data/sqlite-database';

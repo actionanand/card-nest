@@ -73,6 +73,7 @@ class SmsQueue(context: Context) : SQLiteOpenHelper(context, "sms-discovery.db",
       put("issuer", r.issuer); put("reference", r.reference); put("reportedBalanceMinor", r.reportedBalanceMinor)
       put("vehicleNumber", r.vehicleNumber); put("availableLimitMinor", r.availableLimitMinor)
       put("statementTotalMinor", r.statementTotalMinor); put("minimumDueMinor", r.minimumDueMinor)
+      put("amountDueMinor", r.amountDueMinor)
       put("dueDate", r.dueDate); put("evidence", r.evidence)
       put("eventTime", r.eventTime); put("timeZone", r.timeZone); put("cardNetwork", r.cardNetwork)
       put("confidence", r.confidence); put("earnedForPeriod", r.earnedForPeriod); put("statementDate", r.statementDate)

@@ -126,7 +126,7 @@ describe('SMS review privacy and explicit approval UI', () => {
     bankCashTracking,
     bankAccounts: computed(() => paymentSources().filter((source) => source.kind === 'DEBIT')),
     activePaymentSources: computed(() => paymentSources()),
-    alphabeticalActiveCards: signal([]),
+    alphabeticalActiveCards: signal<CreditCard[]>([]),
     cardSettlementFundingAccounts: signal([]),
     transfers: signal([]),
     fundingFor: () => undefined,
@@ -1196,6 +1196,118 @@ describe('SMS review privacy and explicit approval UI', () => {
     };
     page.open(credit);
     expect(page.bankEditor.controls.purpose.value).toBe('');
+  });
+
+  it('keeps a CRED repayment visible in SMS Review when bank tracking is off', async () => {
+    paymentSources.set([
+      {
+        id: 'hsbc-2006',
+        nickname: 'Fictional HSBC account',
+        institution: 'HSBC Bank',
+        kind: 'DEBIT',
+        lastDigits: '2006',
+        noLimit: false,
+        autoLoad: false,
+        archived: false,
+      },
+    ]);
+    bankCashTracking.set({ enabled: false, askCardSettlementFunding: false });
+    const candidate: SmsCandidate = {
+      ...demoCandidate(),
+      id: 'c'.repeat(64),
+      kind: 'PAYMENT_INITIATED',
+      item: {
+        ...demoCandidate().item!,
+        id: 'c'.repeat(64),
+        kind: 'PAYMENT_INITIATED',
+        issuer: 'HSBC',
+        accountDigits: '2006',
+        direction: 'DEBIT',
+        purposeHint: 'CARD_REPAYMENT',
+        merchant: 'CRED Club',
+        amountMinor: 652066,
+      },
+    };
+    candidates.set([candidate]);
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(fixture.nativeElement.querySelector('.candidate')?.textContent).toContain('CRED Club');
+    fixture.componentInstance.open(candidate);
+    fixture.detectChanges();
+    expect(fixture.componentInstance.bankIdentity()).toContain('HSBC');
+    expect(fixture.componentInstance.bankReviewable()).toBe(false);
+    expect(fixture.nativeElement.querySelector('.bank-review')).toBeNull();
+    expect(fixture.nativeElement.textContent).toContain(
+      'enable Bank/Cash tracking and Ask to deduct bank balance for credit-card payments in Settings',
+    );
+    expect(sync.approveBank).not.toHaveBeenCalled();
+  });
+
+  it('requires explicit card-settlement purpose and card selection when tracking is enabled', async () => {
+    const bank: PaymentSource = {
+      id: 'hsbc-2006',
+      nickname: 'Fictional HSBC account',
+      institution: 'HSBC Bank',
+      kind: 'DEBIT',
+      lastDigits: '2006',
+      balanceMinor: 2_000_000,
+      balanceCutoverAt: '2026-10-25T00:00:00.000Z',
+      noLimit: false,
+      autoLoad: false,
+      archived: false,
+    };
+    const hsbcCard = { ...demoCard, issuerName: 'HSBC Bank', lastDigits: '0379' };
+    paymentSources.set([bank]);
+    store.cards.set([hsbcCard]);
+    store.alphabeticalActiveCards.set([hsbcCard]);
+    bankCashTracking.set({ enabled: true, askCardSettlementFunding: true });
+    const candidate: SmsCandidate = {
+      ...demoCandidate(),
+      id: 'd'.repeat(64),
+      kind: 'PAYMENT_INITIATED',
+      item: {
+        ...demoCandidate().item!,
+        id: 'd'.repeat(64),
+        kind: 'PAYMENT_INITIATED',
+        eventDate: '2026-10-26',
+        issuer: 'HSBC',
+        accountDigits: '2006',
+        direction: 'DEBIT',
+        purposeHint: 'CARD_REPAYMENT',
+        merchant: 'CRED Club',
+        amountMinor: 652066,
+        eventTimeExplicit: false,
+      },
+    };
+    candidates.set([candidate]);
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const page = fixture.componentInstance;
+    page.open(candidate);
+    fixture.detectChanges();
+    expect(page.bankReviewable()).toBe(true);
+    expect(page.bankEditor.controls.purpose.value).toBe('');
+    expect(page.bankPurposeOptions().map((option) => option.value)).toContain('CARD_SETTLEMENT');
+    expect(page.bankEditor.controls.source.value).toBe(bank.id);
+    page.setBankPurpose('CARD_SETTLEMENT');
+    expect(page.bankCardOptions().map((option) => option.value)).toContain(hsbcCard.id);
+
+    page.bankEditor.controls.card.setValue(hsbcCard.id);
+    expect(page.bankDeductionNotice()).toContain('will be deducted once');
+    expect(sync.approveBank).not.toHaveBeenCalled();
+    page.approveBankEvent(new Event('submit'));
+    await fixture.whenStable();
+    expect(sync.approveBank).toHaveBeenCalledWith(
+      candidate,
+      expect.objectContaining({
+        purpose: 'CARD_SETTLEMENT',
+        sourceId: bank.id,
+        cardId: hsbcCard.id,
+        amountMinor: 652066,
+      }),
+    );
   });
 
   it('uses the configured card picker, keeps comments across method changes and resets a new SMS', async () => {

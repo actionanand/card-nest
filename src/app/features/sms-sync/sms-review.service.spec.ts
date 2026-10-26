@@ -726,6 +726,112 @@ describe('SMS approved import integrity', () => {
     expect((await service.loadReviewFilters()).sortOrder).toBe('TRANSACTION_DESC');
     expect(count('card_transactions')).toBe(0);
   });
+  it('keeps HSBC repayment and purchase evidence visible with tracking off without creating financial rows', async () => {
+    const repayment = stage(
+      evidence({
+        id: 'a'.repeat(64),
+        kind: 'PAYMENT_INITIATED',
+        issuer: 'HSBC',
+        accountDigits: '2006',
+        direction: 'DEBIT',
+        purposeHint: 'CARD_REPAYMENT',
+        merchant: 'CRED Club',
+        reference: '735182094701',
+        amountMinor: 652066,
+        eventDate: '2026-10-26',
+        eventAt: '2026-10-25T18:30:00.000Z',
+        eventTime: '00:00:00',
+        eventTimeExplicit: false,
+      }),
+    );
+    const purchase = stage(
+      evidence({
+        id: 'b'.repeat(64),
+        kind: 'PURCHASE',
+        issuer: 'HSBC',
+        cardDigits: '0379',
+        direction: undefined,
+        purposeHint: undefined,
+        merchant: 'FLIPKART',
+        amountMinor: 101800,
+        availableLimitMinor: 6334,
+        amountDueMinor: 1048666,
+        eventDate: '2026-10-26',
+        eventAt: '2026-10-25T18:30:00.000Z',
+        eventTime: '00:00:00',
+        eventTimeExplicit: false,
+        receivedAt: Date.parse('2026-10-26T18:31:00.000Z'),
+      }),
+    );
+    realRefresh();
+
+    await service.filterReview({ ...readFilters('ALL'), state: 'ALL', kind: 'ALL' });
+    expect(service.candidates().map((candidate) => candidate.id)).toEqual([
+      purchase.id,
+      repayment.id,
+    ]);
+    expect(service.candidates().map((candidate) => candidate.item?.issuer)).toEqual([
+      'HSBC',
+      'HSBC',
+    ]);
+    expect(service.candidates()[0].item).toMatchObject({
+      cardDigits: '0379',
+      merchant: 'FLIPKART',
+      amountMinor: 101800,
+      availableLimitMinor: 6334,
+      amountDueMinor: 1048666,
+      eventTimeExplicit: false,
+    });
+    expect(service.candidates()[1].item).toMatchObject({
+      kind: 'PAYMENT_INITIATED',
+      accountDigits: '2006',
+      direction: 'DEBIT',
+      purposeHint: 'CARD_REPAYMENT',
+      merchant: 'CRED Club',
+      reference: '735182094701',
+      amountMinor: 652066,
+      eventTimeExplicit: false,
+    });
+    expect(count('card_transactions')).toBe(0);
+    expect(count('source_transfers')).toBe(0);
+  });
+  it('keeps supported bank, card-payment, card-purchase and loan kinds visible in All types mode', async () => {
+    const kinds: SmsEvidence['kind'][] = [
+      'PURCHASE',
+      'CARD_PAYMENT_RECEIVED',
+      'BANK_DEBIT',
+      'BANK_CREDIT',
+      'PAYMENT_INITIATED',
+      'LOAN_DEBIT',
+      'LOAN_REMINDER',
+    ];
+    kinds.forEach((kind, index) =>
+      stage(
+        evidence({
+          id: (index + 1).toString(16).padStart(64, '0'),
+          kind,
+          direction:
+            kind === 'BANK_CREDIT' || kind === 'CARD_PAYMENT_RECEIVED' ? 'CREDIT' : 'DEBIT',
+          purposeHint:
+            kind === 'PAYMENT_INITIATED'
+              ? 'CARD_REPAYMENT'
+              : kind === 'BANK_CREDIT'
+                ? 'INCOMING'
+                : undefined,
+        }),
+      ),
+    );
+    realRefresh();
+
+    await service.filterReview({ ...readFilters('ALL'), state: 'ALL', kind: 'ALL' });
+    expect(
+      service
+        .candidates()
+        .map((candidate) => candidate.kind)
+        .sort(),
+    ).toEqual(kinds.sort());
+    expect(service.total()).toBe(kinds.length);
+  });
   it('uses deterministic event-date fallback for missing or invalid receivedAt metadata', async () => {
     const validReceived = stage(
       evidence({

@@ -1213,6 +1213,17 @@
                     This message is evidence only. It cannot create spending, income or a loan
                     schedule.
                   </p>
+                  @if (
+                    bankItem()?.purposeHint === 'CARD_REPAYMENT' &&
+                    (!store.bankCashTracking().enabled ||
+                      !store.bankCashTracking().askCardSettlementFunding)
+                  ) {
+                    <p>
+                      To record a funded card settlement, enable Bank/Cash tracking and Ask to
+                      deduct bank balance for credit-card payments in Settings. This SMS alone does
+                      not confirm issuer receipt.
+                    </p>
+                  }
                 </div>
               </aside>
               @if (
@@ -1319,6 +1330,20 @@
                   item.reportedBalanceMinor === undefined
                     ? 'Not provided'
                     : money(item.reportedBalanceMinor)
+                }}
+              </dd>
+              <dt>Available limit (evidence only)</dt>
+              <dd>
+                {{
+                  item.availableLimitMinor === undefined
+                    ? 'Not provided'
+                    : money(item.availableLimitMinor)
+                }}
+              </dd>
+              <dt>Amount due (informational)</dt>
+              <dd>
+                {{
+                  item.amountDueMinor === undefined ? 'Not provided' : money(item.amountDueMinor)
                 }}
               </dd>
               <dt>Statement total / minimum</dt>
