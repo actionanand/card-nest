@@ -197,12 +197,54 @@ class SmsBankParserTest {
     assertEquals(1048666L, issued.amountMinor)
     assertEquals(100000L, issued.minimumDueMinor)
     assertEquals("2026-10-26", issued.eventDate)
+    assertEquals("2026-10-26", issued.statementDate)
+    assertFalse(issued.dateFallback)
+    assertNull(issued.dueDate)
 
     val available = parse("Your HSBC Credit Card statement is available on 26-Oct-26. Total amount due INR 10,486.66; minimum amount due INR 1,000.00.")
     assertEquals(SmsTransactionParser.Kind.STATEMENT, available.kind)
     assertEquals(1048666L, available.amountMinor)
     assertEquals(100000L, available.minimumDueMinor)
     assertEquals("2026-10-26", available.eventDate)
+    assertEquals("2026-10-26", available.statementDate)
+    assertFalse(available.dateFallback)
+    assertNull(available.dueDate)
+  }
+
+  @Test fun statementDatesStaySeparateFromPaymentDeadlines() {
+    for (wording in listOf("was issued on", "is available on", "dated", "date:")) {
+      for (deadlineFirst in listOf(false, true)) {
+        val statement = "Your HSBC credit card statement $wording 26-Oct-26. Statement total INR 10,486.66."
+        val deadline = "Payment due by 10-Nov-26."
+        val r = parse(if (deadlineFirst) "$deadline $statement" else "$statement $deadline")
+        assertEquals(SmsTransactionParser.Kind.STATEMENT, r.kind)
+        assertEquals("2026-10-26", r.eventDate)
+        assertEquals("2026-10-26", r.statementDate)
+        assertEquals("2026-11-10", r.dueDate)
+        assertFalse(r.dateFallback)
+      }
+    }
+    val dated = parse("Your HSBC credit card statement was issued on 26-Oct-26. Statement dated 20-Oct-26. Statement total INR 10,486.66; due by 10-Nov-26.")
+    assertEquals("2026-10-20", dated.eventDate)
+    assertEquals("2026-10-20", dated.statementDate)
+    assertEquals("2026-11-10", dated.dueDate)
+    val ordinal = parse("Your HSBC credit card statement dated 26th October 2026 is available. Statement total INR 10,486.66.")
+    assertEquals("2026-10-26", ordinal.eventDate)
+    assertEquals("2026-10-26", ordinal.statementDate)
+  }
+
+  @Test fun undatedStatementsNeverBorrowLaterDatesAndInvalidDatesAreRejected() {
+    for (wording in listOf("was issued", "is available", "was issued on request", "is available on request", "dated", "date:")) {
+      val r = parse("Your HSBC credit card statement $wording. Statement total INR 10,486.66; due by 10-Nov-26.")
+      assertEquals(SmsTransactionParser.Kind.STATEMENT, r.kind)
+      assertEquals("2026-10-24", r.eventDate)
+      assertNull(r.statementDate)
+      assertEquals("2026-11-10", r.dueDate)
+      assertTrue(r.dateFallback)
+    }
+    for (wording in listOf("was issued on", "is available on", "dated", "date:")) {
+      assertNull(SmsTransactionParser.parse("Your HSBC credit card statement $wording 31-Feb-26. Statement total INR 10,486.66; due by 10-Nov-26.", receipt))
+    }
   }
 
   @Test fun strictPrimaryAndOptionalMoneyParsingAcceptsValidGroupingsButRejectsMalformedTokens() {
