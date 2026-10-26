@@ -191,6 +191,20 @@ class SmsBankParserTest {
     assertEquals(99900L, equivalent.amountMinor)
   }
 
+  @Test fun hsbcStatementIssuedAndAvailableRemainRecognized() {
+    val issued = parse("Your HSBC credit card statement was issued on 26-Oct-26. Statement total INR 10,486.66; minimum due INR 1,000.00.")
+    assertEquals(SmsTransactionParser.Kind.STATEMENT, issued.kind)
+    assertEquals(1048666L, issued.amountMinor)
+    assertEquals(100000L, issued.minimumDueMinor)
+    assertEquals("2026-10-26", issued.eventDate)
+
+    val available = parse("Your HSBC Credit Card statement is available on 26-Oct-26. Total amount due INR 10,486.66; minimum amount due INR 1,000.00.")
+    assertEquals(SmsTransactionParser.Kind.STATEMENT, available.kind)
+    assertEquals(1048666L, available.amountMinor)
+    assertEquals(100000L, available.minimumDueMinor)
+    assertEquals("2026-10-26", available.eventDate)
+  }
+
   @Test fun strictPrimaryAndOptionalMoneyParsingAcceptsValidGroupingsButRejectsMalformedTokens() {
     val grouped = parse("HSBC Credit Card xx0379 used at FLIPKART for INR 1,23,456.78 on 26/10/26. Avl limit INR 63.34; due INR 10,486.66.")
     assertEquals(12345678L, grouped.amountMinor)

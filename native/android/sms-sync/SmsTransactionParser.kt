@@ -120,7 +120,7 @@ object SmsTransactionParser {
     val aggregator = has("\\bcred\\b|cheq|ccbp")
     val confirmed = card && !aggregator && has("payment of.{0,100}(received|credited)|online payment.{0,100}credited")
     val completedCardUse = card && has("\\b(?:credit\\s+)?card\\b.{0,50}\\b(?:(?:was|has been|has)\\s+)?used\\s+at\\b.{0,100}\\bfor\\s+$MONEY$NUMBER")
-    val statement = card && (has("statement.{0,120}\\b(?:sent|generated|issued|available|ready|emailed|delivered)\\b|your\\s+(?:credit\\s+)?card\\s+statement|statement\\s+(?:total|amount)") ||
+    val statement = card && (has("statement.{0,120}\\b(?:sent|generated|issued|available(?!\\s+limit)|ready|emailed|delivered)\\b|your\\s+(?:credit\\s+)?card\\s+statement|statement\\s+(?:total|amount)") ||
       (has("\\bstatement\\b") && due && has("total|minimum") && !has("reminder")))
     val purchase = has("\\b(spent|debited|charged)\\b|transaction of.+was made using|thank you for using.+card") || completedCardUse
     val scheduled = card && has("will be (?:charged|debited)|is scheduled to be (?:charged|debited)|standing instruction.{0,60}registered")
