@@ -238,7 +238,10 @@ export class SmsReviewService {
       },
   ): Promise<void> {
     this.assertUnlocked();
-    const applied = reviewFilters(filters);
+    const applied = reviewFilters({
+      ...filters,
+      sortOrder: filters.sortOrder ?? this.filters.sortOrder,
+    });
     await this.database.run(
       'INSERT INTO app_preferences(key,encrypted_value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET encrypted_value=excluded.encrypted_value',
       [SMS_REVIEW_FILTERS_KEY, JSON.stringify(applied)],
@@ -589,6 +592,16 @@ export class SmsReviewService {
     if (revision !== this.refreshRevision || this.lock.locked() || !this.lock.foreground()) return;
     this.total.set(count.total);
     this.reviewPage.update((page) => Math.min(page, Math.max(0, Math.ceil(count.total / 200) - 1)));
+    const orderBy =
+      this.filters.sortOrder === 'TRANSACTION_DESC'
+        ? 'event_at DESC, id'
+        : `CASE
+          WHEN payload IS NOT NULL AND json_valid(payload)
+            AND json_type(payload, '$.receivedAt') IN ('integer','real')
+            AND CAST(json_extract(payload, '$.receivedAt') AS REAL) BETWEEN 0 AND 8640000000000000
+          THEN CAST(json_extract(payload, '$.receivedAt') AS REAL)
+          ELSE CAST(strftime('%s', event_at) AS REAL) * 1000
+        END DESC, event_at DESC, id`;
     const rows = await this.database.query<{
       id: string;
       state: ReviewState;
@@ -598,7 +611,7 @@ export class SmsReviewService {
       transaction_id: string;
       read_at: string | null;
       decision: string | null;
-    }>(`SELECT * FROM sms_candidates ${where} ORDER BY event_at DESC, id LIMIT 200 OFFSET ?`, [
+    }>(`SELECT * FROM sms_candidates ${where} ORDER BY ${orderBy} LIMIT 200 OFFSET ?`, [
       ...values,
       this.reviewPage() * 200,
     ]);

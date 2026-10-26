@@ -10,7 +10,11 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { APP_ENVIRONMENT } from '../services/app-environment';
-import { reviewFilters } from '../../features/sms-sync/sms-review-filters';
+import {
+  defaultReviewFilters,
+  reviewFilters,
+  SMS_REVIEW_FILTERS_KEY,
+} from '../../features/sms-sync/sms-review-filters';
 import { BackupService } from '../services/backup.service';
 import { webcrypto } from 'node:crypto';
 import { Blob as NodeBlob } from 'node:buffer';
@@ -548,6 +552,13 @@ describe('Durable first-run data, additive read migration and private portable b
       ],
     );
 
+    await database.run(
+      'INSERT INTO app_preferences(key,encrypted_value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET encrypted_value=excluded.encrypted_value',
+      [
+        SMS_REVIEW_FILTERS_KEY,
+        JSON.stringify({ ...defaultReviewFilters(), sortOrder: 'TRANSACTION_DESC' }),
+      ],
+    );
     vi.stubGlobal('crypto', webcrypto);
     vi.stubGlobal('Blob', NodeBlob);
     try {
@@ -573,6 +584,13 @@ describe('Durable first-run data, additive read migration and private portable b
         restoredUtilities.initialise(),
         restoredBankActivity.initialise(),
       ]);
+      const [restoredReviewPreference] = await database.query<{ encrypted_value: string }>(
+        'SELECT encrypted_value FROM app_preferences WHERE key=?',
+        [SMS_REVIEW_FILTERS_KEY],
+      );
+      expect(reviewFilters(JSON.parse(restoredReviewPreference.encrypted_value)).sortOrder).toBe(
+        'TRANSACTION_DESC',
+      );
       expect(restoredUtilities.settings()).toEqual({
         showIndianUtilities: true,
         utilityReminders: true,
@@ -646,7 +664,7 @@ describe('Durable first-run data, additive read migration and private portable b
                   (row) =>
                     ![SHOW_INDIAN_UTILITIES_KEY, UTILITY_REMINDERS_KEY].includes(
                       String(row['key']),
-                    ),
+                    ) && String(row['key']) !== SMS_REVIEW_FILTERS_KEY,
                 ),
               }
             : table,
@@ -657,6 +675,12 @@ describe('Durable first-run data, additive read migration and private portable b
       const oldBackup = await backups.create('synthetic-old-utilities-passphrase');
       exportSpy.mockRestore();
       await backups.restore(oldBackup.contents, 'synthetic-old-utilities-passphrase');
+      const [oldReviewPreference] = await database.query<{ encrypted_value: string }>(
+        'SELECT encrypted_value FROM app_preferences WHERE key=?',
+        [SMS_REVIEW_FILTERS_KEY],
+      );
+      expect(oldReviewPreference).toBeUndefined();
+      expect(reviewFilters(undefined).sortOrder).toBe('RECEIVED_DESC');
       const oldUtilities = TestBed.runInInjectionContext(() => new UtilitiesService());
       await oldUtilities.initialise();
       expect(oldUtilities.settings()).toEqual({

@@ -1,4 +1,9 @@
 export const SMS_REVIEW_FILTERS_KEY = 'sms_review_filters';
+export type SmsReviewSortOrder = 'RECEIVED_DESC' | 'TRANSACTION_DESC';
+export const SMS_REVIEW_SORT_ORDERS: readonly SmsReviewSortOrder[] = [
+  'RECEIVED_DESC',
+  'TRANSACTION_DESC',
+];
 export const SMS_KINDS = [
   'PURCHASE',
   'BANK_DEBIT',
@@ -38,6 +43,7 @@ export interface SmsReviewFilters {
   kinds: string[];
   multipleInitialized: boolean;
   hideAlreadyAdded: boolean;
+  sortOrder: SmsReviewSortOrder;
 }
 
 export function defaultReviewFilters(): SmsReviewFilters {
@@ -53,6 +59,7 @@ export function defaultReviewFilters(): SmsReviewFilters {
     kinds: [],
     multipleInitialized: false,
     hideAlreadyAdded: true,
+    sortOrder: 'RECEIVED_DESC',
   };
 }
 
@@ -124,5 +131,8 @@ export function reviewFilters(value: unknown): SmsReviewFilters {
       : [],
     multipleInitialized: item['multipleInitialized'] === true || item['mode'] === 'MULTIPLE',
     hideAlreadyAdded: item['hideAlreadyAdded'] !== false,
+    sortOrder: SMS_REVIEW_SORT_ORDERS.includes(item['sortOrder'] as SmsReviewSortOrder)
+      ? (item['sortOrder'] as SmsReviewSortOrder)
+      : defaults.sortOrder,
   };
 }

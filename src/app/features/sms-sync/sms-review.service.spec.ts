@@ -675,7 +675,151 @@ describe('SMS approved import integrity', () => {
   });
   it('keeps old-installation defaults without creating preferences on load', async () => {
     expect(await service.loadReviewFilters()).toEqual(defaultReviewFilters());
+    expect((await service.loadReviewFilters()).sortOrder).toBe('RECEIVED_DESC');
     expect(count('app_preferences')).toBe(0);
+  });
+  it('orders late-arriving SMS by receipt time by default and preserves transaction-date order as the alternate', async () => {
+    const lateOlderTransaction = stage(
+      evidence({
+        id: 'a'.repeat(64),
+        eventDate: '2026-10-25',
+        eventAt: '2026-10-25T16:00:00.000Z',
+        receivedAt: Date.parse('2026-10-26T02:30:00.000Z'),
+      }),
+    );
+    const newerTransaction = stage(
+      evidence({
+        id: 'b'.repeat(64),
+        eventDate: '2026-10-26',
+        eventAt: '2026-10-25T20:30:00.000Z',
+        receivedAt: Date.parse('2026-10-25T20:31:00.000Z'),
+      }),
+    );
+    const middleTransaction = stage(
+      evidence({
+        id: 'c'.repeat(64),
+        eventDate: '2026-10-25',
+        eventAt: '2026-10-25T16:25:00.000Z',
+        receivedAt: Date.parse('2026-10-25T16:26:00.000Z'),
+      }),
+    );
+    realRefresh();
+
+    await service.filterReview({ ...readFilters('ALL'), state: 'ALL' });
+    expect(service.candidates().map((candidate) => candidate.id)).toEqual([
+      lateOlderTransaction.id,
+      newerTransaction.id,
+      middleTransaction.id,
+    ]);
+    expect((await service.loadReviewFilters()).sortOrder).toBe('RECEIVED_DESC');
+
+    await service.filterReview({
+      ...readFilters('ALL'),
+      state: 'ALL',
+      sortOrder: 'TRANSACTION_DESC',
+    });
+    expect(service.candidates().map((candidate) => candidate.id)).toEqual([
+      newerTransaction.id,
+      middleTransaction.id,
+      lateOlderTransaction.id,
+    ]);
+    expect((await service.loadReviewFilters()).sortOrder).toBe('TRANSACTION_DESC');
+    expect(count('card_transactions')).toBe(0);
+  });
+  it('uses deterministic event-date fallback for missing or invalid receivedAt metadata', async () => {
+    const validReceived = stage(
+      evidence({
+        id: 'a'.repeat(64),
+        eventAt: '2010-01-01T00:00:00.000Z',
+        receivedAt: Date.parse('2026-10-26T02:30:00.000Z'),
+      }),
+    );
+    const missingReceived = stage(
+      evidence({
+        id: 'b'.repeat(64),
+        eventAt: '2026-10-25T23:00:00.000Z',
+        receivedAt: Date.parse('2020-01-01T00:00:00.000Z'),
+      }),
+    );
+    const invalidReceived = stage(
+      evidence({
+        id: 'c'.repeat(64),
+        eventAt: '2026-10-25T23:00:00.000Z',
+        receivedAt: Date.parse('2020-01-01T00:00:00.000Z'),
+      }),
+    );
+    run("UPDATE sms_candidates SET payload=json_remove(payload,'$.receivedAt') WHERE id=?", [
+      missingReceived.id,
+    ]);
+    run(
+      "UPDATE sms_candidates SET payload=json_set(payload,'$.receivedAt','legacy-invalid') WHERE id=?",
+      [invalidReceived.id],
+    );
+    realRefresh();
+
+    await service.filterReview({ ...readFilters('ALL'), state: 'ALL' });
+    expect(service.candidates().map((candidate) => candidate.id)).toEqual([
+      validReceived.id,
+      missingReceived.id,
+      invalidReceived.id,
+    ]);
+  });
+  it('retains ascending candidate ID as the deterministic transaction-date tie-breaker', async () => {
+    const second = stage(
+      evidence({
+        id: 'b'.repeat(64),
+        eventAt: '2026-10-25T16:00:00.000Z',
+        receivedAt: Date.parse('2026-10-25T18:00:00.000Z'),
+      }),
+    );
+    const first = stage(
+      evidence({
+        id: 'a'.repeat(64),
+        eventAt: '2026-10-25T16:00:00.000Z',
+        receivedAt: Date.parse('2026-10-25T17:00:00.000Z'),
+      }),
+    );
+    realRefresh();
+
+    await service.filterReview({
+      ...readFilters('ALL'),
+      state: 'ALL',
+      sortOrder: 'TRANSACTION_DESC',
+    });
+    expect(service.candidates().map((candidate) => candidate.id)).toEqual([first.id, second.id]);
+  });
+  it('sorts received timestamps across the full filtered dataset before the 200-row page limit', async () => {
+    const baseReceivedAt = Date.parse('2026-10-01T00:00:00.000Z');
+    const target = stage(
+      evidence({
+        id: 'f'.repeat(64),
+        eventAt: '2010-01-01T00:00:00.000Z',
+        receivedAt: baseReceivedAt + 10_000,
+      }),
+    );
+    for (let index = 0; index < 204; index++)
+      stage(
+        evidence({
+          id: (index + 1).toString(16).padStart(64, '0'),
+          eventAt: `2026-10-26T00:${String(index % 60).padStart(2, '0')}:00.000Z`,
+          receivedAt: baseReceivedAt + index,
+        }),
+      );
+    realRefresh();
+
+    await service.filterReview({ ...readFilters('ALL'), state: 'ALL' });
+    expect(service.total()).toBe(205);
+    expect(service.candidates()).toHaveLength(200);
+    expect(service.candidates()[0].id).toBe(target.id);
+    const firstPageIds = service.candidates().map((candidate) => candidate.id);
+    const oldestReceivedOnFirstPage = service.candidates().at(-1)!.item!.receivedAt;
+    await service.turnPage(1);
+    expect(service.candidates()).toHaveLength(5);
+    expect(service.candidates()[0].item!.receivedAt).toBeLessThan(oldestReceivedOnFirstPage);
+    expect(service.candidates().some((candidate) => firstPageIds.includes(candidate.id))).toBe(
+      false,
+    );
+    expect(count('card_transactions')).toBe(0);
   });
   it('persists all applied filters in SQLite and re-applies them through a recreated service', async () => {
     realRefresh();
@@ -689,6 +833,7 @@ describe('SMS approved import integrity', () => {
       from: '2026-10-01',
       to: '2026-10-31',
       read: 'UNREAD',
+      sortOrder: 'TRANSACTION_DESC' as const,
     };
     await service.filterReview(filters);
     expect(service.total()).toBe(1);
@@ -722,6 +867,7 @@ describe('SMS approved import integrity', () => {
       ...defaultReviewFilters(),
       state: 'ALL',
       read: 'ALL',
+      sortOrder: 'TRANSACTION_DESC',
     });
   });
   it('falls back safely for malformed or invalid restored filter values', async () => {
@@ -732,6 +878,7 @@ describe('SMS approved import integrity', () => {
         state: 'unknown',
         kind: {},
         read: 'unknown',
+        sortOrder: 'ORDER BY arbitrary SQL',
         search: 9,
         source: ['bad'],
         from: '2026-02-30',

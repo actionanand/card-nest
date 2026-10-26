@@ -1,4 +1,10 @@
 import {
+  INITIAL_MULTIPLE_KINDS,
+  reviewFilters,
+  SMS_REVIEW_SORT_ORDERS,
+  SmsReviewSortOrder,
+} from './sms-review-filters';
+import {
   Component,
   DestroyRef,
   ElementRef,
@@ -19,10 +25,10 @@ import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker
 import { SnackbarService } from '../../core/services/snackbar.service';
 import { lockDocumentScroll } from '../../shared/document-scroll-lock';
 import { CardNestStore } from '../../core/services/card-nest-store';
+import { indiaTodayIso } from '../../core/services/india-date';
 import { parseMoneyToMinor } from '../../core/services/money';
 import { SmsReviewService } from './sms-review.service';
 import { SmsTypePicker } from './sms-type-picker';
-import { INITIAL_MULTIPLE_KINDS, reviewFilters } from './sms-review-filters';
 import { matchExisting, walletComparison } from './sms-matching';
 import {
   bankCashTracked,
@@ -82,6 +88,13 @@ interface CandidateMenuPosition {
   readonly opensUp: boolean;
 }
 
+interface CandidateTimestamp {
+  readonly datetime: string;
+  readonly primaryLabel: string;
+  readonly primaryValue: string;
+  readonly secondary?: string;
+}
+
 const CANDIDATE_MENU_WIDTH = 240;
 const CANDIDATE_MENU_ITEM_HEIGHT = 44;
 
@@ -128,6 +141,11 @@ export class SmsSyncPage {
     value,
     label: value === 'ALL' ? 'All suggestions' : this.label(value),
   }));
+  readonly sortOrder = signal<SmsReviewSortOrder>('RECEIVED_DESC');
+  readonly sortOrderOptions: readonly AppSelectOption[] = [
+    { value: 'RECEIVED_DESC', label: 'SMS received time — newest first' },
+    { value: 'TRANSACTION_DESC', label: 'Transaction date — current behavior' },
+  ];
   readonly kindOptions = computed<readonly AppSelectOption[]>(() => [
     { value: 'ALL', label: 'All types' },
     ...this.kinds.map((value) => ({ value, label: this.label(value) })),
@@ -397,8 +415,14 @@ export class SmsSyncPage {
         to: this.to(),
         read: this.readFilter(),
         hideAlreadyAdded: this.hideAlreadyAdded(),
+        sortOrder: this.sortOrder(),
       }),
     );
+  }
+  changeSortOrder(value: string): void {
+    if (!SMS_REVIEW_SORT_ORDERS.includes(value as SmsReviewSortOrder)) return;
+    this.sortOrder.set(value as SmsReviewSortOrder);
+    this.applyFilters();
   }
   page(direction: number): void {
     void this.run(() => this.sync.turnPage(direction));
@@ -1062,6 +1086,7 @@ export class SmsSyncPage {
             this.to.set(filters.to);
             this.readFilter.set(filters.read);
             this.hideAlreadyAdded.set(filters.hideAlreadyAdded);
+            this.sortOrder.set(filters.sortOrder);
             if (this.entryPermissionPending) {
               this.entryPermissionPending = false;
               await this.sync.enterFromReview(this.range());
@@ -1137,11 +1162,103 @@ export class SmsSyncPage {
       ? new Date(value).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
       : 'Date unavailable';
   }
+  reviewTimestamp(candidate: SmsCandidate): CandidateTimestamp {
+    const item = candidate.item;
+    if (!item)
+      return {
+        datetime: candidate.eventAt,
+        primaryLabel: 'Date and time',
+        primaryValue: this.dateTime(candidate.eventAt),
+      };
+
+    const pasted = item.providerId === 'paste';
+    const receivedAt = this.validInstant(item.receivedAt);
+    const fallbackInstant = this.validInstant(item.eventAt);
+    if (item.dateFallback) {
+      const source = receivedAt ?? fallbackInstant;
+      return {
+        datetime: source?.toISOString() ?? item.eventAt,
+        primaryLabel: 'Date and time',
+        primaryValue: source ? this.formatInstant(source) : this.dateTime(item.eventAt),
+        secondary: pasted
+          ? 'Based on paste processing time'
+          : 'Based on SMS received date and time',
+      };
+    }
+
+    const date = this.calendarDateText(item.eventDate);
+    if (item.eventTimeExplicit === true) {
+      const time = this.wallTimeText(item.eventTime) ?? this.timeFromInstant(fallbackInstant);
+      return {
+        datetime: item.eventAt,
+        primaryLabel: 'Transaction',
+        primaryValue: time ? `${date} · ${time}` : date,
+      };
+    }
+
+    let secondary: string | undefined;
+    if (receivedAt) {
+      const receiptLabel = pasted ? 'Processed at' : 'SMS received';
+      const receiptDate = indiaTodayIso(receivedAt);
+      const receiptValue =
+        pasted || receiptDate !== item.eventDate
+          ? this.formatInstant(receivedAt)
+          : this.timeFromInstant(receivedAt);
+      if (receiptValue) secondary = `${receiptLabel}: ${receiptValue}`;
+    }
+    return {
+      datetime: item.eventDate,
+      primaryLabel: 'Transaction date',
+      primaryValue: date,
+      secondary,
+    };
+  }
   label(value: string): string {
     return value
       .toLowerCase()
       .replaceAll('_', ' ')
       .replace(/^./, (letter) => letter.toUpperCase());
+  }
+  private validInstant(value: unknown): Date | undefined {
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 8.64e15)
+      return undefined;
+    const date = new Date(value);
+    return Number.isFinite(date.getTime()) ? date : undefined;
+  }
+  private calendarDateText(value: string): string {
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(value) ? new Date(`${value}T12:00:00Z`) : undefined;
+    return date && Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value
+      ? date.toLocaleDateString('en-US', {
+          month: 'short',
+          day: 'numeric',
+          year: 'numeric',
+          timeZone: 'UTC',
+        })
+      : 'Date unavailable';
+  }
+  private formatInstant(value: Date): string {
+    return value.toLocaleString('en-US', {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+      timeZone: 'Asia/Kolkata',
+    });
+  }
+  private timeFromInstant(value: Date | undefined): string | undefined {
+    return value?.toLocaleTimeString('en-US', {
+      hour: 'numeric',
+      minute: '2-digit',
+      timeZone: 'Asia/Kolkata',
+    });
+  }
+  private wallTimeText(value: string | undefined): string | undefined {
+    const match = /^(\d{1,2}):([0-5]\d)(?::[0-5]\d(?:\.\d+)?)?$/.exec(value ?? '');
+    if (!match) return undefined;
+    const date = new Date(Date.UTC(2000, 0, 1, Number(match[1]), Number(match[2])));
+    return date.toLocaleTimeString('en-US', {
+      hour: 'numeric',
+      minute: '2-digit',
+      timeZone: 'UTC',
+    });
   }
   async run(work: () => Promise<void>): Promise<void> {
     this.error.set('');

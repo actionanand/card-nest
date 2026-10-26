@@ -284,6 +284,14 @@
           Filters
         </button>
       </div>
+      <div class="sort-order-control">
+        <app-select-picker
+          label="Sort order"
+          [options]="sortOrderOptions"
+          [value]="sortOrder()"
+          (valueChange)="changeSortOrder($event)"
+        />
+      </div>
       <div id="sms-filters" [hidden]="!advanced()">
         <div class="filters">
           <label
@@ -450,9 +458,17 @@
               </div>
               <div class="row-meta">
                 <span class="badge">{{ candidate.readAt ? 'Read' : 'Unread' }}</span>
-                <span class="badge">{{ label(candidate.kind) }}</span
-                ><span>{{ label(candidate.state) }}</span
-                ><time [attr.datetime]="candidate.eventAt">{{ dateTime(candidate.eventAt) }}</time>
+                <span class="badge">{{ label(candidate.kind) }}</span>
+                <span>{{ label(candidate.state) }}</span>
+                @let timestamp = reviewTimestamp(candidate);
+                <span class="candidate-timestamp">
+                  <time [attr.datetime]="timestamp.datetime"
+                    >{{ timestamp.primaryLabel }}: {{ timestamp.primaryValue }}</time
+                  >
+                  @if (timestamp.secondary) {
+                    <small>{{ timestamp.secondary }}</small>
+                  }
+                </span>
               </div>
               <div class="row-source">
                 <span>{{ sourceLabel(candidate) }}</span>

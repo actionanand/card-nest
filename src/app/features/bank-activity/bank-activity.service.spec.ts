@@ -5,6 +5,15 @@ import { CardNestStore } from '../../core/services/card-nest-store';
 import { AndroidBankActivityEvidence, BankActivityService } from './bank-activity.service';
 import { BankActivityEvent, BankActivityProfile } from './bank-activity-model';
 
+const capacitorMock = vi.hoisted(() => ({
+  isNativePlatform: vi.fn(() => true),
+  getPlatform: vi.fn(() => 'android'),
+}));
+vi.mock('@capacitor/core', () => ({
+  Capacitor: capacitorMock,
+  registerPlugin: vi.fn(),
+}));
+
 describe('BankActivityService Android SMS matching', () => {
   let service: BankActivityService;
   let sources: {

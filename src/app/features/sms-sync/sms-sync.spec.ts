@@ -394,6 +394,153 @@ describe('SMS review privacy and explicit approval UI', () => {
       expect.objectContaining({ search: 'Unapplied edit' }),
     );
   });
+  it('offers exactly two custom sort choices and changing order preserves active filters', async () => {
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const page = fixture.componentInstance;
+    expect(page.sortOrder()).toBe('RECEIVED_DESC');
+    expect(page.sortOrderOptions.map((option) => option.value)).toEqual([
+      'RECEIVED_DESC',
+      'TRANSACTION_DESC',
+    ]);
+    expect(fixture.nativeElement.querySelector('select')).toBeNull();
+
+    page.search.set('Synthetic merchant');
+    page.sourceFilter.set('4321');
+    page.state.set('DEFERRED');
+    page.readFilter.set('READ');
+    page.from.set('2026-10-01');
+    page.to.set('2026-10-31');
+    page.changeSortOrder('TRANSACTION_DESC');
+    await fixture.whenStable();
+    expect(sync.filterReview).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        search: 'Synthetic merchant',
+        source: '4321',
+        state: 'DEFERRED',
+        read: 'READ',
+        from: '2026-10-01',
+        to: '2026-10-31',
+        sortOrder: 'TRANSACTION_DESC',
+      }),
+    );
+  });
+  it('distinguishes transaction time, SMS receipt time, receipt-date fallback, and paste processing time', async () => {
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const page = fixture.componentInstance;
+    const base = demoCandidate();
+
+    const explicit = page.reviewTimestamp({
+      ...base,
+      item: {
+        ...base.item!,
+        eventDate: '2026-10-25',
+        eventAt: '2026-10-25T16:55:00.000Z',
+        eventTime: '22:25:00',
+        eventTimeExplicit: true,
+        dateFallback: false,
+      },
+    });
+    expect(explicit).toMatchObject({
+      primaryLabel: 'Transaction',
+      primaryValue: 'Oct 25, 2026 · 10:25 PM',
+    });
+    expect(explicit).not.toHaveProperty('secondary');
+    expect(explicit.primaryValue).not.toContain('12:00 AM');
+
+    const dateOnlyCandidate = {
+      ...base,
+      item: {
+        ...base.item!,
+        eventDate: '2026-10-26',
+        eventAt: '2026-10-26T00:00:00.000Z',
+        eventTime: '00:00:00',
+        eventTimeExplicit: false,
+        receivedAt: Date.parse('2026-10-26T17:37:00.000Z'),
+        dateFallback: false,
+      },
+    };
+    const dateOnlySameDay = page.reviewTimestamp(dateOnlyCandidate);
+    expect(dateOnlySameDay).toMatchObject({
+      primaryLabel: 'Transaction date',
+      primaryValue: 'Oct 26, 2026',
+      secondary: 'SMS received: 11:07 PM',
+    });
+    candidates.set([dateOnlyCandidate]);
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('.candidate-timestamp')?.textContent).toContain(
+      'SMS received: 11:07 PM',
+    );
+
+    const dateOnlyNextDay = page.reviewTimestamp({
+      ...base,
+      item: {
+        ...base.item!,
+        eventDate: '2026-10-25',
+        eventAt: '2026-10-25T00:00:00.000Z',
+        eventTime: '00:00:00',
+        eventTimeExplicit: false,
+        receivedAt: Date.parse('2026-10-26T21:00:00.000Z'),
+        dateFallback: false,
+      },
+    });
+    expect(dateOnlyNextDay.primaryLabel).toBe('Transaction date');
+    expect(dateOnlyNextDay.secondary).toContain('SMS received: Oct 27, 2026');
+    expect(dateOnlyNextDay.secondary).toContain('2:30 AM');
+
+    const invalidReceivedAt = page.reviewTimestamp({
+      ...base,
+      item: {
+        ...base.item!,
+        eventDate: '2026-10-26',
+        eventAt: '2026-10-26T00:00:00.000Z',
+        eventTime: '00:00:00',
+        eventTimeExplicit: false,
+        receivedAt: -1,
+        dateFallback: false,
+      },
+    });
+    expect(invalidReceivedAt.primaryLabel).toBe('Transaction date');
+    expect(invalidReceivedAt.secondary).toBeUndefined();
+
+    const receiptFallback = page.reviewTimestamp({
+      ...base,
+      item: {
+        ...base.item!,
+        eventDate: '2026-10-27',
+        eventAt: '2026-10-26T21:00:00.000Z',
+        eventTime: '02:30:00',
+        eventTimeExplicit: false,
+        receivedAt: Date.parse('2026-10-26T21:00:00.000Z'),
+        dateFallback: true,
+      },
+    });
+    expect(receiptFallback).toMatchObject({
+      primaryLabel: 'Date and time',
+      secondary: 'Based on SMS received date and time',
+    });
+    expect(receiptFallback.primaryValue).toContain('Oct 27, 2026');
+    expect(receiptFallback.primaryValue).toContain('2:30 AM');
+
+    const pastedFallback = page.reviewTimestamp({
+      ...base,
+      item: {
+        ...base.item!,
+        providerId: 'paste',
+        eventDate: '2026-10-27',
+        eventAt: '2026-10-26T21:00:00.000Z',
+        eventTime: '02:30:00',
+        eventTimeExplicit: false,
+        receivedAt: Date.parse('2026-10-26T21:00:00.000Z'),
+        dateFallback: true,
+      },
+    });
+    expect(pastedFallback.secondary).toBe('Based on paste processing time');
+    expect(pastedFallback.secondary).not.toContain('SMS received');
+  });
   it('does not request permission or approve money when the page opens', () => {
     const fixture = TestBed.createComponent(SmsSyncPage);
     fixture.detectChanges();
