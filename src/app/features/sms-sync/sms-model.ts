@@ -101,6 +101,7 @@ export interface ApprovalEdits {
   splitTargetId?: string;
   transactionDate?: string;
   categoryId?: string;
+  categoryOverridden?: boolean;
   relatedTransactionId?: string;
   /** Explicit paying bank account for a card payment; never inferred. */
   fundingSourceId?: string;

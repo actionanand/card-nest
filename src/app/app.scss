@@ -168,9 +168,88 @@ main {
 .mobile-app-bar,
 .mobile-drawer,
 .drawer-scrim,
-.flash-transaction-fab,
 .flash-backdrop {
   display: none;
+}
+
+.floating-shortcut-fab {
+  position: fixed;
+  z-index: 24;
+  right: max(1.25rem, env(safe-area-inset-right));
+  bottom: calc(1.25rem + env(safe-area-inset-bottom));
+  display: grid;
+  width: clamp(44px, 3.45rem, 56px);
+  height: clamp(44px, 3.45rem, 56px);
+  place-items: center;
+  border: 4px solid var(--surface);
+  border-radius: 50%;
+  color: var(--surface);
+  background: var(--accent);
+  box-shadow: 0 0.7rem 1.6rem rgb(20 60 43 / 32%);
+  animation: floating-shortcut-enter 180ms ease-out both;
+}
+.floating-shortcut-fab:focus-visible {
+  outline: 3px solid var(--ink);
+  outline-offset: 3px;
+}
+.floating-shortcut-fab app-icon {
+  width: min(1.55rem, 28px);
+  height: min(1.55rem, 28px);
+}
+.sms-sync-fab-icon {
+  position: relative;
+  display: block;
+  width: 2rem;
+  height: 2rem;
+}
+.sms-sync-fab-message {
+  position: absolute;
+  top: 0.1rem;
+  left: 0.05rem;
+  display: grid;
+  width: 1.55rem;
+  height: 1.55rem;
+  place-items: center;
+  color: white;
+}
+.sms-sync-fab-message app-icon {
+  width: 1.55rem;
+  height: 1.55rem;
+}
+.sms-sync-fab-badge {
+  position: absolute;
+  right: -0.08rem;
+  bottom: -0.05rem;
+  display: grid;
+  width: 1.05rem;
+  height: 1.05rem;
+  place-items: center;
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  color: var(--accent);
+  background: var(--surface);
+}
+.sms-sync-fab-badge app-icon {
+  width: 0.68rem;
+  height: 0.68rem;
+}
+.sms-sync-fab:active:not(:disabled) .sms-sync-fab-badge {
+  animation: floating-shortcut-sync 420ms ease-out;
+}
+@keyframes floating-shortcut-enter {
+  from {
+    opacity: 0;
+    transform: translateY(0.35rem) scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+@keyframes floating-shortcut-sync {
+  to {
+    transform: rotate(180deg);
+  }
 }
 
 .permission-backdrop {
@@ -536,20 +615,8 @@ main {
     line-height: 1;
   }
 
-  .flash-transaction-fab {
-    position: fixed;
-    z-index: 24;
-    right: max(1rem, env(safe-area-inset-right));
+  .floating-shortcut-fab {
     bottom: calc(5.45rem + env(safe-area-inset-bottom));
-    display: grid;
-    width: clamp(44px, 3.45rem, 56px);
-    height: clamp(44px, 3.45rem, 56px);
-    place-items: center;
-    border: 4px solid var(--surface);
-    border-radius: 50%;
-    color: var(--surface);
-    background: var(--accent);
-    box-shadow: 0 0.7rem 1.6rem rgb(20 60 43 / 32%);
   }
   .flash-transaction-fab app-icon {
     width: min(1.55rem, 28px);
@@ -622,5 +689,12 @@ main {
     bottom: calc(6.5rem + env(safe-area-inset-bottom));
     width: auto;
     max-height: calc(100dvh - 7.5rem - env(safe-area-inset-bottom));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .floating-shortcut-fab,
+  .sms-sync-fab:active:not(:disabled) .sms-sync-fab-badge {
+    animation: none;
   }
 }

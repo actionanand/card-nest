@@ -32,7 +32,7 @@ import { lockDocumentScroll } from '../../shared/document-scroll-lock';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { indiaTodayIso } from '../../core/services/india-date';
 import { parseMoneyToMinor, matchesTransactionType } from '../../core/services/money';
-import { SmsReviewService } from './sms-review.service';
+import { SmsReviewFilterRefreshError, SmsReviewService } from './sms-review.service';
 import { SmsTypePicker } from './sms-type-picker';
 import { matchExisting, walletComparison } from './sms-matching';
 import { SmsSplitProposal } from './sms-split-continuity';
@@ -389,6 +389,7 @@ export class SmsSyncPage {
   }
   readonly restoreFiltersConfirmation = signal(false);
   readonly restoringFilters = signal(false);
+  readonly retryRestoredFilterRefresh = signal(false);
   requestRestoreFilters(): void {
     if (!this.restoringFilters()) this.restoreFiltersConfirmation.set(true);
   }
@@ -414,16 +415,39 @@ export class SmsSyncPage {
     if (!this.restoreFiltersConfirmation() || this.restoringFilters()) return;
     this.restoringFilters.set(true);
     this.restoreFiltersConfirmation.set(false);
+    this.retryRestoredFilterRefresh.set(false);
+    const defaults = defaultReviewFilters();
     try {
-      const defaults = defaultReviewFilters();
       await this.sync.filterReview(defaults);
       this.setFilterSignals(defaults);
       this.snackbar.show('Default SMS Review filters restored.');
     } catch (error: unknown) {
-      this.error.set(error instanceof Error ? error.message : 'Filters could not be restored.');
+      if (error instanceof SmsReviewFilterRefreshError && error.preferencesSaved) {
+        this.setFilterSignals(defaults);
+        this.retryRestoredFilterRefresh.set(true);
+        this.notice.set('Default filters were saved. The SMS Review inbox could not refresh.');
+        this.snackbar.show(
+          'Default filters saved. SMS Review could not refresh; retry the inbox refresh.',
+          'WARNING',
+        );
+      } else {
+        this.error.set(error instanceof Error ? error.message : 'Filters could not be restored.');
+      }
     } finally {
       this.restoringFilters.set(false);
       queueMicrotask(() => document.getElementById('restore-default-review-filters')?.focus());
+    }
+  }
+  async retryReviewInboxRefresh(): Promise<void> {
+    if (!this.retryRestoredFilterRefresh() || this.loading()) return;
+    try {
+      await this.run(() => this.sync.refresh());
+      if (!this.error()) {
+        this.retryRestoredFilterRefresh.set(false);
+        this.notice.set('SMS Review inbox refreshed.');
+      }
+    } catch {
+      // run() preserves the retry state and reports the refresh error.
     }
   }
   clearFilters(): void {
@@ -1180,6 +1204,7 @@ export class SmsSyncPage {
           description: value.description,
           transactionDate: value.transactionDate,
           categoryId: value.category,
+          categoryOverridden: this.bankCategoryOverridden(),
           existingId: value.existing || undefined,
           counterpartySourceId: value.counterparty || undefined,
           existingTransferId: value.existingTransfer || undefined,
@@ -1962,6 +1987,7 @@ export class SmsSyncPage {
           {
             transactionDate: value.transactionDate,
             categoryId: value.category,
+            categoryOverridden: this.cardCategoryOverridden(),
             relatedTransactionId: value.relatedPurchase || undefined,
             fundingSourceId: value.funding || undefined,
             fundingTiming: value.fundingTiming || undefined,

@@ -1,4 +1,5 @@
 import { resolveCategory } from '../../core/services/category-matcher';
+import type { CategoryCatalogEntry } from '../../core/data/category-catalog';
 import { Service, computed, inject, signal } from '@angular/core';
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import { SqliteDatabase, DatabaseSession } from '../../core/data/sqlite-database';
@@ -85,6 +86,7 @@ export interface BankApproval {
   description: string;
   transactionDate: string;
   categoryId?: string;
+  categoryOverridden?: boolean;
   /** Existing ledger entry (purchase/receipt) or card payment to link instead of creating one. */
   existingId?: string;
   /** Other owned account for a transfer. Counterparty names never establish ownership. */
@@ -160,6 +162,19 @@ export interface SmsDismissal {
     updated_at: string;
     transaction_id: string | null;
   };
+}
+
+export class SmsReviewFilterRefreshError extends Error {
+  readonly preferencesSaved = true;
+
+  constructor(cause: unknown) {
+    super(
+      cause instanceof Error
+        ? cause.message
+        : 'Filter preferences were saved, but the SMS Review inbox could not refresh.',
+    );
+    this.name = 'SmsReviewFilterRefreshError';
+  }
 }
 
 @Service()
@@ -254,7 +269,11 @@ export class SmsReviewService {
       );
       this.filters = applied;
       this.reviewPage.set(0);
-      await this.refresh();
+      try {
+        await this.refresh();
+      } catch (error: unknown) {
+        throw new SmsReviewFilterRefreshError(error);
+      }
     });
     this.filterWrites = write.catch(() => undefined);
     await write;
@@ -1350,11 +1369,6 @@ export class SmsReviewService {
         new Date(transactionDate).toISOString().slice(0, 10) !== transactionDate
       )
         throw new Error('Enter a valid event date.');
-      if (
-        edits.categoryId &&
-        !(await tx.query('SELECT id FROM categories WHERE id=?', [edits.categoryId])).length
-      )
-        throw new Error('Choose an existing category.');
       const linkedTransaction = existingId
         ? ledger.find((entry) => entry.id === existingId)
         : undefined;
@@ -1449,6 +1463,9 @@ export class SmsReviewService {
         archived: number;
       }>('SELECT id,name,icon,applies_to AS appliesTo,archived FROM categories');
       const usableCategories = categoryRows.map((row) => ({ ...row, archived: !!row.archived }));
+      const categoryStates = await tx.query<CategoryCatalogEntry>(
+        'SELECT canonical_id,category_id,deleted FROM category_catalog_state',
+      );
       const purposeCategory =
         type === 'PAYMENT'
           ? 'payment'
@@ -1463,7 +1480,21 @@ export class SmsReviewService {
         purposeCategory,
         usableCategories,
         type ?? 'PURCHASE',
+        categoryStates,
       );
+      const selectedCategory = edits.categoryId
+        ? resolveCategory(edits.categoryId, usableCategories, type ?? 'PURCHASE', categoryStates)
+        : defaultCategory;
+      const categoryWasExplicit = edits.categoryOverridden ?? !!edits.categoryId;
+      if (
+        (!existingId || reconciliation === 'REPAIR_EXISTING') &&
+        categoryWasExplicit &&
+        edits.categoryId &&
+        selectedCategory !== edits.categoryId
+      )
+        throw new Error(
+          'The selected category is unavailable or incompatible. Choose a valid category.',
+        );
       let statement: CardStatement | null = null;
       let transaction: CardTransaction | null = null;
       let balanceAdjustment: CardTransaction | null = null;
@@ -1483,7 +1514,7 @@ export class SmsReviewService {
             amountMinor,
             merchant: merchant.trim().slice(0, 100),
             transactionDate,
-            categoryId: edits.categoryId ?? existing.categoryId,
+            categoryId: selectedCategory ?? existing.categoryId,
             updatedAt: now,
           };
           await tx.run(
@@ -1630,7 +1661,7 @@ export class SmsReviewService {
                 : undefined,
             reference: item.reference,
             merchant: merchant.trim().slice(0, 100),
-            categoryId: defaultCategory,
+            categoryId: selectedCategory,
             attachmentIds: [],
             createdAt: now,
             updatedAt: now,
@@ -1642,7 +1673,6 @@ export class SmsReviewService {
           item.dateFallback ? ['SMS event date unavailable; received date used.'] : [],
         );
         transaction.sourceBalanceApplied = !retainBalance;
-        if (edits.categoryId) transaction.categoryId = edits.categoryId;
         // A verified SMS balance already contains earlier events; applying one would double-count.
         if (!retainBalance && source && walletAnchorPosition(source, transaction) === 'BEFORE')
           throw new Error(
@@ -2257,16 +2287,42 @@ export class SmsReviewService {
             )
               throw new Error('This referenced bank event is already recorded. Match it instead.');
           }
-          const categoryId =
-            approval.categoryId ||
+          const categoryRows = await tx.query<{
+            id: string;
+            name: string;
+            icon: string;
+            colour: string | null;
+            appliesTo: Category['appliesTo'];
+            archived: number;
+          }>('SELECT id,name,icon,colour,applies_to AS appliesTo,archived FROM categories');
+          const categories = categoryRows.map((row) => ({
+            ...row,
+            colour: row.colour ?? undefined,
+            archived: !!row.archived,
+          }));
+          const categoryStates = await tx.query<CategoryCatalogEntry>(
+            'SELECT canonical_id,category_id,deleted FROM category_catalog_state',
+          );
+          const categoryPurpose = approval.purpose === 'INCOME' ? 'INCOME' : 'PURCHASE';
+          const suggestedCategory =
+            approval.categoryId ??
             resolveCategory(
               approval.purpose === 'INCOME' ? 'income' : 'other',
-              this.store.categories(),
-              approval.purpose === 'INCOME' ? 'INCOME' : 'PURCHASE',
-              this.store.categoryCatalog?.() ?? [],
+              categories,
+              categoryPurpose,
+              categoryStates,
             );
-          if (!(await tx.query('SELECT id FROM categories WHERE id=?', [categoryId])).length)
-            throw new Error('Choose an existing category.');
+          const categoryId = resolveCategory(
+            suggestedCategory,
+            categories,
+            categoryPurpose,
+            categoryStates,
+          );
+          const categoryWasExplicit = approval.categoryOverridden ?? !!approval.categoryId;
+          if (categoryWasExplicit && approval.categoryId && categoryId !== approval.categoryId)
+            throw new Error(
+              'The selected category is unavailable or incompatible. Choose a valid category.',
+            );
           if (!approval.baselineTiming && needsBaselineConfirmation(source, settings, date, time))
             throw new Error(TIMING_QUESTION);
           transaction = annotateSmsRecord(

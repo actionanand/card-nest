@@ -50,19 +50,32 @@
     <section class="review-section" aria-labelledby="discovered-accounts-title">
       <h2 id="discovered-accounts-title">Discovered bank accounts</h2>
       <p>
-        Financial SMS alerts mention accounts that aren't currently monitored. Review them to create
-        a monitoring profile.
+        Review provisional SMS account identities. A matching alert does not establish ownership or
+        create a monitoring profile.
       </p>
       @for (group of discoveries(); track group.id) {
         <article class="review-candidate">
           <strong
             >{{ group.bankName }}
             {{ group.accountSuffix ? ' · •••' + group.accountSuffix : '' }}</strong
-          ><small>Found in financial SMS · Last qualifying event: {{ group.lastDate }}</small>
-          <p>
-            Monitoring profile: Not created · Ownership: Not confirmed. This group is provisional;
-            different accounts may share these digits.
-          </p>
+          >
+          <span class="status-badge unknown">
+            {{
+              group.needsIdentification ? 'Account needs identification' : 'New account candidate'
+            }}
+          </span>
+          <small>Found in financial SMS · Last qualifying event: {{ group.lastDate }}</small>
+          @if (group.needsIdentification) {
+            <p>
+              Existing monitoring details do not uniquely identify this account. Verify the bank and
+              suffix before adding or selecting a profile.
+            </p>
+          } @else {
+            <p>
+              No active profile matches this bank and suffix. Monitoring is not created until you
+              review and save a profile.
+            </p>
+          }
           <small
             >{{ group.events.length }} pending event suggestions. No activity has been
             recorded.</small

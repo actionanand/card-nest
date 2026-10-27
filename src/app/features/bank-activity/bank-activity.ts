@@ -73,6 +73,7 @@ export class BankActivityPage {
         .map((row) => row.activityDate)
         .sort()
         .at(-1)!,
+      needsIdentification: group.events.some((row) => this.activity.match(row).state !== 'NEW'),
     }));
   });
   readonly reviewCandidates = computed(() => this.activity.candidates());

@@ -1,6 +1,7 @@
 [
   { "id": "icici", "name": "ICICI Bank", "aliases": ["ICICI", "ICICI Bank"] },
   { "id": "hdfc", "name": "HDFC Bank", "aliases": ["HDFC", "HDFC Bank"] },
+  { "id": "hsbc", "name": "HSBC", "aliases": ["HSBC", "HSBC Bank"] },
   { "id": "sbi", "name": "State Bank of India", "aliases": ["SBI", "State Bank of India"] },
   { "id": "axis", "name": "Axis Bank", "aliases": ["Axis", "Axis Bank"] }
 ]

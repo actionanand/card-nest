@@ -250,25 +250,42 @@
             hint="Changes symbols and number formatting throughout CardNest."
             (valueChange)="updateDisplayCurrency($event)"
           />
-          <div class="flash-source-setting">
-            <app-payment-source-picker
-              label="Flash transaction source"
-              sheetTitle="Default Flash source"
-              [allowAutomatic]="true"
-              [value]="store.flashTransactionSourceId()"
-              (valueChange)="updateFlashSource($event)"
-            />
-            <small>Used by the mobile flash-transaction button.</small>
-          </div>
-          <label class="setting-row toggle flash-visibility-setting"
-            ><span
-              ><strong>Show Flash transaction button</strong
-              ><small>Display the rocket shortcut above the mobile navigation</small></span
-            ><input
-              type="checkbox"
-              [checked]="uiPreferences.showFlashTransaction()"
-              (change)="toggleFlashTransactionVisibility()"
-          /></label>
+          @if (uiPreferences.androidNative) {
+            <section class="floating-shortcut-settings" aria-labelledby="floating-shortcut-title">
+              <h3 id="floating-shortcut-title">Floating shortcut</h3>
+              <label class="setting-row toggle">
+                <span>
+                  <strong>Enable floating shortcut</strong>
+                  <small>Show one quick-action button above the Android navigation bar.</small>
+                </span>
+                <input
+                  type="checkbox"
+                  [checked]="uiPreferences.floatingShortcutEnabled()"
+                  (change)="toggleFloatingShortcut($event)"
+                />
+              </label>
+              @if (uiPreferences.floatingShortcutEnabled()) {
+                <app-select-picker
+                  label="Shortcut action"
+                  [options]="floatingShortcutModeOptions"
+                  [value]="uiPreferences.floatingShortcutMode()"
+                  (valueChange)="selectFloatingShortcutMode($event)"
+                />
+                @if (uiPreferences.floatingShortcutMode() === 'QUICK_TRANSACTION') {
+                  <div class="flash-source-setting">
+                    <app-payment-source-picker
+                      label="Quick Transaction default source"
+                      sheetTitle="Default Quick Transaction source"
+                      [allowAutomatic]="true"
+                      [value]="store.flashTransactionSourceId()"
+                      (valueChange)="updateFlashSource($event)"
+                    />
+                    <small>Used only by the Quick Transaction floating shortcut.</small>
+                  </div>
+                }
+              }
+            </section>
+          }
           <app-select-picker
             label="Date format"
             [options]="dateFormatOptions"

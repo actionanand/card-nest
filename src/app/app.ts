@@ -1,13 +1,16 @@
 import {
   afterNextRender,
   Component,
+  computed,
+  DestroyRef,
   effect,
   ElementRef,
   inject,
   signal,
   viewChild,
 } from '@angular/core';
-import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
+import { DOCUMENT } from '@angular/common';
+import { Router, RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 import { SqliteDatabase } from './core/data/sqlite-database';
 import { AppLockService } from './core/services/app-lock.service';
 import { CardNestStore } from './core/services/card-nest-store';
@@ -42,6 +45,8 @@ function sanitizedMoneyInput(value: string): string {
   styleUrl: './app.scss',
   host: {
     '(document:keydown.escape)': 'dismissNotificationPermissionConfirmation()',
+    '(document:focusin)': 'refreshFabKeyboardState()',
+    '(document:focusout)': 'refreshFabKeyboardState()',
     '(window:focus)': 'refreshNotificationPermission()',
   },
 })
@@ -53,13 +58,20 @@ export class App {
   readonly snackbar = inject(SnackbarService);
   readonly uiPreferences = inject(UiPreferencesService);
   readonly utilities = inject(UtilitiesService);
+  private readonly router = inject(Router);
+  private readonly document = inject(DOCUMENT);
+  private readonly destroyRef = inject(DestroyRef);
 
   readonly showNotificationPermissionConfirmation = signal(false);
+  readonly blockingDialogOpen = signal(false);
   readonly mobileMenuOpen = signal(false);
   readonly lockPin = signal('');
   readonly lockError = signal<string | null>(null);
   readonly unlocking = signal(false);
   readonly flashTransactionOpen = signal(false);
+  readonly savingFlashTransaction = signal(false);
+  readonly smsShortcutNavigationPending = signal(false);
+  readonly keyboardInputFocused = signal(false);
   readonly flashSourceId = signal('');
   readonly flashAmount = signal('');
   readonly flashMerchant = signal('');
@@ -68,8 +80,39 @@ export class App {
     'allowNotificationsButton',
   );
   readonly mainContent = viewChild<ElementRef<HTMLElement>>('mainContent');
+  readonly floatingShortcutVisible = computed(
+    () =>
+      this.uiPreferences.androidNative &&
+      this.database.ready() &&
+      this.uiPreferences.floatingShortcutEnabled() &&
+      this.appLock.foreground() &&
+      !this.appLock.locked() &&
+      !this.blockingDialogOpen() &&
+      !this.showNotificationPermissionConfirmation() &&
+      !this.snackbar.message() &&
+      !this.keyboardInputFocused() &&
+      !this.flashTransactionOpen(),
+  );
 
   constructor() {
+    this.refreshFabKeyboardState();
+    const MutationObserverClass = this.document.defaultView?.MutationObserver;
+    if (MutationObserverClass && this.document.documentElement) {
+      const refreshDialogState = () =>
+        this.blockingDialogOpen.set(
+          !!this.document.querySelector('dialog[open], [role="dialog"][aria-modal="true"]'),
+        );
+      const observer = new MutationObserverClass(refreshDialogState);
+      observer.observe(this.document.documentElement, {
+        subtree: true,
+        childList: true,
+        attributes: true,
+        attributeFilter: ['open', 'aria-modal', 'role'],
+      });
+      refreshDialogState();
+      this.destroyRef.onDestroy(() => observer.disconnect());
+    }
+
     effect(() => {
       const cards = this.store.cards();
       this.store.transactions();
@@ -102,6 +145,16 @@ export class App {
     if (!this.showNotificationPermissionConfirmation()) return;
     this.showNotificationPermissionConfirmation.set(false);
     queueMicrotask(() => this.mainContent()?.nativeElement.focus());
+  }
+
+  refreshFabKeyboardState(): void {
+    queueMicrotask(() => {
+      const active = this.document.activeElement as HTMLElement | null;
+      const editable =
+        !!active &&
+        (active.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(active.tagName));
+      this.keyboardInputFocused.set(this.uiPreferences.androidNative && editable);
+    });
   }
 
   refreshNotificationPermission(): void {
@@ -144,6 +197,11 @@ export class App {
   }
 
   openFlashTransaction(): void {
+    if (
+      !this.floatingShortcutVisible() ||
+      this.uiPreferences.floatingShortcutMode() !== 'QUICK_TRANSACTION'
+    )
+      return;
     const availableIds = [
       ...this.store.alphabeticalActiveCards().map((card) => card.id),
       ...this.store.activePaymentSources().map((source) => source.id),
@@ -176,30 +234,63 @@ export class App {
     this.flashSourceId.set(sourceId);
   }
 
+  async openSmsSyncFromShortcut(): Promise<void> {
+    if (
+      !this.floatingShortcutVisible() ||
+      this.uiPreferences.floatingShortcutMode() !== 'SMS_SYNC' ||
+      this.smsShortcutNavigationPending()
+    )
+      return;
+    const smsSyncRoute = this.router.config.find(
+      (route) => route.data?.['floatingShortcut'] === 'SMS_SYNC',
+    );
+    if (!smsSyncRoute?.path) return;
+    const smsSyncUrl = `/${smsSyncRoute.path}`;
+    if (this.router.url.split(/[?#]/, 1)[0] === smsSyncUrl) return;
+    this.smsShortcutNavigationPending.set(true);
+    try {
+      if (!(await this.router.navigateByUrl(smsSyncUrl)))
+        this.snackbar.show('SMS Sync could not be opened.', 'WARNING');
+    } finally {
+      this.smsShortcutNavigationPending.set(false);
+    }
+  }
+
   saveFlashTransaction(event: Event): void {
     event.preventDefault();
-    const amountMinor = parseMoneyToMinor(this.flashAmount());
-    if (!this.flashSourceId() || amountMinor === null || amountMinor <= 0) {
-      this.flashError.set('Enter an amount and choose a payment source.');
+    if (
+      !this.flashTransactionOpen() ||
+      this.savingFlashTransaction() ||
+      !this.uiPreferences.showFlashTransaction()
+    )
       return;
+    this.savingFlashTransaction.set(true);
+    try {
+      const amountMinor = parseMoneyToMinor(this.flashAmount());
+      if (!this.flashSourceId() || amountMinor === null || amountMinor <= 0) {
+        this.flashError.set('Enter an amount and choose a payment source.');
+        return;
+      }
+      const timestamp = new Date().toISOString();
+      const transaction: CardTransaction = {
+        id: crypto.randomUUID(),
+        cardId: this.flashSourceId(),
+        type: 'PURCHASE',
+        amountMinor,
+        currencyCode: 'INR',
+        transactionDate: indiaTodayIso(),
+        merchant: this.flashMerchant().trim() || undefined,
+        categoryId: 'other',
+        attachmentIds: [],
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      };
+      this.store.addTransaction(transaction);
+      this.closeFlashTransaction();
+      this.snackbar.show('Flash transaction added.');
+    } finally {
+      this.savingFlashTransaction.set(false);
     }
-    const timestamp = new Date().toISOString();
-    const transaction: CardTransaction = {
-      id: crypto.randomUUID(),
-      cardId: this.flashSourceId(),
-      type: 'PURCHASE',
-      amountMinor,
-      currencyCode: 'INR',
-      transactionDate: indiaTodayIso(),
-      merchant: this.flashMerchant().trim() || undefined,
-      categoryId: 'other',
-      attachmentIds: [],
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    };
-    this.store.addTransaction(transaction);
-    this.closeFlashTransaction();
-    this.snackbar.show('Flash transaction added.');
   }
 
   private async openNotificationPermissionConfirmationIfNeeded(): Promise<void> {

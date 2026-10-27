@@ -100,6 +100,10 @@ export class SettingsPage {
   }
   readonly appVersion = APP_VERSION;
   readonly showAppVersion = Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android';
+  readonly floatingShortcutModeOptions: readonly AppSelectOption[] = [
+    { value: 'QUICK_TRANSACTION', label: 'Quick Transaction' },
+    { value: 'SMS_SYNC', label: 'SMS Sync' },
+  ];
   readonly copyright =
     new Date().getFullYear() > 2026 ? `2026 – ${new Date().getFullYear()}` : '2026';
   readonly database = inject(SqliteDatabase);
@@ -494,8 +498,17 @@ export class SettingsPage {
     void this.appLock.setLockOnBackground(!this.lockOnBackground());
   }
 
-  toggleFlashTransactionVisibility(): void {
-    this.uiPreferences.setShowFlashTransaction(!this.uiPreferences.showFlashTransaction());
+  toggleFloatingShortcut(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    if (this.uiPreferences.setFloatingShortcutEnabled(input.checked)) return;
+    input.checked = this.uiPreferences.floatingShortcutEnabled();
+    this.snackbar.show('Floating shortcut setting could not be saved.', 'WARNING');
+  }
+
+  selectFloatingShortcutMode(value: string): void {
+    if (this.uiPreferences.setFloatingShortcutMode(value as 'QUICK_TRANSACTION' | 'SMS_SYNC'))
+      return;
+    this.snackbar.show('Floating shortcut mode could not be saved.', 'WARNING');
   }
 
   toggleScreenshotPrevention(): void {

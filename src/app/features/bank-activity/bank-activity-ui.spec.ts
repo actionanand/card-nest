@@ -178,6 +178,24 @@ describe('Bank profile popup and confirmation-only discovery UI', () => {
     expect(activity.discoverSavedEvidence).not.toHaveBeenCalled();
     fixture.destroy();
   });
+  it('distinguishes a new account candidate from an account that needs identification', async () => {
+    candidates.set([candidate]);
+    const fixture = TestBed.createComponent(BankActivityPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(fixture.nativeElement.textContent).toContain('New account candidate');
+    expect(fixture.nativeElement.textContent).toContain('No active profile matches');
+
+    profiles.set([profile]);
+    candidates.set([{ ...candidate, fingerprint: 'suffix-conflict', accountSuffix: '456' }]);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(fixture.nativeElement.textContent).toContain('Account needs identification');
+    expect(fixture.nativeElement.textContent).toContain('do not uniquely identify this account');
+    expect(activity.saveProfile).not.toHaveBeenCalled();
+    expect(activity.approveCandidate).not.toHaveBeenCalled();
+    fixture.destroy();
+  });
   it('preselects only unique accounts, requires a confirmation dialog and preserves Cancel', async () => {
     profiles.set([profile]);
     candidates.set([candidate]);

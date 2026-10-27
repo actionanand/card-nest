@@ -164,6 +164,11 @@
     @if (notice()) {
       <p class="feedback" role="status">{{ notice() }}</p>
     }
+    @if (retryRestoredFilterRefresh()) {
+      <button class="btn" type="button" [disabled]="loading()" (click)="retryReviewInboxRefresh()">
+        Retry inbox refresh
+      </button>
+    }
     <section
       class="panel review-panel"
       aria-labelledby="sms-inbox-title"

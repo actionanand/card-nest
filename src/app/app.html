@@ -179,15 +179,33 @@
     >
   </nav>
 
-  @if (uiPreferences.showFlashTransaction()) {
-    <button
-      class="flash-transaction-fab"
-      type="button"
-      (click)="openFlashTransaction()"
-      aria-label="Add flash transaction"
-    >
-      <app-icon name="flash_transaction" />
-    </button>
+  @if (floatingShortcutVisible()) {
+    @if (uiPreferences.floatingShortcutMode() === 'QUICK_TRANSACTION') {
+      <button
+        class="floating-shortcut-fab flash-transaction-fab"
+        type="button"
+        (click)="openFlashTransaction()"
+        aria-label="Add flash transaction"
+      >
+        <app-icon name="flash_transaction" />
+      </button>
+    } @else {
+      <button
+        class="floating-shortcut-fab sms-sync-fab"
+        type="button"
+        aria-label="Open SMS Sync"
+        aria-description="Navigate to SMS Sync; scanning is not started"
+        [disabled]="smsShortcutNavigationPending()"
+        [attr.aria-busy]="smsShortcutNavigationPending() ? 'true' : null"
+        [class.is-navigating]="smsShortcutNavigationPending()"
+        (click)="openSmsSyncFromShortcut()"
+      >
+        <span class="sms-sync-fab-icon" aria-hidden="true">
+          <span class="sms-sync-fab-message"><app-icon name="message" /></span>
+          <span class="sms-sync-fab-badge"><app-icon name="sync" /></span>
+        </span>
+      </button>
+    }
   }
 
   @if (flashTransactionOpen()) {

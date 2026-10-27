@@ -70,9 +70,7 @@ export function activityMatch(
     active.length === 1 &&
     exact.length === 1 &&
     sourceMatches.length <= 1 &&
-    (!sourceMatches.length ||
-      !active[0].paymentSourceId ||
-      active[0].paymentSourceId === sourceMatches[0].id)
+    (!sourceMatches.length || active[0].paymentSourceId === sourceMatches[0].id)
   )
     return {
       state: 'UNIQUE',

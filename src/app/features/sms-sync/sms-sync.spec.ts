@@ -1,7 +1,7 @@
 import { TestBed } from '@angular/core/testing';
 import { computed, signal } from '@angular/core';
 import { SmsSyncPage } from './sms-sync';
-import { SmsReviewService } from './sms-review.service';
+import { SmsReviewFilterRefreshError, SmsReviewService } from './sms-review.service';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { PurchaseReviewDraft, ScanStatus, SmsCandidate } from './sms-model';
 import axe from 'axe-core';
@@ -181,6 +181,53 @@ describe('SMS review privacy and explicit approval UI', () => {
     expect(page.search()).toBe('keep');
     expect(page.restoringFilters()).toBe(false);
     expect(toast).not.toHaveBeenCalled();
+  });
+  it('reflects saved default filters after refresh failure and exposes a retry without changing decisions', async () => {
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const page = fixture.componentInstance;
+    page.search.set('previous search');
+    page.sourceFilter.set('previous source');
+    page.state.set('DEFERRED');
+    page.readFilter.set('READ');
+    page.sortOrder.set('TRANSACTION_DESC');
+    const toast = vi.spyOn(TestBed.inject(SnackbarService), 'show');
+    sync.filterReview.mockRejectedValueOnce(
+      new SmsReviewFilterRefreshError(new Error('Synthetic inbox refresh failure')),
+    );
+
+    page.requestRestoreFilters();
+    await page.confirmRestoreFilters();
+    expect({
+      search: page.search(),
+      source: page.sourceFilter(),
+      kind: page.kind(),
+      mode: page.typeMode(),
+      kinds: page.multipleKinds(),
+      multipleInitialized: page.multipleInitialized(),
+      state: page.state(),
+      from: page.from(),
+      to: page.to(),
+      read: page.readFilter(),
+      hideAlreadyAdded: page.hideAlreadyAdded(),
+      sortOrder: page.sortOrder(),
+    }).toEqual(defaultReviewFilters());
+    expect(page.retryRestoredFilterRefresh()).toBe(true);
+    expect(page.notice()).toContain('Default filters were saved');
+    expect(toast).toHaveBeenCalledWith(
+      'Default filters saved. SMS Review could not refresh; retry the inbox refresh.',
+      'WARNING',
+    );
+    expect(toast).not.toHaveBeenCalledWith('Default SMS Review filters restored.');
+    expect(sync.approve).not.toHaveBeenCalled();
+    expect(sync.approveBank).not.toHaveBeenCalled();
+
+    await page.retryReviewInboxRefresh();
+    expect(sync.refresh).toHaveBeenCalled();
+    expect(page.retryRestoredFilterRefresh()).toBe(false);
+    expect(page.notice()).toBe('SMS Review inbox refreshed.');
+    fixture.destroy();
   });
   it('shares merchant rules across review forms and preserves an explicit category and draft override', async () => {
     const fixture = TestBed.createComponent(SmsSyncPage);

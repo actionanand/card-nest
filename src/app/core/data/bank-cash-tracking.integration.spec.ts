@@ -701,6 +701,55 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     expect(count('card_transactions')).toBe(1);
   });
 
+  it('revalidates Bank/UPI categories atomically at approval time', async () => {
+    const { store, review } = await boot();
+    await database.run("UPDATE categories SET archived=1 WHERE id='groceries'");
+    const automatic = await stage(evidence({ id: 'd'.repeat(64), reference: '735182094621' }));
+    await review.approveBank(automatic, {
+      purpose: 'PURCHASE',
+      sourceId: 'source-debit',
+      amountMinor: 45000,
+      description: 'HILL FARM MEATS',
+      transactionDate: today,
+      categoryId: 'groceries',
+      categoryOverridden: false,
+      allowSeparate: true,
+    });
+    expect(store.transactions()[0].categoryId).toBe('other');
+
+    const staleExplicit = await stage(evidence({ id: 'e'.repeat(64), reference: '735182094622' }));
+    await expect(
+      review.approveBank(staleExplicit, {
+        purpose: 'PURCHASE',
+        sourceId: 'source-debit',
+        amountMinor: 45000,
+        description: 'HILL FARM MEATS',
+        transactionDate: today,
+        categoryId: 'groceries',
+        categoryOverridden: true,
+        allowSeparate: true,
+      }),
+    ).rejects.toThrow('selected category is unavailable or incompatible');
+    expect(count('card_transactions')).toBe(1);
+
+    const validExplicit = await stage(evidence({ id: 'f'.repeat(64), reference: '735182094623' }));
+    await review.approveBank(validExplicit, {
+      purpose: 'PURCHASE',
+      sourceId: 'source-debit',
+      amountMinor: 45000,
+      description: 'HILL FARM MEATS',
+      transactionDate: today,
+      categoryId: 'dining',
+      categoryOverridden: true,
+      allowSeparate: true,
+    });
+    expect(
+      store.transactions().find((transaction) => transaction.id === `sms-${validExplicit.id}`)
+        ?.categoryId,
+    ).toBe('dining');
+    expect(count('card_transactions')).toBe(2);
+  });
+
   it('migrates legacy per-source tracking to a confirmed baseline without replay or SMS import', async () => {
     await database.initialise();
     await database.run('INSERT INTO app_preferences(key,encrypted_value) VALUES(?,?)', [

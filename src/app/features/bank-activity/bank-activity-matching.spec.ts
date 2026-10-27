@@ -60,6 +60,7 @@ describe('Independent bank and masked originating-account evidence', () => {
   it.each([
     ['ICICI', 'ICICI Bank'],
     ['HDFC Bank', 'HDFC'],
+    ['HSBC', 'HSBC Bank'],
     ['SBI', 'State Bank of India'],
     ['Axis', 'Axis Bank'],
   ])('recognizes explicit bank aliases %s and %s', (left, right) =>
@@ -67,6 +68,7 @@ describe('Independent bank and masked originating-account evidence', () => {
   );
   it('does not conflate unknown institutions or bank names with the same suffix', () => {
     expect(matchesBank('Fiction West', 'Fiction East')).toBe(false);
+    expect(matchesBank('HSBC', 'HSBC Holdings')).toBe(false);
     expect(matchesBank('HDFC', 'ICICI')).toBe(false);
     expect(normalizedBank(undefined)).toBe('');
   });
@@ -76,6 +78,26 @@ describe('Independent bank and masked originating-account evidence', () => {
       suggestedId: profile.id,
     });
     expect(activityMatch(candidate, [profile], []).reason).toContain('confirmation is required');
+  });
+  it('does not call a standalone profile unique when a matching linked source also exists', () => {
+    const competingSource = {
+      id: 'unlinked-source',
+      kind: 'DEBIT' as const,
+      institution: 'ICICI Bank',
+      lastDigits: '45123',
+    };
+    expect(activityMatch(candidate, [profile], [competingSource])).toMatchObject({
+      state: 'AMBIGUOUS',
+      profileIds: [profile.id],
+    });
+    const linked = { ...profile, paymentSourceId: competingSource.id };
+    expect(activityMatch(candidate, [linked], [competingSource])).toMatchObject({
+      state: 'UNIQUE',
+      suggestedId: linked.id,
+    });
+    const sharedStandalone = activityMatch(candidate, [profile, { ...profile, id: 'family' }], []);
+    expect(sharedStandalone.state).toBe('AMBIGUOUS');
+    expect(sharedStandalone.suggestedId).toBeUndefined();
   });
   it('retains ambiguity across profiles, archived matches and multiple linked sources', () => {
     expect(

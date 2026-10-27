@@ -6,7 +6,7 @@ This guide introduces the main CardNest workflows. It is intended for users sett
 
 1. Add each credit card from **Cards > Add card**. A nickname, issuer, network, billing dates, and final digits make later transaction entry easier.
 2. Add or rename cash, bank/UPI, debit, and meal-card sources under **Cash, Banks & Pluxee**.
-3. In **Settings**, choose the currency, date display format, preferred Flash transaction source, theme, PIN, biometric unlock, and reminders.
+3. In **Settings**, choose the currency, date display format, Quick Transaction default source, theme, PIN, biometric unlock, and reminders.
 4. Add or adjust categories and optional spending limits.
 
 Full card number, CVV, and cardholder name are optional protected details. Transaction exports and notifications never contain the full number or CVV.
@@ -25,9 +25,13 @@ Refunds can be linked to a purchase from the selected card during the preceding 
 
 Receipt images larger than 1 MB are compressed before storage. Use **Activity > Filters > Type > With image** to find entries with attachments.
 
-## 3. Flash transaction
+## 3. Android floating shortcut
 
-On mobile, the floating lightning button opens a compact purchase form from any main page. The amount is the only new value required when a preferred source is configured. CardNest uses today’s date, Purchase, and the Other category automatically. The preferred source is configured in Settings.
+On Android, **Settings > Cards & currency > Floating shortcut** controls one floating action button. It is enabled by default and can be disabled or switched between **Quick Transaction** and **SMS Sync**. The setting does not appear on web or iOS, and it does not replace the Add transaction button in the bottom navigation.
+
+**Quick Transaction** opens a compact purchase form from any main page. The amount is the only new value required when a default source is configured. CardNest uses today’s date, Purchase, and the Other category automatically. Choose its default source in Settings.
+
+**SMS Sync** opens the SMS Sync review screen only. Pressing the shortcut does not request SMS permission, scan messages, import a transaction, or change financial records. Start SMS review from that screen when you are ready. Existing Flash transaction visibility is carried forward when the new shortcut preference is first created; SMS Sync is never selected automatically during migration.
 
 ## 4. Transaction details, splits, and EMI
 

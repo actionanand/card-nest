@@ -3,6 +3,7 @@ import { signal } from '@angular/core';
 import { of } from 'rxjs';
 import axe from 'axe-core';
 import { ActivatedRoute, provideRouter } from '@angular/router';
+import { Capacitor } from '@capacitor/core';
 import { SettingsPage } from './settings';
 import { SqliteDatabase } from '../../core/data/sqlite-database';
 import { BackupService } from '../../core/services/backup.service';
@@ -44,6 +45,10 @@ describe('Explicit backup destination choice', () => {
         { provide: BackupService, useValue: backups },
       ],
     });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    localStorage.clear();
   });
   const create = async () => {
     const fixture = TestBed.createComponent(SettingsPage);
@@ -223,5 +228,52 @@ describe('Explicit backup destination choice', () => {
       vi.clearAllTimers();
       vi.useRealTimers();
     }
+  });
+  it('shows one Android-only floating shortcut control with exclusive Quick Transaction and SMS Sync modes', async () => {
+    localStorage.clear();
+    vi.spyOn(Capacitor, 'isNativePlatform').mockReturnValue(true);
+    vi.spyOn(Capacitor, 'getPlatform').mockReturnValue('android');
+    const fixture = TestBed.createComponent(SettingsPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const preferences = fixture.componentInstance.uiPreferences;
+    expect(fixture.nativeElement.textContent).toContain('Enable floating shortcut');
+    expect(preferences.floatingShortcut()).toEqual({ enabled: true, mode: 'QUICK_TRANSACTION' });
+    expect(
+      fixture.nativeElement.querySelectorAll('.floating-shortcut-settings app-select-picker'),
+    ).toHaveLength(1);
+    expect(fixture.nativeElement.textContent).toContain('Quick Transaction default source');
+
+    expect(preferences.setFloatingShortcutMode('SMS_SYNC')).toBe(true);
+    fixture.detectChanges();
+    expect(fixture.nativeElement.textContent).toContain('SMS Sync');
+    expect(fixture.nativeElement.textContent).not.toContain('Quick Transaction default source');
+    expect(preferences.floatingShortcutEnabled()).toBe(true);
+    expect(
+      fixture.nativeElement.querySelectorAll('.floating-shortcut-settings app-select-picker'),
+    ).toHaveLength(1);
+
+    expect(preferences.setFloatingShortcutEnabled(false)).toBe(true);
+    fixture.detectChanges();
+    expect(
+      fixture.nativeElement.querySelector('.floating-shortcut-settings app-select-picker'),
+    ).toBeNull();
+    expect(preferences.floatingShortcutMode()).toBe('SMS_SYNC');
+    fixture.destroy();
+  });
+  it.each([
+    ['Android Chrome', false, 'web'],
+    ['desktop web', false, 'web'],
+    ['iOS native', true, 'ios'],
+  ])('hides shortcut settings on %s', async (_label, native, platform) => {
+    localStorage.clear();
+    vi.spyOn(Capacitor, 'isNativePlatform').mockReturnValue(native);
+    vi.spyOn(Capacitor, 'getPlatform').mockReturnValue(platform);
+    const fixture = TestBed.createComponent(SettingsPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(fixture.nativeElement.querySelector('.floating-shortcut-settings')).toBeNull();
+    expect(fixture.componentInstance.uiPreferences.setFloatingShortcutEnabled(true)).toBe(false);
+    fixture.destroy();
   });
 });

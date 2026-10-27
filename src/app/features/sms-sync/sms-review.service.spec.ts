@@ -10,7 +10,7 @@ import { DatabaseSession, SqliteDatabase } from '../../core/data/sqlite-database
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { AppLockService } from '../../core/services/app-lock.service';
 import { CardTransaction, CreditCard, PaymentSource } from '../../core/models/domain';
-import { SmsReviewService } from './sms-review.service';
+import { SmsReviewFilterRefreshError, SmsReviewService } from './sms-review.service';
 import { defaultReviewFilters, SMS_REVIEW_FILTERS_KEY } from './sms-review-filters';
 import { matchExisting } from './sms-matching';
 import {
@@ -1168,6 +1168,24 @@ describe('SMS approved import integrity', () => {
       read: 'ALL',
       sortOrder: 'TRANSACTION_DESC',
     });
+  });
+  it('distinguishes a saved filter preference from a subsequent inbox refresh failure', async () => {
+    realRefresh();
+    await service.filterReview({ ...defaultReviewFilters(), search: 'previous filter' });
+    const refresh = vi
+      .spyOn(service, 'refresh')
+      .mockRejectedValueOnce(new Error('Synthetic inbox query failure'));
+
+    await expect(service.filterReview(defaultReviewFilters())).rejects.toBeInstanceOf(
+      SmsReviewFilterRefreshError,
+    );
+    const [saved] = rows<{ encrypted_value: string }>(
+      'SELECT encrypted_value FROM app_preferences WHERE key=?',
+      [SMS_REVIEW_FILTERS_KEY],
+    );
+    expect(JSON.parse(saved.encrypted_value)).toEqual(defaultReviewFilters());
+    expect(await service.loadReviewFilters()).toEqual(defaultReviewFilters());
+    refresh.mockRestore();
   });
   it('falls back safely for malformed or invalid restored filter values', async () => {
     run('INSERT INTO app_preferences VALUES(?,?)', [SMS_REVIEW_FILTERS_KEY, 'broken JSON']);
@@ -2446,6 +2464,78 @@ describe('SMS approved import integrity', () => {
       expect(count('card_transactions')).toBe(2);
     },
   );
+  it.each([
+    ['deleted', "DELETE FROM categories WHERE id='dining'"],
+    ['archived', "UPDATE categories SET archived=1 WHERE id='dining'"],
+    ['incompatible', "UPDATE categories SET applies_to='CREDIT' WHERE id='dining'"],
+  ])(
+    're-resolves an automatic card category when it becomes %s before approval',
+    async (_label, sql) => {
+      const candidate = stage(evidence({ merchant: 'Swiggy' }));
+      run(sql);
+
+      await service.approve(
+        candidate,
+        card.id,
+        candidate.item!.amountMinor,
+        'Swiggy',
+        '',
+        'PENDING',
+        false,
+        '',
+        0,
+        {
+          transactionDate: candidate.item!.eventDate,
+          categoryId: 'dining',
+          categoryOverridden: false,
+        },
+      );
+      expect(transactions()[0].categoryId).toBe('other');
+    },
+  );
+  it('rejects a stale explicit card category and keeps a valid explicit category unchanged', async () => {
+    const invalid = stage(evidence({ merchant: 'Swiggy' }));
+    run("DELETE FROM categories WHERE id='dining'");
+    await expect(
+      service.approve(
+        invalid,
+        card.id,
+        invalid.item!.amountMinor,
+        'Swiggy',
+        '',
+        'PENDING',
+        false,
+        '',
+        0,
+        {
+          transactionDate: invalid.item!.eventDate,
+          categoryId: 'dining',
+          categoryOverridden: true,
+        },
+      ),
+    ).rejects.toThrow('selected category is unavailable or incompatible');
+    expect(count('card_transactions')).toBe(0);
+
+    const valid = stage(evidence({ id: 'b'.repeat(64), merchant: 'Swiggy' }));
+    await service.approve(
+      valid,
+      card.id,
+      valid.item!.amountMinor,
+      'Swiggy',
+      '',
+      'PENDING',
+      false,
+      '',
+      0,
+      {
+        transactionDate: valid.item!.eventDate,
+        categoryId: 'groceries',
+        categoryOverridden: true,
+      },
+    );
+    expect(transactions()[0].categoryId).toBe('groceries');
+    expect(count('card_transactions')).toBe(1);
+  });
   it('allows a guarded one-time baseline repair for an already approved Pluxee top-up', async () => {
     const wallet: PaymentSource = {
       id: 'pluxee-6423',
