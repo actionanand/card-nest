@@ -1007,19 +1007,21 @@ export class SmsReviewService {
               ])
             : [];
         const item = old ? { ...incoming, id: old.id } : incoming;
-        activityCandidates.push({
-          fingerprint: item.id,
-          activityDate: item.eventDate,
-          kind: item.kind,
-          direction: bankDirection(item),
-          purposeHint: item.purposeHint,
-          accountDigits: item.accountDigits,
-          counterpartyAccountDigits: item.counterpartyAccountDigits,
-          issuer: item.issuer,
-          reference: item.reference,
-          dateFallback: item.dateFallback,
-          merchant: item.merchant,
-        });
+        if (!retention || item.eventDate >= retention.value)
+          activityCandidates.push({
+            fingerprint: item.id,
+            parserVersion: item.parserVersion,
+            activityDate: item.eventDate,
+            kind: item.kind,
+            direction: bankDirection(item),
+            purposeHint: item.purposeHint,
+            accountDigits: item.accountDigits,
+            counterpartyAccountDigits: item.counterpartyAccountDigits,
+            issuer: item.issuer,
+            reference: item.reference,
+            dateFallback: item.dateFallback,
+            merchant: item.merchant,
+          });
         const changes = await tx.run(
           `INSERT OR IGNORE INTO sms_candidates(id, provider_id, event_at, kind, state, payload, updated_at, received_at)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,

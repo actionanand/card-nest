@@ -278,3 +278,61 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+.page-header {
+  flex-wrap: wrap;
+  align-items: start;
+}
+.page-header > div {
+  flex: 1 1 15rem;
+  min-width: 0;
+}
+.page-header > .btn {
+  flex: 0 0 auto;
+  min-height: 44px;
+}
+.review-candidate,
+.profile-heading > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.check-field {
+  display: flex !important;
+  align-items: start;
+  gap: 0.6rem;
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
+.check-field input {
+  width: 1.2rem;
+  min-height: 1.2rem;
+  flex: 0 0 auto;
+}
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.6rem;
+  position: sticky;
+  bottom: -1rem;
+  padding: 0.8rem 0;
+  background: var(--surface);
+}
+app-profile-modal .activity-form {
+  padding: 0;
+}
+.discovery-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+}
+.discovery-actions p {
+  flex-basis: 100%;
+}
+.profile-actions .btn,
+.icon-action {
+  min-height: 44px;
+}
+.review-candidate p {
+  margin: 0.3rem 0;
+}

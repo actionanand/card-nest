@@ -529,6 +529,13 @@ export class SqliteDatabase {
         }
       }
       await flushInserts();
+      // Portable imports rebuild rowids. Pending evidence stays durable, but its local replay cursor must restart.
+      await CapacitorSQLite.run({
+        database: this.databaseName,
+        statement: "DELETE FROM app_preferences WHERE key='bank_activity_discovery_cursor'",
+        values: [],
+        transaction: false,
+      });
       await reconcileCategoryCatalog({
         query: async <T extends Record<string, unknown>>(
           statement: string,

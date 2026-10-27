@@ -19,6 +19,119 @@ vi.mock('@capacitor/core', () => ({
 }));
 
 describe('BankActivityService Android SMS matching', () => {
+  it.each(['12', '1234', '12a', '123456'])(
+    'rejects standalone suffix %s instead of silently truncating it',
+    async (suffix) => {
+      await expect(makeProfile({ accountSuffix: suffix })).rejects.toThrow('exactly three');
+      expect(service.profiles()).toHaveLength(0);
+    },
+  );
+  it('preserves leading zeros and supports explicit manual-only family monitoring without SMS', async () => {
+    const profile = await service.saveProfile({
+      bankName: 'HDFC Bank',
+      accountSuffix: '007',
+      owner: 'OTHERS',
+      holderName: 'Fiction Alex',
+    });
+    expect(profile.accountSuffix).toBe('007');
+    const manual = await service.saveProfile({
+      bankName: 'SBI',
+      owner: 'OTHERS',
+      holderName: 'Fiction Jamie',
+      manualOnly: true,
+    });
+    expect(manual.manualOnly).toBe(true);
+    await service.saveManualEvent({
+      profileId: manual.id,
+      activityDate: '2026-10-26',
+      direction: 'DEBIT',
+    });
+    expect(service.events()).toHaveLength(1);
+    await expect(
+      service.saveProfile({ bankName: 'ICICI', owner: 'OTHERS', accountSuffix: '123' }),
+    ).rejects.toThrow('holder name');
+  });
+  it.each(['9123', '45123'])(
+    'derives %s through the stable linked source while preserving its saved suffix',
+    async (suffix) => {
+      sources = [source('linked', suffix)];
+      const profile = await makeProfile({ paymentSourceId: 'linked' });
+      expect(profile.paymentSourceId).toBe('linked');
+      expect(profile.accountSuffix).toBe('123');
+      expect(sources[0].lastDigits).toBe(suffix);
+      await expect(makeProfile({ paymentSourceId: 'linked' })).rejects.toThrow('already monitored');
+    },
+  );
+  it('requires evidence or explicit manual-only mode when a linked source has no trustworthy suffix', async () => {
+    sources = [source('linked', 'bad123')];
+    await expect(makeProfile({ paymentSourceId: 'linked' })).rejects.toThrow('manual-only');
+    const profile = await service.saveProfile({
+      paymentSourceId: 'linked',
+      bankName: 'Fictional Bank',
+      owner: 'OWN',
+      manualOnly: true,
+    });
+    expect(profile.accountSuffix).toBeUndefined();
+    expect(profile.manualOnly).toBe(true);
+  });
+  it('rejects indistinguishable duplicate profiles but permits explicitly distinguished same-bank accounts', async () => {
+    await makeProfile({ accountSuffix: '456' });
+    await expect(makeProfile({ accountSuffix: '456' })).rejects.toThrow('identity conflict');
+    const second = await service.saveProfile({
+      bankName: 'Fictional Bank',
+      accountSuffix: '456',
+      owner: 'OTHERS',
+      holderName: 'Fiction Alex',
+      allowIdentityConflict: true,
+    });
+    expect(second.holderName).toBe('Fiction Alex');
+    const differentBank = await service.saveProfile({
+      bankName: 'HDFC',
+      accountSuffix: '456',
+      owner: 'OWN',
+    });
+    expect(differentBank.accountSuffix).toBe('456');
+    expect(service.profiles()).toHaveLength(3);
+  });
+  it('requires additional acknowledgement for conflicting or missing account identity and never uses recipient digits as source digits', async () => {
+    const profile = await makeProfile({ accountSuffix: '456' });
+    const item = makeEvidence('recipient-only', {
+      accountDigits: undefined,
+      counterpartyAccountDigits: '23456',
+      issuer: undefined,
+    });
+    await service.ingestAndroidSms(item);
+    expect(service.candidates()[0].accountSuffix).toBeUndefined();
+    expect(service.match(service.candidates()[0]).state).toBe('MISSING');
+    await expect(service.approveCandidate(item.fingerprint, profile.id)).rejects.toThrow(
+      'acknowledge',
+    );
+    expect(service.events()).toHaveLength(0);
+    await service.approveCandidate(item.fingerprint, profile.id, true);
+    expect(service.events()[0].verification).toBe('USER_CONFIRMED');
+    await expect(service.approveCandidate(item.fingerprint, profile.id, true)).resolves.toBeNull();
+  });
+  it.each([
+    { kind: 'STATEMENT' },
+    { kind: 'PAYMENT_REMINDER' },
+    { kind: 'SCHEDULED_CHARGE' },
+    { kind: 'OTP' },
+    { kind: 'ADVERTISEMENT' },
+    { kind: 'BANK_CREDIT', direction: 'DEBIT' as const },
+    { purposeHint: 'UNKNOWN' },
+    { purposeHint: 'MANDATE' },
+    { merchant: 'NACH mandate' },
+    { merchant: 'Monthly interest credit' },
+    { merchant: 'Failed payment' },
+    { merchant: 'Reversed transfer' },
+    { merchant: 'Pending instruction' },
+    { dateFallback: true },
+    { parserVersion: 2 },
+  ])('rejects unsupported, uncertain or excluded evidence %j', async (change) => {
+    await service.ingestAndroidSms(makeEvidence('excluded', change));
+    expect(service.candidates()).toHaveLength(0);
+    expect(service.events()).toHaveLength(0);
+  });
   let service: BankActivityService;
   let sources: {
     id: string;
@@ -111,14 +224,14 @@ describe('BankActivityService Android SMS matching', () => {
     kind: 'BANK_DEBIT',
     direction: 'DEBIT',
     purposeHint: 'PURCHASE',
-    accountDigits: '99123456',
+    accountDigits: '23456',
     issuer: 'Fictional Bank',
     reference: `REF-${fingerprint}`,
     merchant: 'Fictional Store',
     ...changes,
   });
 
-  const source = (id: string, lastDigits = '123456') => ({
+  const source = (id: string, lastDigits = '23456') => ({
     id,
     kind: 'DEBIT',
     institution: 'Fictional Bank',
@@ -139,6 +252,7 @@ describe('BankActivityService Android SMS matching', () => {
       accountSuffix: input.accountSuffix,
       nickname: input.nickname,
       owner: 'OWN',
+      allowIdentityConflict: !!input.nickname,
     });
 
   beforeEach(() => {
@@ -161,18 +275,21 @@ describe('BankActivityService Android SMS matching', () => {
 
   afterEach(() => vi.restoreAllMocks());
 
-  it('records a unique linked account match once without changing financial balances', async () => {
+  it('queues a unique linked match and records it only after explicit confirmation without changing balances', async () => {
     sources = [source('source-one')];
     const profile = await makeProfile({ paymentSourceId: 'source-one' });
     const evidence = makeEvidence('unique-fingerprint');
 
-    await expect(service.ingestAndroidSms(evidence)).resolves.toBe(true);
+    await expect(service.ingestAndroidSms(evidence)).resolves.toBe(false);
+    expect(service.events()).toHaveLength(0);
+    expect(service.candidates()).toHaveLength(1);
+    await service.approveCandidate(evidence.fingerprint, profile.id);
     await expect(service.ingestAndroidSms(evidence)).resolves.toBe(false);
     expect(service.events()).toHaveLength(1);
     expect(service.events()[0]).toMatchObject({
       profileId: profile.id,
       origin: 'ANDROID_SMS',
-      verification: 'SOURCE_MATCHED',
+      verification: 'USER_CONFIRMED',
     });
     expect(sources[0].balanceMinor).toBe(123400);
     expect(
@@ -198,17 +315,19 @@ describe('BankActivityService Android SMS matching', () => {
     expect(candidates.get('ambiguous-fingerprint')).not.toContain('RAW SMS');
   });
 
-  it('records a unique standalone monitored account without requiring a linked source', async () => {
+  it('requires confirmation for a unique standalone monitored account', async () => {
     const profile = await makeProfile({ accountSuffix: '456' });
     await expect(service.ingestAndroidSms(makeEvidence('standalone-fingerprint'))).resolves.toBe(
-      true,
+      false,
     );
+    expect(service.events()).toHaveLength(0);
+    await service.approveCandidate('standalone-fingerprint', profile.id);
     expect(service.events()).toHaveLength(1);
     expect(service.events()[0].profileId).toBe(profile.id);
   });
 
   it.each([
-    ['unknown suffix', { accountDigits: '999000' }],
+    ['unknown suffix', { accountDigits: '99000' }],
     ['absent suffix', { accountDigits: undefined }],
   ])('queues a review candidate for an %s', async (_label, changes) => {
     await makeProfile({ accountSuffix: '456' });
@@ -235,11 +354,11 @@ describe('BankActivityService Android SMS matching', () => {
     expect(candidates.size).toBe(1);
   });
 
-  it('does not queue qualifying bank evidence when no account is monitored', async () => {
+  it('preserves unmonitored qualifying evidence for discovery', async () => {
     await expect(service.ingestAndroidSms(makeEvidence('unmonitored-fingerprint'))).resolves.toBe(
       false,
     );
-    expect(service.candidates()).toHaveLength(0);
-    expect(candidates.size).toBe(0);
+    expect(service.candidates()).toHaveLength(1);
+    expect(candidates.size).toBe(1);
   });
 });

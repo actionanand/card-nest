@@ -125,46 +125,61 @@
         </button>
       </section>
       @if (mobileFormOpen()) {
-        <form class="panel utility-form" [formGroup]="mobileForm" (submit)="saveMobile($event)">
-          <header>
-            <h3>{{ editingMobileId() ? 'Edit mobile profile' : 'New mobile profile' }}</h3>
-            <button class="btn" type="button" (click)="mobileFormOpen.set(false)">Close</button>
-          </header>
-          <div class="form-grid">
-            <label
-              >Person's name<input formControlName="personName" maxlength="80" required
-            /></label>
-            <app-select-picker
-              label="Plan type"
-              formControlName="subscriptionType"
-              [options]="subscriptionOptions"
-            />
-            <app-select-picker
-              label="Operator"
-              formControlName="operator"
-              [options]="mobileOptions"
-            />
-            <label
-              >Indian mobile number (optional)<input
-                formControlName="mobileNumber"
-                inputmode="tel"
-                autocomplete="tel-national"
-                placeholder="9876543210 or +91 9876543210"
-            /></label>
-          </div>
-          @if (mobileForm.controls.subscriptionType.value === 'POSTPAID') {
-            <p class="form-note">
-              Postpaid service is not marked inactive when no prepaid-style recharge has been
-              recorded. Add billing validity only when you know it.
-            </p>
-          }
-          @if (error(); as message) {
-            <p class="form-error" role="alert">{{ message }}</p>
-          }
-          <button class="btn btn-primary" type="submit" [disabled]="saving() || mobileForm.invalid">
-            {{ saving() ? 'Saving…' : 'Save profile' }}
-          </button>
-        </form>
+        <app-profile-modal
+          [title]="editingMobileId() ? 'Edit mobile profile' : 'Add mobile profile'"
+          [busy]="saving()"
+          (closed)="mobileFormOpen.set(false)"
+          ><form class="utility-form" [formGroup]="mobileForm" (submit)="saveMobile($event)">
+            <div class="form-grid">
+              <label
+                >Person's name<input formControlName="personName" maxlength="80" required
+              /></label>
+              <app-select-picker
+                label="Plan type"
+                formControlName="subscriptionType"
+                [options]="subscriptionOptions"
+              />
+              <app-select-picker
+                label="Operator"
+                formControlName="operator"
+                [options]="mobileOptions"
+              />
+              <label
+                >Indian mobile number (optional)<input
+                  formControlName="mobileNumber"
+                  inputmode="tel"
+                  autocomplete="tel-national"
+                  placeholder="9876543210 or +91 9876543210"
+              /></label>
+            </div>
+            @if (mobileForm.controls.subscriptionType.value === 'POSTPAID') {
+              <p class="form-note">
+                Postpaid service is not marked inactive when no prepaid-style recharge has been
+                recorded. Add billing validity only when you know it.
+              </p>
+            }
+            @if (error(); as message) {
+              <p class="form-error" role="alert">{{ message }}</p>
+            }
+
+            <div class="modal-actions">
+              <button
+                class="btn btn-primary"
+                type="submit"
+                [disabled]="saving() || mobileForm.invalid"
+              >
+                {{ saving() ? 'Saving…' : 'Save profile' }}</button
+              ><button
+                class="btn"
+                type="button"
+                [disabled]="saving()"
+                (click)="mobileFormOpen.set(false)"
+              >
+                Cancel
+              </button>
+            </div>
+          </form></app-profile-modal
+        >
       }
 
       @for (profile of mobileProfiles(); track profile.id) {
@@ -377,83 +392,100 @@
           </button>
         </section>
         @if (lpgFormOpen()) {
-          <form class="panel utility-form" [formGroup]="lpgForm" (submit)="saveLpg($event)">
-            <header>
-              <h3>{{ editingLpgId() ? 'Edit LPG connection' : 'New LPG connection' }}</h3>
-              <button class="btn" type="button" (click)="lpgFormOpen.set(false)">Close</button>
-            </header>
-            <div class="form-grid">
+          <app-profile-modal
+            [title]="editingLpgId() ? 'Edit LPG connection' : 'Add LPG connection'"
+            [busy]="saving()"
+            (closed)="lpgFormOpen.set(false)"
+            ><form class="utility-form" [formGroup]="lpgForm" (submit)="saveLpg($event)">
+              <div class="form-grid">
+                <label
+                  >Connection name<input formControlName="connectionName" maxlength="80" required
+                /></label>
+                <app-select-picker
+                  label="LPG provider"
+                  formControlName="provider"
+                  [options]="providerOptions"
+                />
+                <app-select-picker
+                  label="Cylinder size"
+                  formControlName="cylinderSize"
+                  [options]="cylinderOptions"
+                />
+                <label class="check-field"
+                  ><input type="checkbox" formControlName="commercial" /><span
+                    >Commercial connection</span
+                  ></label
+                >
+                <label
+                  >Linked mobile number (optional)<input
+                    formControlName="mobileNumber"
+                    inputmode="tel"
+                    placeholder="+91 mobile number"
+                /></label>
+                <label
+                  >Connection ID (optional)<input formControlName="connectionId" maxlength="80"
+                /></label>
+                <label
+                  >Distributor ID (optional)<input formControlName="distributorId" maxlength="80"
+                /></label>
+                <label
+                  >Distributor name (optional)<input
+                    formControlName="distributorName"
+                    maxlength="80"
+                /></label>
+                <label
+                  >Distributor contact number (optional)<input
+                    formControlName="distributorContact"
+                    inputmode="tel"
+                    maxlength="20"
+                /></label>
+                <label
+                  >Distributor WhatsApp number (optional)<input
+                    formControlName="distributorWhatsApp"
+                    inputmode="tel"
+                    maxlength="20"
+                /></label>
+                <label
+                  >Estimated usage days<input
+                    formControlName="estimatedUsageDays"
+                    inputmode="numeric"
+                    pattern="[0-9]+"
+                    required
+                /></label>
+              </div>
+              <p class="form-note">
+                The refill-check estimate is based on the current-cylinder start date. It never
+                marks a cylinder Empty.
+              </p>
               <label
-                >Connection name<input formControlName="connectionName" maxlength="80" required
-              /></label>
-              <app-select-picker
-                label="LPG provider"
-                formControlName="provider"
-                [options]="providerOptions"
-              />
-              <app-select-picker
-                label="Cylinder size"
-                formControlName="cylinderSize"
-                [options]="cylinderOptions"
-              />
-              <label class="check-field"
-                ><input type="checkbox" formControlName="commercial" /><span
-                  >Commercial connection</span
-                ></label
-              >
-              <label
-                >Linked mobile number (optional)<input
-                  formControlName="mobileNumber"
-                  inputmode="tel"
-                  placeholder="+91 mobile number"
-              /></label>
-              <label
-                >Connection ID (optional)<input formControlName="connectionId" maxlength="80"
-              /></label>
-              <label
-                >Distributor ID (optional)<input formControlName="distributorId" maxlength="80"
-              /></label>
-              <label
-                >Distributor name (optional)<input formControlName="distributorName" maxlength="80"
-              /></label>
-              <label
-                >Distributor contact number (optional)<input
-                  formControlName="distributorContact"
-                  inputmode="tel"
-                  maxlength="20"
-              /></label>
-              <label
-                >Distributor WhatsApp number (optional)<input
-                  formControlName="distributorWhatsApp"
-                  inputmode="tel"
-                  maxlength="20"
-              /></label>
-              <label
-                >Estimated usage days<input
-                  formControlName="estimatedUsageDays"
-                  inputmode="numeric"
-                  pattern="[0-9]+"
-                  required
-              /></label>
-            </div>
-            <p class="form-note">
-              The refill-check estimate is based on the current-cylinder start date. It never marks
-              a cylinder Empty.
-            </p>
-            <label
-              >Notes (optional)<textarea
-                rows="2"
-                maxlength="300"
-                formControlName="notes"
-              ></textarea>
-            </label>
-            @if (error(); as message) {
-              <p class="form-error" role="alert">{{ message }}</p>
-            }
-            <button class="btn btn-primary" type="submit" [disabled]="saving() || lpgForm.invalid">
-              Save connection
-            </button>
-          </form>
+                >Notes (optional)<textarea
+                  rows="2"
+                  maxlength="300"
+                  formControlName="notes"
+                ></textarea>
+              </label>
+              @if (error(); as message) {
+                <p class="form-error" role="alert">{{ message }}</p>
+              }
+
+              <div class="modal-actions">
+                <button
+                  class="btn btn-primary"
+                  type="submit"
+                  [disabled]="saving() || lpgForm.invalid"
+                >
+                  Save connection</button
+                ><button
+                  class="btn"
+                  type="button"
+                  [disabled]="saving()"
+                  (click)="lpgFormOpen.set(false)"
+                >
+                  Cancel
+                </button>
+              </div>
+            </form></app-profile-modal
+          >
         }
         @for (profile of lpgProfiles(); track profile.id) {
           <article class="panel lpg-profile">

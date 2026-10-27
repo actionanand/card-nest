@@ -1,3 +1,4 @@
+import { ProfileModal } from '../../shared/profile-modal';
 import { Component, computed, inject, signal } from '@angular/core';
 import { NgOptimizedImage } from '@angular/common';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
@@ -25,7 +26,14 @@ type UtilitySection = 'MOBILE' | 'GAS' | 'ELECTRICITY' | 'BROADBAND';
 
 @Component({
   selector: 'app-utilities-page',
-  imports: [ReactiveFormsModule, NgOptimizedImage, AppIcon, AppSelectPicker, WhatsAppAppChooser],
+  imports: [
+    ProfileModal,
+    ReactiveFormsModule,
+    NgOptimizedImage,
+    AppIcon,
+    AppSelectPicker,
+    WhatsAppAppChooser,
+  ],
   templateUrl: './utilities.html',
   styleUrl: './utilities.scss',
 })

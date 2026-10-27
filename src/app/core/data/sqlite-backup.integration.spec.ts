@@ -479,7 +479,9 @@ describe('Durable first-run data, additive read migration and private portable b
         merchant: 'Monthly interest credit',
       }),
     ).toBe(false);
-    expect(await bankActivity.ingestAndroidSms(smsEvidence)).toBe(true);
+    expect(await bankActivity.ingestAndroidSms(smsEvidence)).toBe(false);
+    expect(bankActivity.eventsFor(bankProfile.id)).toHaveLength(1);
+    await bankActivity.approveCandidate(smsEvidence.fingerprint, bankProfile.id);
     expect(await bankActivity.ingestAndroidSms(smsEvidence)).toBe(false);
     expect(bankActivity.eventsFor(bankProfile.id)).toHaveLength(2);
     expect(count('card_transactions')).toBe(0);
@@ -490,6 +492,7 @@ describe('Durable first-run data, additive read migration and private portable b
       accountSuffix: '417',
       owner: 'OTHERS',
       holderName: 'Fictional Alex',
+      allowIdentityConflict: true,
     });
     expect(
       await bankActivity.ingestAndroidSms({ ...smsEvidence, fingerprint: 'b'.repeat(64) }),
@@ -498,7 +501,7 @@ describe('Durable first-run data, additive read migration and private portable b
       {
         fingerprint: 'b'.repeat(64),
         activityDate: today,
-        bankName: 'ICICI',
+        bankName: 'ICICI Bank',
         accountSuffix: '417',
       },
     ]);

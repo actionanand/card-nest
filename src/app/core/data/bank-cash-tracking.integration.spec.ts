@@ -24,6 +24,7 @@ import { TransactionsPage } from '../../features/transactions/transactions';
 import { By } from '@angular/platform-browser';
 import { AppSelectPicker } from '../../shared/app-select-picker';
 import { Blob as NodeBlob } from 'node:buffer';
+import { BankActivityService } from '../../features/bank-activity/bank-activity.service';
 
 const { DatabaseSync } = process.getBuiltinModule('node:sqlite') as typeof import('node:sqlite');
 
@@ -48,6 +49,212 @@ vi.mock('@capacitor-community/sqlite', () => ({
 
 /** Real SQLite behind the native plugin contract. Every identifier here is fictional. */
 describe('Bank/UPI and Cash tracking with SQLite', () => {
+  it('stages bank discoveries, rolls back failed confirmation and records once with no financial side effects', async () => {
+    const { store } = await boot();
+    vi.spyOn(Capacitor, 'isNativePlatform').mockReturnValue(true);
+    const activity = TestBed.inject(BankActivityService);
+    await activity.initialise();
+    const source = await store.addBankAccount({
+      nickname: 'Fiction account',
+      institution: 'ICICI Bank',
+      lastDigits: '45123',
+    });
+    const profile = await activity.saveProfile({
+      paymentSourceId: source.id,
+      bankName: 'ICICI',
+      owner: 'OWN',
+    });
+    expect(profile.accountSuffix).toBe('123');
+    expect(store.paymentSources().find((row) => row.id === source.id)?.lastDigits).toBe('45123');
+    const payment = purchase({
+      id: 'financial-preserved',
+      merchant: 'Fiction meal',
+      amountMinor: 20000,
+    });
+    const additional = purchase({ id: 'financial-member', cardId: source.id, amountMinor: 2000 });
+    await store.saveManualTransaction(payment);
+    await store.saveManualTransaction(additional);
+    await store.combinePayments([payment.id, additional.id], payment.id);
+    const financialTables = [
+      'card_transactions',
+      'transaction_split_groups',
+      'transaction_split_members',
+      'credit_cards',
+      'source_transfers',
+      'source_balance_adjustments',
+      'app_preferences',
+      'sms_candidates',
+    ];
+    const financial = () =>
+      financialTables.map((table) => rows('SELECT * FROM ' + table + ' ORDER BY rowid'));
+    const snapshot = financial();
+    const sourceSnapshot = store.paymentSources();
+    const spending = calculateNetSpending(store.transactions());
+    const item = {
+      fingerprint: 'bank-confirmation-a',
+      activityDate: today,
+      kind: 'BANK_DEBIT',
+      direction: 'DEBIT' as const,
+      purposeHint: 'PURCHASE',
+      accountDigits: '45123',
+      issuer: 'ICICI',
+      merchant: 'Fiction store',
+      reference: 'SAFE-REF',
+      parserVersion: 3,
+      dateFallback: false,
+    };
+    await activity.ingestAndroidSms(item);
+    await activity.ingestAndroidSms(item);
+    expect(activity.events()).toHaveLength(0);
+    expect(activity.candidates()).toHaveLength(1);
+    expect(activity.match(activity.candidates()[0])).toMatchObject({
+      state: 'UNIQUE',
+      suggestedId: profile.id,
+    });
+    expect(financial()).toEqual(snapshot);
+    sql.exec(
+      "CREATE TRIGGER fail_activity_resolve BEFORE UPDATE ON bank_activity_candidates BEGIN SELECT RAISE(ABORT,'synthetic activity rollback'); END",
+    );
+    await expect(activity.approveCandidate(item.fingerprint, profile.id)).rejects.toThrow(
+      'synthetic activity rollback',
+    );
+    expect(count('bank_activity_events')).toBe(0);
+    expect(activity.events()).toHaveLength(0);
+    expect(activity.candidates()).toHaveLength(1);
+    expect(financial()).toEqual(snapshot);
+    sql.exec('DROP TRIGGER fail_activity_resolve');
+    const results = await Promise.all([
+      activity.approveCandidate(item.fingerprint, profile.id),
+      activity.approveCandidate(item.fingerprint, profile.id),
+    ]);
+    expect(results.filter(Boolean)).toHaveLength(1);
+    expect(activity.events()).toHaveLength(1);
+    expect(activity.events()[0]).toMatchObject({
+      verification: 'USER_CONFIRMED',
+      origin: 'ANDROID_SMS',
+    });
+    expect(activity.candidates()).toHaveLength(0);
+    expect(financial()).toEqual(snapshot);
+    expect(store.paymentSources()).toEqual(sourceSnapshot);
+    expect(calculateNetSpending(store.transactions())).toBe(spending);
+    await activity.ingestAndroidSms(item);
+    expect(count('bank_activity_events')).toBe(1);
+    expect(activity.candidates()).toHaveLength(0);
+    await activity.ingestAndroidSms({
+      ...item,
+      fingerprint: 'new-bank-evidence',
+      issuer: 'HDFC',
+      accountDigits: '12007',
+    });
+    await activity.ingestAndroidSms({
+      ...item,
+      fingerprint: 'new-bank-evidence-two',
+      issuer: 'HDFC Bank',
+      accountDigits: '007',
+    });
+    expect(activity.candidates()).toHaveLength(2);
+    expect(count('bank_activity_profiles')).toBe(1);
+    await activity.saveProfile({
+      bankName: 'HDFC Bank',
+      accountSuffix: '007',
+      owner: 'OTHERS',
+      holderName: 'Fiction Jamie',
+    });
+    expect(activity.events()).toHaveLength(1);
+    expect(activity.candidates()).toHaveLength(2);
+    vi.stubGlobal('crypto', webcrypto);
+    vi.stubGlobal('Blob', NodeBlob);
+    try {
+      await database.run(
+        "INSERT INTO app_preferences(key,encrypted_value) VALUES('bank_activity_discovery_cursor','9999') ON CONFLICT(key) DO UPDATE SET encrypted_value=excluded.encrypted_value",
+      );
+      const backup = await TestBed.inject(BackupService).create(
+        'synthetic-bank-discovery-passphrase',
+      );
+      await activity.dismissCandidates(activity.candidates().map((row) => row.fingerprint));
+      await TestBed.inject(BackupService).restore(
+        backup.contents,
+        'synthetic-bank-discovery-passphrase',
+      );
+      await activity.reload();
+      expect(
+        rows("SELECT * FROM app_preferences WHERE key='bank_activity_discovery_cursor'"),
+      ).toEqual([]);
+      expect(activity.candidates()).toHaveLength(2);
+      expect(activity.events()).toHaveLength(1);
+      expect(activity.profiles()).toHaveLength(2);
+      expect(JSON.stringify(rows('SELECT payload FROM bank_activity_candidates'))).not.toContain(
+        '45123',
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    await activity.setArchived(profile.id, true);
+    await activity.ingestAndroidSms({ ...item, fingerprint: 'archived-account-evidence' });
+    expect(
+      activity.match(
+        activity.candidates().find((row) => row.fingerprint === 'archived-account-evidence')!,
+      ).state,
+    ).toBe('ARCHIVED');
+    await expect(
+      activity.approveCandidate('archived-account-evidence', profile.id),
+    ).rejects.toThrow('active monitored');
+    await expect(
+      activity.saveProfile({ paymentSourceId: source.id, bankName: 'ICICI', owner: 'OWN' }),
+    ).rejects.toThrow('already monitored');
+    expect(activity.events()).toHaveLength(1);
+  });
+  it('replays only retained parsed bank evidence on explicit discovery, resumes safely and never resets review decisions', async () => {
+    const { store } = await boot();
+    vi.spyOn(Capacitor, 'isNativePlatform').mockReturnValue(true);
+    const activity = TestBed.inject(BankActivityService);
+    await activity.initialise();
+    const item = evidence({
+      id: '9'.repeat(64),
+      accountDigits: '12007',
+      issuer: 'HDFC',
+      merchant: 'Fiction vendor',
+    });
+    await stage(item, 'REJECTED');
+    const rejected = rows('SELECT * FROM sms_candidates');
+    await activity.discoverSavedEvidence();
+    expect(activity.candidates()).toHaveLength(1);
+    expect(activity.events()).toHaveLength(0);
+    expect(activity.profiles()).toHaveLength(0);
+    expect(rows('SELECT * FROM sms_candidates')).toEqual(rejected);
+    await activity.discoverSavedEvidence();
+    expect(activity.candidates()).toHaveLength(1);
+    await activity.dismissCandidate(item.id);
+    await activity.discoverSavedEvidence();
+    expect(activity.candidates()).toHaveLength(0);
+    const manual = await activity.saveProfile({
+      bankName: 'HDFC Bank',
+      owner: 'OTHERS',
+      holderName: 'Fiction Alex',
+      manualOnly: true,
+    });
+    await activity.saveManualEvent({
+      profileId: manual.id,
+      activityDate: today,
+      direction: 'DEBIT',
+    });
+    expect(activity.events()).toHaveLength(1);
+    expect(count('card_transactions')).toBe(0);
+    expect(count('source_transfers')).toBe(0);
+    expect(store.transactions()).toHaveLength(0);
+    const invalid = evidence({
+      id: '8'.repeat(64),
+      purposeHint: 'INCOMING',
+      direction: 'CREDIT',
+      merchant: 'NACH automatic interest credit',
+    });
+    await stage(invalid);
+    await activity.discoverSavedEvidence();
+    expect(activity.candidates()).toHaveLength(0);
+    vi.spyOn(Capacitor, 'isNativePlatform').mockReturnValue(false);
+    await expect(activity.discoverSavedEvidence()).rejects.toThrow('Android');
+    expect(activity.profiles()).toHaveLength(1);
+  });
   it('reconciles old portable category backups on restore without changing history, deleted old defaults or custom IDs', async () => {
     const { store } = await boot();
     const item = purchase({
