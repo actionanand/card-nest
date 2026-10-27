@@ -641,6 +641,30 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     vi.restoreAllMocks();
   });
 
+  it('rolls back a Quick Transaction ledger write and source balance together on SQLite failure', async () => {
+    const { store, balance, stored } = await boot();
+    await store.enableBankCashTracking({ 'source-cash': 20000 });
+    const balanceBefore = balance('source-cash');
+    const storedBalanceBefore = stored('source-cash');
+    sql.exec(
+      "CREATE TRIGGER fail_quick_transaction_balance BEFORE UPDATE OF encrypted_value ON app_preferences WHEN OLD.key='payment_sources' BEGIN SELECT RAISE(ABORT,'synthetic source persistence failure'); END",
+    );
+    const transaction = purchase({
+      id: 'flash-durable-failure',
+      amountMinor: 4500,
+      merchant: 'Synthetic market',
+    });
+
+    await expect(store.saveManualTransaction(transaction)).rejects.toThrow(
+      'synthetic source persistence failure',
+    );
+    expect(count('card_transactions')).toBe(0);
+    expect(count('source_transfers')).toBe(0);
+    expect(store.transactions().some((item) => item.id === transaction.id)).toBe(false);
+    expect(balance('source-cash')).toBe(balanceBefore);
+    expect(stored('source-cash')).toBe(storedBalanceBefore);
+  });
+
   it('approves an ICICI-style UPI debit as spending with tracking off, keeping bank identity and no balance', async () => {
     const { store, review, balance } = await boot();
     expect(store.bankCashTracking().enabled).toBe(false);

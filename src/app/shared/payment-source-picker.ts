@@ -11,6 +11,7 @@ import { AppIcon } from './app-icon';
       <button
         type="button"
         class="picker-trigger"
+        [disabled]="disabled()"
         [attr.aria-expanded]="open()"
         aria-haspopup="dialog"
         (click)="open.set(true)"
@@ -48,6 +49,7 @@ import { AppIcon } from './app-icon';
             <button
               type="button"
               class="picker-option"
+              [disabled]="disabled()"
               [class.selected]="!value()"
               role="option"
               [attr.aria-selected]="!value()"
@@ -67,6 +69,7 @@ import { AppIcon } from './app-icon';
               <button
                 type="button"
                 class="picker-option"
+                [disabled]="disabled()"
                 [class.selected]="value() === card.id"
                 role="option"
                 [attr.aria-selected]="value() === card.id"
@@ -87,6 +90,7 @@ import { AppIcon } from './app-icon';
               <button
                 type="button"
                 class="picker-option"
+                [disabled]="disabled()"
                 [class.selected]="value() === source.id"
                 role="option"
                 [attr.aria-selected]="value() === source.id"
@@ -258,6 +262,7 @@ export class PaymentSourcePicker {
   readonly label = input('Pay from');
   readonly sheetTitle = input('Pay from');
   readonly allowAutomatic = input(false);
+  readonly disabled = input(false);
   readonly valueChange = output<string>();
   readonly open = signal(false);
 
@@ -272,6 +277,7 @@ export class PaymentSourcePicker {
   });
 
   select(id: string): void {
+    if (this.disabled()) return;
     this.valueChange.emit(id);
     this.open.set(false);
   }

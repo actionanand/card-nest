@@ -229,6 +229,7 @@
           <button
             type="button"
             (click)="closeFlashTransaction()"
+            [disabled]="savingFlashTransaction()"
             aria-label="Close flash transaction"
           >
             <app-icon name="close" />
@@ -237,6 +238,7 @@
         <form (submit)="saveFlashTransaction($event)">
           <app-payment-source-picker
             [value]="flashSourceId()"
+            [disabled]="savingFlashTransaction()"
             (valueChange)="updateFlashSource($event)"
           />
           <label
@@ -246,6 +248,7 @@
               pattern="[0-9]*[.]?[0-9]{0,2}"
               placeholder="0.00"
               [value]="flashAmount()"
+              [disabled]="savingFlashTransaction()"
               (input)="sanitizeFlashAmount($event)"
           /></label>
           <label
@@ -255,12 +258,15 @@
               autocomplete="off"
               placeholder="Where did you spend?"
               [value]="flashMerchant()"
+              [disabled]="savingFlashTransaction()"
               (input)="flashMerchant.set($any($event.target).value)"
           /></label>
           @if (flashError(); as error) {
             <p class="flash-error" role="alert">{{ error }}</p>
           }
-          <button class="btn btn-primary" type="submit">Save purchase</button>
+          <button class="btn btn-primary" type="submit" [disabled]="savingFlashTransaction()">
+            {{ savingFlashTransaction() ? 'Saving…' : 'Save purchase' }}
+          </button>
         </form>
       </section>
     </div>

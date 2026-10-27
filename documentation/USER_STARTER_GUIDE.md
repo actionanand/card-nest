@@ -31,7 +31,9 @@ On Android, **Settings > Cards & currency > Floating shortcut** controls one flo
 
 **Quick Transaction** opens a compact purchase form from any main page. The amount is the only new value required when a default source is configured. CardNest uses today’s date, Purchase, and the Other category automatically. Choose its default source in Settings.
 
-**SMS Sync** opens the SMS Sync review screen only. Pressing the shortcut does not request SMS permission, scan messages, import a transaction, or change financial records. Start SMS review from that screen when you are ready. Existing Flash transaction visibility is carried forward when the new shortcut preference is first created; SMS Sync is never selected automatically during migration.
+Quick Transaction reports success only after the save completes. If saving fails, the form keeps its source, amount, and merchant so you can retry.
+
+**SMS Sync** opens the SMS Sync review screen only. Pressing the shortcut does not request SMS permission, scan messages, import a transaction, or change financial records. Start SMS review from that screen when you are ready. If navigation fails, CardNest shows a warning and lets you retry. Its message and sync icons use theme-aware foreground colours. Check focus, icon contrast, and safe-area placement on a physical Android device; automated browser tests cannot replace device verification. Existing Flash transaction visibility is carried forward when the new shortcut preference is first created; SMS Sync is never selected automatically during migration.
 
 ## 4. Transaction details, splits, and EMI
 

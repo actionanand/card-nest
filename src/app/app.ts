@@ -76,6 +76,7 @@ export class App {
   readonly flashAmount = signal('');
   readonly flashMerchant = signal('');
   readonly flashError = signal<string | null>(null);
+  private flashTransactionId: string | null = null;
   readonly allowNotificationsButton = viewChild<ElementRef<HTMLButtonElement>>(
     'allowNotificationsButton',
   );
@@ -97,7 +98,11 @@ export class App {
   constructor() {
     this.refreshFabKeyboardState();
     const MutationObserverClass = this.document.defaultView?.MutationObserver;
-    if (MutationObserverClass && this.document.documentElement) {
+    if (
+      this.uiPreferences.androidNative &&
+      MutationObserverClass &&
+      this.document.documentElement
+    ) {
       const refreshDialogState = () =>
         this.blockingDialogOpen.set(
           !!this.document.querySelector('dialog[open], [role="dialog"][aria-modal="true"]'),
@@ -211,12 +216,15 @@ export class App {
     this.flashAmount.set('');
     this.flashMerchant.set('');
     this.flashError.set(null);
+    this.flashTransactionId = null;
     this.flashTransactionOpen.set(true);
   }
 
   closeFlashTransaction(): void {
+    if (this.savingFlashTransaction()) return;
     this.flashTransactionOpen.set(false);
     this.flashError.set(null);
+    this.flashTransactionId = null;
   }
 
   closeFlashFromBackdrop(event: MouseEvent): void {
@@ -244,19 +252,23 @@ export class App {
     const smsSyncRoute = this.router.config.find(
       (route) => route.data?.['floatingShortcut'] === 'SMS_SYNC',
     );
-    if (!smsSyncRoute?.path) return;
+    if (!smsSyncRoute?.path) {
+      this.warnSmsShortcutNavigationFailure();
+      return;
+    }
     const smsSyncUrl = `/${smsSyncRoute.path}`;
     if (this.router.url.split(/[?#]/, 1)[0] === smsSyncUrl) return;
     this.smsShortcutNavigationPending.set(true);
     try {
-      if (!(await this.router.navigateByUrl(smsSyncUrl)))
-        this.snackbar.show('SMS Sync could not be opened.', 'WARNING');
+      if (!(await this.router.navigateByUrl(smsSyncUrl))) this.warnSmsShortcutNavigationFailure();
+    } catch {
+      this.warnSmsShortcutNavigationFailure();
     } finally {
       this.smsShortcutNavigationPending.set(false);
     }
   }
 
-  saveFlashTransaction(event: Event): void {
+  async saveFlashTransaction(event: Event): Promise<void> {
     event.preventDefault();
     if (
       !this.flashTransactionOpen() ||
@@ -264,16 +276,17 @@ export class App {
       !this.uiPreferences.showFlashTransaction()
     )
       return;
+    const amountMinor = parseMoneyToMinor(this.flashAmount());
+    if (!this.flashSourceId() || amountMinor === null || amountMinor <= 0) {
+      this.flashError.set('Enter an amount and choose a payment source.');
+      return;
+    }
     this.savingFlashTransaction.set(true);
+    this.flashError.set(null);
     try {
-      const amountMinor = parseMoneyToMinor(this.flashAmount());
-      if (!this.flashSourceId() || amountMinor === null || amountMinor <= 0) {
-        this.flashError.set('Enter an amount and choose a payment source.');
-        return;
-      }
       const timestamp = new Date().toISOString();
       const transaction: CardTransaction = {
-        id: crypto.randomUUID(),
+        id: (this.flashTransactionId ??= crypto.randomUUID()),
         cardId: this.flashSourceId(),
         type: 'PURCHASE',
         amountMinor,
@@ -285,12 +298,22 @@ export class App {
         createdAt: timestamp,
         updatedAt: timestamp,
       };
-      this.store.addTransaction(transaction);
-      this.closeFlashTransaction();
+      await this.store.saveManualTransaction(transaction);
+      this.flashTransactionId = null;
+      this.flashTransactionOpen.set(false);
+      this.flashError.set(null);
       this.snackbar.show('Flash transaction added.');
+    } catch {
+      this.flashError.set(
+        'Could not save this transaction. Your entries are still here; try again.',
+      );
     } finally {
       this.savingFlashTransaction.set(false);
     }
+  }
+
+  private warnSmsShortcutNavigationFailure(): void {
+    this.snackbar.show('SMS Sync could not be opened. Please try again.', 'WARNING');
   }
 
   private async openNotificationPermissionConfirmationIfNeeded(): Promise<void> {
