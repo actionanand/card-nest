@@ -147,6 +147,29 @@ describe('Shared 18-hour purchase comparison', () => {
       ).toBe(false);
     expect(purchaseCompatible(sms, { ...entry, merchant: 'Breakfast' }, 'card')).toBe(true);
   });
+  it('recognizes an explicitly classified split payment as the same purchase purpose without matching legacy or balance corrections', () => {
+    expect(
+      purchaseCompatible(
+        sms,
+        { ...entry, type: 'ADJUSTMENT', adjustmentPurpose: 'SPLIT_PAYMENT' },
+        'card',
+      ),
+    ).toBe(true);
+    expect(
+      purchaseCompatible(
+        sms,
+        { ...entry, type: 'ADJUSTMENT', adjustmentPurpose: 'LEGACY_MANUAL' },
+        'card',
+      ),
+    ).toBe(false);
+    expect(
+      purchaseCompatible(
+        sms,
+        { ...entry, type: 'ADJUSTMENT', adjustmentPurpose: 'BALANCE_RECONCILIATION' },
+        'card',
+      ),
+    ).toBe(false);
+  });
   it('edits refresh suggestions without inventing a timestamp on the edited date', () => {
     expect(purchaseAnchor(sms, '2026-10-25')).toMatchObject({
       kind: 'REVIEW_DATE_ONLY',

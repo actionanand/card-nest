@@ -1596,6 +1596,6 @@ describe('Durable first-run data, additive read migration and private portable b
     ]);
     expect(vi.mocked(CapacitorSQLite.closeConnection)).toHaveBeenCalled();
     expect(CapacitorSQLite.createConnection).toHaveBeenCalledTimes(2);
-    expect(sql.prepare('PRAGMA user_version').get()?.['user_version']).toBe(11);
+    expect(sql.prepare('PRAGMA user_version').get()?.['user_version']).toBe(12);
   });
 });

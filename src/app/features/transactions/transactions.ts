@@ -21,7 +21,21 @@ import {
   TransactionType,
 } from '../../core/models/domain';
 import { CardNestStore } from '../../core/services/card-nest-store';
-import { formatMoney, parseMoneyToMinor, transactionEffect } from '../../core/services/money';
+import {
+  formatMoney,
+  parseMoneyToMinor,
+  transactionEffect,
+  transactionLabel,
+} from '../../core/services/money';
+import { eligiblePaymentMember } from '../../core/services/payment-groups';
+import { PaymentGroupsPanel } from './payment-groups-panel';
+import { PaymentBreakdown } from '../../shared/payment-breakdown';
+import {
+  composeSmsApprovalNotes,
+  paymentMethodDetailConfig,
+  paymentMethodsFor,
+  validateSmsPaymentAnnotation,
+} from '../../core/services/payment-method-options';
 import { SnackbarService } from '../../core/services/snackbar.service';
 import { AppIcon } from '../../shared/app-icon';
 import { CategoriesPage } from '../categories/categories';
@@ -69,6 +83,8 @@ function sanitizedMoneyInput(value: string): string {
 @Component({
   selector: 'app-transactions-page',
   imports: [
+    PaymentGroupsPanel,
+    PaymentBreakdown,
     ReactiveFormsModule,
     AppIcon,
     AppDatePipe,
@@ -84,6 +100,8 @@ function sanitizedMoneyInput(value: string): string {
   styleUrl: './transactions.scss',
   host: {
     '(document:keydown.escape)': 'closeOverlays()',
+    '(document:keydown)': 'trapEditorFocus($event)',
+    '(window:cardnest:back)': 'androidBack($event)',
     '(document:click)': 'closeMenusFromOutside($event)',
     '(window:beforeunload)': 'protectBrowserUnload($event)',
   },
@@ -127,6 +145,111 @@ export class TransactionsPage {
   );
   readonly showEmiForm = signal(false);
   readonly showSplitForm = signal(false);
+  readonly saving = signal(false);
+  readonly splitTimingOptions = [
+    { value: '', label: 'Choose only if the balance-confirmation day is ambiguous' },
+    { value: 'AFTER_BASELINE', label: 'After the confirmed balance — apply this payment' },
+    {
+      value: 'INCLUDED_IN_BASELINE',
+      label: 'Already included in the confirmed balance — record only',
+    },
+  ];
+  setSplitTiming(index: number, value: string): void {
+    if (value === '' || value === 'AFTER_BASELINE' || value === 'INCLUDED_IN_BASELINE')
+      this.splitForm.controls.parts.at(index).controls.balanceTiming.setValue(value);
+  }
+  readonly transactionEditor = viewChild<ElementRef<HTMLElement>>('transactionEditor');
+  private editorReturnFocus: HTMLElement | null = null;
+  groupTotal(ids: readonly string[]): number {
+    return this.groupEntries(ids).reduce((sum, item) => sum + item.amountMinor, 0);
+  }
+  trapEditorFocus(event: KeyboardEvent): void {
+    if (event.key !== 'Tab' || document.querySelector('app-select-picker dialog[open]')) return;
+    const element = this.transactionEditor()?.nativeElement;
+    if (!element) return;
+    const nodes = Array.from(
+      element.querySelectorAll<HTMLElement>(
+        'button:not([disabled]),input:not([disabled]),textarea:not([disabled]),[tabindex="0"]',
+      ),
+    );
+    const first = nodes[0],
+      last = nodes.at(-1);
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last?.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first?.focus();
+    }
+  }
+  androidBack(event: Event): void {
+    if (document.querySelector('app-select-picker dialog[open]')) return;
+    if (this.combineOpen() || this.showForm() || this.showSplitForm() || this.detailTransaction()) {
+      event.preventDefault();
+      this.closeOverlays();
+    }
+  }
+  readonly combineOpen = signal(false);
+  readonly manageGroupId = signal('');
+  openCombine(transaction?: CardTransaction): void {
+    this.closeDetails();
+    this.manageGroupId.set(transaction?.splitGroupId ?? '');
+    this.combineOpen.set(true);
+  }
+  closeCombine(): void {
+    this.combineOpen.set(false);
+    queueMicrotask(() => document.getElementById('combine-payments')?.focus());
+  }
+  groupEntries(ids: readonly string[]): readonly CardTransaction[] {
+    return this.store.transactions().filter((entry) => ids.includes(entry.id));
+  }
+  relatedPaymentGroup() {
+    return (this.store.paymentGroups?.() ?? []).find(
+      (group) =>
+        group.id === this.form.controls.relatedTransactionId.value ||
+        group.memberIds.includes(this.form.controls.relatedTransactionId.value),
+    );
+  }
+  relatedPaymentEntries(): readonly CardTransaction[] {
+    const group = this.relatedPaymentGroup();
+    return group
+      ? this.groupEntries(group.memberIds)
+      : this.store
+          .transactions()
+          .filter((entry) => entry.id === this.form.controls.relatedTransactionId.value);
+  }
+  paymentDelta(): number {
+    const amount = parseMoneyToMinor(this.form.controls.amount.value) ?? 0;
+    return (
+      amount -
+      (this.relatedPaymentEntries().find((entry) => entry.id === this.editingId())?.amountMinor ??
+        0)
+    );
+  }
+  legacyAdjustment(): CardTransaction | undefined {
+    if (this.form.controls.type.value !== 'ADJUSTMENT') return undefined;
+    return this.store
+      .transactions()
+      .find(
+        (entry) =>
+          entry.id === this.editingId() &&
+          entry.type === 'ADJUSTMENT' &&
+          (entry.adjustmentPurpose !== 'SPLIT_PAYMENT' || !entry.splitGroupId),
+      );
+  }
+  groupTypeChange(): boolean {
+    return !!this.store
+      .transactions()
+      .find(
+        (entry) =>
+          entry.id === this.editingId() &&
+          (entry.splitGroupId ||
+            (this.store.paymentGroups?.() ?? []).some((group) =>
+              group.memberIds.includes(entry.id),
+            )) &&
+          entry.type !== this.form.controls.type.value,
+      );
+  }
   readonly helpOpen = signal(false);
   readonly deleteCandidate = signal<CardTransaction | null>(null);
   readonly payFromOpen = signal(false);
@@ -182,7 +305,7 @@ export class TransactionsPage {
   readonly repeatOptions = Array.from({ length: 36 }, (_, index) => index + 1);
   readonly types: readonly { value: TransactionType; label: string }[] = [
     { value: 'PURCHASE', label: 'Purchase' },
-    { value: 'ADJUSTMENT', label: 'Adjustment' },
+    { value: 'ADJUSTMENT', label: 'Split payment' },
     { value: 'PAYMENT', label: 'Card payment' },
     { value: 'REFUND', label: 'Refund' },
     { value: 'CASHBACK', label: 'Cashback' },
@@ -289,6 +412,18 @@ export class TransactionsPage {
     merchant: new FormControl('', { nonNullable: true, validators: [Validators.maxLength(100)] }),
     notes: new FormControl('', { nonNullable: true, validators: [Validators.maxLength(500)] }),
     relatedTransactionId: new FormControl('', { nonNullable: true }),
+    preserveLegacy: new FormControl(false, { nonNullable: true }),
+    unlinkConfirmed: new FormControl(false, { nonNullable: true }),
+    paymentMethod: new FormControl('NONE', { nonNullable: true }),
+    paymentMethodDetail: new FormControl('', { nonNullable: true }),
+    paymentMethodCustom: new FormControl('', {
+      nonNullable: true,
+      validators: Validators.maxLength(80),
+    }),
+    smsAdditionalComment: new FormControl('', {
+      nonNullable: true,
+      validators: Validators.maxLength(500),
+    }),
     taxIncluded: new FormControl(false, { nonNullable: true }),
     taxAmount: new FormControl('', { nonNullable: true }),
     repeat: new FormControl<RepeatChoice>('NONE', { nonNullable: true }),
@@ -299,6 +434,14 @@ export class TransactionsPage {
     this.formChanges();
     const value = this.form.getRawValue();
     const existing = this.store.transactions().find((item) => item.id === this.editingId());
+    if (
+      existing &&
+      existing.cardId === value.cardId &&
+      existing.amountMinor === parseMoneyToMinor(value.amount) &&
+      existing.transactionDate === value.transactionDate &&
+      transactionEffect(existing) === transactionEffect({ ...existing, type: value.type })
+    )
+      return false;
     return needsBaselineConfirmation(
       this.store.paymentSources().find((source) => source.id === value.cardId),
       this.store.bankCashTracking(),
@@ -387,13 +530,65 @@ export class TransactionsPage {
     this.form.controls.categoryId.markAsDirty();
     this.form.controls.categoryId.markAsTouched();
   }
+  manualPaymentContext() {
+    const source = this.store
+      .paymentSources()
+      .find((item) => item.id === this.form.controls.cardId.value);
+    return source?.kind === 'DEBIT' ||
+      source?.kind === 'CASH' ||
+      (this.form.controls.type.value === 'PAYMENT' &&
+        !!this.store.fundingFor?.(this.editingId() ?? ''))
+      ? ('BANK' as const)
+      : ('CARD' as const);
+  }
+  manualPaymentMethods() {
+    this.formChanges();
+    return paymentMethodsFor(this.manualPaymentContext());
+  }
+  readonly manualPaymentDetail = paymentMethodDetailConfig;
+  setManualPaymentMethod(value: string): void {
+    if (!this.manualPaymentMethods().some((item) => item.value === value)) return;
+    this.form.patchValue({
+      paymentMethod: value,
+      paymentMethodDetail: '',
+      paymentMethodCustom: '',
+    });
+  }
+  setManualPaymentDetail(value: string): void {
+    this.form.controls.paymentMethodDetail.setValue(value);
+    if (this.form.controls.paymentMethod.value === 'UPI')
+      this.form.controls.paymentMethodCustom.setValue('');
+  }
+  customManualPayment(): void {
+    if (this.form.controls.paymentMethodCustom.value)
+      this.form.controls.paymentMethodDetail.setValue('');
+  }
 
   relatedOptions(): readonly AppSelectOption[] {
     return [
       { value: '', label: 'Not linked' },
+      ...(this.form.controls.type.value === 'ADJUSTMENT'
+        ? (this.store.paymentGroups?.() ?? []).map((group) => ({
+            value: group.id,
+            label: group.title || 'Existing payment group',
+            detail: group.memberIds
+              .map((id) => {
+                const entry = this.store.transactions().find((row) => row.id === id);
+                return entry
+                  ? `${entry.merchant ?? ''} ${entry.transactionDate} ${entry.amountMinor / 100} ${this.store.sourceDetail(entry.cardId)}`
+                  : '';
+              })
+              .join(' · '),
+          }))
+        : []),
       ...this.relatedTransactionOptions().map((transaction) => ({
         value: transaction.id,
-        label: transaction.merchant || transaction.type,
+        label:
+          (this.store.paymentGroups?.() ?? []).find((group) =>
+            group.memberIds.includes(transaction.id),
+          )?.title ||
+          transaction.merchant ||
+          transactionLabel(transaction),
         detail: `${transaction.transactionDate} · ${this.money(transaction.amountMinor, transaction.currencyCode)} · ${this.store.sourceName(transaction.cardId)}`,
       })),
     ];
@@ -401,6 +596,8 @@ export class TransactionsPage {
 
   setRelatedTransaction(value: string): void {
     this.form.controls.relatedTransactionId.setValue(value);
+    if (value && this.form.controls.type.value === 'ADJUSTMENT')
+      this.form.controls.preserveLegacy.setValue(false);
     this.form.controls.relatedTransactionId.markAsDirty();
   }
 
@@ -436,7 +633,7 @@ export class TransactionsPage {
           (!item.emiInstallmentNumber ||
             item.emiInstallmentNumber === 1 ||
             item.transactionDate.slice(0, 7) <= currentMonth) &&
-          (!this.hideCredits() || !this.isCredit(item.type)) &&
+          (!this.hideCredits() || !this.isCredit(item)) &&
           (!this.creditCardsOnly() || this.store.cards().some((card) => card.id === item.cardId)) &&
           (this.typeFilter() === 'ALL' ||
             (this.typeFilter() === 'WITH_IMAGE'
@@ -445,6 +642,10 @@ export class TransactionsPage {
           (this.sourceFilter() === 'ALL' || item.cardId === this.sourceFilter()) &&
           (this.categoryFilter() === 'ALL' || item.categoryId === this.categoryFilter()) &&
           (!term ||
+            (this.store.paymentGroups?.() ?? []).some(
+              (group) =>
+                group.memberIds.includes(item.id) && group.title.toLowerCase().includes(term),
+            ) ||
             item.merchant?.toLocaleLowerCase().includes(term) ||
             item.bankName?.toLocaleLowerCase().includes(term) ||
             this.cardName(item.cardId).toLocaleLowerCase().includes(term) ||
@@ -500,24 +701,36 @@ export class TransactionsPage {
     });
   });
   readonly visibleTotal = computed(() =>
-    this.filtered().reduce(
-      (sum, item) => sum + (this.isCredit(item.type) ? item.amountMinor : -item.amountMinor),
-      0,
-    ),
+    this.filtered().reduce((sum, item) => sum - transactionEffect(item), 0),
   );
-  readonly visibleTransactions = computed(() => this.filtered().slice(0, this.visibleLimit()));
+  readonly logicalGroups = computed(() =>
+    this.sourceFilter() === 'ALL'
+      ? (this.store.paymentGroups?.() ?? []).filter(
+          (group) =>
+            group.kind === 'PAYMENTS' &&
+            group.memberIds.length > 1 &&
+            group.memberIds.every((id) => this.filtered().some((entry) => entry.id === id)),
+        )
+      : [],
+  );
+  readonly visibleTransactions = computed(() =>
+    this.filtered()
+      .filter((entry) => !this.logicalGroups().some((group) => group.memberIds.includes(entry.id)))
+      .slice(0, this.visibleLimit()),
+  );
   readonly remainingTransactions = computed(() =>
-    Math.max(0, this.filtered().length - this.visibleTransactions().length),
+    Math.max(
+      0,
+      this.filtered().filter(
+        (entry) => !this.logicalGroups().some((group) => group.memberIds.includes(entry.id)),
+      ).length - this.visibleTransactions().length,
+    ),
   );
   readonly groups = computed(() => {
     const totals = new Map<string, number>();
     for (const transaction of this.filtered()) {
       const period = this.periodFor(transaction);
-      totals.set(
-        period.key,
-        (totals.get(period.key) ?? 0) +
-          (this.isCredit(transaction.type) ? transaction.amountMinor : -transaction.amountMinor),
-      );
+      totals.set(period.key, (totals.get(period.key) ?? 0) + -transactionEffect(transaction));
     }
     const grouped = new Map<string, { label: string; transactions: CardTransaction[] }>();
     for (const transaction of this.visibleTransactions()) {
@@ -589,8 +802,10 @@ export class TransactionsPage {
   category(categoryId: string) {
     return this.store.categories().find((item) => item.id === categoryId);
   }
-  isCredit(type: TransactionType): boolean {
-    return ['PAYMENT', 'REFUND', 'CASHBACK', 'CREDIT'].includes(type);
+  isCredit(value: TransactionType | CardTransaction): boolean {
+    return typeof value === 'string'
+      ? ['PAYMENT', 'REFUND', 'CASHBACK', 'CREDIT'].includes(value)
+      : transactionEffect(value) < 0;
   }
   updateSearch(event: Event): void {
     this.search.set((event.target as HTMLInputElement).value);
@@ -663,10 +878,16 @@ export class TransactionsPage {
     void this.router.navigate(['/sources'], { fragment: selected.id });
   }
   openAdd(): void {
+    if (this.saving()) return;
+    this.editorReturnFocus =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
     this.editingId.set(null);
     this.resetForm(this.defaultSourceId());
     this.showForm.set(true);
     this.closeMenus();
+    globalThis.setTimeout(() =>
+      this.transactionEditor()?.nativeElement.querySelector<HTMLElement>('button,input')?.focus(),
+    );
   }
   async pickReceipts(): Promise<void> {
     try {
@@ -734,6 +955,7 @@ export class TransactionsPage {
     this.receiptDraftDirty.set(true);
   }
   closeForm(): void {
+    if (this.saving()) return;
     if (this.hasUnsavedDraft()) {
       this.discardClosesEditor = true;
       this.discardConfirmationOpen.set(true);
@@ -788,6 +1010,11 @@ export class TransactionsPage {
     this.editingId.set(null);
     this.receiptPreviews.set([]);
     this.receiptDraftDirty.set(false);
+    const trigger = this.editorReturnFocus;
+    queueMicrotask(() => {
+      if (trigger?.isConnected) trigger.focus();
+      else document.getElementById('add-transaction')?.focus();
+    });
     void this.router.navigate([], {
       relativeTo: this.route,
       queryParams: { add: null, payment: null, edit: null },
@@ -846,6 +1073,9 @@ export class TransactionsPage {
     return 'Select source';
   }
   edit(transaction: CardTransaction): void {
+    if (this.saving()) return;
+    this.editorReturnFocus =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
     this.closeDetails();
     this.editingId.set(transaction.id);
     this.form.reset({
@@ -856,7 +1086,18 @@ export class TransactionsPage {
       categoryId: transaction.categoryId,
       merchant: transaction.merchant ?? '',
       notes: transaction.notes ?? '',
-      relatedTransactionId: transaction.relatedTransactionId ?? '',
+      relatedTransactionId:
+        transaction.relatedTransactionId ??
+        (transaction.type === 'ADJUSTMENT' ? transaction.splitGroupId : '') ??
+        '',
+      preserveLegacy:
+        transaction.type === 'ADJUSTMENT' &&
+        (transaction.adjustmentPurpose !== 'SPLIT_PAYMENT' || !transaction.splitGroupId),
+      unlinkConfirmed: false,
+      paymentMethod: transaction.paymentMethod ?? 'NONE',
+      paymentMethodDetail: transaction.paymentMethodDetail ?? '',
+      paymentMethodCustom: transaction.paymentMethodCustom ?? '',
+      smsAdditionalComment: transaction.smsAdditionalComment ?? '',
       taxIncluded: transaction.taxIncluded ?? false,
       taxAmount: transaction.taxMinor === undefined ? '' : String(transaction.taxMinor / 100),
       repeat: 'NONE',
@@ -870,10 +1111,15 @@ export class TransactionsPage {
     this.receiptPreviews.set(transaction.attachmentIds);
     this.receiptDraftDirty.set(false);
     this.showForm.set(true);
+    globalThis.setTimeout(() =>
+      this.transactionEditor()?.nativeElement.querySelector<HTMLElement>('button,input')?.focus(),
+    );
     this.closeMenus();
     globalThis.scrollTo?.({ top: 0, behavior: 'smooth' });
   }
   transactionTypeChanged(type: TransactionType): void {
+    this.form.controls.preserveLegacy.setValue(false);
+    this.form.controls.unlinkConfirmed.setValue(false);
     if (type === 'REFUND' || type === 'CASHBACK') {
       this.form.controls.categoryId.setValue('contra-expenses');
     } else if (type === 'CREDIT' || type === 'PAYMENT') {
@@ -903,16 +1149,13 @@ export class TransactionsPage {
         .sort((a, b) => b.transactionDate.localeCompare(a.transactionDate));
     }
     if (type === 'ADJUSTMENT') {
-      const previousDate = new Date(selectedDate);
-      previousDate.setDate(previousDate.getDate() - 1);
-      const previous = previousDate.toISOString().slice(0, 10);
-      const current = this.form.controls.transactionDate.value;
       return this.store
         .transactions()
         .filter(
           (item) =>
             item.id !== this.editingId() &&
-            (item.transactionDate === current || item.transactionDate === previous),
+            eligiblePaymentMember(item) &&
+            (item.type === 'PURCHASE' || !!item.splitGroupId),
         )
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     }
@@ -961,6 +1204,11 @@ export class TransactionsPage {
     return this.store
       .transactions()
       .filter((item) => item.splitGroupId === transaction.splitGroupId);
+  }
+  paymentGroupDetails(transaction: CardTransaction) {
+    return (this.store.paymentGroups?.() ?? []).find((group) =>
+      group.memberIds.includes(transaction.id),
+    );
   }
 
   emiPlan(transaction: CardTransaction): EmiPlan | null {
@@ -1046,7 +1294,12 @@ export class TransactionsPage {
   }
 
   canSplit(transaction: CardTransaction): boolean {
-    return !transaction.emiPlanId && !transaction.recurringRuleId && !transaction.splitGroupId;
+    return (
+      eligiblePaymentMember(transaction) &&
+      !transaction.emiPlanId &&
+      !transaction.recurringRuleId &&
+      !transaction.splitGroupId
+    );
   }
 
   canDuplicate(transaction: CardTransaction): boolean {
@@ -1124,18 +1377,19 @@ export class TransactionsPage {
   }
 
   addSplitPart(): void {
-    if (this.splitForm.controls.parts.length < 4)
-      this.splitForm.controls.parts.push(this.createSplitPart());
+    this.splitForm.controls.parts.push(this.createSplitPart());
   }
 
   removeSplitPart(index: number): void {
     if (this.splitForm.controls.parts.length > 2) this.splitForm.controls.parts.removeAt(index);
   }
 
-  saveSplit(transaction: CardTransaction): void {
+  async saveSplit(transaction: CardTransaction): Promise<void> {
+    if (this.saving()) return;
     const parts = this.splitForm.controls.parts.controls.map((part) => ({
       sourceId: part.controls.sourceId.value,
       amountMinor: parseMoneyToMinor(part.controls.amount.value) ?? 0,
+      balanceTiming: part.controls.balanceTiming.value || undefined,
     }));
     if (parts.some((part) => !part.sourceId || part.amountMinor <= 0)) {
       this.snackbar.show('Choose a source and valid amount for every split.', 'WARNING');
@@ -1145,11 +1399,21 @@ export class TransactionsPage {
       this.snackbar.show('Split amounts must equal the original transaction total.', 'WARNING');
       return;
     }
-    const created = this.store.splitTransaction(transaction.id, parts);
-    if (!created.length) return;
-    this.detailTransactionId.set(created[0].id);
-    this.showSplitForm.set(false);
-    this.snackbar.show(`Transaction split into ${created.length} payments.`);
+    this.saving.set(true);
+    try {
+      const created = await this.store.splitTransaction(transaction.id, parts);
+      if (!created.length) return;
+      this.detailTransactionId.set(created[0].id);
+      this.showSplitForm.set(false);
+      this.snackbar.show(`Transaction split into ${created.length} payments.`);
+    } catch (error: unknown) {
+      this.snackbar.show(
+        error instanceof Error ? error.message : 'Unable to divide this payment.',
+        'WARNING',
+      );
+    } finally {
+      this.saving.set(false);
+    }
   }
   toggleActionMenu(event: MouseEvent, transactionId: string): void {
     event.stopPropagation();
@@ -1193,6 +1457,8 @@ export class TransactionsPage {
     });
   }
   closeOverlays(): void {
+    if (document.querySelector('app-select-picker dialog[open]')) return;
+    if (this.saving()) return;
     if (this.deleteTransferCandidate()) {
       this.deleteTransferCandidate.set(null);
       return;
@@ -1231,6 +1497,10 @@ export class TransactionsPage {
     }
     if (this.showForm()) {
       this.closeForm();
+      return;
+    }
+    if (this.combineOpen()) {
+      this.closeCombine();
       return;
     }
     this.closeMenus();
@@ -1297,6 +1567,8 @@ export class TransactionsPage {
   /** Readable kind: the payment source tells a bank purchase from a card purchase. */
   typeLabel(transaction: CardTransaction): string {
     if (transaction.emiPlanId) return 'EMI';
+    if (transaction.splitGroupId && eligiblePaymentMember(transaction))
+      return `${transactionLabel(transaction)} · Split payment member`;
     const source = this.store.paymentSources().find((item) => item.id === transaction.cardId);
     if (this.store.fundingFor(transaction.id)) return 'Credit-card settlement';
     if (source?.kind === 'DEBIT') {
@@ -1307,16 +1579,24 @@ export class TransactionsPage {
       if (transaction.type === 'PURCHASE') return 'Cash purchase';
       if (transaction.type === 'CREDIT') return 'Cash received';
     }
-    return transaction.type.replace('_', ' ');
+    return transactionLabel(transaction);
   }
   transactionTitle(transaction: CardTransaction): string {
-    const label = transaction.merchant || transaction.type.replace('_', ' ');
+    const label = transaction.merchant || transactionLabel(transaction);
     return transaction.bankName ? `${transaction.bankName} · ${label}` : label;
   }
-  confirmDelete(): void {
+  async confirmDelete(): Promise<void> {
     const transaction = this.deleteCandidate();
     if (!transaction) return;
-    this.store.deleteTransaction(transaction.id);
+    try {
+      await this.store.deleteRecordedTransaction(transaction.id);
+    } catch (error: unknown) {
+      this.snackbar.show(
+        error instanceof Error ? error.message : 'Unable to delete transaction.',
+        'WARNING',
+      );
+      return;
+    }
     if (this.detailTransactionId() === transaction.id) this.closeDetails();
     this.deleteCandidate.set(null);
     this.snackbar.show('Transaction deleted.', 'WARNING');
@@ -1425,7 +1705,8 @@ export class TransactionsPage {
     this.visibleLimit.set(TRANSACTION_PAGE_SIZE);
   }
 
-  save(): void {
+  async save(): Promise<void> {
+    if (this.saving()) return;
     this.form.markAllAsTouched();
     const amountMinor = parseMoneyToMinor(this.form.controls.amount.value);
     if (amountMinor === null || amountMinor <= 0) {
@@ -1447,10 +1728,32 @@ export class TransactionsPage {
       return;
     }
     const value = this.form.getRawValue();
+    if (value.type === 'ADJUSTMENT' && !value.preserveLegacy && !value.relatedTransactionId) {
+      this.form.controls.relatedTransactionId.setErrors({ required: true });
+      this.snackbar.show('Choose the related purchase or payment group.', 'WARNING');
+      return;
+    }
+    if (value.type === 'ADJUSTMENT' && !value.preserveLegacy && value.repeat !== 'NONE') {
+      this.snackbar.show(
+        'Each Split payment needs its own confirmed purchase relationship.',
+        'WARNING',
+      );
+      return;
+    }
     const timestamp = new Date().toISOString();
     const existing = this.store
       .transactions()
       .find((transaction) => transaction.id === this.editingId());
+    let annotation;
+    try {
+      annotation = validateSmsPaymentAnnotation(value, this.manualPaymentContext());
+    } catch (error: unknown) {
+      this.snackbar.show(
+        error instanceof Error ? error.message : 'Choose valid payment metadata.',
+        'WARNING',
+      );
+      return;
+    }
     const recurringRuleId =
       existing?.recurringRuleId ?? (value.repeat !== 'NONE' ? crypto.randomUUID() : undefined);
     const transaction: CardTransaction = {
@@ -1464,6 +1767,8 @@ export class TransactionsPage {
       merchant: value.merchant.trim() || undefined,
       categoryId: value.categoryId,
       notes: value.notes.trim() || undefined,
+      ...annotation,
+      origin: existing ? existing.origin : 'MANUAL',
       relatedTransactionId: value.relatedTransactionId || undefined,
       taxIncluded: value.taxIncluded,
       taxMinor,
@@ -1476,8 +1781,29 @@ export class TransactionsPage {
       createdAt: existing?.createdAt ?? timestamp,
       updatedAt: timestamp,
     };
-    if (existing) this.store.updateTransaction(transaction);
-    else this.store.addTransaction(transaction);
+    transaction.notes = composeSmsApprovalNotes({
+      existingNotes: value.notes,
+      previousAnnotation: existing,
+      annotation,
+      newlyApprovedSms: false,
+      preserveSmsMarker: existing?.origin === 'SMS',
+    });
+    this.saving.set(true);
+    try {
+      await this.store.saveManualTransaction(
+        transaction,
+        value.type === 'ADJUSTMENT' && !value.preserveLegacy ? value.relatedTransactionId : '',
+        value.unlinkConfirmed,
+      );
+    } catch (error: unknown) {
+      this.snackbar.show(
+        error instanceof Error ? error.message : 'Unable to save payment.',
+        'WARNING',
+      );
+      return;
+    } finally {
+      this.saving.set(false);
+    }
 
     if (!existing && value.repeat !== 'NONE') {
       const occurrenceLimit = value.repeat === 'INFINITE' ? undefined : Number(value.repeat);
@@ -1596,6 +1922,12 @@ export class TransactionsPage {
       merchant: '',
       notes: '',
       relatedTransactionId: '',
+      preserveLegacy: false,
+      unlinkConfirmed: false,
+      paymentMethod: 'NONE',
+      paymentMethodDetail: '',
+      paymentMethodCustom: '',
+      smsAdditionalComment: '',
       taxIncluded: false,
       taxAmount: '',
       repeat: 'NONE',
@@ -1613,6 +1945,7 @@ export class TransactionsPage {
         nonNullable: true,
         validators: [Validators.required],
       }),
+      balanceTiming: new FormControl<BalanceTiming | ''>('', { nonNullable: true }),
     });
   }
 

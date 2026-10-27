@@ -1,9 +1,8 @@
 import { Component, computed, inject, signal } from '@angular/core';
-import { TransactionType } from '../../core/models/domain';
 import { ExportPeriod } from '../../core/models/export';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { ExportService } from '../../core/services/export.service';
-import { formatMoney } from '../../core/services/money';
+import { formatMoney, spendingContribution } from '../../core/services/money';
 import { bankCashTracked, isBankOrCash } from '../../core/services/source-balance';
 import { AppIcon } from '../../shared/app-icon';
 import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
@@ -17,7 +16,6 @@ interface ReportCycle {
   readonly offset: number;
 }
 
-const EXPENSE_TYPES: readonly TransactionType[] = ['PURCHASE', 'FEE', 'INTEREST'];
 
 @Component({
   selector: 'app-reports-page',
@@ -148,10 +146,10 @@ export class ReportsPage {
       );
   });
   readonly expenses = computed(() =>
-    this.periodTransactions().filter((item) => EXPENSE_TYPES.includes(item.type)),
+    this.periodTransactions().filter((item) => spendingContribution(item) !== 0),
   );
   readonly totalSpent = computed(() =>
-    this.expenses().reduce((sum, item) => sum + item.amountMinor, 0),
+    this.expenses().reduce((sum, item) => sum + spendingContribution(item), 0),
   );
   readonly incomingPayments = computed(() =>
     this.periodTransactions()
@@ -162,12 +160,12 @@ export class ReportsPage {
     const sourceIds = new Set(this.store.paymentSources().map((source) => source.id));
     return this.expenses()
       .filter((item) => sourceIds.has(item.cardId))
-      .reduce((sum, item) => sum + item.amountMinor, 0);
+      .reduce((sum, item) => sum + spendingContribution(item), 0);
   });
   readonly recurringAndEmi = computed(() =>
     this.expenses()
       .filter((item) => item.recurringRuleId || item.emiPlanId)
-      .reduce((sum, item) => sum + item.amountMinor, 0),
+      .reduce((sum, item) => sum + spendingContribution(item), 0),
   );
   readonly loanCommitments = computed(() =>
     this.selectedReportCycles().reduce(
@@ -235,10 +233,10 @@ export class ReportsPage {
       .map((category) => {
         const amount = this.expenses()
           .filter((item) => item.categoryId === category.id)
-          .reduce((sum, item) => sum + item.amountMinor, 0);
+          .reduce((sum, item) => sum + spendingContribution(item), 0);
         return { ...category, amount, percent: total ? Math.round((amount / total) * 100) : 0 };
       })
-      .filter((item) => item.amount > 0)
+      .filter((item) => item.amount !== 0)
       .sort((a, b) => b.amount - a.amount);
   });
   readonly bySource = computed(() =>
@@ -248,9 +246,9 @@ export class ReportsPage {
         name: `${source.nickname}${'lastDigits' in source && source.lastDigits ? ` ${source.lastDigits}` : ''}`,
         amount: this.expenses()
           .filter((item) => item.cardId === source.id)
-          .reduce((sum, item) => sum + item.amountMinor, 0),
+          .reduce((sum, item) => sum + spendingContribution(item), 0),
       }))
-      .filter((item) => item.amount > 0)
+      .filter((item) => item.amount !== 0)
       .sort((a, b) => b.amount - a.amount),
   );
   readonly categoryLabels = computed(() => this.byCategory().map((item) => item.name));
@@ -277,9 +275,9 @@ export class ReportsPage {
           (item) =>
             item.transactionDate >= cycle.startDate &&
             item.transactionDate <= cycle.endDate &&
-            EXPENSE_TYPES.includes(item.type),
+            spendingContribution(item) !== 0,
         )
-        .reduce((sum, item) => sum + item.amountMinor, 0);
+        .reduce((sum, item) => sum + spendingContribution(item), 0);
       return { ...cycle, income, expense, remaining: income - expense };
     }),
   );
@@ -300,9 +298,9 @@ export class ReportsPage {
             item.categoryId === categoryId &&
             item.transactionDate >= cycle.startDate &&
             item.transactionDate <= cycle.endDate &&
-            EXPENSE_TYPES.includes(item.type),
+            spendingContribution(item) !== 0,
         )
-        .reduce((sum, item) => sum + item.amountMinor / 100, 0),
+        .reduce((sum, item) => sum + spendingContribution(item) / 100, 0),
     );
   });
 

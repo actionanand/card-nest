@@ -19,6 +19,10 @@ import {
 } from '../../features/sms-sync/sms-review-filters';
 import { BackupService } from '../services/backup.service';
 import { webcrypto } from 'node:crypto';
+import { provideRouter } from '@angular/router';
+import { TransactionsPage } from '../../features/transactions/transactions';
+import { By } from '@angular/platform-browser';
+import { AppSelectPicker } from '../../shared/app-select-picker';
 import { Blob as NodeBlob } from 'node:buffer';
 
 const { DatabaseSync } = process.getBuiltinModule('node:sqlite') as typeof import('node:sqlite');
@@ -95,8 +99,17 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
   });
   const stage = async (item: SmsEvidence, state = 'PENDING'): Promise<SmsCandidate> => {
     await database.run(
-      'INSERT INTO sms_candidates(id,provider_id,event_at,kind,state,payload,updated_at) VALUES(?,?,?,?,?,?,?)',
-      [item.id, item.providerId, item.eventAt, item.kind, state, JSON.stringify(item), 'now'],
+      'INSERT INTO sms_candidates(id,provider_id,event_at,kind,state,payload,updated_at,received_at) VALUES(?,?,?,?,?,?,?,?)',
+      [
+        item.id,
+        item.providerId,
+        item.eventAt,
+        item.kind,
+        state,
+        JSON.stringify(item),
+        'now',
+        item.receivedAt,
+      ],
     );
     return { id: item.id, kind: item.kind, eventAt: item.eventAt, state: 'PENDING', item };
   };
@@ -182,6 +195,7 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     });
     TestBed.configureTestingModule({
       providers: [
+        provideRouter([]),
         SqliteDatabase,
         CardNestStore,
         SmsReviewService,
@@ -1016,6 +1030,497 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     expect(count('card_transactions')).toBe(1);
     expect(count('sms_reconciliation')).toBe(0);
   });
+  it('enters second and third payments using searchable custom pickers and preserves real rows when changing type', async () => {
+    const { store } = await boot();
+    store.addCard(card);
+    await settle();
+    const date = indiaTodayIso(new Date(Date.now() + 86400000));
+    const anchor = purchase({
+      id: 'entry-anchor',
+      cardId: card.id,
+      amountMinor: 20000,
+      transactionDate: date,
+      merchant: 'Local Market',
+    });
+    await store.saveManualTransaction(anchor);
+    const fixture = TestBed.createComponent(TransactionsPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const page = fixture.componentInstance;
+    page.openAdd();
+    page.form.patchValue({
+      type: 'ADJUSTMENT',
+      cardId: 'source-debit',
+      amount: '20',
+      transactionDate: date,
+      categoryId: 'other',
+      merchant: 'Local Market',
+    });
+    await page.save();
+    expect(page.form.controls.relatedTransactionId.hasError('required')).toBe(true);
+    expect(count('card_transactions')).toBe(1);
+    page.setRelatedTransaction(anchor.id);
+    page.setManualPaymentMethod('UPI');
+    page.setManualPaymentDetail('GPAY');
+    page.form.controls.smsAdditionalComment.setValue('Remainder paid at the store');
+    fixture.detectChanges();
+    const picker = fixture.debugElement
+      .queryAll(By.directive(AppSelectPicker))
+      .map((element) => element.componentInstance as AppSelectPicker)
+      .find((element) => element.label().includes('Related purchase'))!;
+    expect(picker.searchable()).toBe(true);
+    expect(fixture.nativeElement.querySelector('select')).toBeNull();
+    await page.save();
+    const second = store.transactions().find((entry) => entry.id !== anchor.id)!;
+    expect(second).toMatchObject({
+      type: 'ADJUSTMENT',
+      adjustmentPurpose: 'SPLIT_PAYMENT',
+      amountMinor: 2000,
+      paymentMethod: 'UPI',
+      paymentMethodDetail: 'GPAY',
+      smsAdditionalComment: 'Remainder paid at the store',
+    });
+    const group = second.splitGroupId;
+    page.openAdd();
+    page.form.patchValue({
+      type: 'ADJUSTMENT',
+      cardId: 'source-cash',
+      amount: '30',
+      transactionDate: date,
+      categoryId: 'other',
+      merchant: 'Local Market',
+    });
+    page.setRelatedTransaction(second.id);
+    expect(page.relatedPaymentEntries()).toHaveLength(2);
+    await page.save();
+    expect(store.paymentGroups()).toHaveLength(1);
+    expect(store.paymentGroups()[0].id).toBe(group);
+    expect(store.paymentGroups()[0].memberIds).toHaveLength(3);
+    expect(calculateNetSpending(store.transactions())).toBe(25000);
+    page.sourceFilter.set('source-debit');
+    expect(page.logicalGroups()).toHaveLength(0);
+    expect(page.visibleTransactions().map((entry) => entry.id)).toEqual([second.id]);
+    page.edit(second);
+    page.form.controls.type.setValue('PURCHASE');
+    page.transactionTypeChanged('PURCHASE');
+    page.form.controls.unlinkConfirmed.setValue(true);
+    await page.save();
+    expect(store.transactions().find((entry) => entry.id === second.id)).toMatchObject({
+      type: 'PURCHASE',
+      amountMinor: 2000,
+      cardId: 'source-debit',
+    });
+    expect(
+      store.transactions().find((entry) => entry.id === second.id)?.splitGroupId,
+    ).toBeUndefined();
+    expect(count('card_transactions')).toBe(3);
+  });
+  it('saves unlimited independent payment members, edits classification and unlinks without repeating source effects', async () => {
+    const { store, balance } = await boot();
+    store.addCard(card);
+    await settle();
+    const bank = await store.addBankAccount({
+      nickname: 'Daily bank',
+      institution: 'ICICI',
+      lastDigits: '417',
+    });
+    await store.addWallet({
+      id: 'meal-split',
+      kind: 'MEAL',
+      institution: 'Pluxee',
+      nickname: 'Meal',
+      lastDigits: '8765',
+      balanceMinor: 100000,
+      noLimit: false,
+      archived: false,
+      autoLoad: false,
+    });
+    await store.enableBankCashTracking({ [bank.id]: 100000, 'source-cash': 100000 });
+    const date = indiaTodayIso(new Date(Date.now() + 86400000));
+    const first = purchase({
+      id: 'first-payment',
+      cardId: 'meal-split',
+      amountMinor: 20000,
+      transactionDate: date,
+    });
+    await store.saveManualTransaction(first);
+    const second = purchase({
+      id: 'second-payment',
+      type: 'ADJUSTMENT',
+      cardId: bank.id,
+      amountMinor: 2000,
+      transactionDate: date,
+      reference: 'PRESERVE-UPI',
+    });
+    await store.saveManualTransaction(second, first.id);
+    const group = store.transactions().find((entry) => entry.id === first.id)!.splitGroupId!;
+    const third = purchase({
+      id: 'third-payment',
+      type: 'ADJUSTMENT',
+      cardId: card.id,
+      amountMinor: 3000,
+      transactionDate: date,
+    });
+    await store.saveManualTransaction(third, second.id);
+    await store.saveManualTransaction(
+      purchase({
+        id: 'fourth-payment',
+        type: 'ADJUSTMENT',
+        cardId: 'source-cash',
+        amountMinor: 500,
+        transactionDate: date,
+      }),
+      third.id,
+    );
+    await store.saveManualTransaction(third, second.id);
+    expect(count('card_transactions')).toBe(4);
+    expect(store.paymentGroups()).toHaveLength(1);
+    expect(store.paymentGroups()[0].id).toBe(group);
+    expect(store.paymentGroups()[0].memberIds).toHaveLength(4);
+    expect(calculateNetSpending(store.transactions())).toBe(25500);
+    expect([
+      balance('meal-split'),
+      balance(bank.id),
+      balance('source-cash'),
+      store.cardOutstanding(card.id),
+    ]).toEqual([80000, 98000, 99500, 3000]);
+    const beforeSources = structuredClone(store.paymentSources());
+    await store.updatePaymentGroup(group, { title: 'Local Market', billTotalMinor: 21000 });
+    await store.removePaymentMember(second.id);
+    const savedThird = store.transactions().find((entry) => entry.id === third.id)!;
+    await expect(store.saveManualTransaction({ ...savedThird, type: 'PURCHASE' })).rejects.toThrow(
+      'Confirm removing',
+    );
+    await store.saveManualTransaction({ ...savedThird, type: 'PURCHASE' }, '', true);
+    await store.removePaymentMember(group, true);
+    expect(store.paymentGroups()).toHaveLength(0);
+    expect(store.paymentSources()).toEqual(beforeSources);
+    expect(calculateNetSpending(store.transactions())).toBe(25500);
+    expect(store.transactions().find((entry) => entry.id === second.id)?.reference).toBe(
+      'PRESERVE-UPI',
+    );
+    await store.saveManualTransaction(
+      { ...store.transactions().find((entry) => entry.id === second.id)!, type: 'CREDIT' },
+      '',
+      true,
+    );
+    expect(balance(bank.id)).toBe(102000);
+    await store.deleteRecordedTransaction(first.id);
+    expect(balance('meal-split')).toBe(100000);
+  });
+  it('rolls back a failed division completely and does not clone SMS references, receipts or annotations onto new allocations', async () => {
+    const { store, review } = await boot();
+    store.addCard(card);
+    await settle();
+    const bank = await store.addBankAccount({
+      nickname: 'Daily bank',
+      institution: 'ICICI',
+      lastDigits: '417',
+    });
+    await store.addWallet({
+      id: 'division-meal',
+      kind: 'MEAL',
+      institution: 'Pluxee',
+      nickname: 'Meal',
+      balanceMinor: 100000,
+      noLimit: false,
+      archived: false,
+      autoLoad: false,
+    });
+    await store.enableBankCashTracking({ [bank.id]: 100000, 'source-cash': 100000 });
+    const date = indiaTodayIso(new Date(Date.now() + 86400000));
+    const original = purchase({
+      id: 'division-original',
+      cardId: 'division-meal',
+      amountMinor: 10000,
+      transactionDate: date,
+      reference: 'NATIVE-REFERENCE',
+      origin: 'SMS',
+      notes: 'Original SMS audit',
+      smsAdditionalComment: 'Original comment',
+      attachmentIds: ['private-original-receipt'],
+    });
+    await store.saveManualTransaction(original);
+    const bound = await stage(
+      evidence({
+        id: '8'.repeat(64),
+        kind: 'PLUXEE_PURCHASE',
+        issuer: 'Pluxee',
+        cardDigits: undefined,
+        accountDigits: undefined,
+        eventDate: date,
+        amountMinor: 10000,
+        reference: 'NATIVE-REFERENCE',
+      }),
+      'MATCHED_EXISTING',
+    );
+    await database.run(
+      "UPDATE sms_candidates SET transaction_id=?,decision='AUTO_EXISTING: verified original payment' WHERE id=?",
+      [original.id, bound.id],
+    );
+    await database.run(
+      'INSERT INTO sms_reconciliation(id,candidate_id,target_id,decision,amount_minor,created_at) VALUES(?,?,?,?,?,?)',
+      [
+        'division-native-audit',
+        bound.id,
+        original.id,
+        'AUTO_EXISTING: verified original payment',
+        10000,
+        'before',
+      ],
+    );
+    const before = {
+      entries: structuredClone(store.transactions()),
+      sources: structuredClone(store.paymentSources()),
+    };
+    const parts = [
+      { sourceId: 'division-meal', amountMinor: 2000 },
+      { sourceId: card.id, amountMinor: 2000 },
+      { sourceId: bank.id, amountMinor: 2000 },
+      { sourceId: 'source-cash', amountMinor: 2000 },
+      { sourceId: 'division-meal', amountMinor: 2000 },
+    ];
+    sql.exec(
+      "CREATE TRIGGER fail_division BEFORE INSERT ON transaction_split_members BEGIN SELECT RAISE(ABORT,'Synthetic division failure'); END",
+    );
+    await expect(store.splitTransaction(original.id, parts)).rejects.toThrow(
+      'Synthetic division failure',
+    );
+    expect(store.transactions()).toEqual(before.entries);
+    expect(store.paymentSources()).toEqual(before.sources);
+    expect(count('card_transactions')).toBe(1);
+    expect(count('transaction_split_groups')).toBe(0);
+    sql.exec('DROP TRIGGER fail_division');
+    const entries = await store.splitTransaction(original.id, parts);
+    expect(entries).toHaveLength(5);
+    expect(entries[0].id).toBe(original.id);
+    expect(entries[0].reference).toBe('NATIVE-REFERENCE');
+    for (const entry of entries.slice(1))
+      expect(entry).toMatchObject({ origin: 'MANUAL', attachmentIds: [] });
+    for (const entry of entries.slice(1)) {
+      expect(entry.reference).toBeUndefined();
+      expect(entry.notes).toBeUndefined();
+      expect(entry.smsAdditionalComment).toBeUndefined();
+    }
+    expect(calculateNetSpending(store.transactions())).toBe(10000);
+    expect(store.paymentGroups()[0].kind).toBe('DIVISION');
+    expect(count('card_transactions')).toBe(5);
+    await review.reevaluatePending();
+    expect(
+      rows('SELECT state,transaction_id,decision FROM sms_candidates WHERE id=?', [bound.id])[0],
+    ).toMatchObject({
+      state: 'MATCHED_EXISTING',
+      transaction_id: original.id,
+      decision: expect.stringContaining('EXPLICIT_DIVISION:'),
+    });
+    expect(count('card_transactions')).toBe(5);
+  });
+  it('reclassifies a positive legacy adjustment without changing its original payment or reference', async () => {
+    const { store, balance } = await boot();
+    const bank = await store.addBankAccount({
+      nickname: 'Daily bank',
+      institution: 'ICICI',
+      lastDigits: '417',
+    });
+    await store.enableBankCashTracking({ [bank.id]: 100000 });
+    const date = indiaTodayIso(new Date(Date.now() + 86400000));
+    const anchor = purchase({
+      id: 'legacy-anchor',
+      cardId: bank.id,
+      amountMinor: 20000,
+      transactionDate: date,
+    });
+    await store.saveManualTransaction(anchor);
+    store.addTransaction(
+      purchase({
+        id: 'legacy-extra',
+        type: 'ADJUSTMENT',
+        adjustmentPurpose: 'LEGACY_MANUAL',
+        cardId: bank.id,
+        amountMinor: 2000,
+        reference: 'ORIGINAL-LEGACY',
+        transactionDate: date,
+      }),
+    );
+    await settle();
+    await store.refreshPaymentLedger();
+    const legacy = store.transactions().find((entry) => entry.id === 'legacy-extra')!;
+    const before = balance(bank.id);
+    const effect = structuredClone(legacy.balanceEffect);
+    await store.saveManualTransaction(legacy, anchor.id);
+    expect(balance(bank.id)).toBe(before);
+    expect(store.transactions().find((entry) => entry.id === legacy.id)).toMatchObject({
+      id: legacy.id,
+      cardId: bank.id,
+      amountMinor: 2000,
+      reference: 'ORIGINAL-LEGACY',
+      balanceEffect: effect,
+      adjustmentPurpose: 'SPLIT_PAYMENT',
+    });
+    expect(calculateNetSpending(store.transactions())).toBe(22000);
+  });
+  it('groups only continuous SMS payments after final approval, joins the third payment, and rejects a stale interrupted sequence atomically', async () => {
+    const { store, review, balance } = await boot();
+    store.addCard(card);
+    await settle();
+    const bank = await store.addBankAccount({
+      nickname: 'Daily bank',
+      institution: 'ICICI',
+      lastDigits: '417',
+    });
+    await store.enableBankCashTracking({ [bank.id]: 100000 });
+    await store.addWallet({
+      id: 'sms-group-meal',
+      kind: 'MEAL',
+      institution: 'Pluxee',
+      nickname: 'Meal',
+      lastDigits: '8765',
+      balanceMinor: 100000,
+      noLimit: false,
+      archived: false,
+      autoLoad: false,
+    });
+    const date = indiaTodayIso(new Date(Date.now() + 86400000));
+    const start = Date.parse(`${date}T06:30:00Z`);
+    const item = (
+      id: string,
+      minutes: number,
+      amountMinor: number,
+      extra: Partial<SmsEvidence>,
+    ) => {
+      const stamp = new Date(start + minutes * 60000 + 330 * 60000).toISOString();
+      return evidence({
+        id: id.repeat(64),
+        providerId: id,
+        amountMinor,
+        eventDate: date,
+        eventAt: new Date(start + minutes * 60000).toISOString(),
+        eventTime: stamp.slice(11, 19),
+        eventTimeExplicit: true,
+        receivedAt: start + (minutes + 1) * 60000,
+        merchant: 'Local Market',
+        reference: `SYNTH-SPLIT-${id}`,
+        ...extra,
+      });
+    };
+    const first = await stage(
+      item('a', 0, 20000, {
+        kind: 'PLUXEE_PURCHASE',
+        issuer: 'Pluxee',
+        cardDigits: '8765',
+        accountDigits: undefined,
+        direction: undefined,
+        purposeHint: undefined,
+      }),
+    );
+    await review.approve(first, 'sms-group-meal', 20000, 'Local Market');
+    const second = await stage(
+      item('b', 5, 2000, {
+        kind: 'BANK_DEBIT',
+        cardDigits: undefined,
+        accountDigits: '417',
+        issuer: 'ICICI',
+      }),
+    );
+    const proposal = await review.splitSuggestion(second, bank.id);
+    expect(proposal?.targetId).toBe(`sms-${first.id}`);
+    expect(count('transaction_split_groups')).toBe(0);
+    await review.approveBank(second, {
+      purpose: 'PURCHASE',
+      sourceId: bank.id,
+      amountMinor: 2000,
+      description: 'Local Market',
+      transactionDate: date,
+      splitTargetId: proposal!.targetId,
+    });
+    const group = store.paymentGroups()[0].id;
+    expect(store.paymentGroups()[0].memberIds).toHaveLength(2);
+    const third = await stage(
+      item('c', 10, 3000, {
+        kind: 'PURCHASE',
+        issuer: 'ICICI',
+        cardDigits: '4321',
+        accountDigits: undefined,
+        direction: undefined,
+        purposeHint: undefined,
+      }),
+    );
+    expect((await review.splitSuggestion(third, card.id))?.targetId).toBe(group);
+    expect(store.paymentGroups()[0].memberIds).toHaveLength(2);
+    await review.approve(third, card.id, 3000, 'Local Market', '', 'PENDING', false, '', 0, {
+      splitTargetId: group,
+    });
+    await review.approve(third, card.id, 3000, 'Local Market', '', 'PENDING', false, '', 0, {
+      splitTargetId: group,
+    });
+    expect(count('card_transactions')).toBe(3);
+    expect(store.paymentGroups()[0].memberIds).toHaveLength(3);
+    expect(calculateNetSpending(store.transactions())).toBe(25000);
+    expect([balance('sms-group-meal'), balance(bank.id), store.cardOutstanding(card.id)]).toEqual([
+      80000, 98000, 3000,
+    ]);
+    const thirdPayment = store.transactions().find((entry) => entry.id === `sms-${third.id}`)!;
+    await store.saveManualTransaction({ ...thirdPayment, type: 'ADJUSTMENT' }, group);
+    expect(
+      rows('SELECT state,transaction_id,decision FROM sms_candidates WHERE id=?', [third.id])[0],
+    ).toMatchObject({
+      state: 'IMPORTED',
+      transaction_id: thirdPayment.id,
+      decision: expect.stringContaining('EXPLICIT_TYPE_CHANGE'),
+    });
+    const confirmation = await stage({
+      ...third.item!,
+      id: 'f'.repeat(64),
+      providerId: 'other-confirmation',
+      receivedAt: start + 12 * 60000,
+    });
+    await review.approve(confirmation, card.id, 3000, 'Local Market', thirdPayment.id);
+    expect(count('card_transactions')).toBe(3);
+    expect(store.cardOutstanding(card.id)).toBe(3000);
+    expect(store.paymentGroups()[0].memberIds).toHaveLength(3);
+    await stage(
+      item('d', 13, 100000, {
+        kind: 'PURCHASE',
+        cardDigits: '9999',
+        accountDigits: undefined,
+        direction: undefined,
+        purposeHint: undefined,
+        merchant: 'Petrol Station',
+      }),
+    );
+    const later = await stage(
+      item('e', 20, 4000, {
+        kind: 'BANK_DEBIT',
+        accountDigits: '417',
+        cardDigits: undefined,
+        issuer: 'ICICI',
+      }),
+    );
+    expect(await review.splitSuggestion(later, bank.id)).toBeNull();
+    await expect(
+      review.approveBank(later, {
+        purpose: 'PURCHASE',
+        sourceId: bank.id,
+        amountMinor: 4000,
+        description: 'Local Market',
+        transactionDate: date,
+        splitTargetId: group,
+      }),
+    ).rejects.toThrow('continuity');
+    expect(count('card_transactions')).toBe(3);
+    expect(balance(bank.id)).toBe(98000);
+    await review.approveBank(later, {
+      purpose: 'PURCHASE',
+      sourceId: bank.id,
+      amountMinor: 4000,
+      description: 'Local Market',
+      transactionDate: date,
+    });
+    const after = balance(bank.id);
+    await store.combinePayments([`sms-${later.id}`], group);
+    expect(balance(bank.id)).toBe(after);
+    expect(store.paymentGroups()[0].memberIds).toHaveLength(4);
+  });
   it('round trips SMS annotations, notes, decisions and matches through encrypted backup without financial duplication', async () => {
     const { store, review, balance } = await boot();
     store.addCard(card);
@@ -1248,7 +1753,15 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
         source: bank.id,
       }),
     ]);
+    const balancesBeforeGrouping = structuredClone(store.paymentSources());
+    const restoredGroupId = await store.combinePayments(
+      [cardEntry.id, bankEntry.id],
+      cardEntry.id,
+      { title: 'Synthetic combined bill', billTotalMinor: 20000 },
+    );
+    expect(store.paymentSources()).toEqual(balancesBeforeGrouping);
     const before = {
+      groups: structuredClone(store.paymentGroups()),
       transactions: [...structuredClone(store.transactions())].sort((left, right) =>
         left.id.localeCompare(right.id),
       ),
@@ -1276,6 +1789,8 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
         [...restarted.transfers()].sort((left, right) => left.id.localeCompare(right.id)),
       ).toEqual(before.transfers);
       expect(restarted.paymentSources()).toEqual(before.sources);
+      expect(restarted.paymentGroups()).toEqual(before.groups);
+      expect(restarted.paymentGroups()[0].id).toBe(restoredGroupId);
       expect(count('card_transactions')).toBe(before.transactions.length);
       expect(count('source_transfers')).toBe(before.transfers.length);
       for (const item of restarted.transactions().filter((entry) => entry.origin === 'SMS')) {

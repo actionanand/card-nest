@@ -53,12 +53,45 @@ export function calculateNetSpending(
   transactions: readonly CardTransaction[],
   refundsReduceSpending = true,
 ): Money {
-  const purchases = transactions
-    .filter((item) => item.type === 'PURCHASE')
-    .reduce((sum, item) => sum + item.amountMinor, 0);
-  if (!refundsReduceSpending) return purchases;
-  const offsets = transactions
-    .filter((item) => item.type === 'REFUND' || item.type === 'CASHBACK')
-    .reduce((sum, item) => sum + item.amountMinor, 0);
-  return Math.max(0, purchases - offsets);
+  return transactions.reduce(
+    (sum, item) => sum + spendingContribution(item, refundsReduceSpending),
+    0,
+  );
+}
+
+/** Reporting classification is separate from the already-applied account balance effect. */
+export function spendingContribution(item: CardTransaction, refundsReduceSpending = true): Money {
+  if (item.type === 'ADJUSTMENT')
+    return item.adjustmentPurpose === 'BALANCE_RECONCILIATION' ? 0 : transactionEffect(item);
+  if (['PURCHASE', 'FEE', 'INTEREST'].includes(item.type)) return item.amountMinor;
+  return refundsReduceSpending && (item.type === 'REFUND' || item.type === 'CASHBACK')
+    ? -item.amountMinor
+    : 0;
+}
+
+/** Split payment is a purchase purpose, while its persisted enum remains ADJUSTMENT. */
+export function isPurchasePayment(
+  item: Pick<CardTransaction, 'type' | 'adjustmentPurpose' | 'adjustmentDirection'>,
+): boolean {
+  return (
+    item.type === 'PURCHASE' ||
+    (item.type === 'ADJUSTMENT' &&
+      item.adjustmentPurpose === 'SPLIT_PAYMENT' &&
+      item.adjustmentDirection !== 'DECREASE')
+  );
+}
+export function matchesTransactionType(
+  item: CardTransaction,
+  type: TransactionType | undefined,
+): boolean {
+  return type === 'PURCHASE' ? isPurchasePayment(item) : item.type === type;
+}
+
+export function transactionLabel(item: CardTransaction): string {
+  if (item.type !== 'ADJUSTMENT') return item.type.replaceAll('_', ' ');
+  return item.adjustmentPurpose === 'SPLIT_PAYMENT'
+    ? 'Split payment'
+    : item.adjustmentPurpose === 'BALANCE_RECONCILIATION'
+      ? 'Balance reconciliation'
+      : 'Legacy adjustment';
 }

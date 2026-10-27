@@ -3,6 +3,15 @@ export interface DatabaseMigration {
   readonly statements: readonly string[];
 }
 
+export const CLASSIFY_LEGACY_ADJUSTMENTS = `UPDATE card_transactions SET payload=json_set(payload,'$.adjustmentPurpose',CASE WHEN EXISTS (
+        SELECT 1 FROM sms_candidates c JOIN sms_reconciliation r ON r.candidate_id=c.id
+        JOIN transaction_links l ON l.transaction_id=card_transactions.id AND l.relationship_type='ADJUSTMENT'
+        WHERE card_transactions.id='sms-adjustment-'||c.id AND l.related_transaction_id=c.transaction_id
+          AND r.target_id=c.transaction_id AND r.decision='ADJUST_BALANCE'
+          AND c.state IN ('IMPORTED','MATCHED_EXISTING')
+      ) THEN 'BALANCE_RECONCILIATION' ELSE 'LEGACY_MANUAL' END)
+      WHERE type='ADJUSTMENT' AND json_valid(payload) AND json_extract(payload,'$.adjustmentPurpose') IS NULL`;
+
 export const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
   {
     version: 1,
@@ -110,6 +119,23 @@ export const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
     statements: [
       `CREATE TABLE IF NOT EXISTS bank_activity_candidates (fingerprint TEXT PRIMARY KEY NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL)`,
       `CREATE INDEX IF NOT EXISTS idx_bank_activity_candidates_created ON bank_activity_candidates(created_at DESC)`,
+    ],
+  },
+  {
+    version: 12,
+    statements: [
+      `ALTER TABLE sms_candidates ADD COLUMN received_at INTEGER`,
+      `UPDATE sms_candidates SET received_at=json_extract(payload,'$.receivedAt') WHERE json_valid(payload) AND json_type(payload,'$.receivedAt')='integer'`,
+      `CREATE INDEX idx_sms_receipt_order ON sms_candidates(received_at)`,
+      `ALTER TABLE transaction_split_groups ADD COLUMN kind TEXT NOT NULL DEFAULT 'DIVISION' CHECK(kind IN ('DIVISION','PAYMENTS'))`,
+      `ALTER TABLE transaction_split_groups ADD COLUMN anchor_transaction_id TEXT REFERENCES card_transactions(id) ON DELETE SET NULL`,
+      `ALTER TABLE transaction_split_groups ADD COLUMN title TEXT NOT NULL DEFAULT ''`,
+      `ALTER TABLE transaction_split_groups ADD COLUMN currency_code TEXT NOT NULL DEFAULT 'INR'`,
+      `ALTER TABLE transaction_split_groups ADD COLUMN bill_total_minor INTEGER CHECK(bill_total_minor IS NULL OR bill_total_minor >= 0)`,
+      `ALTER TABLE transaction_split_groups ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''`,
+      `UPDATE transaction_split_groups SET anchor_transaction_id=(SELECT transaction_id FROM transaction_split_members WHERE group_id=transaction_split_groups.id ORDER BY transaction_id LIMIT 1),updated_at=created_at`,
+      `UPDATE transaction_split_groups SET currency_code=COALESCE((SELECT currency_code FROM card_transactions WHERE id=anchor_transaction_id),'INR')`,
+      CLASSIFY_LEGACY_ADJUSTMENTS,
     ],
   },
 ];

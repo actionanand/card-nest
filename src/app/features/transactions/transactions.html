@@ -17,8 +17,12 @@
       </p>
     </div>
     <div class="header-actions">
+      <button id="combine-payments" class="btn" type="button" (click)="openCombine()">
+        Combine payments
+      </button>
       <app-platform-tools />
       <button
+        id="add-transaction"
         class="btn btn-primary add-transaction"
         type="button"
         (click)="openAdd()"
@@ -28,10 +32,35 @@
       </button>
     </div>
   </header>
+  @if (combineOpen()) {
+    <app-payment-groups-panel [groupId]="manageGroupId()" (closed)="closeCombine()" />
+  }
+  @for (group of logicalGroups(); track group.id) {
+    <details class="panel payment-group-summary">
+      <summary>
+        {{ group.title || 'Combined purchase' }} ·
+        {{ money(groupTotal(group.memberIds), group.currency) }} total ·
+        {{ group.memberIds.length }} payments
+      </summary>
+      <app-payment-breakdown
+        [entries]="groupEntries(group.memberIds)"
+        [billTotalMinor]="group.billTotalMinor"
+      />
+      <button class="btn" type="button" (click)="openCombine(groupEntries(group.memberIds)[0])">
+        Manage payment group
+      </button>
+      @for (entry of groupEntries(group.memberIds); track entry.id) {
+        <button class="btn" type="button" (click)="openDetails(entry)">
+          View {{ store.sourceName(entry.cardId) }} payment
+        </button>
+      }
+    </details>
+  }
 
   @if (showForm()) {
     <div class="transaction-modal-backdrop">
       <section
+        #transactionEditor
         class="panel transaction-form"
         role="dialog"
         aria-modal="true"
@@ -206,20 +235,59 @@
               form.controls.type.value === 'REFUND' || form.controls.type.value === 'ADJUSTMENT'
             ) {
               <div class="full linked-transaction-picker">
+                @if (legacyAdjustment(); as legacy) {
+                  <p>
+                    {{ typeLabel(legacy) }} · {{ isCredit(legacy) ? 'Decreasing' : 'Increasing' }} ·
+                    Existing amount and payment effect are retained when only classification
+                    changes.
+                  </p>
+                  <label
+                    ><input
+                      type="checkbox"
+                      formControlName="preserveLegacy"
+                      (change)="form.controls.relatedTransactionId.setErrors(null)"
+                    />
+                    Keep the existing legacy / balance-correction classification</label
+                  >
+                }
                 <app-select-picker
                   [label]="
                     form.controls.type.value === 'REFUND'
                       ? 'Refund for transaction (optional)'
-                      : 'Adjustment for transaction (optional)'
+                      : 'Related purchase or payment group (required for Split payment)'
                   "
                   [options]="relatedOptions()"
+                  [searchable]="true"
                   [value]="form.controls.relatedTransactionId.value"
                   (valueChange)="setRelatedTransaction($event)"
                 />
+                @if (form.controls.relatedTransactionId.hasError('required')) {
+                  <small role="alert"
+                    >Choose the original purchase or an existing payment group.</small
+                  >
+                }
+                @if (
+                  form.controls.type.value === 'ADJUSTMENT' &&
+                  !form.controls.preserveLegacy.value &&
+                  relatedPaymentEntries().length
+                ) {
+                  <app-payment-breakdown
+                    [entries]="relatedPaymentEntries()"
+                    [additionalMinor]="paymentDelta()"
+                    [billTotalMinor]="relatedPaymentGroup()?.billTotalMinor ?? null"
+                  />
+                }
                 @if (!relatedTransactionOptions().length) {
                   <small>No matching recent transactions were found.</small>
                 }
               </div>
+            }
+            @if (groupTypeChange()) {
+              <label class="full"
+                ><input type="checkbox" formControlName="unlinkConfirmed" /> Confirm changing this
+                payment's type and removing its old grouping relationship where needed. The real
+                payment is kept.</label
+              >
             }
             <app-select-picker
               label="Category"
@@ -234,6 +302,35 @@
                 autocomplete="off"
                 placeholder="Where did you spend?"
             /></label>
+            <app-select-picker
+              label="Payment method (optional)"
+              [options]="manualPaymentMethods()"
+              [value]="form.controls.paymentMethod.value"
+              (valueChange)="setManualPaymentMethod($event)"
+            />
+            @if (manualPaymentDetail(form.controls.paymentMethod.value); as detail) {
+              <app-select-picker
+                [label]="detail.label"
+                [options]="detail.options"
+                [value]="form.controls.paymentMethodDetail.value"
+                (valueChange)="setManualPaymentDetail($event)"
+              />
+              @if (form.controls.paymentMethod.value === 'UPI') {
+                <label
+                  >Other UPI app (optional)<input
+                    formControlName="paymentMethodCustom"
+                    maxlength="80"
+                    (input)="customManualPayment()"
+                /></label>
+              }
+            }
+            <label class="full"
+              >Payment comment (optional)<textarea
+                formControlName="smsAdditionalComment"
+                maxlength="500"
+                rows="2"
+              ></textarea>
+            </label>
             @if (!editingId()) {
               <app-select-picker
                 label="Repeat monthly"
@@ -305,7 +402,7 @@
           </div>
           <div class="form-actions">
             <button class="btn" type="button" (click)="closeForm()">Cancel</button>
-            <button class="btn btn-primary" type="submit">
+            <button class="btn btn-primary" type="submit" [disabled]="saving()">
               {{ editingId() ? 'Update transaction' : 'Save transaction' }}
             </button>
           </div>
@@ -648,8 +745,8 @@
                   <span>{{ transaction.transactionDate | appDate }}</span
                   ><small>{{ typeLabel(transaction) }}</small>
                 </span>
-                <strong class="tx-amount" [class.credit]="isCredit(transaction.type)"
-                  >{{ isCredit(transaction.type) ? '+' : '−'
+                <strong class="tx-amount" [class.credit]="isCredit(transaction)"
+                  >{{ isCredit(transaction) ? '+' : '−'
                   }}{{ money(transaction.amountMinor, transaction.currencyCode) }}</strong
                 >
               </button>
@@ -747,8 +844,8 @@
           <app-icon name="close" />
         </button>
       </header>
-      <div class="detail-amount" [class.credit]="isCredit(transaction.type)">
-        {{ isCredit(transaction.type) ? '+' : '−'
+      <div class="detail-amount" [class.credit]="isCredit(transaction)">
+        {{ isCredit(transaction) ? '+' : '−'
         }}{{ money(transaction.amountMinor, transaction.currencyCode) }}
       </div>
       <dl class="detail-grid">
@@ -844,13 +941,14 @@
       }
       @if (splitSiblings(transaction).length > 1) {
         <section class="detail-section">
-          <h3>Split payments</h3>
-          @for (part of splitSiblings(transaction); track part.id) {
-            <div class="schedule-row">
-              <span>{{ store.sourceName(part.cardId) }}</span>
-              <strong>{{ money(part.amountMinor, part.currencyCode) }}</strong>
-            </div>
-          }
+          <h3>{{ paymentGroupDetails(transaction)?.title || 'Split payments' }}</h3>
+          <app-payment-breakdown
+            [entries]="splitSiblings(transaction)"
+            [billTotalMinor]="paymentGroupDetails(transaction)?.billTotalMinor ?? null"
+          />
+          <button class="btn" type="button" (click)="openCombine(transaction)">
+            Manage payment group
+          </button>
         </section>
       }
       @if (emiPlan(transaction); as plan) {
@@ -919,7 +1017,7 @@
         </button>
         @if (canSplit(transaction)) {
           <button class="btn" type="button" (click)="openSplit(transaction)">
-            <app-icon name="split" /> Split payment
+            <app-icon name="split" /> Divide recorded payment
           </button>
         }
         @if (canConvertToEmi(transaction)) {
@@ -1049,7 +1147,7 @@
         <header class="detail-heading">
           <div>
             <p class="eyebrow">Two to four payments</p>
-            <h2 id="split-title">Split transaction</h2>
+            <h2 id="split-title">Divide recorded payment</h2>
           </div>
           <button type="button" (click)="showSplitForm.set(false)" aria-label="Close split form">
             <app-icon name="close" />
@@ -1071,6 +1169,12 @@
                   (valueChange)="setSplitSource(index, $event)"
                 />
                 <label>Amount<input formControlName="amount" inputmode="decimal" /></label>
+                <app-select-picker
+                  label="Ordering against a confirmed Bank/Cash balance, if needed"
+                  [options]="splitTimingOptions"
+                  [value]="part.controls.balanceTiming.value"
+                  (valueChange)="setSplitTiming(index, $event)"
+                />
                 @if (splitForm.controls.parts.length > 2) {
                   <button class="remove-part" type="button" (click)="removeSplitPart(index)">
                     <app-icon name="delete" /> Remove
@@ -1079,14 +1183,14 @@
               </fieldset>
             }
           </div>
-          @if (splitForm.controls.parts.length < 4) {
-            <button class="btn" type="button" (click)="addSplitPart()">
-              <app-icon name="plus" /> Add payment
-            </button>
-          }
+          <button class="btn" type="button" (click)="addSplitPart()">
+            <app-icon name="plus" /> Add payment
+          </button>
           <div class="form-actions">
             <button class="btn" type="button" (click)="showSplitForm.set(false)">Cancel</button>
-            <button class="btn btn-primary" type="submit">Save split</button>
+            <button class="btn btn-primary" type="submit" [disabled]="saving()">
+              Save division
+            </button>
           </div>
         </form>
       </section>

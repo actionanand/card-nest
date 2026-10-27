@@ -860,6 +860,15 @@
                   </fieldset>
                 }
               }
+              @if (splitProposal(); as proposal) {
+                <app-sms-split-suggestion
+                  [proposal]="proposal"
+                  [item]="candidate.item!"
+                  [sourceId]="splitSource()"
+                  [selectedTarget]="splitSelection()"
+                  (chosen)="chooseSmsSplit($event)"
+                />
+              }
               @if (purchaseReviewActive()) {
                 @if (purchaseMatches().length) {
                   <app-sms-purchase-comparison
@@ -994,6 +1003,7 @@
                 <app-icon name="landmark" />
                 <div>
                   <strong>{{ bankIdentity() }}</strong>
+                  <p>{{ sourceLabel(candidate) }}</p>
                   <p>
                     Nothing is recorded until you choose a purpose and approve. A recipient's
                     "credited" wording never makes this incoming money, and names never prove
@@ -1123,6 +1133,15 @@
                   Recorded as a repayment from this account, not a purchase. Loan schedules and EMI
                   installments are not changed.
                 </p>
+              }
+              @if (splitProposal(); as proposal) {
+                <app-sms-split-suggestion
+                  [proposal]="proposal"
+                  [item]="candidate.item!"
+                  [sourceId]="splitSource()"
+                  [selectedTarget]="splitSelection()"
+                  (chosen)="chooseSmsSplit($event)"
+                />
               }
               @if (purchaseReviewActive(true)) {
                 @if (purchaseMatches(true).length) {

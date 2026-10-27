@@ -8,7 +8,12 @@ import {
   statementDateFor,
   toIsoDate,
 } from '../../core/services/billing-cycle';
-import { formatMoney, transactionEffect } from '../../core/services/money';
+import {
+  formatMoney,
+  transactionEffect,
+  spendingContribution,
+  transactionLabel,
+} from '../../core/services/money';
 import { AppIcon } from '../../shared/app-icon';
 import { AppDatePipe } from '../../core/services/date-format.service';
 import { CardNetworkLogo } from '../../shared/card-network-logo';
@@ -23,6 +28,7 @@ type BreakdownView = 'OUTSTANDING' | 'STATEMENT' | 'UNBILLED';
   styleUrl: './dashboard.scss',
 })
 export class DashboardPage {
+  readonly transactionKind = transactionLabel;
   readonly store = inject(CardNestStore);
   readonly snapshot = this.store.dashboard;
   readonly greeting = computed(() => {
@@ -162,7 +168,7 @@ export class DashboardPage {
     let max = 0;
     for (const group of this.breakdownGroups()) {
       for (const transaction of group.transactions) {
-        const effect = transactionEffect(transaction);
+        const effect = spendingContribution(transaction);
         if (effect > max) max = effect;
       }
     }
@@ -172,7 +178,7 @@ export class DashboardPage {
   /** Grades a spend row relative to the biggest spend in this popup; credits are never graded. */
   spendTier(transaction: CardTransaction): 'high' | 'mid' | null {
     if (!this.store.highlightDashboardSpending()) return null;
-    const effect = transactionEffect(transaction);
+    const effect = spendingContribution(transaction);
     if (effect <= 0) return null;
     const max = this.spendMax();
     if (max <= 0) return null;

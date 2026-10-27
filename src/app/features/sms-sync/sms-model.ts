@@ -9,6 +9,7 @@ import {
   TransactionType,
 } from '../../core/models/domain';
 import { purchaseCompatible } from './sms-purchase-matching';
+import { matchesTransactionType } from '../../core/services/money';
 
 export type SmsKind =
   | 'PURCHASE'
@@ -95,6 +96,7 @@ export function suspectEvidence(item: SmsEvidence): boolean {
   );
 }
 export interface ApprovalEdits {
+  splitTargetId?: string;
   transactionDate?: string;
   categoryId?: string;
   relatedTransactionId?: string;
@@ -108,6 +110,7 @@ export interface ApprovalEdits {
   smsAdditionalComment?: string;
 }
 export interface PurchaseReviewDraft {
+  splitTargetId?: string;
   mode: 'CARD' | 'BANK';
   source: string;
   amount: string;
@@ -432,7 +435,7 @@ export function bankExistingSuggestions(
   return transactions.filter(
     (entry) =>
       entry.cardId === sourceId &&
-      entry.type === type &&
+      matchesTransactionType(entry, type) &&
       entry.currencyCode === item.currency &&
       entry.amountMinor === amountMinor &&
       (type === 'PURCHASE'
@@ -552,7 +555,7 @@ export function existingSuggestions(
   return transactions.filter(
     (t) =>
       t.cardId === sourceId &&
-      t.type === type &&
+      matchesTransactionType(t, type) &&
       t.currencyCode === item.currency &&
       t.amountMinor === amountMinor &&
       Math.abs(Date.parse(t.transactionDate) - Date.parse(reviewDate)) <= 3 * 86400000,

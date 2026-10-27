@@ -5,6 +5,9 @@ import {
   calculateOutstanding,
   formatMoney,
   parseMoneyToMinor,
+  spendingContribution,
+  transactionEffect,
+  transactionLabel,
 } from './money';
 
 function transaction(type: CardTransaction['type'], amountMinor: number): CardTransaction {
@@ -23,6 +26,38 @@ function transaction(type: CardTransaction['type'], amountMinor: number): CardTr
 }
 
 describe('money calculations', () => {
+  it('counts actual split parts once, charges fees and interest, and excludes repayments, ordinary credits and verified corrections', () => {
+    const items = [
+      transaction('PURCHASE', 20000),
+      { ...transaction('ADJUSTMENT', 2000), adjustmentPurpose: 'SPLIT_PAYMENT' as const },
+      transaction('FEE', 100),
+      transaction('INTEREST', 200),
+      transaction('REFUND', 500),
+      transaction('CASHBACK', 100),
+      transaction('PAYMENT', 99999),
+      transaction('CREDIT', 99999),
+      { ...transaction('ADJUSTMENT', 88888), adjustmentPurpose: 'BALANCE_RECONCILIATION' as const },
+    ];
+    expect(calculateNetSpending(items)).toBe(21700);
+    expect(calculateNetSpending([...items, transaction('PURCHASE', 3000)])).toBe(24700);
+    expect(calculateNetSpending(items, false)).toBe(22300);
+  });
+  it('preserves signed legacy contributions without guessing purpose from merchant wording', () => {
+    const decreasing = {
+      ...transaction('ADJUSTMENT', 2000),
+      adjustmentDirection: 'DECREASE' as const,
+    };
+    expect(spendingContribution(decreasing)).toBe(-2000);
+    expect(transactionEffect(decreasing)).toBe(-2000);
+    expect(transactionLabel(decreasing)).toBe('Legacy adjustment');
+    expect(calculateNetSpending([decreasing])).toBe(-2000);
+    expect(
+      spendingContribution({
+        ...transaction('ADJUSTMENT', 2000),
+        merchant: 'Approved wallet balance reconciliation',
+      }),
+    ).toBe(2000);
+  });
   beforeEach(() => configureMoneyDisplay('IN', 'INR'));
 
   it('parses decimal input to integer minor units', () => {

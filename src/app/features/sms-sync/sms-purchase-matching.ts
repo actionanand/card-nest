@@ -1,5 +1,6 @@
 import type { CardTransaction } from '../../core/models/domain';
 import type { SmsEvidence } from './sms-model';
+import { isPurchasePayment } from '../../core/services/money';
 
 export const PURCHASE_WINDOW_MS = 18 * 60 * 60 * 1000;
 export interface PurchaseAnchor {
@@ -98,7 +99,7 @@ export function purchaseCompatible(
 ): boolean {
   return (
     entry.cardId === sourceId &&
-    entry.type === 'PURCHASE' &&
+    isPurchasePayment(entry) &&
     entry.currencyCode === item.currency &&
     entry.amountMinor === amountMinor &&
     !(item.reference && entry.reference && item.reference !== entry.reference) &&

@@ -112,6 +112,7 @@ describe('SMS review privacy and explicit approval UI', () => {
     approveBank: vi.fn().mockResolvedValue(undefined),
     loadPurchaseReview: vi.fn<() => Promise<PurchaseReviewDraft | null>>().mockResolvedValue(null),
     savePurchaseReview: vi.fn().mockResolvedValue(undefined),
+    splitSuggestion: vi.fn().mockResolvedValue(null),
   };
   const bankCashTracking = signal({ enabled: false, askCardSettlementFunding: false });
   const paymentSources = signal<readonly PaymentSource[]>([]);
@@ -169,6 +170,7 @@ describe('SMS review privacy and explicit approval UI', () => {
     expect(buttons[1].textContent).toContain('Mark read');
   });
   beforeEach(() => {
+    sync.splitSuggestion.mockReset().mockResolvedValue(null);
     sync.loadPurchaseReview.mockReset().mockResolvedValue(null);
     sync.savePurchaseReview.mockClear();
     locked.set(false);
@@ -207,6 +209,98 @@ describe('SMS review privacy and explicit approval UI', () => {
         },
       ],
     });
+  });
+  it('keeps Add to split payment distinct from duplicate matching and separate-purchase choices without posting money', async () => {
+    store.cards.set([demoCard]);
+    const first: CardTransaction = {
+      id: 'first-split-payment',
+      cardId: 'meal',
+      type: 'PURCHASE',
+      amountMinor: 20000,
+      currencyCode: 'INR',
+      transactionDate: '2026-10-18',
+      merchant: 'Local Market',
+      categoryId: 'other',
+      attachmentIds: [],
+      createdAt: 'before',
+      updatedAt: 'before',
+    };
+    store.transactions.set([
+      first,
+      { ...first, id: 'duplicate-candidate', cardId: demoCard.id, amountMinor: 10000 },
+    ]);
+    const proposal = {
+      targetId: first.id,
+      previousCandidateId: 'previous-sms',
+      previousTransactionId: first.id,
+      approximate: true,
+      reason: 'Consecutive financial alerts; receipt timing is approximate.',
+    };
+    sync.splitSuggestion.mockResolvedValue(proposal);
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const page = fixture.componentInstance;
+    page.open(demoCandidate());
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('app-sms-split-suggestion')?.textContent).toContain(
+      'Add to split payment',
+    );
+    const calls = sync.approve.mock.calls.length;
+    page.chooseSmsSplit(first.id);
+    expect(page.editor.getRawValue()).toMatchObject({
+      existing: '',
+      separate: false,
+      splitTarget: first.id,
+    });
+    expect(sync.savePurchaseReview).toHaveBeenLastCalledWith(
+      expect.any(String),
+      expect.objectContaining({ splitTargetId: first.id }),
+    );
+    page.confirmSeparatePurchase();
+    expect(page.editor.getRawValue()).toMatchObject({
+      existing: '',
+      separate: true,
+      splitTarget: '',
+    });
+    page.chooseSmsSplit(first.id);
+    page.chooseExisting('duplicate-candidate');
+    expect(page.editor.getRawValue()).toMatchObject({
+      existing: 'duplicate-candidate',
+      separate: false,
+      splitTarget: '',
+    });
+    expect(sync.approve.mock.calls.length).toBe(calls);
+    expect(store.transactions()).toHaveLength(2);
+  });
+  it('explains whether a duplicate suggestion came from the original SMS date instead of the edited review date', async () => {
+    store.cards.set([demoCard]);
+    const candidate = demoCandidate();
+    store.transactions.set([
+      {
+        id: 'original-date',
+        cardId: demoCard.id,
+        type: 'PURCHASE',
+        amountMinor: 10000,
+        currencyCode: 'INR',
+        transactionDate: candidate.item!.eventDate,
+        categoryId: 'other',
+        attachmentIds: [],
+        createdAt: 'before',
+        updatedAt: 'before',
+      },
+    ]);
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const page = fixture.componentInstance;
+    page.open(candidate);
+    page.editor.controls.transactionDate.setValue('2026-10-20');
+    expect(page.purchaseMatches()[0].reason).toContain('original SMS event date 2026-10-18');
+    expect(page.purchaseMatches()[0].reason).toContain('edited review date 2026-10-20');
+    expect(page.purchaseTimingNote()).toContain('checked separately');
   });
   it('shows visible match and separate choices without opening reconciliation, preserves edits and only records a choice', async () => {
     store.cards.set([demoCard]);
@@ -321,6 +415,32 @@ describe('SMS review privacy and explicit approval UI', () => {
       separate: true,
       smsAdditionalComment: 'Second visit',
     });
+  });
+  it('clears a saved split choice when the original financial sequence can no longer be established', async () => {
+    store.cards.set([demoCard]);
+    sync.loadPurchaseReview.mockResolvedValueOnce({
+      mode: 'CARD',
+      source: demoCard.id,
+      amount: '100',
+      merchant: 'Saved purchase',
+      transactionDate: '2026-10-18',
+      category: 'other',
+      existing: '',
+      separate: false,
+      splitTargetId: 'stale-group',
+      paymentMethod: 'NONE',
+      paymentMethodDetail: '',
+      paymentMethodCustom: '',
+      smsAdditionalComment: '',
+    });
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.componentInstance.open(demoCandidate());
+    await fixture.whenStable();
+    expect(fixture.componentInstance.editor.controls.splitTarget.value).toBe('');
+    expect(fixture.componentInstance.editor.controls.merchant.value).toBe('Saved purchase');
+    expect(fixture.componentInstance.notice()).toContain('fresh continuity review');
   });
   it('uses compact icon-labelled swipe actions and keeps explicit row buttons when swipe is off', async () => {
     candidates.set([demoCandidate()]);

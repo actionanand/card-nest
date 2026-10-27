@@ -87,6 +87,7 @@ export interface CardTransaction {
   cardId: string;
   type: TransactionType;
   adjustmentDirection?: 'INCREASE' | 'DECREASE';
+  adjustmentPurpose?: 'SPLIT_PAYMENT' | 'LEGACY_MANUAL' | 'BALANCE_RECONCILIATION';
   amountMinor: Money;
   currencyCode: string;
   originalAmountMinor?: Money;
@@ -130,6 +131,19 @@ export interface CardTransaction {
   paymentMethodDetail?: SmsPaymentMethodDetail;
   paymentMethodCustom?: string;
   smsAdditionalComment?: string;
+}
+
+/** A relationship only: its total is never posted to the financial ledger. */
+export interface PaymentGroup {
+  id: string;
+  kind: 'DIVISION' | 'PAYMENTS';
+  anchorId: string | null;
+  title: string;
+  currency: string;
+  billTotalMinor: number | null;
+  createdAt: string;
+  updatedAt: string;
+  memberIds: readonly string[];
 }
 
 export type BalanceTiming = 'AFTER_BASELINE' | 'INCLUDED_IN_BASELINE';

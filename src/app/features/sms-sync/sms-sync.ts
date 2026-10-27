@@ -27,10 +27,12 @@ import { SnackbarService } from '../../core/services/snackbar.service';
 import { lockDocumentScroll } from '../../shared/document-scroll-lock';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { indiaTodayIso } from '../../core/services/india-date';
-import { parseMoneyToMinor } from '../../core/services/money';
+import { parseMoneyToMinor, matchesTransactionType } from '../../core/services/money';
 import { SmsReviewService } from './sms-review.service';
 import { SmsTypePicker } from './sms-type-picker';
 import { matchExisting, walletComparison } from './sms-matching';
+import { SmsSplitProposal } from './sms-split-continuity';
+import { SmsSplitSuggestion } from './sms-split-suggestion';
 import { purchaseAnchor, purchaseTiming } from './sms-purchase-matching';
 import { PurchaseReviewMatch, SmsPurchaseComparison } from './sms-purchase-comparison';
 import {
@@ -105,6 +107,7 @@ const CANDIDATE_MENU_ITEM_HEIGHT = 44;
 @Component({
   selector: 'app-sms-sync',
   imports: [
+    SmsSplitSuggestion,
     ReactiveFormsModule,
     AppIcon,
     AppSelectPicker,
@@ -335,6 +338,24 @@ export class SmsSyncPage {
     this.applyFilters();
   }
   readonly selected = signal<SmsCandidate | null>(null);
+  readonly splitProposal = signal<SmsSplitProposal | null>(null);
+  splitSource(): string {
+    return (this.bankItem() ? this.bankEditor : this.editor).controls.source.value;
+  }
+  splitSelection(): string {
+    return (this.bankItem() ? this.bankEditor : this.editor).controls.splitTarget.value;
+  }
+  chooseSmsSplit(target: string): void {
+    const proposal = this.splitProposal();
+    if (!proposal || target !== proposal.targetId) return;
+    const bank = !!this.bankItem();
+    (bank ? this.bankEditor : this.editor).patchValue({
+      existing: '',
+      separate: false,
+      splitTarget: target,
+    });
+    void this.savePurchaseChoice(bank);
+  }
   private hydratingReview = false;
   private reviewRevision = 0;
 
@@ -368,8 +389,8 @@ export class SmsSyncPage {
       .transactions()
       .filter((entry) => ids.includes(entry.id))
       .map((entry) => {
-        const timing =
-          purchaseTiming(item, entry, value.transactionDate) ?? purchaseTiming(item, entry);
+        const editedTiming = purchaseTiming(item, entry, value.transactionDate);
+        const timing = editedTiming ?? purchaseTiming(item, entry);
         const minutes =
           timing?.differenceMs === null || timing?.differenceMs === undefined
             ? null
@@ -381,8 +402,10 @@ export class SmsSyncPage {
           reason:
             entry.amountMinor !== parseMoneyToMinor(value.amount)
               ? 'The original SMS amount matches this record. Restore the matching amount to link, or verify a separate purchase.'
-              : (timing?.reason ??
-                'The verified transaction reference matches. Timing differs; inspect the original event before linking.'),
+              : !editedTiming && timing
+                ? `Suggested from the original SMS event date ${item.eventDate}; the edited review date ${value.transactionDate} does not independently match. ${timing.reason}`
+                : (timing?.reason ??
+                  'The verified transaction reference matches. Timing differs; inspect the original event before linking.'),
           canMatch: entry.amountMinor === parseMoneyToMinor(value.amount),
           timeDifference:
             minutes === null
@@ -402,7 +425,7 @@ export class SmsSyncPage {
     return anchor.kind === 'EXPLICIT_TRANSACTION_TIME'
       ? `SMS transaction time: ${item.eventDate} ${item.eventTime} IST.`
       : anchor.kind === 'REVIEW_DATE_ONLY'
-        ? `Review date edited. Only same-date manual suggestions are shown. Original SMS event date: ${item.eventDate}.`
+        ? `Original SMS date ${item.eventDate} and edited review date ${anchor.localDate} are checked separately. No transaction time is assumed for the edited date.`
         : `SMS received: ${anchor.timestamp === null ? 'time unavailable' : new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Kolkata' }).format(anchor.timestamp) + ' IST'}. This is approximate, not the purchase time. Original event date: ${item.eventDate}.${anchor.delayed ? ' Receipt was on a different local date; delivery-day purchases are excluded.' : ''}`;
   }
 
@@ -415,14 +438,24 @@ export class SmsSyncPage {
   }
 
   confirmSeparatePurchase(bank = false): void {
-    (bank ? this.bankEditor : this.editor).patchValue({ existing: '', separate: true });
+    (bank ? this.bankEditor : this.editor).patchValue({
+      existing: '',
+      separate: true,
+      splitTarget: '',
+    });
     void this.savePurchaseChoice(bank);
   }
 
   private async savePurchaseChoice(bank = false): Promise<void> {
     const candidate = this.selected();
-    if (!candidate || this.hydratingReview || !this.purchaseReviewActive(bank)) return;
+    if (!candidate || this.hydratingReview) return;
     const value = (bank ? this.bankEditor : this.editor).getRawValue();
+    if (
+      !this.purchaseReviewActive(bank) &&
+      candidate.kind !== 'PLUXEE_PURCHASE' &&
+      !value.splitTarget
+    )
+      return;
     const draft: PurchaseReviewDraft = {
       mode: bank ? 'BANK' : 'CARD',
       source: value.source,
@@ -432,6 +465,7 @@ export class SmsSyncPage {
       category: value.category,
       existing: value.existing,
       separate: value.separate,
+      splitTargetId: value.splitTarget || undefined,
       paymentMethod: value.paymentMethod,
       paymentMethodDetail: value.paymentMethodDetail,
       paymentMethodCustom: value.paymentMethodCustom,
@@ -452,11 +486,28 @@ export class SmsSyncPage {
       if (!draft || this.selected()?.id !== candidate.id || this.reviewRevision !== revision)
         return;
       const bank = draft.mode === 'BANK';
-      if (!this.purchaseReviewActive(bank)) return;
+      if (!this.purchaseReviewActive(bank) && candidate.kind !== 'PLUXEE_PURCHASE') return;
+      let verifiedSplit = '';
+      if (draft.splitTargetId) {
+        const proposal = await this.sync.splitSuggestion(candidate, draft.source);
+        if (this.selected()?.id !== candidate.id || this.reviewRevision !== revision) return;
+        if (
+          proposal?.targetId === draft.splitTargetId &&
+          draft.transactionDate === candidate.item?.eventDate &&
+          parseMoneyToMinor(draft.amount) === candidate.item?.amountMinor
+        )
+          verifiedSplit = draft.splitTargetId;
+        else
+          this.notice.set(
+            'The saved split choice needs a fresh continuity review. No grouping is selected.',
+          );
+      }
       this.hydratingReview = true;
-      const { mode, merchant, ...values } = draft;
-      if (mode === 'BANK') this.bankEditor.patchValue({ ...values, description: merchant });
-      else this.editor.patchValue({ ...values, merchant });
+      const { mode, merchant, splitTargetId, ...values } = draft;
+      const splitTarget = splitTargetId ? verifiedSplit : '';
+      if (mode === 'BANK')
+        this.bankEditor.patchValue({ ...values, description: merchant, splitTarget });
+      else this.editor.patchValue({ ...values, merchant, splitTarget });
       const form = bank ? this.bankEditor : this.editor;
       if (
         draft.existing &&
@@ -484,6 +535,7 @@ export class SmsSyncPage {
     amount: new FormControl('', { nonNullable: true, validators: Validators.required }),
     merchant: new FormControl('', { nonNullable: true, validators: Validators.maxLength(100) }),
     existing: new FormControl('', { nonNullable: true }),
+    splitTarget: new FormControl('', { nonNullable: true }),
     reconciliation: new FormControl<ReconciliationChoice>('PENDING', {
       nonNullable: true,
     }),
@@ -600,12 +652,17 @@ export class SmsSyncPage {
   });
   sourceLabel(candidate: SmsCandidate): string {
     this.editorChanges();
+    this.bankEditorChanges();
     const smsDigits = candidate.item?.cardDigits;
     if (candidate.state === 'IMPORTED') return 'Added from SMS · Recorded transaction';
     if (candidate.state === 'MATCHED_EXISTING')
       return 'Already added · Matched to existing transaction';
     if (isBankEvidence(candidate.item)) {
       const matches = matchingBankAccounts(candidate.item, this.store.paymentSources());
+      const chosen =
+        this.selected()?.id === candidate.id ? this.bankEditor.controls.source.value : '';
+      if (chosen && (matches.length !== 1 || matches[0].id !== chosen))
+        return `Manually selected bank source: ${this.store.sourceDetail(chosen)}. This selection is not automatic SMS identity verification; check the bank and account before approval.`;
       if (matches.length === 1) return this.store.sourceDetail(matches[0].id);
       return matches.length > 1
         ? `Ambiguous · ${matches.length} matching accounts; choose one`
@@ -658,6 +715,7 @@ export class SmsSyncPage {
     transactionDate: new FormControl('', { nonNullable: true }),
     category: new FormControl('other', { nonNullable: true }),
     existing: new FormControl('', { nonNullable: true }),
+    splitTarget: new FormControl('', { nonNullable: true }),
     counterparty: new FormControl('', { nonNullable: true }),
     existingTransfer: new FormControl('', { nonNullable: true }),
     card: new FormControl('', { nonNullable: true }),
@@ -990,6 +1048,7 @@ export class SmsSyncPage {
           existingTransferId: value.existingTransfer || undefined,
           cardId: value.card || undefined,
           allowSeparate: value.separate,
+          splitTargetId: value.splitTarget || undefined,
           baselineTiming: value.timing || undefined,
           ...annotation,
         });
@@ -1040,7 +1099,7 @@ export class SmsSyncPage {
         return 'Linked record unavailable. The original review decision is retained; inspect Activity before recording anything again.';
       if (
         candidate.item &&
-        (target.type !== ledgerType(candidate.item) ||
+        (!matchesTransactionType(target, ledgerType(candidate.item)) ||
           target.amountMinor !== candidate.item.amountMinor ||
           target.transactionDate !== candidate.item.eventDate)
       )
@@ -1189,6 +1248,55 @@ export class SmsSyncPage {
   });
   constructor() {
     const destroyRef = inject(DestroyRef);
+    let splitKey = '';
+    let splitLedger: readonly unknown[] = [];
+    effect(() => {
+      this.editorChanges();
+      this.bankEditorChanges();
+      const candidate = this.selected();
+      const item = candidate?.item;
+      const ledger = this.store.transactions();
+      const bank = !!this.bankItem();
+      const value = (bank ? this.bankEditor : this.editor).getRawValue();
+      const key = [
+        candidate?.id,
+        value.source,
+        value.amount,
+        value.transactionDate,
+        bank ? this.bankPurpose() : 'CARD',
+      ].join('|');
+      if (key === splitKey && ledger === splitLedger) return;
+      splitKey = key;
+      splitLedger = ledger;
+      this.splitProposal.set(null);
+      if (
+        !candidate ||
+        !item ||
+        !['PENDING', 'DEFERRED'].includes(candidate.state) ||
+        !value.source ||
+        value.transactionDate !== item.eventDate ||
+        parseMoneyToMinor(value.amount) !== item.amountMinor ||
+        (bank
+          ? this.bankPurpose() !== 'PURCHASE'
+          : !['PURCHASE', 'PLUXEE_PURCHASE'].includes(item.kind))
+      )
+        return;
+      void this.sync
+        .splitSuggestion(candidate, value.source)
+        .then((proposal) => {
+          if (splitKey === key && this.selected()?.id === candidate.id) {
+            this.splitProposal.set(proposal);
+            const control = (bank ? this.bankEditor : this.editor).controls.splitTarget;
+            if (control.value && control.value !== proposal?.targetId) {
+              control.setValue('');
+              this.notice.set(
+                'Split continuity changed. Review the grouping choice again before approval.',
+              );
+            }
+          }
+        })
+        .catch(() => this.splitProposal.set(null));
+    });
     for (const [mode, form] of [
       ['CARD', this.editor],
       ['BANK', this.bankEditor],
@@ -1204,10 +1312,11 @@ export class SmsSyncPage {
           value.transactionDate,
           'purpose' in value ? value.purpose : '',
         ].join('|');
-        const purchase = this.purchaseReviewActive(mode === 'BANK');
+        const purchase = this.purchaseReviewActive(mode === 'BANK') || !!value.splitTarget;
         if (!this.hydratingReview && (purchase || wasPurchase) && key !== identity) {
           form.controls.existing.setValue('', { emitEvent: false });
           form.controls.separate.setValue(false, { emitEvent: false });
+          form.controls.splitTarget.setValue('', { emitEvent: false });
         }
         identity = key;
         wasPurchase = purchase;
@@ -1216,6 +1325,14 @@ export class SmsSyncPage {
       changes.pipe(debounceTime(250), takeUntilDestroyed(destroyRef)).subscribe(() => {
         void this.savePurchaseChoice(mode === 'BANK');
       });
+      form.controls.existing.valueChanges.pipe(takeUntilDestroyed(destroyRef)).subscribe((id) => {
+        if (id) form.controls.splitTarget.setValue('', { emitEvent: false });
+      });
+      form.controls.separate.valueChanges
+        .pipe(takeUntilDestroyed(destroyRef))
+        .subscribe((separate) => {
+          if (separate) form.controls.splitTarget.setValue('', { emitEvent: false });
+        });
     }
     inject(DestroyRef).onDestroy(() => {
       this.sync.candidates.set([]);
@@ -1513,6 +1630,7 @@ export class SmsSyncPage {
         transactionDate: item.eventDate,
         category: defaultBankCategory(purpose, item.merchant, this.store.categories()),
         existing: '',
+        splitTarget: '',
         counterparty: '',
         existingTransfer: '',
         card: '',
@@ -1541,6 +1659,7 @@ export class SmsSyncPage {
       amount: String((candidate.item?.amountMinor ?? 0) / 100),
       merchant: merchantTitle(candidate.item, candidate.kind),
       existing: '',
+      splitTarget: '',
       reconciliation: 'PENDING',
       separate: false,
       statementDate: '',
@@ -1563,7 +1682,11 @@ export class SmsSyncPage {
     });
     this.hydratingReview = false;
     const revision = this.reviewRevision;
-    if (candidate.kind === 'PURCHASE' || isBankEvidence(candidate.item))
+    if (
+      candidate.kind === 'PURCHASE' ||
+      candidate.kind === 'PLUXEE_PURCHASE' ||
+      isBankEvidence(candidate.item)
+    )
       void this.restorePurchaseReview(candidate, revision);
     queueMicrotask(() => document.getElementById('sms-review-heading')?.focus());
   }
@@ -1712,6 +1835,7 @@ export class SmsSyncPage {
             relatedTransactionId: value.relatedPurchase || undefined,
             fundingSourceId: value.funding || undefined,
             fundingTiming: value.fundingTiming || undefined,
+            splitTargetId: value.splitTarget || undefined,
             ...annotation,
           },
         );

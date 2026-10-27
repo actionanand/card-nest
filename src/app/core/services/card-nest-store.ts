@@ -12,6 +12,7 @@ import {
   LoanCommitment,
   MonthlyIncomeRecord,
   PaymentSource,
+  PaymentGroup,
   RecurringRule,
   SourceBalanceAdjustment,
   SourceTransfer,
@@ -45,6 +46,13 @@ import {
   toIsoDate,
 } from './billing-cycle';
 import { calculateNetSpending, calculateOutstanding, transactionEffect } from './money';
+import {
+  attachPaymentGroup,
+  detachPaymentGroup,
+  eligiblePaymentMember,
+  PaymentGroupEdits,
+  readPaymentGroups,
+} from './payment-groups';
 import { indiaTimeOfDay, indiaTodayIso } from './india-date';
 import { APP_ENVIRONMENT } from './app-environment';
 import { initialiseAppData } from '../data/app-initialization';
@@ -263,6 +271,8 @@ export class CardNestStore {
   private dataWasCleared = false;
   readonly cards = signal<readonly CreditCard[]>([]);
   readonly transactions = signal<readonly CardTransaction[]>([]);
+  readonly paymentGroups = signal<readonly PaymentGroup[]>([]);
+  readonly transactionWriteError = signal('');
   readonly categories = signal<readonly Category[]>(CATEGORIES);
   readonly paymentSources = signal<readonly PaymentSource[]>(PAYMENT_SOURCES);
   readonly recurringRules = signal<readonly RecurringRule[]>([]);
@@ -749,6 +759,160 @@ export class CardNestStore {
     this.cards.update((cards) => cards.map((card) => (card.id === updated.id ? updated : card)));
     void this.persistCard(updated);
   }
+  async refreshPaymentGroups(): Promise<void> {
+    if (this.database.ready()) this.paymentGroups.set(await readPaymentGroups(this.database));
+  }
+  async refreshPaymentLedger(): Promise<void> {
+    await this.loadTransactions();
+  }
+
+  async combinePayments(
+    ids: readonly string[],
+    targetId = ids[0],
+    edits: PaymentGroupEdits = {},
+  ): Promise<string> {
+    if (!this.database.ready()) throw new Error('Database is not ready.');
+    const id = await this.database.atomic((tx) => attachPaymentGroup(tx, ids, targetId, edits));
+    await this.loadTransactions();
+    return id;
+  }
+
+  async removePaymentMember(id: string, dissolve = false): Promise<void> {
+    await this.database.atomic((tx) => detachPaymentGroup(tx, id, dissolve));
+    await this.loadTransactions();
+  }
+
+  async updatePaymentGroup(id: string, edits: PaymentGroupEdits): Promise<void> {
+    await this.database.atomic(async (tx) => {
+      const group = (await readPaymentGroups(tx)).find((row) => row.id === id);
+      if (!group) throw new Error('Payment group no longer exists.');
+      const bill = edits.billTotalMinor === undefined ? group.billTotalMinor : edits.billTotalMinor;
+      if (bill !== null && (!Number.isSafeInteger(bill) || bill < 0))
+        throw new Error('Enter a valid bill total.');
+      await tx.run(
+        'UPDATE transaction_split_groups SET title=?,bill_total_minor=?,updated_at=? WHERE id=?',
+        [(edits.title ?? group.title).trim().slice(0, 150), bill, new Date().toISOString(), id],
+      );
+    });
+    await this.loadTransactions();
+  }
+
+  /** Manual saves publish only after all ledger, grouping and balance writes commit. */
+  async saveManualTransaction(
+    transaction: CardTransaction,
+    targetId = '',
+    unlinkConfirmed = false,
+  ): Promise<void> {
+    if (!this.database.ready()) throw new Error('Database is not ready.');
+    const result = await this.database.atomic(async (tx) => {
+      const [row] = await tx.query<{ payload: string }>(
+        'SELECT payload FROM card_transactions WHERE id=?',
+        [transaction.id],
+      );
+      const previous = row ? (JSON.parse(row.payload) as CardTransaction) : null;
+      if (
+        !Number.isSafeInteger(transaction.amountMinor) ||
+        transaction.amountMinor <= 0 ||
+        !validTransferDate(transaction.transactionDate)
+      )
+        throw new Error('Enter a valid amount and transaction date.');
+      const sources = await this.readStoredSources(tx);
+      const card = this.cards().find((item) => item.id === transaction.cardId && !item.deletedAt);
+      if (!card && !sources.some((item) => item.id === transaction.cardId))
+        throw new Error('Choose an existing payment source.');
+      if (transaction.currencyCode !== (card?.currencyCode ?? 'INR'))
+        throw new Error('The payment currency differs from the source.');
+      if (targetId === transaction.id) throw new Error('A payment cannot link to itself.');
+      const next = { ...transaction };
+      if (previous?.sourceBalanceApplied === false && previous.cardId !== next.cardId)
+        next.sourceBalanceApplied = true;
+      const previousGroup = (await readPaymentGroups(tx)).find((group) =>
+        group.memberIds.includes(next.id),
+      );
+      if (previousGroup) next.splitGroupId = previousGroup.id;
+      if (
+        previousGroup &&
+        eligiblePaymentMember(next) &&
+        previousGroup.currency !== next.currencyCode
+      )
+        throw new Error('Unlink this payment before changing its currency.');
+      if (next.type === 'ADJUSTMENT') {
+        if (targetId) {
+          if (previous?.adjustmentPurpose === 'BALANCE_RECONCILIATION')
+            throw new Error(
+              'A verified balance correction is not a merchant payment. Record the real payment separately.',
+            );
+          if (next.adjustmentDirection === 'DECREASE')
+            throw new Error(
+              'A decreasing legacy adjustment cannot be a new positive Split payment.',
+            );
+          next.adjustmentPurpose = 'SPLIT_PAYMENT';
+          next.adjustmentDirection = 'INCREASE';
+          const group = (await readPaymentGroups(tx)).find(
+            (item) => item.id === targetId || item.memberIds.includes(targetId),
+          );
+          const anchorId = group?.anchorId ?? targetId;
+          if (anchorId === next.id && !previousGroup)
+            throw new Error('A payment cannot link to itself.');
+          next.relatedTransactionId = anchorId === next.id ? undefined : (anchorId ?? undefined);
+        } else if (
+          !previous ||
+          previous.type !== 'ADJUSTMENT' ||
+          (previous.adjustmentPurpose === 'SPLIT_PAYMENT' && !!previous.splitGroupId)
+        )
+          throw new Error('Choose the related purchase or payment group for this Split payment.');
+        else {
+          next.adjustmentPurpose = previous.adjustmentPurpose ?? 'LEGACY_MANUAL';
+          if (
+            next.relatedTransactionId &&
+            !(
+              await tx.query('SELECT id FROM card_transactions WHERE id=?', [
+                next.relatedTransactionId,
+              ])
+            ).length
+          )
+            next.relatedTransactionId = undefined;
+        }
+      } else {
+        next.adjustmentPurpose = undefined;
+        next.adjustmentDirection = undefined;
+        if (next.type !== 'REFUND') next.relatedTransactionId = undefined;
+      }
+      if (
+        previous &&
+        previousGroup &&
+        (!eligiblePaymentMember(next) || (previous.type !== next.type && !targetId))
+      ) {
+        if (!unlinkConfirmed)
+          throw new Error('Confirm removing this payment from its group before changing its type.');
+        await detachPaymentGroup(tx, next.id);
+        next.splitGroupId = undefined;
+      }
+      const saved = await this.writeTransaction(tx, next);
+      if (previous && previous.type !== next.type) {
+        const note = `MANUAL_TYPE_CHANGE:${previous.type}->${next.type}`;
+        await tx.run(
+          "UPDATE sms_candidates SET decision='EXPLICIT_TYPE_CHANGE: '||COALESCE(decision,'')||'; '||? WHERE transaction_id=? AND state IN ('IMPORTED','MATCHED_EXISTING')",
+          [note, next.id],
+        );
+        await tx.run("UPDATE sms_reconciliation SET decision=decision||'; '||? WHERE target_id=?", [
+          note,
+          next.id,
+        ]);
+      }
+      if (targetId && next.type === 'ADJUSTMENT') await attachPaymentGroup(tx, [next.id], targetId);
+      return saved;
+    });
+    this.publishStoredBalances(result.wallets);
+    await this.loadTransactions();
+    if (result.fundingChanged) await this.loadTransfers();
+  }
+
+  async deleteRecordedTransaction(id: string): Promise<void> {
+    await this.removePersistedTransaction(id);
+    await this.loadTransactions();
+  }
+
   addTransaction(transaction: CardTransaction): void {
     this.transactions.update((items) => {
       const updated = [transaction, ...items];
@@ -799,6 +963,19 @@ export class CardNestStore {
     if (!existing) return false;
     if (existing.sourceBalanceApplied === false && updated.cardId !== existing.cardId)
       updated = { ...updated, sourceBalanceApplied: true };
+    if (existing.splitGroupId) {
+      void this.saveManualTransaction(
+        updated,
+        updated.type === 'ADJUSTMENT' && updated.adjustmentPurpose === 'SPLIT_PAYMENT'
+          ? (updated.relatedTransactionId ?? '')
+          : '',
+      ).catch((error: unknown) =>
+        this.transactionWriteError.set(
+          error instanceof Error ? error.message : 'Unable to save grouped payment.',
+        ),
+      );
+      return true;
+    }
     this.adjustPaymentSourceBalance(existing, -1);
     this.transactions.update((items) => {
       const next = items.map((transaction) =>
@@ -814,6 +991,14 @@ export class CardNestStore {
   deleteTransaction(transactionId: string): boolean {
     const existing = this.transactions().find((transaction) => transaction.id === transactionId);
     if (!existing) return false;
+    if (existing.splitGroupId) {
+      void this.deleteRecordedTransaction(transactionId).catch((error: unknown) =>
+        this.transactionWriteError.set(
+          error instanceof Error ? error.message : 'Unable to delete grouped payment.',
+        ),
+      );
+      return true;
+    }
     this.adjustPaymentSourceBalance(existing, -1);
     this.transactions.update((items) => {
       const next = items.filter((transaction) => transaction.id !== transactionId);
@@ -934,32 +1119,121 @@ export class CardNestStore {
     }
   }
 
-  splitTransaction(
+  async splitTransaction(
     transactionId: string,
-    parts: readonly { sourceId: string; amountMinor: number }[],
-  ): readonly CardTransaction[] {
-    const original = this.transactions().find((item) => item.id === transactionId);
-    if (!original || parts.length < 2 || parts.length > 4) return [];
-    const total = parts.reduce((sum, part) => sum + part.amountMinor, 0);
-    if (total !== original.amountMinor) return [];
-    const groupId = crypto.randomUUID();
-    const timestamp = new Date().toISOString();
-    const splitTransactions = parts.map((part, index): CardTransaction => ({
-      ...original,
-      id: index === 0 ? original.id : crypto.randomUUID(),
-      cardId: part.sourceId,
-      amountMinor: part.amountMinor,
-      splitGroupId: groupId,
-      splitOriginalAmountMinor: original.amountMinor,
-      emiPlanId: undefined,
-      createdAt: index === 0 ? original.createdAt : timestamp,
-      updatedAt: timestamp,
-    }));
-    this.updateTransaction(splitTransactions[0]);
-    for (const transaction of splitTransactions.slice(1)) this.addTransaction(transaction);
-    if (this.database.ready())
-      void this.persistSplitGroup(groupId, original.amountMinor, splitTransactions);
-    return splitTransactions;
+    parts: readonly { sourceId: string; amountMinor: number; balanceTiming?: BalanceTiming }[],
+  ): Promise<readonly CardTransaction[]> {
+    const result = await this.database.atomic(async (tx) => {
+      const [row] = await tx.query<{ payload: string }>(
+        'SELECT payload FROM card_transactions WHERE id=?',
+        [transactionId],
+      );
+      const original = row ? (JSON.parse(row.payload) as CardTransaction) : null;
+      if (
+        !original ||
+        !eligiblePaymentMember(original) ||
+        original.emiPlanId ||
+        original.recurringRuleId ||
+        (await readPaymentGroups(tx)).some((group) => group.memberIds.includes(transactionId))
+      )
+        throw new Error(
+          'Only an ungrouped positive purchase payment without EMI or recurrence can be divided.',
+        );
+      if (
+        parts.length < 2 ||
+        parts.some((part) => !Number.isSafeInteger(part.amountMinor) || part.amountMinor <= 0) ||
+        parts.reduce((sum, part) => sum + part.amountMinor, 0) !== original.amountMinor
+      )
+        throw new Error('Payment parts must be positive and total the original amount.');
+      const sources = await this.readStoredSources(tx);
+      const timestamp = new Date().toISOString();
+      const entries: CardTransaction[] = [];
+      for (const [index, part] of parts.entries()) {
+        const card = this.cards().find((item) => item.id === part.sourceId && !item.deletedAt);
+        if (!card && !sources.some((item) => item.id === part.sourceId))
+          throw new Error('Choose an existing payment source.');
+        if ((card?.currencyCode ?? 'INR') !== original.currencyCode)
+          throw new Error('Payment currencies must match.');
+        const entry: CardTransaction = {
+          ...original,
+          id: index === 0 ? original.id : crypto.randomUUID(),
+          cardId: part.sourceId,
+          amountMinor: part.amountMinor,
+          splitOriginalAmountMinor: original.amountMinor,
+          balanceTiming: part.balanceTiming ?? (index === 0 ? original.balanceTiming : undefined),
+          balanceTimingAt: part.balanceTiming
+            ? timestamp
+            : index === 0
+              ? original.balanceTimingAt
+              : undefined,
+          ...(index === 0
+            ? {}
+            : {
+                origin: 'MANUAL' as const,
+                reference: undefined,
+                attachmentIds: [],
+                notes: undefined,
+                transactionTime: undefined,
+                relatedTransactionId: undefined,
+                balanceEffect: undefined,
+                sourceBalanceApplied: undefined,
+                bankName: undefined,
+                accountSuffix: undefined,
+                paymentMethod: undefined,
+                paymentMethodDetail: undefined,
+                paymentMethodCustom: undefined,
+                smsAdditionalComment: undefined,
+              }),
+          createdAt: index === 0 ? original.createdAt : timestamp,
+          updatedAt: timestamp,
+        };
+        if (
+          index === 0 &&
+          original.sourceBalanceApplied === false &&
+          original.cardId !== entry.cardId
+        )
+          entry.sourceBalanceApplied = true;
+        const saved = await this.writeTransaction(tx, entry);
+        entries.push(saved.persisted);
+      }
+      const groupId = crypto.randomUUID();
+      await tx.run(
+        `INSERT INTO transaction_split_groups(id,original_amount_minor,created_at,kind,anchor_transaction_id,title,currency_code,bill_total_minor,updated_at) VALUES(?,?,?,'DIVISION',?,?,?,?,?)`,
+        [
+          groupId,
+          original.amountMinor,
+          timestamp,
+          original.id,
+          original.merchant ?? '',
+          original.currencyCode,
+          original.amountMinor,
+          timestamp,
+        ],
+      );
+      for (const entry of entries) {
+        await tx.run('INSERT INTO transaction_split_members(group_id,transaction_id) VALUES(?,?)', [
+          groupId,
+          entry.id,
+        ]);
+        await tx.run('UPDATE card_transactions SET payload=? WHERE id=?', [
+          JSON.stringify({ ...entry, splitGroupId: groupId }),
+          entry.id,
+        ]);
+      }
+      const note = `EXPLICIT_DIVISION:${groupId}`;
+      await tx.run(
+        "UPDATE sms_candidates SET decision=?||'; '||COALESCE(decision,'') WHERE transaction_id=? AND state IN ('IMPORTED','MATCHED_EXISTING')",
+        [note, original.id],
+      );
+      await tx.run("UPDATE sms_reconciliation SET decision=decision||'; '||? WHERE target_id=?", [
+        note,
+        original.id,
+      ]);
+      return entries.map((entry) => ({ ...entry, splitGroupId: groupId }));
+    });
+    await this.loadTransactions();
+    this.publishStoredBalances(await this.readStoredSources(this.database));
+    return result;
   }
   addRecurringRule(rule: RecurringRule): void {
     this.recurringRules.update((rules) => [...rules, rule]);
@@ -1577,6 +1851,7 @@ export class CardNestStore {
     await this.database.deleteAllData();
     this.cards.set([]);
     this.transactions.set([]);
+    this.paymentGroups.set([]);
     this.categories.set(CATEGORIES);
     this.paymentSources.set(PAYMENT_SOURCES);
     this.recurringRules.set([]);
@@ -1962,6 +2237,7 @@ export class CardNestStore {
   }
 
   private async loadTransactions(): Promise<void> {
+    await this.refreshPaymentGroups();
     const rows = await this.database.query<{ payload: string }>(
       'SELECT payload FROM card_transactions ORDER BY transaction_date DESC, created_at DESC',
     );
@@ -2071,43 +2347,61 @@ export class CardNestStore {
 
   private async persistTransaction(transaction: CardTransaction): Promise<void> {
     if (!this.database.ready()) return;
-    const result = await this.database.atomic(async (tx) => {
-      const [stored] = await tx.query<{ payload: string }>(
-        'SELECT payload FROM card_transactions WHERE id = ?',
-        [transaction.id],
-      );
-      const previous = stored ? (JSON.parse(stored.payload) as CardTransaction) : null;
-      const wallets = await this.readStoredSources(tx);
-      const settings = await this.readTrackingSettings(tx);
-      const now = new Date().toISOString();
+    const result = await this.database.atomic((tx) => this.writeTransaction(tx, transaction));
+    this.publishStoredBalances(result.wallets);
+    if (result.fundingChanged) await this.loadTransfers();
+  }
+
+  private async writeTransaction(tx: DatabaseSession, transaction: CardTransaction) {
+    const [stored] = await tx.query<{ payload: string }>(
+      'SELECT payload FROM card_transactions WHERE id = ?',
+      [transaction.id],
+    );
+    const previous = stored ? (JSON.parse(stored.payload) as CardTransaction) : null;
+    const wallets = await this.readStoredSources(tx);
+    const settings = await this.readTrackingSettings(tx);
+    const now = new Date().toISOString();
+    const metadataOnly =
+      previous &&
+      previous.cardId === transaction.cardId &&
+      previous.amountMinor === transaction.amountMinor &&
+      previous.transactionDate === transaction.transactionDate &&
+      previous.transactionTime === transaction.transactionTime &&
+      transactionEffect(previous) === transactionEffect(transaction) &&
+      previous.sourceBalanceApplied === transaction.sourceBalanceApplied &&
+      previous.balanceTiming === transaction.balanceTiming &&
+      previous.balanceTimingAt === transaction.balanceTimingAt;
+    let persisted: CardTransaction;
+    if (metadataOnly)
+      persisted = {
+        ...transaction,
+        balanceEffect: previous.balanceEffect,
+        sourceBalanceApplied: previous.sourceBalanceApplied,
+        balanceTiming: previous.balanceTiming,
+        balanceTimingAt: previous.balanceTimingAt,
+      };
+    else {
       applyWalletTransaction(wallets, previous, -1);
       applyWalletTransaction(wallets, transaction, 1);
       reverseBalanceEffect(wallets, previous?.balanceEffect, settings);
-      const persisted = applyBankCashTransaction(wallets, previous, transaction, settings, now);
-      await this.upsertTransactionRow(tx, persisted);
-      await tx.run('DELETE FROM transaction_links WHERE transaction_id = ?', [transaction.id]);
-      if (
-        transaction.relatedTransactionId &&
-        (transaction.type === 'REFUND' || transaction.type === 'ADJUSTMENT')
-      ) {
-        await tx.run(
-          `INSERT INTO transaction_links
+      persisted = applyBankCashTransaction(wallets, previous, transaction, settings, now);
+    }
+    await this.upsertTransactionRow(tx, persisted);
+    await tx.run('DELETE FROM transaction_links WHERE transaction_id = ?', [transaction.id]);
+    if (
+      transaction.relatedTransactionId &&
+      (transaction.type === 'REFUND' || transaction.type === 'ADJUSTMENT')
+    ) {
+      await tx.run(
+        `INSERT INTO transaction_links
          (transaction_id, related_transaction_id, relationship_type, created_at)
          VALUES (?, ?, ?, ?)`,
-          [
-            transaction.id,
-            transaction.relatedTransactionId,
-            transaction.type,
-            transaction.createdAt,
-          ],
-        );
-      }
-      const fundingChanged = await this.syncCardFunding(tx, wallets, settings, persisted, now);
-      if (wallets.length) await this.writeStoredSources(tx, wallets);
-      return { wallets, fundingChanged };
-    });
-    this.publishStoredBalances(result.wallets);
-    if (result.fundingChanged) await this.loadTransfers();
+        [transaction.id, transaction.relatedTransactionId, transaction.type, transaction.createdAt],
+      );
+    }
+    const fundingChanged = await this.syncCardFunding(tx, wallets, settings, persisted, now);
+    if (wallets.length) await this.writeStoredSources(tx, wallets);
+    return { wallets, fundingChanged, persisted };
   }
 
   private async upsertTransactionRow(
@@ -2295,6 +2589,7 @@ export class CardNestStore {
         reverseTransferEffects(wallets, JSON.parse(funding.payload) as SourceTransfer, settings);
         await tx.run('DELETE FROM source_transfers WHERE payment_transaction_id=?', [id]);
       }
+      await detachPaymentGroup(tx, id);
       await tx.run('DELETE FROM card_transactions WHERE id=?', [id]);
       if (wallets.length) await this.writeStoredSources(tx, wallets);
       return { wallets, funding: !!funding };
@@ -2359,25 +2654,6 @@ export class CardNestStore {
           installment.paid ? 1 : 0,
           JSON.stringify(installment),
         ],
-      );
-    }
-  }
-
-  private async persistSplitGroup(
-    groupId: string,
-    originalAmountMinor: number,
-    transactions: readonly CardTransaction[],
-  ): Promise<void> {
-    for (const transaction of transactions) await this.persistTransaction(transaction);
-    await this.database.run(
-      `INSERT INTO transaction_split_groups (id, original_amount_minor, created_at)
-       VALUES (?, ?, ?)`,
-      [groupId, originalAmountMinor, new Date().toISOString()],
-    );
-    for (const transaction of transactions) {
-      await this.database.run(
-        `INSERT INTO transaction_split_members (group_id, transaction_id) VALUES (?, ?)`,
-        [groupId, transaction.id],
       );
     }
   }

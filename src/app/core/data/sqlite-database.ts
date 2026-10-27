@@ -1,7 +1,7 @@
 import { CapacitorSQLite } from '@capacitor-community/sqlite';
 import { Capacitor } from '@capacitor/core';
 import { Service, signal } from '@angular/core';
-import { DATABASE_MIGRATIONS } from './migrations';
+import { CLASSIFY_LEGACY_ADJUSTMENTS, DATABASE_MIGRATIONS } from './migrations';
 import { clearPlatformDiscovery, prunePlatformDiscovery } from './platform-data';
 import { INITIAL_DATA_KEY } from './app-initialization';
 
@@ -446,7 +446,7 @@ export class SqliteDatabase {
         database: this.databaseName,
         statement:
           name === 'sms_candidates'
-            ? `SELECT id, provider_id, event_at, kind, state, NULL AS payload, transaction_id, updated_at, decision, read_at FROM sms_candidates`
+            ? `SELECT id, provider_id, event_at, kind, state, NULL AS payload, transaction_id, updated_at, decision, read_at, received_at FROM sms_candidates`
             : `SELECT * FROM ${name}`,
         values: [],
       });
@@ -524,6 +524,13 @@ export class SqliteDatabase {
         }
       }
       await flushInserts();
+      await CapacitorSQLite.execute({
+        database: this.databaseName,
+        transaction: false,
+        statements: `${CLASSIFY_LEGACY_ADJUSTMENTS};
+        UPDATE transaction_split_groups SET anchor_transaction_id=(SELECT transaction_id FROM transaction_split_members WHERE group_id=transaction_split_groups.id ORDER BY transaction_id LIMIT 1) WHERE anchor_transaction_id IS NULL;
+        UPDATE transaction_split_groups SET currency_code=COALESCE((SELECT currency_code FROM card_transactions WHERE id=anchor_transaction_id),'INR'),updated_at=created_at WHERE updated_at='';`,
+      });
       await CapacitorSQLite.run({
         database: this.databaseName,
         statement: `INSERT INTO app_preferences(key,encrypted_value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET encrypted_value=excluded.encrypted_value`,
