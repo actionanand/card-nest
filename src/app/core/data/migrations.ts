@@ -138,4 +138,11 @@ export const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
       CLASSIFY_LEGACY_ADJUSTMENTS,
     ],
   },
+  {
+    version: 13,
+    statements: [
+      `CREATE TABLE category_catalog_state (canonical_id TEXT PRIMARY KEY NOT NULL,category_id TEXT REFERENCES categories(id) ON DELETE SET NULL,deleted INTEGER NOT NULL DEFAULT 0 CHECK(deleted IN (0,1)))`,
+      `CREATE TABLE category_catalog_conflicts (id TEXT PRIMARY KEY NOT NULL,category_id TEXT NOT NULL,details TEXT NOT NULL,created_at TEXT NOT NULL)`,
+    ],
+  },
 ];

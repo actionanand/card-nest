@@ -48,6 +48,228 @@ vi.mock('@capacitor-community/sqlite', () => ({
 
 /** Real SQLite behind the native plugin contract. Every identifier here is fictional. */
 describe('Bank/UPI and Cash tracking with SQLite', () => {
+  it('reconciles old portable category backups on restore without changing history, deleted old defaults or custom IDs', async () => {
+    const { store } = await boot();
+    const item = purchase({
+      id: 'old-category-payment',
+      categoryId: 'groceries',
+      reference: 'KEEP',
+    });
+    await store.saveManualTransaction(item);
+    const backup = JSON.parse(await database.exportBackupJson()) as {
+      databaseVersion: number;
+      tables: { name: string; rows: Record<string, unknown>[] }[];
+    };
+    backup.databaseVersion = 12;
+    backup.tables = backup.tables.filter(
+      (table) => !['category_catalog_state', 'category_catalog_conflicts'].includes(table.name),
+    );
+    const prefs = backup.tables.find((table) => table.name === 'app_preferences')!;
+    prefs.rows = prefs.rows.filter((row) => row['key'] !== 'category_catalog_version');
+    const categories = backup.tables.find((table) => table.name === 'categories')!;
+    categories.rows = categories.rows
+      .filter(
+        (row) =>
+          ![
+            'meat-dairy',
+            'fresh-produce',
+            'tech-gadgets',
+            'household',
+            'kids',
+            'digital-goods',
+            'snacks-pastry',
+            'indulgences',
+            'education',
+            'dining',
+          ].includes(String(row['id'])),
+      )
+      .map((row) =>
+        row['id'] === 'groceries'
+          ? { ...row, name: 'Groceries' }
+          : row['id'] === 'travel'
+            ? { ...row, name: 'Travel' }
+            : row,
+      );
+    categories.rows.push({
+      id: 'old-user-kids',
+      name: '  KIDS  ',
+      icon: 'custom',
+      colour: '#123456',
+      applies_to: 'BOTH',
+      archived: 0,
+    });
+    await database.restoreBackupJson(JSON.stringify(backup));
+    await store.initialisePreferences();
+    expect(store.categories().find((row) => row.id === 'groceries')?.name).toBe('Pantry Staples');
+    expect(store.categories().find((row) => row.id === 'travel')?.name).toBe('Travel & Lodging');
+    expect(store.categories().find((row) => row.id === 'old-user-kids')).toMatchObject({
+      name: 'Kids',
+      colour: '#123456',
+      icon: 'custom',
+    });
+    expect(store.categories().some((row) => row.id === 'kids' || row.id === 'dining')).toBe(false);
+    expect(store.transactions().find((row) => row.id === item.id)?.reference).toBe('KEEP');
+    expect(rows('PRAGMA foreign_key_check')).toEqual([]);
+  });
+  it('serializes filter restoration after older saves, persists canonical defaults and rolls back failed preferences without financial changes', async () => {
+    const { store, review } = await boot();
+    const sources = store.paymentSources();
+    const history = count('sms_candidates');
+    const changed = {
+      ...defaultReviewFilters(),
+      search: 'earlier',
+      state: 'ALL',
+      kind: 'BANK_DEBIT',
+      read: 'ALL',
+      hideAlreadyAdded: false,
+      sortOrder: 'TRANSACTION_DESC' as const,
+    };
+    await Promise.all([review.filterReview(changed), review.filterReview(defaultReviewFilters())]);
+    expect(await review.loadReviewFilters()).toEqual(defaultReviewFilters());
+    expect(review.reviewPage()).toBe(0);
+    sql.exec(
+      "CREATE TRIGGER fail_filters BEFORE UPDATE ON app_preferences WHEN NEW.key='sms_review_filters' BEGIN SELECT RAISE(ABORT,'synthetic filter failure'); END",
+    );
+    await expect(review.filterReview(changed)).rejects.toThrow('synthetic filter failure');
+    expect(await review.loadReviewFilters()).toEqual(defaultReviewFilters());
+    expect(store.paymentSources()).toEqual(sources);
+    expect(count('sms_candidates')).toBe(history);
+    expect(count('card_transactions')).toBe(0);
+  });
+  it('deletes a category with SQLite rollback safety and encrypted backup tombstones, preserving actual payment metadata', async () => {
+    const { store } = await boot();
+    const recorded = (id: string) =>
+      JSON.parse(
+        String(rows('SELECT payload FROM card_transactions WHERE id=?', [id])[0]['payload']),
+      ) as CardTransaction;
+    const original = purchase({
+      id: 'category-payment',
+      categoryId: 'kids',
+      reference: 'UNCHANGED',
+      origin: 'SMS',
+      attachmentIds: ['receipt'],
+      merchant: 'Recorded item',
+    });
+    await store.saveManualTransaction(original);
+    await store.setCategoryLimit('kids', 500000, true);
+    const sources = store.paymentSources();
+    const originalStored = recorded(original.id);
+    sql.exec(
+      "CREATE TRIGGER fail_category_delete BEFORE DELETE ON categories BEGIN SELECT RAISE(ABORT,'synthetic category deletion failure'); END",
+    );
+    await expect(store.deleteCategory('kids')).rejects.toThrow(
+      'synthetic category deletion failure',
+    );
+    expect(recorded(original.id)).toEqual(originalStored);
+    expect(
+      store.categories().some((row) => row.id === 'kids' && row.monthlyLimitMinor === 500000),
+    ).toBe(true);
+    expect(store.transactions().find((row) => row.id === original.id)).toEqual(originalStored);
+    expect(store.paymentSources()).toEqual(sources);
+    sql.exec('DROP TRIGGER fail_category_delete');
+    await store.deleteCategory('kids');
+    expect(recorded(original.id)).toEqual({ ...originalStored, categoryId: 'other' });
+    expect(rows('SELECT category_id FROM card_transactions WHERE id=?', [original.id])).toEqual([
+      { category_id: 'other' },
+    ]);
+    expect(count('category_limits')).toBe(0);
+    expect(store.paymentSources()).toEqual(sources);
+    await store.initialisePreferences();
+    expect(store.categories().some((row) => row.id === 'kids')).toBe(false);
+    vi.stubGlobal('crypto', webcrypto);
+    vi.stubGlobal('Blob', NodeBlob);
+    try {
+      const backups = TestBed.inject(BackupService);
+      const backup = await backups.create('synthetic-category-passphrase');
+      await store.addCategory({
+        id: 'recreated-kids',
+        name: '  KIDS  ',
+        icon: 'kids',
+        colour: '#123456',
+        appliesTo: 'BOTH',
+        archived: false,
+      });
+      expect(store.categories().find((row) => row.id === 'recreated-kids')?.name).toBe('Kids');
+      await backups.restore(backup.contents, 'synthetic-category-passphrase');
+      await store.initialisePreferences();
+      expect(store.categories().some((row) => row.name === 'Kids')).toBe(false);
+      expect(store.categoryCatalog().find((row) => row.canonical_id === 'kids')?.deleted).toBe(1);
+      expect(recorded(original.id)).toEqual({ ...originalStored, categoryId: 'other' });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+  it('suggests only for new manual entries, preserves explicit overrides and saved categories, and inherits new split categories', async () => {
+    const { store } = await boot();
+    const fixture = TestBed.createComponent(TransactionsPage);
+    const page = fixture.componentInstance;
+    page.openAdd();
+    page.form.controls.merchant.setValue('Swiggy Instamart');
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(page.form.controls.categoryId.value).toBe('groceries');
+    page.setCategory('shopping');
+    page.form.controls.merchant.setValue('Netflix');
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(page.form.controls.categoryId.value).toBe('shopping');
+    const existing = purchase({ id: 'saved-category', merchant: 'Netflix', categoryId: 'dining' });
+    page.edit(existing);
+    page.form.controls.merchant.setValue('Swiggy');
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(page.form.controls.categoryId.value).toBe('dining');
+    store.transactions.set([existing]);
+    page.closeForm();
+    page.openAdd();
+    page.form.controls.type.setValue('ADJUSTMENT');
+    page.setRelatedTransaction(existing.id);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(page.form.controls.categoryId.value).toBe('dining');
+    expect(store.transactions()[0].categoryId).toBe('dining');
+    page.setCategory('household');
+    page.form.controls.merchant.setValue('Zomato');
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(page.form.controls.categoryId.value).toBe('household');
+    fixture.destroy();
+  });
+  it('adds canonical names without duplicate aliases and preserves custom names, IDs and settings on reload', async () => {
+    const { store } = await boot();
+    await store.deleteCategory('kids');
+    await store.addCategory({
+      id: 'user-kids',
+      name: '  ＫＩＤＳ  ',
+      icon: 'custom',
+      colour: '#123456',
+      appliesTo: 'BOTH',
+      archived: false,
+    });
+    await store.setCategoryLimit('user-kids', 500000, false);
+    await expect(
+      store.addCategory({
+        id: 'duplicate',
+        name: 'Kids',
+        icon: 'category',
+        appliesTo: 'BOTH',
+        archived: false,
+      }),
+    ).rejects.toThrow('already exists');
+    await store.initialisePreferences();
+    expect(store.categories().filter((row) => row.name === 'Kids')).toHaveLength(1);
+    expect(store.categories().find((row) => row.id === 'user-kids')).toMatchObject({
+      name: 'Kids',
+      colour: '#123456',
+      icon: 'custom',
+      monthlyLimitMinor: 500000,
+      showLimit: false,
+    });
+    expect(store.categoryCatalog().find((row) => row.canonical_id === 'kids')).toMatchObject({
+      category_id: 'user-kids',
+      deleted: 0,
+    });
+  });
   let sql: DatabaseSyncType;
   let database: SqliteDatabase;
   const lock = { locked: signal(false), foreground: signal(true) };
@@ -217,6 +439,7 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     expect(store.bankCashTracking().enabled).toBe(false);
     const candidate = await stage(evidence());
     await review.approveBank(candidate, {
+      categoryId: 'groceries',
       purpose: 'PURCHASE',
       sourceId: 'source-debit',
       amountMinor: 45000,
@@ -1997,7 +2220,7 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
       store.transactions().some((item) => item.id === old.id && item.cardId === icici.id),
     ).toBe(true);
     expect(store.sourceDetail(icici.id)).toBe('ICICI Bank · A/c ••417');
-    expect(store.deleteCategory('other')).toBe(false);
+    expect(await store.deleteCategory('other')).toBe(false);
     expect(store.categories().some((category) => category.id === 'other')).toBe(true);
   });
 

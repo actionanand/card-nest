@@ -4,6 +4,7 @@ import { Service, signal } from '@angular/core';
 import { CLASSIFY_LEGACY_ADJUSTMENTS, DATABASE_MIGRATIONS } from './migrations';
 import { clearPlatformDiscovery, prunePlatformDiscovery } from './platform-data';
 import { INITIAL_DATA_KEY } from './app-initialization';
+import { reconcileCategoryCatalog } from './category-catalog';
 
 interface JeepSqliteElement extends HTMLElement {
   wasmPath: string;
@@ -54,6 +55,8 @@ const BACKUP_TABLES = [
   'loan_commitments',
   'monthly_income',
   'category_limits',
+  'category_catalog_state',
+  'category_catalog_conflicts',
   'utility_profiles',
   'mobile_recharges',
   'lpg_events',
@@ -68,6 +71,8 @@ const BACKUP_TABLES = [
 ] as const;
 
 const DELETE_TABLES = [
+  'category_catalog_state',
+  'category_catalog_conflicts',
   'bank_activity_candidates',
   'bank_activity_events',
   'bank_activity_profiles',
@@ -524,6 +529,28 @@ export class SqliteDatabase {
         }
       }
       await flushInserts();
+      await reconcileCategoryCatalog({
+        query: async <T extends Record<string, unknown>>(
+          statement: string,
+          values: readonly unknown[] = [],
+        ) => {
+          const result = await CapacitorSQLite.query({
+            database: this.databaseName,
+            statement,
+            values: [...values],
+          });
+          return (result.values ?? []) as T[];
+        },
+        run: async (statement, values = []) => {
+          const result = await CapacitorSQLite.run({
+            database: this.databaseName,
+            statement,
+            values: [...values],
+            transaction: false,
+          });
+          return result.changes?.changes ?? 0;
+        },
+      });
       await CapacitorSQLite.execute({
         database: this.databaseName,
         transaction: false,

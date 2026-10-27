@@ -1,0 +1,217 @@
+{
+  "version": 2,
+  "categories": [
+    {
+      "id": "payment",
+      "name": "Card Payment",
+      "aliases": [],
+      "icon": "payments",
+      "colour": "#4e9d73",
+      "appliesTo": "CREDIT",
+      "protected": true,
+      "introduced": 1
+    },
+    {
+      "id": "contra-expenses",
+      "name": "Contra-expenses",
+      "aliases": [],
+      "icon": "banknote_arrow_down",
+      "colour": "#4e9d73",
+      "appliesTo": "CREDIT",
+      "protected": false,
+      "introduced": 1
+    },
+    {
+      "id": "dining",
+      "name": "Dining",
+      "aliases": [],
+      "icon": "restaurant",
+      "colour": "#de7d68",
+      "appliesTo": "BOTH",
+      "protected": false,
+      "introduced": 1
+    },
+    {
+      "id": "fuel",
+      "name": "Fuel",
+      "aliases": [],
+      "icon": "local_gas_station",
+      "colour": "#5a9d90",
+      "appliesTo": "BOTH",
+      "protected": false,
+      "introduced": 1
+    },
+    {
+      "id": "groceries",
+      "name": "Pantry Staples",
+      "aliases": ["Groceries"],
+      "icon": "shopping_basket",
+      "colour": "#e0a860",
+      "appliesTo": "BOTH",
+      "protected": false,
+      "introduced": 1
+    },
+    {
+      "id": "healthcare",
+      "name": "Healthcare",
+      "aliases": [],
+      "icon": "health_and_safety",
+      "colour": "#d56a7b",
+      "appliesTo": "BOTH",
+      "protected": false,
+      "introduced": 1
+    },
+    {
+      "id": "income",
+      "name": "Income",
+      "aliases": [],
+      "icon": "banknote_arrow_up",
+      "colour": "#3f8f63",
+      "appliesTo": "CREDIT",
+      "protected": false,
+      "introduced": 1
+    },
+    {
+      "id": "other",
+      "name": "Other",
+      "aliases": [],
+      "icon": "category",
+      "colour": "#7a8797",
+      "appliesTo": "BOTH",
+      "protected": true,
+      "introduced": 1
+    },
+    {
+      "id": "shopping",
+      "name": "Shopping",
+      "aliases": [],
+      "icon": "shopping_bag",
+      "colour": "#9075b5",
+      "appliesTo": "BOTH",
+      "protected": false,
+      "introduced": 1
+    },
+    {
+      "id": "subscription",
+      "name": "Subscription",
+      "aliases": [],
+      "icon": "subscriptions",
+      "colour": "#65758b",
+      "appliesTo": "BOTH",
+      "protected": false,
+      "introduced": 1
+    },
+    {
+      "id": "travel",
+      "name": "Travel & Lodging",
+      "aliases": ["Travel"],
+      "icon": "flight",
+      "colour": "#4e87c7",
+      "appliesTo": "BOTH",
+      "protected": false,
+      "introduced": 1
+    },
+    {
+      "id": "utilities",
+      "name": "Utilities",
+      "aliases": [],
+      "icon": "bolt",
+      "colour": "#c8a43b",
+      "appliesTo": "BOTH",
+      "protected": false,
+      "introduced": 1
+    },
+    {
+      "id": "meat-dairy",
+      "name": "Meat & Dairy",
+      "aliases": [],
+      "icon": "meat_fish",
+      "colour": "#c06b70",
+      "appliesTo": "BOTH",
+      "protected": false,
+      "introduced": 2
+    },
+    {
+      "id": "fresh-produce",
+      "name": "Fresh Produce",
+      "aliases": [],
+      "icon": "vegetables_fruits",
+      "colour": "#609251",
+      "appliesTo": "BOTH",
+      "protected": false,
+      "introduced": 2
+    },
+    {
+      "id": "tech-gadgets",
+      "name": "Tech & Gadgets",
+      "aliases": [],
+      "icon": "electronics",
+      "colour": "#4a91a8",
+      "appliesTo": "BOTH",
+      "protected": false,
+      "introduced": 2
+    },
+    {
+      "id": "household",
+      "name": "Household",
+      "aliases": [],
+      "icon": "home",
+      "colour": "#a17d55",
+      "appliesTo": "BOTH",
+      "protected": false,
+      "introduced": 2
+    },
+    {
+      "id": "kids",
+      "name": "Kids",
+      "aliases": [],
+      "icon": "kids",
+      "colour": "#8a70b0",
+      "appliesTo": "BOTH",
+      "protected": false,
+      "introduced": 2
+    },
+    {
+      "id": "digital-goods",
+      "name": "Digital Goods",
+      "aliases": [],
+      "icon": "mobile",
+      "colour": "#627fc1",
+      "appliesTo": "BOTH",
+      "protected": false,
+      "introduced": 2
+    },
+    {
+      "id": "snacks-pastry",
+      "name": "Snacks & Pastry",
+      "aliases": [],
+      "icon": "pastry_snacks",
+      "colour": "#b67b50",
+      "appliesTo": "BOTH",
+      "protected": false,
+      "introduced": 2
+    },
+    {
+      "id": "indulgences",
+      "name": "Indulgences",
+      "aliases": [],
+      "icon": "entertainment",
+      "colour": "#b36b9c",
+      "appliesTo": "BOTH",
+      "protected": false,
+      "introduced": 2,
+      "description": "Subjective discretionary treats; manual selection only."
+    },
+    {
+      "id": "education",
+      "name": "Education",
+      "aliases": [],
+      "icon": "education",
+      "colour": "#587aa0",
+      "appliesTo": "BOTH",
+      "protected": false,
+      "introduced": 2,
+      "description": "Tuition, courses and books. EMI repayments retain their existing accounting."
+    }
+  ]
+}

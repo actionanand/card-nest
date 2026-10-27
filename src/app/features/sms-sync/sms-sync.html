@@ -390,7 +390,23 @@
             </button>
           }
         }
-        <button class="btn clear" type="button" (click)="clearFilters()">Clear filters</button>
+        <button
+          class="btn clear"
+          type="button"
+          (click)="clearFilters()"
+          [disabled]="restoringFilters()"
+        >
+          Clear filters
+        </button>
+        <button
+          id="restore-default-review-filters"
+          class="btn"
+          type="button"
+          (click)="requestRestoreFilters()"
+          [disabled]="restoringFilters()"
+        >
+          Restore default filters
+        </button>
       </div>
       @if (!(sync.reconciling() || (loading() && !sync.candidates().length))) {
         <p class="muted" [attr.role]="loading() ? null : 'status'">
@@ -779,7 +795,8 @@
               /></label>
               <app-select-picker
                 label="Category"
-                formControlName="category"
+                [value]="editor.controls.category.value"
+                (valueChange)="chooseReviewCategory($event, false)"
                 [options]="categoryOptions()"
                 [searchable]="true"
               />
@@ -1096,7 +1113,8 @@
               @if (bankPurpose() === 'PURCHASE' || bankPurpose() === 'INCOME') {
                 <app-select-picker
                   label="Category"
-                  formControlName="category"
+                  [value]="bankEditor.controls.category.value"
+                  (valueChange)="chooseReviewCategory($event, true)"
                   [options]="categoryOptions()"
                   [searchable]="true"
                 />
@@ -1448,3 +1466,13 @@
     }
   }
 </div>
+
+@if (restoreFiltersConfirmation()) {
+  <app-confirmation-dialog
+    title="Restore default filters?"
+    message="This will restore the original SMS Review filters, sorting, and visibility settings. Your SMS messages, review decisions, and saved transactions will not be changed."
+    confirmLabel="Restore defaults"
+    (confirmed)="confirmRestoreFilters()"
+    (cancelled)="cancelRestoreFilters()"
+  />
+}

@@ -1,3 +1,5 @@
+import { suggestCategory } from '../../core/services/category-matcher';
+import { CATEGORY_REGISTRY } from '../../core/data/category-definitions';
 import {
   BankCashTrackingSettings,
   CardTransaction,
@@ -110,6 +112,9 @@ export interface ApprovalEdits {
   smsAdditionalComment?: string;
 }
 export interface PurchaseReviewDraft {
+  categoryOverridden?: boolean;
+  bankPurpose?: BankPurpose;
+  categoryUnavailable?: boolean;
   splitTargetId?: string;
   mode: 'CARD' | 'BANK';
   source: string;
@@ -445,45 +450,28 @@ export function bankExistingSuggestions(
   );
 }
 
-const BANK_PURCHASE_CATEGORY_HINTS: readonly [RegExp, string][] = [
-  [/\b(?:mart|grocer\w*|supermarket|vegetables?|fruits?|meats?|fish|dairy|milk)\b/i, 'groceries'],
-  [/\b(?:cafe|coffee|restaurant|eatery|dining|bakery|food)\b/i, 'dining'],
-  [/\b(?:fuel|petrol|diesel)\b/i, 'fuel'],
-  [/\b(?:electricity|water bill|gas bill|broadband)\b/i, 'utilities'],
-];
-
-/** Existing usable category for a bank event; Other is the safe fallback. */
+/** Compatibility entry point; review screens share the offline matcher. */
 export function defaultBankCategory(
   purpose: BankPurpose | '',
   merchant: string | undefined,
-  categories: readonly Pick<Category, 'id' | 'archived' | 'appliesTo'>[],
+  categories: readonly (Pick<Category, 'id' | 'archived' | 'appliesTo'> &
+    Partial<Pick<Category, 'name' | 'icon'>>)[],
 ): string {
-  const usable = (id: string, incompatible: Category['appliesTo']) =>
-    categories.some(
-      (category) => category.id === id && !category.archived && category.appliesTo !== incompatible,
-    );
-  if (purpose === 'INCOME')
-    return usable('income', 'EXPENSE')
-      ? 'income'
-      : usable('contra-expenses', 'EXPENSE')
-        ? 'contra-expenses'
-        : 'other';
-  const hint = BANK_PURCHASE_CATEGORY_HINTS.find(([pattern]) => pattern.test(merchant ?? ''))?.[1];
-  return hint && usable(hint, 'CREDIT') ? hint : 'other';
-}
-
-export function defaultPluxeeCategory(
-  kind: SmsKind,
-  categories: readonly Pick<Category, 'id' | 'archived' | 'appliesTo'>[],
-): string {
-  const preferred = kind === 'PLUXEE_PURCHASE' ? 'dining' : 'contra-expenses';
-  const incompatible = kind === 'PLUXEE_PURCHASE' ? 'CREDIT' : 'EXPENSE';
-  return categories.some(
-    (category) =>
-      category.id === preferred && !category.archived && category.appliesTo !== incompatible,
-  )
-    ? preferred
-    : 'other';
+  return suggestCategory(
+    {
+      purpose:
+        purpose === 'INCOME' ? 'INCOME' : purpose === 'CARD_SETTLEMENT' ? 'PAYMENT' : 'PURCHASE',
+      merchant,
+    },
+    categories.map((category) => ({
+      ...category,
+      name:
+        category.name ??
+        CATEGORY_REGISTRY.categories.find((def) => def.id === category.id)?.name ??
+        category.id,
+      icon: category.icon ?? 'category',
+    })),
+  );
 }
 
 /** Aliases identify issuers; only cardDigits (never accountDigits) identifies a card. */

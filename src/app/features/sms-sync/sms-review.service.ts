@@ -1,3 +1,4 @@
+import { resolveCategory } from '../../core/services/category-matcher';
 import { Service, computed, inject, signal } from '@angular/core';
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import { SqliteDatabase, DatabaseSession } from '../../core/data/sqlite-database';
@@ -65,7 +66,6 @@ import {
   suspectEvidence,
   isPluxeeSource,
   normalizedIssuer,
-  defaultPluxeeCategory,
   BankPurpose,
   accountSuffixMatches,
   bankDirection,
@@ -73,7 +73,6 @@ import {
   bankExistingSuggestions,
   bankPurposes,
   bankSourceConflict,
-  defaultBankCategory,
   isBankEvidence,
 } from './sms-model';
 
@@ -218,6 +217,7 @@ export class SmsReviewService {
     await this.enable(days);
   }
   private filters = defaultReviewFilters();
+  private filterWrites: Promise<void> = Promise.resolve();
   async loadReviewFilters(): Promise<SmsReviewFilters> {
     this.assertUnlocked();
     const [row] = await this.database.query<{ encrypted_value: string }>(
@@ -247,14 +247,19 @@ export class SmsReviewService {
       ...filters,
       sortOrder: filters.sortOrder ?? this.filters.sortOrder,
     });
-    await this.database.run(
-      'INSERT INTO app_preferences(key,encrypted_value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET encrypted_value=excluded.encrypted_value',
-      [SMS_REVIEW_FILTERS_KEY, JSON.stringify(applied)],
-    );
-    this.filters = applied;
-    this.reviewPage.set(0);
-    await this.refresh();
+    const write = this.filterWrites.then(async () => {
+      await this.database.run(
+        'INSERT INTO app_preferences(key,encrypted_value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET encrypted_value=excluded.encrypted_value',
+        [SMS_REVIEW_FILTERS_KEY, JSON.stringify(applied)],
+      );
+      this.filters = applied;
+      this.reviewPage.set(0);
+      await this.refresh();
+    });
+    this.filterWrites = write.catch(() => undefined);
+    await write;
   }
+
   async turnPage(direction: number): Promise<void> {
     this.reviewPage.update((page) => Math.max(0, page + direction));
     await this.refresh();
@@ -1184,6 +1189,19 @@ export class SmsReviewService {
       if (!draft || typeof draft !== 'object') return null;
       const values = draft as Record<string, unknown>;
       if (
+        values['bankPurpose'] !== undefined &&
+        !['PURCHASE', 'INCOME', 'TRANSFER', 'CARD_SETTLEMENT', 'LOAN_REPAYMENT'].includes(
+          String(values['bankPurpose']),
+        )
+      )
+        return null;
+      if (
+        ['categoryOverridden', 'categoryUnavailable'].some(
+          (key) => values[key] !== undefined && typeof values[key] !== 'boolean',
+        )
+      )
+        return null;
+      if (
         values['splitTargetId'] !== undefined &&
         (typeof values['splitTargetId'] !== 'string' || values['splitTargetId'].length > 150)
       )
@@ -1421,11 +1439,29 @@ export class SmsReviewService {
       }
       const reconcileTopupSnapshot =
         reconciliation === 'PENDING' && unchangedEvent && comparison?.automaticRepair === true;
-      const pluxeeCategories = item.kind.startsWith('PLUXEE')
-        ? await tx.query<{ id: string; archived: number; applies_to: Category['appliesTo'] }>(
-            'SELECT id,archived,applies_to FROM categories',
-          )
-        : [];
+      const categoryRows = await tx.query<{
+        id: string;
+        name: string;
+        icon: string;
+        appliesTo: Category['appliesTo'];
+        archived: number;
+      }>('SELECT id,name,icon,applies_to AS appliesTo,archived FROM categories');
+      const usableCategories = categoryRows.map((row) => ({ ...row, archived: !!row.archived }));
+      const purposeCategory =
+        type === 'PAYMENT'
+          ? 'payment'
+          : ['CASHBACK', 'REFUND'].includes(type ?? '') ||
+              item.kind === 'PLUXEE_TOPUP' ||
+              item.kind === 'FASTAG_TOPUP'
+            ? 'contra-expenses'
+            : type === 'CREDIT'
+              ? 'income'
+              : 'other';
+      const defaultCategory = resolveCategory(
+        purposeCategory,
+        usableCategories,
+        type ?? 'PURCHASE',
+      );
       let statement: CardStatement | null = null;
       let transaction: CardTransaction | null = null;
       let balanceAdjustment: CardTransaction | null = null;
@@ -1592,21 +1628,7 @@ export class SmsReviewService {
                 : undefined,
             reference: item.reference,
             merchant: merchant.trim().slice(0, 100),
-            categoryId:
-              type === 'PAYMENT'
-                ? 'payment'
-                : item.kind.startsWith('PLUXEE')
-                  ? defaultPluxeeCategory(
-                      item.kind,
-                      pluxeeCategories.map((category) => ({
-                        id: category.id,
-                        archived: !!category.archived,
-                        appliesTo: category.applies_to,
-                      })),
-                    )
-                  : ['CASHBACK', 'REFUND', 'CREDIT'].includes(type)
-                    ? 'contra-expenses'
-                    : 'other',
+            categoryId: defaultCategory,
             attachmentIds: [],
             createdAt: now,
             updatedAt: now,
@@ -2235,7 +2257,12 @@ export class SmsReviewService {
           }
           const categoryId =
             approval.categoryId ||
-            defaultBankCategory(approval.purpose, description, this.store.categories());
+            resolveCategory(
+              approval.purpose === 'INCOME' ? 'income' : 'other',
+              this.store.categories(),
+              approval.purpose === 'INCOME' ? 'INCOME' : 'PURCHASE',
+              this.store.categoryCatalog?.() ?? [],
+            );
           if (!(await tx.query('SELECT id FROM categories WHERE id=?', [categoryId])).length)
             throw new Error('Choose an existing category.');
           if (!approval.baselineTiming && needsBaselineConfirmation(source, settings, date, time))

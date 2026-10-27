@@ -1,4 +1,8 @@
+import { suggestCategory, categoryCompatible } from '../../core/services/category-matcher';
+import { ConfirmationDialog } from '../../shared/confirmation-dialog';
 import {
+  defaultReviewFilters,
+  SmsReviewFilters,
   INITIAL_MULTIPLE_KINDS,
   reviewFilters,
   SMS_REVIEW_SORT_ORDERS,
@@ -57,14 +61,12 @@ import {
   ledgerType,
   merchantTitle,
   suspectEvidence,
-  defaultPluxeeCategory,
   BankPurpose,
   accountSuffixMatches,
   bankDirection,
   bankDisplayName,
   bankExistingSuggestions,
   bankPurposes,
-  defaultBankCategory,
   defaultBankPurpose,
   isBankEvidence,
   matchingBankAccounts,
@@ -107,6 +109,7 @@ const CANDIDATE_MENU_ITEM_HEIGHT = 44;
 @Component({
   selector: 'app-sms-sync',
   imports: [
+    ConfirmationDialog,
     SmsSplitSuggestion,
     ReactiveFormsModule,
     AppIcon,
@@ -175,7 +178,10 @@ export class SmsSyncPage {
     'ERROR',
   ].map((value) => ({ value, label: this.label(value) }));
   readonly categoryOptions = computed<readonly AppSelectOption[]>(() =>
-    this.store.categories().map((category) => ({ value: category.id, label: category.name })),
+    this.store
+      .categories()
+      .filter((category) => !category.archived)
+      .map((category) => ({ value: category.id, label: category.name })),
   );
   sourceOptions(): readonly AppSelectOption[] {
     return [
@@ -326,6 +332,100 @@ export class SmsSyncPage {
     controls[key]?.set(key === 'kind' || key === 'state' || key === 'read' ? 'ALL' : '');
     this.applyFilters();
   }
+  readonly cardCategoryOverridden = signal(false);
+  readonly bankCategoryOverridden = signal(false);
+  chooseReviewCategory(value: string, bank = false): void {
+    (bank ? this.bankCategoryOverridden : this.cardCategoryOverridden).set(true);
+    (bank ? this.bankEditor : this.editor).controls.category.setValue(value);
+  }
+  suggestReviewCategory(): void {
+    const candidate = this.selected();
+    if (!candidate?.item || this.hydratingReview) return;
+    if (['IMPORTED', 'MATCHED_EXISTING'].includes(candidate.state)) {
+      const saved = this.store.transactions().find((row) => row.id === candidate.transactionId);
+      if (saved)
+        (isBankEvidence(candidate.item) ? this.bankEditor : this.editor).controls.category.setValue(
+          saved.categoryId,
+          { emitEvent: false },
+        );
+      return;
+    }
+    const bank = isBankEvidence(candidate.item);
+    if ((bank ? this.bankCategoryOverridden : this.cardCategoryOverridden)()) return;
+    const value = (bank ? this.bankEditor : this.editor).getRawValue();
+    const target = value.splitTarget;
+    const group = this.store
+      .paymentGroups?.()
+      .find((row) => row.id === target || row.memberIds.includes(target));
+    const related = this.store.transactions().find((row) => row.id === (group?.anchorId ?? target));
+    const bankPurpose = this.bankEditor.controls.purpose.value;
+    const purpose = bank
+      ? bankPurpose === 'INCOME'
+        ? 'INCOME'
+        : bankPurpose === 'CARD_SETTLEMENT'
+          ? 'PAYMENT'
+          : 'PURCHASE'
+      : ['PLUXEE_TOPUP', 'FASTAG_TOPUP'].includes(candidate.kind)
+        ? 'TOPUP'
+        : (ledgerType(candidate.item) ?? 'PURCHASE');
+    try {
+      const category = suggestCategory(
+        {
+          purpose,
+          merchant: bank
+            ? this.bankEditor.controls.description.value
+            : this.editor.controls.merchant.value,
+          ...(target ? { inheritedId: related?.categoryId ?? '' } : {}),
+        },
+        this.store.categories(),
+        this.store.categoryCatalog?.() ?? [],
+      );
+      (bank ? this.bankEditor : this.editor).controls.category.setValue(category, {
+        emitEvent: false,
+      });
+    } catch (error: unknown) {
+      this.error.set(error instanceof Error ? error.message : 'Category integrity error.');
+    }
+  }
+  readonly restoreFiltersConfirmation = signal(false);
+  readonly restoringFilters = signal(false);
+  requestRestoreFilters(): void {
+    if (!this.restoringFilters()) this.restoreFiltersConfirmation.set(true);
+  }
+  cancelRestoreFilters(): void {
+    this.restoreFiltersConfirmation.set(false);
+    queueMicrotask(() => document.getElementById('restore-default-review-filters')?.focus());
+  }
+  private setFilterSignals(filters: SmsReviewFilters): void {
+    this.search.set(filters.search);
+    this.sourceFilter.set(filters.source);
+    this.kind.set(filters.kind);
+    this.typeMode.set(filters.mode);
+    this.multipleKinds.set([...filters.kinds]);
+    this.multipleInitialized.set(filters.multipleInitialized);
+    this.state.set(filters.state);
+    this.from.set(filters.from);
+    this.to.set(filters.to);
+    this.readFilter.set(filters.read);
+    this.hideAlreadyAdded.set(filters.hideAlreadyAdded);
+    this.sortOrder.set(filters.sortOrder);
+  }
+  async confirmRestoreFilters(): Promise<void> {
+    if (!this.restoreFiltersConfirmation() || this.restoringFilters()) return;
+    this.restoringFilters.set(true);
+    this.restoreFiltersConfirmation.set(false);
+    try {
+      const defaults = defaultReviewFilters();
+      await this.sync.filterReview(defaults);
+      this.setFilterSignals(defaults);
+      this.snackbar.show('Default SMS Review filters restored.');
+    } catch (error: unknown) {
+      this.error.set(error instanceof Error ? error.message : 'Filters could not be restored.');
+    } finally {
+      this.restoringFilters.set(false);
+      queueMicrotask(() => document.getElementById('restore-default-review-filters')?.focus());
+    }
+  }
   clearFilters(): void {
     this.search.set('');
     this.sourceFilter.set('');
@@ -450,12 +550,7 @@ export class SmsSyncPage {
     const candidate = this.selected();
     if (!candidate || this.hydratingReview) return;
     const value = (bank ? this.bankEditor : this.editor).getRawValue();
-    if (
-      !this.purchaseReviewActive(bank) &&
-      candidate.kind !== 'PLUXEE_PURCHASE' &&
-      !value.splitTarget
-    )
-      return;
+    if (!candidate.item || !['PENDING', 'DEFERRED'].includes(candidate.state)) return;
     const draft: PurchaseReviewDraft = {
       mode: bank ? 'BANK' : 'CARD',
       source: value.source,
@@ -463,6 +558,10 @@ export class SmsSyncPage {
       merchant: 'merchant' in value ? value.merchant : value.description,
       transactionDate: value.transactionDate,
       category: value.category,
+      ...(bank && this.bankEditor.controls.purpose.value
+        ? { bankPurpose: this.bankEditor.controls.purpose.value as BankPurpose }
+        : {}),
+      categoryOverridden: (bank ? this.bankCategoryOverridden : this.cardCategoryOverridden)(),
       existing: value.existing,
       separate: value.separate,
       splitTargetId: value.splitTarget || undefined,
@@ -486,7 +585,8 @@ export class SmsSyncPage {
       if (!draft || this.selected()?.id !== candidate.id || this.reviewRevision !== revision)
         return;
       const bank = draft.mode === 'BANK';
-      if (!this.purchaseReviewActive(bank) && candidate.kind !== 'PLUXEE_PURCHASE') return;
+      if (bank !== isBankEvidence(candidate.item)) return;
+
       let verifiedSplit = '';
       if (draft.splitTargetId) {
         const proposal = await this.sync.splitSuggestion(candidate, draft.source);
@@ -503,10 +603,46 @@ export class SmsSyncPage {
           );
       }
       this.hydratingReview = true;
-      const { mode, merchant, splitTargetId, ...values } = draft;
+      const {
+        mode,
+        merchant,
+        splitTargetId,
+        categoryOverridden,
+        categoryUnavailable,
+        bankPurpose,
+        ...values
+      } = draft;
+      const purpose = bank
+        ? (bankPurpose ?? this.bankEditor.controls.purpose.value) === 'INCOME'
+          ? 'INCOME'
+          : (bankPurpose ?? this.bankEditor.controls.purpose.value) === 'CARD_SETTLEMENT'
+            ? 'PAYMENT'
+            : 'PURCHASE'
+        : ['PLUXEE_TOPUP', 'FASTAG_TOPUP'].includes(candidate.kind)
+          ? 'TOPUP'
+          : (ledgerType(candidate.item!) ?? 'PURCHASE');
+      const saved = this.store
+        .categories()
+        .find((row) => row.id === draft.category && categoryCompatible(row, purpose));
+      if (!saved || categoryUnavailable) {
+        values.category = 'other';
+        this.notice.update(
+          (message) =>
+            (message ? message + ' ' : '') +
+            'The original category is unavailable. Other is selected; review it before approval.',
+        );
+      }
+      (bank ? this.bankCategoryOverridden : this.cardCategoryOverridden).set(
+        categoryOverridden ?? true,
+      );
       const splitTarget = splitTargetId ? verifiedSplit : '';
       if (mode === 'BANK')
-        this.bankEditor.patchValue({ ...values, description: merchant, splitTarget });
+        this.bankEditor.patchValue({
+          ...values,
+          ...(bankPurpose ? { purpose: bankPurpose } : {}),
+          description: merchant,
+          splitTarget,
+        });
       else this.editor.patchValue({ ...values, merchant, splitTarget });
       const form = bank ? this.bankEditor : this.editor;
       if (
@@ -601,6 +737,7 @@ export class SmsSyncPage {
       ).length,
   );
   applyFilters(): void {
+    if (this.restoringFilters()) return;
     void this.run(() =>
       this.sync.filterReview({
         state: this.state(),
@@ -1074,16 +1211,10 @@ export class SmsSyncPage {
     return `${this.money(amount)} will be deducted once from ${this.store.sourceDetail(value.source)}. The card payment reduces its outstanding and is not counted as spending.`;
   }
   setBankPurpose(value: string): void {
-    const item = this.bankItem();
     this.bankEditor.patchValue({
       purpose: value as BankPurpose | '',
       existing: '',
       existingTransfer: '',
-      category: defaultBankCategory(
-        value as BankPurpose | '',
-        item?.merchant,
-        this.store.categories(),
-      ),
     });
   }
   matchReason(candidate: SmsCandidate): string {
@@ -1305,6 +1436,7 @@ export class SmsSyncPage {
       let wasPurchase = false;
       const changes: Observable<unknown> = form.valueChanges;
       changes.pipe(takeUntilDestroyed(destroyRef)).subscribe(() => {
+        if (!this.hydratingReview) this.suggestReviewCategory();
         const value = form.getRawValue();
         const key = [
           value.source,
@@ -1403,6 +1535,11 @@ export class SmsSyncPage {
   }
   androidBack(event: Event): void {
     if (document.querySelector('app-select-picker dialog[open]')) return;
+    if (this.restoreFiltersConfirmation()) {
+      event.preventDefault();
+      this.cancelRestoreFilters();
+      return;
+    }
     if (this.candidateMenuId()) {
       event.preventDefault();
       this.closeCandidateMenu();
@@ -1606,6 +1743,8 @@ export class SmsSyncPage {
   }
   open(candidate: SmsCandidate): void {
     this.hydratingReview = true;
+    this.cardCategoryOverridden.set(false);
+    this.bankCategoryOverridden.set(false);
     this.confirmBalance.set(false);
     this.error.set('');
     this.notice.set('');
@@ -1628,7 +1767,7 @@ export class SmsSyncPage {
         amount: String(item.amountMinor / 100),
         description: item.merchant ? merchantTitle(item, candidate.kind) : '',
         transactionDate: item.eventDate,
-        category: defaultBankCategory(purpose, item.merchant, this.store.categories()),
+        category: 'other',
         existing: '',
         splitTarget: '',
         counterparty: '',
@@ -1665,13 +1804,7 @@ export class SmsSyncPage {
       statementDate: '',
       statementDue: '',
       transactionDate: candidate.item?.eventDate ?? '',
-      category: candidate.kind.startsWith('PLUXEE')
-        ? defaultPluxeeCategory(candidate.kind, this.store.categories())
-        : candidate.kind === 'CARD_PAYMENT_RECEIVED'
-          ? 'payment'
-          : ['CASHBACK', 'REFUND', 'PLUXEE_TOPUP', 'FASTAG_TOPUP'].includes(candidate.kind)
-            ? 'contra-expenses'
-            : 'other',
+      category: 'other',
       relatedPurchase: '',
       funding: '',
       fundingTiming: '',
@@ -1681,12 +1814,9 @@ export class SmsSyncPage {
       smsAdditionalComment: '',
     });
     this.hydratingReview = false;
+    this.suggestReviewCategory();
     const revision = this.reviewRevision;
-    if (
-      candidate.kind === 'PURCHASE' ||
-      candidate.kind === 'PLUXEE_PURCHASE' ||
-      isBankEvidence(candidate.item)
-    )
+    if (!!(candidate.item && ledgerType(candidate.item)) || isBankEvidence(candidate.item))
       void this.restorePurchaseReview(candidate, revision);
     queueMicrotask(() => document.getElementById('sms-review-heading')?.focus());
   }
@@ -1851,7 +1981,8 @@ export class SmsSyncPage {
   readonly evidenceTarget = new FormControl('', { nonNullable: true });
   escape(): void {
     if (document.querySelector('app-select-picker dialog[open]')) return;
-    if (this.candidateMenuId()) this.closeCandidateMenu();
+    if (this.restoreFiltersConfirmation()) this.cancelRestoreFilters();
+    else if (this.candidateMenuId()) this.closeCandidateMenu();
     else if (this.confirmReadCount() !== null) this.confirmReadCount.set(null);
     else this.closeEditor();
   }

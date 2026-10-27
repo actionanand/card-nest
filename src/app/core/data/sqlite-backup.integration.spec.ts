@@ -902,7 +902,18 @@ describe('Durable first-run data, additive read migration and private portable b
       eventAt: '2026-10-23T00:30:00Z',
       reportedBalanceMinor: undefined,
     });
-    await review.approve(purchase, wallet.id, 50000, 'Fictional breakfast');
+    await review.approve(
+      purchase,
+      wallet.id,
+      50000,
+      'Fictional breakfast',
+      '',
+      'PENDING',
+      false,
+      '',
+      0,
+      { categoryId: 'dining' },
+    );
     expect(repaired().balanceMinor).toBe(923724);
     const second = await stage({
       ...purchase.item!,
@@ -1596,6 +1607,6 @@ describe('Durable first-run data, additive read migration and private portable b
     ]);
     expect(vi.mocked(CapacitorSQLite.closeConnection)).toHaveBeenCalled();
     expect(CapacitorSQLite.createConnection).toHaveBeenCalledTimes(2);
-    expect(sql.prepare('PRAGMA user_version').get()?.['user_version']).toBe(12);
+    expect(sql.prepare('PRAGMA user_version').get()?.['user_version']).toBe(13);
   });
 });

@@ -13,7 +13,7 @@ describe('Category limit action layout and editor', () => {
   it('keeps Set/Edit limit in dedicated action rows without expanding or changing amounts', async () => {
     const fixture = TestBed.createComponent(CategorySpendingPage);
     const store = TestBed.inject(CardNestStore);
-    const category = store.categories()[0];
+    const category = store.categories().find((row) => row.id === 'groceries')!;
     store.categories.set([
       category,
       {

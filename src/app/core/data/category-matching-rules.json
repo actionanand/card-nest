@@ -1,0 +1,133 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "id": "swiggy-instamart",
+      "categoryId": "groceries",
+      "priority": 100,
+      "merchantPhrases": ["swiggy instamart", "instamart"],
+      "enabled": true
+    },
+    {
+      "id": "swiggy-food",
+      "categoryId": "dining",
+      "priority": 80,
+      "merchantWords": ["swiggy"],
+      "enabled": true
+    },
+    {
+      "id": "zomato",
+      "categoryId": "dining",
+      "priority": 80,
+      "merchantWords": ["zomato"],
+      "enabled": true
+    },
+    {
+      "id": "blinkit",
+      "categoryId": "groceries",
+      "priority": 80,
+      "merchantWords": ["blinkit"],
+      "enabled": true
+    },
+    {
+      "id": "vegetable-market",
+      "categoryId": "fresh-produce",
+      "priority": 70,
+      "merchantPhrases": ["fresh vegetable market", "fresh produce market"],
+      "enabled": true
+    },
+    {
+      "id": "dairy-meat",
+      "categoryId": "meat-dairy",
+      "priority": 70,
+      "merchantPhrases": ["milk dairy", "meat shop", "fish market"],
+      "enabled": true,
+      "merchantWords": ["meats"]
+    },
+    {
+      "id": "bakery",
+      "categoryId": "snacks-pastry",
+      "priority": 70,
+      "merchantWords": ["bakery", "patisserie", "confectionery"],
+      "enabled": true
+    },
+    {
+      "id": "fuel",
+      "categoryId": "fuel",
+      "priority": 70,
+      "merchantPhrases": [
+        "indian oil",
+        "bharat petroleum",
+        "hindustan petroleum",
+        "petrol pump",
+        "fuel station"
+      ],
+      "merchantWords": ["petrol", "diesel"],
+      "enabled": true
+    },
+    {
+      "id": "netflix",
+      "categoryId": "subscription",
+      "priority": 80,
+      "merchantWords": ["netflix"],
+      "enabled": true
+    },
+    {
+      "id": "pharmacy",
+      "categoryId": "healthcare",
+      "priority": 70,
+      "merchantWords": ["pharmacy", "pharmacies"],
+      "merchantPhrases": ["medical store"],
+      "enabled": true
+    },
+    {
+      "id": "electronics",
+      "categoryId": "tech-gadgets",
+      "priority": 70,
+      "merchantPhrases": ["electronics store", "computer accessories"],
+      "enabled": true
+    },
+    {
+      "id": "toys",
+      "categoryId": "kids",
+      "priority": 70,
+      "merchantPhrases": ["toy store", "childcare centre", "childcare center"],
+      "enabled": true
+    },
+    {
+      "id": "digital-downloads",
+      "categoryId": "digital-goods",
+      "priority": 70,
+      "merchantPhrases": ["digital software download", "downloadable software"],
+      "enabled": true
+    },
+    {
+      "id": "education",
+      "categoryId": "education",
+      "priority": 70,
+      "merchantPhrases": [
+        "tuition centre",
+        "tuition center",
+        "educational courses",
+        "school tuition"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "utilities",
+      "categoryId": "utilities",
+      "priority": 60,
+      "merchantPhrases": ["water bill", "gas bill", "electricity bill"],
+      "merchantWords": ["broadband", "electricity"],
+      "enabled": true
+    },
+    {
+      "id": "dining-venues",
+      "categoryId": "dining",
+      "priority": 60,
+      "merchantWords": ["restaurant", "cafe", "eatery"],
+      "merchantPhrases": ["coffee stall"],
+      "enabled": true
+    }
+  ]
+}

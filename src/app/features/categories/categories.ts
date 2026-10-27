@@ -1,5 +1,6 @@
 import { Component, computed, inject, input, output, signal } from '@angular/core';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
+import { normalizedCategoryName, categoryDefinition } from '../../core/data/category-definitions';
 import { Category } from '../../core/models/domain';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { SnackbarService } from '../../core/services/snackbar.service';
@@ -151,7 +152,10 @@ export class CategoriesPage {
     this.showForm.set(false);
     this.editingId.set(null);
   }
-  save(): void {
+  readonly saving = signal(false);
+  readonly error = signal('');
+  async save(): Promise<void> {
+    if (this.saving()) return;
     this.form.markAllAsTouched();
     if (this.form.invalid) return;
     const value = this.form.getRawValue();
@@ -160,7 +164,9 @@ export class CategoriesPage {
       .some(
         (item) =>
           item.id !== this.editingId() &&
-          item.name.toLocaleLowerCase() === value.name.trim().toLocaleLowerCase(),
+          (normalizedCategoryName(item.name) === normalizedCategoryName(value.name) ||
+            (!!categoryDefinition(value.name) &&
+              categoryDefinition(item.name)?.id === categoryDefinition(value.name)?.id)),
       );
     if (duplicate) {
       this.form.controls.name.setErrors({ duplicate: true });
@@ -174,20 +180,41 @@ export class CategoriesPage {
       appliesTo: value.appliesTo,
       archived: false,
     };
-    if (this.editingId()) this.store.updateCategory(category);
-    else this.store.addCategory(category);
-    this.snackbar.show(this.editingId() ? `${category.name} updated.` : `${category.name} added.`);
-    this.closeForm();
+    this.saving.set(true);
+    this.error.set('');
+    try {
+      if (this.editingId()) await this.store.updateCategory(category);
+      else await this.store.addCategory(category);
+      this.snackbar.show(this.editingId() ? 'Category updated.' : 'Category added.');
+      this.closeForm();
+    } catch (error: unknown) {
+      this.error.set(error instanceof Error ? error.message : 'Category could not be saved.');
+    } finally {
+      this.saving.set(false);
+    }
   }
   requestDelete(categoryId: string): void {
     const category = this.store.categories().find((item) => item.id === categoryId);
-    if (category) this.deleteCandidate.set(category);
+    if (category && !this.store.categoryProtected(category.id)) this.deleteCandidate.set(category);
   }
-  confirmDelete(): void {
+  async confirmDelete(): Promise<void> {
+    if (this.saving()) return;
     const category = this.deleteCandidate();
     if (!category) return;
-    this.store.deleteCategory(category.id);
     this.deleteCandidate.set(null);
-    this.snackbar.show(`${category.name} deleted. Existing entries moved to Other.`, 'WARNING');
+    this.saving.set(true);
+    this.error.set('');
+    try {
+      if (await this.store.deleteCategory(category.id))
+        this.snackbar.show(category.name + ' deleted. Existing entries moved to Other.', 'WARNING');
+    } catch (error: unknown) {
+      this.error.set(
+        error instanceof Error
+          ? error.message
+          : 'Category could not be deleted. No changes were saved.',
+      );
+    } finally {
+      this.saving.set(false);
+    }
   }
 }

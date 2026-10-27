@@ -56,6 +56,193 @@ const demoCandidate = (): SmsCandidate => ({
 });
 
 describe('SMS review privacy and explicit approval UI', () => {
+  it('restores a bank repayment draft using its saved purpose before checking category compatibility', async () => {
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    const page = fixture.componentInstance;
+    store.categories.set([
+      { id: 'other', name: 'Other', icon: 'category', appliesTo: 'BOTH', archived: false },
+      {
+        id: 'payment',
+        name: 'Card Payment',
+        icon: 'payments',
+        appliesTo: 'CREDIT',
+        archived: false,
+      },
+    ]);
+    const candidate = demoCandidate();
+    candidate.kind = 'BANK_DEBIT';
+    candidate.item = {
+      ...candidate.item!,
+      kind: 'BANK_DEBIT',
+      direction: 'DEBIT',
+      accountDigits: '417',
+    };
+    sync.loadPurchaseReview.mockResolvedValueOnce({
+      mode: 'BANK',
+      bankPurpose: 'CARD_SETTLEMENT',
+      source: 'source-debit',
+      amount: '10',
+      merchant: 'Card settlement',
+      transactionDate: candidate.item.eventDate,
+      category: 'payment',
+      categoryOverridden: true,
+      existing: '',
+      separate: false,
+      paymentMethod: 'NONE',
+      paymentMethodDetail: '',
+      paymentMethodCustom: '',
+      smsAdditionalComment: '',
+    });
+    page.open(candidate);
+    await fixture.whenStable();
+    expect(page.bankEditor.controls.purpose.value).toBe('CARD_SETTLEMENT');
+    expect(page.bankEditor.controls.category.value).toBe('payment');
+    expect(page.notice()).not.toContain('category is unavailable');
+    page.bankEditor.controls.description.setValue('Repayment');
+    expect(page.bankEditor.controls.category.value).toBe('payment');
+  });
+  it('confirms restoration of every canonical filter, preserves Cancel and Clear, and guards double confirmation', async () => {
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const page = fixture.componentInstance;
+    page.search.set('old');
+    page.sourceFilter.set('source');
+    page.state.set('ALL');
+    page.kind.set('PURCHASE');
+    page.from.set('2026-01-01');
+    page.to.set('2026-02-01');
+    page.readFilter.set('ALL');
+    page.hideAlreadyAdded.set(false);
+    page.typeMode.set('MULTIPLE');
+    page.multipleKinds.set(['PURCHASE', 'BANK_DEBIT']);
+    page.multipleInitialized.set(true);
+    page.sortOrder.set('TRANSACTION_DESC');
+    sync.reviewPage.set(3);
+    sync.filterReview.mockClear();
+    const button = fixture.nativeElement.querySelector(
+      '#restore-default-review-filters',
+    ) as HTMLButtonElement;
+    button.click();
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('app-confirmation-dialog').textContent).toContain(
+      'Restore default filters?',
+    );
+    const before = page.search();
+    page.cancelRestoreFilters();
+    expect(page.search()).toBe(before);
+    expect(sync.filterReview).not.toHaveBeenCalled();
+    let release!: () => void;
+    sync.filterReview.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => (release = resolve));
+      sync.reviewPage.set(0);
+    });
+    page.requestRestoreFilters();
+    const first = page.confirmRestoreFilters();
+    const second = page.confirmRestoreFilters();
+    expect(sync.filterReview).toHaveBeenCalledTimes(1);
+    expect(page.search()).toBe('old');
+    release();
+    await Promise.all([first, second]);
+    fixture.detectChanges();
+    expect(sync.filterReview).toHaveBeenLastCalledWith(defaultReviewFilters());
+    expect({
+      state: page.state(),
+      kind: page.kind(),
+      search: page.search(),
+      source: page.sourceFilter(),
+      from: page.from(),
+      to: page.to(),
+      read: page.readFilter(),
+      mode: page.typeMode(),
+      kinds: page.multipleKinds(),
+      multipleInitialized: page.multipleInitialized(),
+      hideAlreadyAdded: page.hideAlreadyAdded(),
+      sortOrder: page.sortOrder(),
+    }).toEqual(defaultReviewFilters());
+    expect(sync.reviewPage()).toBe(0);
+    page.clearFilters();
+    expect(page.state()).toBe('ALL');
+    expect(page.readFilter()).toBe('ALL');
+    expect(sync.approve).not.toHaveBeenCalled();
+    expect(sync.approveBank).not.toHaveBeenCalled();
+  });
+  it('does not announce success or change filter signals when restoring defaults fails', async () => {
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const page = fixture.componentInstance;
+    page.search.set('keep');
+    const toast = vi.spyOn(TestBed.inject(SnackbarService), 'show');
+    sync.filterReview.mockRejectedValueOnce(new Error('Synthetic SQLite failure'));
+    page.requestRestoreFilters();
+    await page.confirmRestoreFilters();
+    expect(page.error()).toContain('Synthetic SQLite failure');
+    expect(page.search()).toBe('keep');
+    expect(page.restoringFilters()).toBe(false);
+    expect(toast).not.toHaveBeenCalled();
+  });
+  it('shares merchant rules across review forms and preserves an explicit category and draft override', async () => {
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    const page = fixture.componentInstance;
+    store.categories.set([
+      { id: 'other', name: 'Other', icon: 'category', appliesTo: 'BOTH', archived: false },
+      { id: 'dining', name: 'Dining', icon: 'restaurant', appliesTo: 'BOTH', archived: false },
+      { id: 'shopping', name: 'Shopping', icon: 'category', appliesTo: 'BOTH', archived: false },
+    ]);
+    const candidate = demoCandidate();
+    candidate.item!.merchant = 'Swiggy';
+    page.open(candidate);
+    expect(page.editor.controls.category.value).toBe('dining');
+    page.chooseReviewCategory('shopping');
+    page.editor.controls.merchant.setValue('Zomato');
+    expect(page.editor.controls.category.value).toBe('shopping');
+    page.confirmSeparatePurchase();
+    await fixture.whenStable();
+    expect(sync.savePurchaseReview).toHaveBeenLastCalledWith(
+      candidate.id,
+      expect.objectContaining({ category: 'shopping', categoryOverridden: true }),
+    );
+    sync.loadPurchaseReview.mockResolvedValueOnce({
+      mode: 'CARD',
+      source: 'demo-card',
+      amount: '10',
+      merchant: 'Swiggy',
+      transactionDate: candidate.item!.eventDate,
+      category: 'shopping',
+      categoryOverridden: true,
+      existing: '',
+      separate: false,
+      paymentMethod: 'NONE',
+      paymentMethodDetail: '',
+      paymentMethodCustom: '',
+      smsAdditionalComment: '',
+    });
+    page.open(candidate);
+    await fixture.whenStable();
+    expect(page.editor.controls.category.value).toBe('shopping');
+    page.editor.controls.merchant.setValue('Swiggy Instamart');
+    expect(page.editor.controls.category.value).toBe('shopping');
+    sync.loadPurchaseReview.mockResolvedValueOnce({
+      mode: 'CARD',
+      source: 'demo-card',
+      amount: '10',
+      merchant: 'Swiggy',
+      transactionDate: candidate.item!.eventDate,
+      category: 'deleted',
+      categoryOverridden: true,
+      existing: '',
+      separate: false,
+      paymentMethod: 'NONE',
+      paymentMethodDetail: '',
+      paymentMethodCustom: '',
+      smsAdditionalComment: '',
+    });
+    page.open(candidate);
+    await fixture.whenStable();
+    expect(page.editor.controls.category.value).toBe('other');
+    expect(page.notice()).toContain('original category is unavailable');
+  });
   const locked = signal(false);
   const foreground = signal(true);
   const candidates = signal<readonly SmsCandidate[]>([]);
@@ -189,7 +376,9 @@ describe('SMS review privacy and explicit approval UI', () => {
     sync.markingRead.set(false);
     store.cards.set([]);
     store.paymentSources.set([]);
-    store.categories.set([]);
+    store.categories.set([
+      { id: 'other', name: 'Other', icon: 'category', archived: false, appliesTo: 'BOTH' },
+    ]);
     bankCashTracking.set({ enabled: false, askCardSettlementFunding: false });
     store.transactions.set([]);
     store.loans.set([]);
@@ -324,6 +513,16 @@ describe('SMS review privacy and explicit approval UI', () => {
     fixture.detectChanges();
     await fixture.whenStable();
     const page = fixture.componentInstance;
+    store.categories.update((categories) => [
+      ...categories,
+      {
+        id: 'groceries',
+        name: 'Pantry Staples',
+        icon: 'category',
+        archived: false,
+        appliesTo: 'BOTH',
+      },
+    ]);
     page.open(candidate);
     page.editor.patchValue({
       merchant: 'Milk',
@@ -331,6 +530,7 @@ describe('SMS review privacy and explicit approval UI', () => {
       smsAdditionalComment: 'Second visit',
       paymentMethod: 'CARD',
     });
+    page.chooseReviewCategory('groceries');
     fixture.detectChanges();
     const panel = fixture.nativeElement.querySelector('app-sms-purchase-comparison') as HTMLElement;
     expect(panel).not.toBeNull();
@@ -485,7 +685,7 @@ describe('SMS review privacy and explicit approval UI', () => {
     },
     30_000,
   );
-  it('preselects a suffix-free Pluxee wallet and Dining, with an available-category fallback', async () => {
+  it('preselects a suffix-free Pluxee wallet and merchant-based Dining, with an available-category fallback', async () => {
     const fixture = TestBed.createComponent(SmsSyncPage);
     const actualStore = TestBed.inject(CardNestStore);
     actualStore.paymentSources.set([
@@ -508,7 +708,13 @@ describe('SMS review privacy and explicit approval UI', () => {
     const candidate: SmsCandidate = {
       ...original,
       kind: 'PLUXEE_PURCHASE',
-      item: { ...original.item!, kind: 'PLUXEE_PURCHASE', issuer: 'Pluxee', cardDigits: undefined },
+      item: {
+        ...original.item!,
+        merchant: 'Zomato',
+        kind: 'PLUXEE_PURCHASE',
+        issuer: 'Pluxee',
+        cardDigits: undefined,
+      },
     };
     fixture.componentInstance.open(candidate);
     expect(fixture.componentInstance.editor.controls.source.value).toBe('synthetic-meal');
@@ -1377,7 +1583,13 @@ describe('SMS review privacy and explicit approval UI', () => {
       },
     ]);
     store.categories.set([
-      { id: 'groceries', name: 'Groceries', icon: 'groceries', appliesTo: 'BOTH', archived: false },
+      {
+        id: 'meat-dairy',
+        name: 'Meat & Dairy',
+        icon: 'groceries',
+        appliesTo: 'BOTH',
+        archived: false,
+      },
       { id: 'other', name: 'Other', icon: 'other', appliesTo: 'BOTH', archived: false },
     ]);
     const fixture = TestBed.createComponent(SmsSyncPage);
@@ -1407,7 +1619,7 @@ describe('SMS review privacy and explicit approval UI', () => {
       purpose: 'PURCHASE',
       source: 'source-debit',
       description: 'HILL FARM MEATS',
-      category: 'groceries',
+      category: 'meat-dairy',
     });
     store.transactions.set([
       {
@@ -1434,7 +1646,7 @@ describe('SMS review privacy and explicit approval UI', () => {
       existing: '',
       separate: true,
       description: 'HILL FARM MEATS',
-      category: 'groceries',
+      category: 'meat-dairy',
     });
     page.approveBankEvent(new Event('submit'));
     await fixture.whenStable();
@@ -1444,7 +1656,7 @@ describe('SMS review privacy and explicit approval UI', () => {
         purpose: 'PURCHASE',
         sourceId: 'source-debit',
         amountMinor: 45000,
-        categoryId: 'groceries',
+        categoryId: 'meat-dairy',
         allowSeparate: true,
       }),
     );

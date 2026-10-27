@@ -27,6 +27,19 @@
     }
   </header>
 
+  @if (error()) {
+    <p role="alert">{{ error() }}</p>
+  }
+  @for (record of store.categoryMigrationRecords(); track record.id) {
+    <details class="panel">
+      <summary>Preserved category merge settings — {{ record.category_id }}</summary>
+      <p>
+        Transactions were combined without changing money. The retained category budget was kept;
+        otherwise the merged budget was used. Both original configurations remain in your backup.
+      </p>
+      <pre style="white-space: pre-wrap; overflow-wrap: anywhere">{{ record.details }}</pre>
+    </details>
+  }
   <section class="panel category-list" aria-label="Transaction categories">
     @for (category of sortedCategories(); track category.id) {
       <article>
@@ -57,7 +70,7 @@
             class="icon-action danger-text"
             type="button"
             (click)="requestDelete(category.id)"
-            [disabled]="category.id === 'other' || category.id === 'payment'"
+            [disabled]="saving() || store.categoryProtected(category.id)"
             aria-label="Delete {{ category.name }}"
           >
             <app-icon name="delete" />
@@ -149,9 +162,11 @@
 
 @if (deleteCandidate(); as category) {
   <app-confirmation-dialog
-    title="Delete category?"
+    [title]="'Delete ' + category.name + '?'"
     [message]="
-      'Delete ' + category.name + '? Existing transactions will be moved to the Other category.'
+      'Transactions assigned to ' +
+      category.name +
+      ' will be moved to Other. No transactions or financial amounts will be deleted. This category will not automatically return.'
     "
     confirmLabel="Delete category"
     (confirmed)="confirmDelete()"

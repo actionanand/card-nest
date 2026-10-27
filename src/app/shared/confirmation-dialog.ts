@@ -1,4 +1,12 @@
-import { Component, input, output } from '@angular/core';
+import {
+  Component,
+  input,
+  output,
+  inject,
+  ElementRef,
+  DestroyRef,
+  afterNextRender,
+} from '@angular/core';
 import { AppIcon } from './app-icon';
 
 @Component({
@@ -19,7 +27,7 @@ import { AppIcon } from './app-icon';
         aria-describedby="confirmation-message"
         tabindex="-1"
         (click)="$event.stopPropagation()"
-        (keydown)="$event.stopPropagation()"
+        (keydown)="handleKey($event)"
       >
         <span class="confirmation-icon" aria-hidden="true"><app-icon name="warning" /></span>
         <div>
@@ -106,6 +114,43 @@ import { AppIcon } from './app-icon';
   `,
 })
 export class ConfirmationDialog {
+  private readonly element = inject<ElementRef<HTMLElement>>(ElementRef);
+  constructor() {
+    const back = (event: Event) => {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      this.cancelled.emit();
+    };
+    window.addEventListener('cardnest:back', back, { capture: true });
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    afterNextRender(() =>
+      this.element.nativeElement.querySelector<HTMLButtonElement>('button')?.focus(),
+    );
+    inject(DestroyRef).onDestroy(() => {
+      window.removeEventListener('cardnest:back', back, { capture: true });
+      if (previous?.isConnected) previous.focus();
+    });
+  }
+  handleKey(event: KeyboardEvent): void {
+    event.stopPropagation();
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      this.cancelled.emit();
+    }
+    if (event.key !== 'Tab') return;
+    const buttons = [
+      ...this.element.nativeElement.querySelectorAll<HTMLButtonElement>('button:not([disabled])'),
+    ];
+    const first = buttons[0],
+      last = buttons.at(-1);
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last?.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first?.focus();
+    }
+  }
   readonly title = input.required<string>();
   readonly message = input.required<string>();
   readonly confirmLabel = input('Delete');

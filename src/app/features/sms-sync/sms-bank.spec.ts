@@ -176,16 +176,16 @@ describe('Bank/UPI review model', () => {
     ).toEqual([]);
     expect(bankExistingSuggestions(evidence(), 'CREDIT', 'icici', [manual])).toEqual([]);
     const categories = [
-      { id: 'groceries', archived: false, appliesTo: 'BOTH' as const },
+      { id: 'meat-dairy', archived: false, appliesTo: 'BOTH' as const },
       { id: 'dining', archived: false, appliesTo: 'BOTH' as const },
       { id: 'income', archived: false, appliesTo: 'CREDIT' as const },
       { id: 'other', archived: false, appliesTo: 'BOTH' as const },
     ];
-    expect(defaultBankCategory('PURCHASE', 'HILL FARM MEATS', categories)).toBe('groceries');
+    expect(defaultBankCategory('PURCHASE', 'HILL FARM MEATS', categories)).toBe('meat-dairy');
     expect(defaultBankCategory('PURCHASE', 'COFFEE STALL', categories)).toBe('dining');
     expect(defaultBankCategory('PURCHASE', 'HOME RENT PORTAL', categories)).toBe('other');
     expect(defaultBankCategory('INCOME', 'JAMIE RIVERS', categories)).toBe('income');
-    expect(defaultBankCategory('INCOME', undefined, [])).toBe('other');
+    expect(() => defaultBankCategory('INCOME', undefined, [])).toThrow('Category integrity error');
   });
 
   it('validates bank evidence fields', () => {

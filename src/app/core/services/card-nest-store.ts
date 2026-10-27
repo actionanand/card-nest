@@ -57,6 +57,19 @@ import { indiaTimeOfDay, indiaTodayIso } from './india-date';
 import { APP_ENVIRONMENT } from './app-environment';
 import { initialiseAppData } from '../data/app-initialization';
 import {
+  DEFAULT_CATEGORIES,
+  CATEGORY_REGISTRY,
+  categoryDefinition,
+  formatNewCategoryName,
+  normalizedCategoryName,
+} from '../data/category-definitions';
+import {
+  reconcileCategoryCatalog,
+  deletePersistedCategory,
+  CategoryCatalogEntry,
+  CategoryMigrationRecord,
+} from '../data/category-catalog';
+import {
   configureMoneyDisplay,
   countryOption,
   countryOptionForCurrency,
@@ -150,31 +163,7 @@ const SAMPLE_CARDS: readonly CreditCard[] = [
   },
 ];
 
-const CATEGORIES: readonly Category[] = [
-  ['groceries', 'Groceries', 'shopping_basket', '#e0a860'],
-  ['dining', 'Dining', 'restaurant', '#de7d68'],
-  ['fuel', 'Fuel', 'local_gas_station', '#5a9d90'],
-  ['shopping', 'Shopping', 'shopping_bag', '#9075b5'],
-  ['travel', 'Travel', 'flight', '#4e87c7'],
-  ['utilities', 'Utilities', 'bolt', '#c8a43b'],
-  ['healthcare', 'Healthcare', 'health_and_safety', '#d56a7b'],
-  ['subscription', 'Subscription', 'subscriptions', '#65758b'],
-  ['payment', 'Card Payment', 'payments', '#4e9d73'],
-  ['contra-expenses', 'Contra-expenses', 'banknote_arrow_down', '#4e9d73'],
-  ['income', 'Income', 'banknote_arrow_up', '#3f8f63'],
-  ['other', 'Other', 'category', '#7a8797'],
-].map(
-  ([id, name, icon, colour]) =>
-    ({
-      id,
-      name,
-      icon,
-      colour,
-      appliesTo:
-        id === 'payment' || id === 'contra-expenses' || id === 'income' ? 'CREDIT' : 'BOTH',
-      archived: false,
-    }) as Category,
-);
+const CATEGORIES = DEFAULT_CATEGORIES;
 
 const SAMPLE_TRANSACTIONS: readonly CardTransaction[] = [
   {
@@ -274,6 +263,8 @@ export class CardNestStore {
   readonly paymentGroups = signal<readonly PaymentGroup[]>([]);
   readonly transactionWriteError = signal('');
   readonly categories = signal<readonly Category[]>(CATEGORIES);
+  readonly categoryCatalog = signal<readonly CategoryCatalogEntry[]>([]);
+  readonly categoryMigrationRecords = signal<readonly CategoryMigrationRecord[]>([]);
   readonly paymentSources = signal<readonly PaymentSource[]>(PAYMENT_SOURCES);
   readonly recurringRules = signal<readonly RecurringRule[]>([]);
   readonly loans = signal<readonly LoanCommitment[]>([]);
@@ -1853,6 +1844,8 @@ export class CardNestStore {
     this.transactions.set([]);
     this.paymentGroups.set([]);
     this.categories.set(CATEGORIES);
+    this.categoryCatalog.set([]);
+    this.categoryMigrationRecords.set([]);
     this.paymentSources.set(PAYMENT_SOURCES);
     this.recurringRules.set([]);
     this.loans.set([]);
@@ -1879,6 +1872,7 @@ export class CardNestStore {
     this.balanceAdjustments.set([]);
     writeCachedTransactions([]);
     for (const category of CATEGORIES) await this.persistCategory(category);
+    await this.loadCategories();
     this.dataWasCleared = true;
     await this.upsertPreference('data_cleared', '1');
   }
@@ -1939,39 +1933,94 @@ export class CardNestStore {
     return removedTransactions.length;
   }
 
-  addCategory(category: Category): void {
-    this.categories.update((categories) => [...categories, category]);
-    void this.persistCategory(category);
+  async addCategory(category: Category): Promise<void> {
+    await this.saveCategory(category, false);
   }
-
-  updateCategory(updated: Category): void {
-    this.categories.update((categories) =>
-      categories.map((category) => (category.id === updated.id ? updated : category)),
-    );
-    void this.persistCategory(updated);
+  async updateCategory(category: Category): Promise<void> {
+    await this.saveCategory(category, true);
   }
-
-  deleteCategory(categoryId: string, replacementCategoryId = 'other'): boolean {
-    if (categoryId === 'other' || categoryId === 'payment') return false;
-    if (replacementCategoryId) {
-      this.transactions.update((transactions) =>
-        transactions.map((transaction) =>
-          transaction.categoryId === categoryId
-            ? {
-                ...transaction,
-                categoryId: replacementCategoryId,
-                updatedAt: new Date().toISOString(),
-              }
-            : transaction,
-        ),
+  private async saveCategory(category: Category, editing: boolean): Promise<void> {
+    if (!this.database.ready()) throw new Error('Category storage is unavailable.');
+    await this.database.atomic(async (tx) => {
+      const rows = await tx.query<{ id: string; name: string }>('SELECT id,name FROM categories');
+      if (!editing && rows.some((row) => row.id === category.id))
+        throw new Error('This category ID already exists.');
+      const definition = categoryDefinition(category.name);
+      if (definition) {
+        const [mapping] = await tx.query<CategoryCatalogEntry>(
+          'SELECT * FROM category_catalog_state WHERE canonical_id=?',
+          [definition.id],
+        );
+        if (
+          mapping?.category_id &&
+          mapping.category_id !== category.id &&
+          rows.some((row) => row.id === mapping.category_id)
+        )
+          throw new Error('A category for this built-in name already exists.');
+      }
+      const name =
+        definition?.name ??
+        (editing
+          ? category.name.trim().replace(/\s+/gu, ' ')
+          : formatNewCategoryName(category.name));
+      if (!name || name.length > 40)
+        throw new Error('Enter a category name of up to 40 characters.');
+      if (
+        rows.some(
+          (row) =>
+            row.id !== category.id &&
+            (normalizedCategoryName(row.name) === normalizedCategoryName(name) ||
+              (!!definition && categoryDefinition(row.name)?.id === definition.id)),
+        )
+      )
+        throw new Error('A category with this name already exists.');
+      if (editing && !rows.some((row) => row.id === category.id))
+        throw new Error('This category no longer exists.');
+      if (
+        this.categoryProtected(category.id) &&
+        (category.archived ||
+          (category.id === 'other' && category.appliesTo !== 'BOTH') ||
+          (category.id === 'payment' && category.appliesTo === 'EXPENSE'))
+      )
+        throw new Error('Essential categories must remain active and compatible.');
+      await tx.run(
+        'INSERT INTO categories(id,name,icon,colour,applies_to,archived) VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,icon=excluded.icon,colour=excluded.colour,applies_to=excluded.applies_to,archived=excluded.archived',
+        [
+          category.id,
+          name,
+          category.icon,
+          category.colour ?? null,
+          category.appliesTo,
+          category.archived ? 1 : 0,
+        ],
       );
-    }
-    this.categories.update((categories) =>
-      categories.filter((category) => category.id !== categoryId),
+      if (definition)
+        await tx.run(
+          'INSERT INTO category_catalog_state(canonical_id,category_id,deleted) VALUES(?,?,0) ON CONFLICT(canonical_id) DO UPDATE SET category_id=excluded.category_id,deleted=0',
+          [definition.id, category.id],
+        );
+    });
+    await this.loadCategories();
+    await this.loadCategoryLimits();
+  }
+  categoryProtected(id: string): boolean {
+    return CATEGORY_REGISTRY.categories.some(
+      (def) =>
+        def.protected &&
+        (def.id === id ||
+          this.categoryCatalog().some(
+            (row) => row.canonical_id === def.id && row.category_id === id,
+          )),
     );
-    if (this.database.ready()) {
-      void this.database.run('DELETE FROM categories WHERE id = ?', [categoryId]);
-    }
+  }
+  async deleteCategory(categoryId: string): Promise<boolean> {
+    if (this.categoryProtected(categoryId)) return false;
+    if (!this.database.ready()) throw new Error('Category storage is unavailable.');
+    await this.database.atomic((tx) => deletePersistedCategory(tx, categoryId));
+    await this.loadCategories();
+    await this.loadCategoryLimits();
+    await this.loadTransactions();
+    await this.loadRecurringRules();
     return true;
   }
 
@@ -2199,6 +2248,7 @@ export class CardNestStore {
   }
 
   private async loadCategories(): Promise<void> {
+    await this.database.atomic((tx) => reconcileCategoryCatalog(tx));
     const rows = await this.database.query<
       {
         id: string;
@@ -2212,28 +2262,24 @@ export class CardNestStore {
       `SELECT id, name, icon, colour, applies_to AS appliesTo, archived
        FROM categories ORDER BY name COLLATE NOCASE`,
     );
-    if (rows.length) {
-      const storedCategories = rows.map((row) => ({
+    this.categories.set(
+      rows.map((row) => ({
         id: row.id,
         name: row.name,
         icon: row.icon,
         colour: row.colour ?? undefined,
         appliesTo: row.appliesTo,
-        archived: Boolean(row.archived),
-      }));
-      const missingDefaults = CATEGORIES.filter(
-        (category) =>
-          !storedCategories.some(
-            (stored) =>
-              stored.id === category.id ||
-              stored.name.localeCompare(category.name, undefined, { sensitivity: 'base' }) === 0,
-          ),
-      );
-      this.categories.set([...storedCategories, ...missingDefaults]);
-      for (const category of missingDefaults) await this.persistCategory(category);
-      return;
-    }
-    for (const category of this.categories()) await this.persistCategory(category);
+        archived: !!row.archived,
+      })),
+    );
+    this.categoryCatalog.set(
+      await this.database.query<CategoryCatalogEntry>('SELECT * FROM category_catalog_state'),
+    );
+    this.categoryMigrationRecords.set(
+      await this.database.query<CategoryMigrationRecord>(
+        'SELECT * FROM category_catalog_conflicts ORDER BY created_at',
+      ),
+    );
   }
 
   private async loadTransactions(): Promise<void> {

@@ -1,6 +1,9 @@
+import { suggestCategory } from '../../core/services/category-matcher';
 import {
   Component,
   computed,
+  effect,
+  untracked,
   DestroyRef,
   ElementRef,
   inject,
@@ -525,7 +528,37 @@ export class TransactionsPage {
     this.form.controls.transactionDate.markAsTouched();
   }
 
+  readonly categoryOverridden = signal(false);
+  suggestNewCategory(): void {
+    if (!this.showForm() || this.editingId() || this.categoryOverridden()) return;
+    const value = this.form.getRawValue();
+    const group = this.store
+      .paymentGroups()
+      .find(
+        (row) =>
+          row.id === value.relatedTransactionId ||
+          row.memberIds.includes(value.relatedTransactionId),
+      );
+    const related = this.store
+      .transactions()
+      .find((row) => row.id === (group?.anchorId ?? value.relatedTransactionId));
+    try {
+      const category = suggestCategory(
+        {
+          purpose: value.type,
+          merchant: value.merchant,
+          ...(value.type === 'ADJUSTMENT' ? { inheritedId: related?.categoryId ?? '' } : {}),
+        },
+        this.store.categories(),
+        this.store.categoryCatalog?.() ?? [],
+      );
+      this.form.controls.categoryId.setValue(category, { emitEvent: false });
+    } catch {
+      this.form.controls.categoryId.setErrors({ integrity: true });
+    }
+  }
   setCategory(value: string): void {
+    this.categoryOverridden.set(true);
     this.form.controls.categoryId.setValue(value);
     this.form.controls.categoryId.markAsDirty();
     this.form.controls.categoryId.markAsTouched();
@@ -769,6 +802,16 @@ export class TransactionsPage {
   });
 
   constructor() {
+    effect(() => {
+      this.formChanges();
+      this.showForm();
+      this.editingId();
+      this.store.categories();
+      this.store.categoryCatalog?.();
+      this.store.transactions();
+      this.store.paymentGroups();
+      untracked(() => this.suggestNewCategory());
+    });
     this.destroyRef.onDestroy(() => this.closeWebCamera());
     if (Capacitor.getPlatform() === 'web') void this.detectWebCamera();
     // Handle edit requested via query param on first load.
@@ -1118,15 +1161,9 @@ export class TransactionsPage {
     globalThis.scrollTo?.({ top: 0, behavior: 'smooth' });
   }
   transactionTypeChanged(type: TransactionType): void {
+    if (this.form.controls.type.value !== type) this.form.controls.type.setValue(type);
     this.form.controls.preserveLegacy.setValue(false);
     this.form.controls.unlinkConfirmed.setValue(false);
-    if (type === 'REFUND' || type === 'CASHBACK') {
-      this.form.controls.categoryId.setValue('contra-expenses');
-    } else if (type === 'CREDIT' || type === 'PAYMENT') {
-      this.form.controls.categoryId.setValue('payment');
-    } else {
-      this.form.controls.categoryId.setValue('other');
-    }
     this.form.controls.relatedTransactionId.setValue('');
   }
 
@@ -1911,6 +1948,7 @@ export class TransactionsPage {
   }
 
   private resetForm(sourceId: string): void {
+    this.categoryOverridden.set(false);
     this.receiptPreviews.set([]);
     this.receiptDraftDirty.set(false);
     this.form.reset({
