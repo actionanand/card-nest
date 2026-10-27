@@ -1,4 +1,5 @@
 import { Service, computed, inject, signal } from '@angular/core';
+import { CommittedSaveRefreshError } from './committed-save-refresh-error';
 import {
   BalanceTiming,
   BankCashTrackingSettings,
@@ -894,9 +895,18 @@ export class CardNestStore {
       if (targetId && next.type === 'ADJUSTMENT') await attachPaymentGroup(tx, [next.id], targetId);
       return saved;
     });
+    // The durable write is now complete. Publish the exact committed row even if a later read fails.
     this.publishStoredBalances(result.wallets);
-    await this.loadTransactions();
-    if (result.fundingChanged) await this.loadTransfers();
+    this.transactions.update((items) => [
+      result.persisted,
+      ...items.filter((item) => item.id !== result.persisted.id),
+    ]);
+    try {
+      await this.loadTransactions();
+      if (result.fundingChanged) await this.loadTransfers();
+    } catch (error: unknown) {
+      throw new CommittedSaveRefreshError(transaction.id, error);
+    }
   }
 
   async deleteRecordedTransaction(id: string): Promise<void> {
@@ -1248,37 +1258,39 @@ export class CardNestStore {
     const updated = this.recurringRules().find((rule) => rule.id === ruleId);
     if (updated) void this.persistRecurringRule(updated);
   }
-  updatePaymentSource(updated: PaymentSource): void {
+  async updatePaymentSource(updated: PaymentSource): Promise<void> {
+    if (!this.database.ready()) throw new Error('Database is not ready.');
     const previous = this.paymentSources().find((source) => source.id === updated.id);
-    if (previous?.balanceMinor !== updated.balanceMinor)
-      updated = {
-        ...updated,
-        balanceCutoverAt: new Date().toISOString(),
-        balanceSnapshotMinor: updated.balanceMinor,
-        ...(updated.kind === 'MEAL' ? { balanceCutoverReason: 'MANUAL' as const } : {}),
-      };
-    this.paymentSources.update((sources) =>
-      sources.map((source) => (source.id === updated.id ? updated : source)),
-    );
-    if (!this.database.ready()) return;
+    if (!previous || previous.kind !== updated.kind)
+      throw new Error('Choose an existing payment source of the same kind.');
+    if (!updated.nickname.trim() || updated.nickname.length > 80)
+      throw new Error('Enter an account nickname of up to 80 characters.');
+    if (updated.kind === 'DEBIT' && updated.lastDigits && !/^\d{3,5}$/.test(updated.lastDigits))
+      throw new Error('Enter the last 3 to 5 account digits.');
     const changed = Object.keys(updated).filter(
-      (key) => updated[key as keyof PaymentSource] !== previous?.[key as keyof PaymentSource],
+      (key) => updated[key as keyof PaymentSource] !== previous[key as keyof PaymentSource],
     );
-    void this.database
-      .atomic(async (tx) => {
-        const sources = await this.readStoredSources(tx);
-        const next = sources.map((source) =>
-          source.id === updated.id
-            ? (Object.fromEntries([
-                ...Object.entries(source),
-                ...changed.map((key) => [key, updated[key as keyof PaymentSource]]),
-              ]) as unknown as PaymentSource)
-            : source,
-        );
-        await this.writeStoredSources(tx, next);
-        return next;
-      })
-      .then((sources) => this.paymentSources.set(sources));
+    if (!changed.length) return;
+    const sources = await this.database.atomic(async (tx) => {
+      const stored = await this.readStoredSources(tx);
+      const current = stored.find((source) => source.id === updated.id);
+      if (!current || current.kind !== updated.kind)
+        throw new Error('This payment source is no longer available.');
+      const merged = Object.fromEntries([
+        ...Object.entries(current),
+        ...changed.map((key) => [key, updated[key as keyof PaymentSource]]),
+      ]) as unknown as PaymentSource;
+      if (changed.includes('balanceMinor')) {
+        if (isBankOrCash(merged)) this.assertBalanceValue(merged, merged.balanceMinor ?? 0);
+        merged.balanceCutoverAt = new Date().toISOString();
+        merged.balanceSnapshotMinor = merged.balanceMinor;
+        if (merged.kind === 'MEAL') merged.balanceCutoverReason = 'MANUAL';
+      }
+      const next = stored.map((source) => (source.id === merged.id ? merged : source));
+      await this.writeStoredSources(tx, next);
+      return next;
+    });
+    this.paymentSources.set(sources);
   }
   addLoan(loan: LoanCommitment): void {
     this.loans.update((loans) => [loan, ...loans]);

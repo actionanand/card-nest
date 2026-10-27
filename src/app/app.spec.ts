@@ -13,6 +13,7 @@ import { UtilitiesService } from './features/utilities/utilities.service';
 import { CardTransaction, CreditCard, PaymentSource } from './core/models/domain';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { CommittedSaveRefreshError } from './core/services/committed-save-refresh-error';
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -175,6 +176,69 @@ describe('App', () => {
   it('should create the app', () => {
     const fixture = TestBed.createComponent(App);
     expect(fixture.componentInstance).toBeTruthy();
+  });
+  it('closes a durably saved Quick Transaction on refresh failure and prevents another submission', async () => {
+    ready.set(true);
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const app = fixture.componentInstance;
+    app.openFlashTransaction();
+    app.flashAmount.set('12.34');
+    store.saveManualTransaction.mockImplementationOnce(async (transaction) => {
+      transactions.set([transaction]);
+      throw new CommittedSaveRefreshError(transaction.id, new Error('Refresh failed'));
+    });
+    await app.saveFlashTransaction(new Event('submit'));
+    await app.saveFlashTransaction(new Event('submit'));
+    expect(store.saveManualTransaction).toHaveBeenCalledTimes(1);
+    expect(app.flashTransactionOpen()).toBe(false);
+    expect(app.flashError()).toBeNull();
+    expect(snackbarShow).toHaveBeenCalledWith(
+      expect.stringContaining('Transaction saved'),
+      'WARNING',
+    );
+    expect(transactions()).toHaveLength(1);
+    fixture.destroy();
+  });
+  it('labels and saves a non-INR credit-card purchase in its own currency without conversion', async () => {
+    ready.set(true);
+    cards.set([{ ...flashCard, currencyCode: 'USD' }]);
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const app = fixture.componentInstance;
+    app.openFlashTransaction();
+    app.updateFlashSource(flashCard.id);
+    app.flashAmount.set('12.34');
+    fixture.detectChanges();
+    expect(fixture.nativeElement.textContent).toContain('Amount (USD)');
+    await app.saveFlashTransaction(new Event('submit'));
+    expect(store.saveManualTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ currencyCode: 'USD', amountMinor: 1234 }),
+    );
+    fixture.destroy();
+  });
+  it('clears text-entry suppression when a focused shadow control is removed during navigation', async () => {
+    ready.set(true);
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const host = document.createElement('div');
+    const root = host.attachShadow({ mode: 'open' });
+    const input = document.createElement('input');
+    root.append(input);
+    document.body.append(host);
+    input.focus();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(fixture.componentInstance.floatingShortcutVisible()).toBe(false);
+    host.remove();
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(fixture.componentInstance.floatingShortcutVisible()).toBe(true);
+    fixture.destroy();
   });
 
   it('should render the product brand', async () => {

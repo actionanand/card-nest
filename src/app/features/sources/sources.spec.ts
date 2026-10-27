@@ -74,6 +74,54 @@ describe('Explicit FASTag wallet creation and feedback', () => {
     await first;
     expect(fixture.componentInstance.walletSaving()).toBe(false);
   });
+  it('waits for identity persistence, reports a failure and restores the field without false success', async () => {
+    const fixture = setup();
+    const page = fixture.componentInstance;
+    const store = TestBed.inject(CardNestStore);
+    const source = store.paymentSources().find((row) => row.kind === 'DEBIT')!;
+    const input = document.createElement('input');
+    input.value = 'Unsaved nickname';
+    let reject!: (reason: Error) => void;
+    const update = vi.spyOn(store, 'updatePaymentSource').mockImplementationOnce(
+      () =>
+        new Promise<void>((_resolve, fail) => {
+          reject = fail;
+        }),
+    );
+    const snackbar = vi.spyOn(TestBed.inject(SnackbarService), 'show');
+    const pending = page.updateBankField(source, 'nickname', { target: input } as unknown as Event);
+    expect(snackbar).not.toHaveBeenCalled();
+    reject(new Error('Identity not saved'));
+    await pending;
+    expect(snackbar).toHaveBeenCalledExactlyOnceWith('Identity not saved', 'WARNING');
+    expect(input.value).toBe(source.nickname);
+    update.mockResolvedValueOnce();
+    input.value = 'Saved nickname';
+    await page.updateBankField(source, 'nickname', { target: input } as unknown as Event);
+    expect(snackbar).toHaveBeenLastCalledWith(`${source.nickname} updated.`);
+    fixture.destroy();
+  });
+  it('exposes an explicit restore action for an archived bank account without replacing its identity or history', async () => {
+    const fixture = setup();
+    const store = TestBed.inject(CardNestStore);
+    const source = {
+      ...store.paymentSources().find((row) => row.kind === 'DEBIT')!,
+      archived: true,
+      lastDigits: '00007',
+    };
+    store.paymentSources.set([source]);
+    fixture.detectChanges();
+    const update = vi.spyOn(store, 'updatePaymentSource').mockResolvedValue();
+    const restore = (fixture.nativeElement as HTMLElement).querySelector<HTMLButtonElement>(
+      'details[aria-label="Archived bank accounts"] button',
+    );
+    expect(restore).not.toBeNull();
+    restore!.click();
+    await fixture.whenStable();
+    expect(update).toHaveBeenCalledWith({ ...source, archived: false });
+    expect(source.archived).toBe(true);
+    fixture.destroy();
+  });
   it('orders wallet activity by event time and shows recorded time without using scan time', () => {
     const fixture = setup();
     const store = TestBed.inject(CardNestStore);

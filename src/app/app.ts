@@ -24,6 +24,8 @@ import { parseMoneyToMinor } from './core/services/money';
 import { UiPreferencesService } from './core/services/ui-preferences.service';
 import { UtilitiesService } from './features/utilities/utilities.service';
 import { BankActivityService } from './features/bank-activity/bank-activity.service';
+import { focusedElement, isTextEntry } from './shared/text-entry-focus';
+import { CommittedSaveRefreshError } from './core/services/committed-save-refresh-error';
 
 interface NativeLaunchBridge {
   hideSplash(): void;
@@ -78,6 +80,10 @@ export class App {
   readonly flashAmount = signal('');
   readonly flashMerchant = signal('');
   readonly flashError = signal<string | null>(null);
+  readonly flashCurrency = computed(
+    () =>
+      this.store.cards().find((card) => card.id === this.flashSourceId())?.currencyCode ?? 'INR',
+  );
   private flashTransactionId: string | null = null;
   readonly allowNotificationsButton = viewChild<ElementRef<HTMLButtonElement>>(
     'allowNotificationsButton',
@@ -117,12 +123,14 @@ export class App {
       MutationObserverClass &&
       this.document.documentElement
     ) {
-      const refreshDialogState = () =>
+      const refreshDialogState = () => {
         this.blockingDialogOpen.set(
           !!this.document.querySelector(
             'dialog[open], [role="dialog"][aria-modal="true"], [role="alertdialog"][aria-modal="true"]',
           ),
         );
+        this.refreshFabKeyboardState();
+      };
       const observer = new MutationObserverClass(refreshDialogState);
       observer.observe(this.document.documentElement, {
         subtree: true,
@@ -170,11 +178,9 @@ export class App {
 
   refreshFabKeyboardState(): void {
     queueMicrotask(() => {
-      const active = this.document.activeElement as HTMLElement | null;
-      const editable =
-        !!active &&
-        (active.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(active.tagName));
-      this.keyboardInputFocused.set(this.uiPreferences.androidNative && editable);
+      this.keyboardInputFocused.set(
+        this.uiPreferences.androidNative && isTextEntry(focusedElement(this.document)),
+      );
     });
   }
 
@@ -306,7 +312,7 @@ export class App {
         cardId: this.flashSourceId(),
         type: 'PURCHASE',
         amountMinor,
-        currencyCode: 'INR',
+        currencyCode: this.flashCurrency(),
         transactionDate: indiaTodayIso(),
         merchant: this.flashMerchant().trim() || undefined,
         categoryId: 'other',
@@ -319,7 +325,13 @@ export class App {
       this.flashTransactionOpen.set(false);
       this.flashError.set(null);
       this.snackbar.show('Flash transaction added.');
-    } catch {
+    } catch (error: unknown) {
+      if (error instanceof CommittedSaveRefreshError) {
+        this.flashTransactionOpen.set(false);
+        this.flashTransactionId = null;
+        this.snackbar.show(error.message, 'WARNING');
+        return;
+      }
       this.flashError.set(
         'Could not save this transaction. Your entries are still here; try again.',
       );

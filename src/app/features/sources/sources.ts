@@ -110,6 +110,10 @@ export class SourcesPage {
     }
   }
   readonly store = inject(CardNestStore);
+  readonly archivedBankAccounts = computed(() =>
+    this.store.paymentSources().filter((source) => source.kind === 'DEBIT' && source.archived),
+  );
+  readonly restoringAccounts = signal<ReadonlySet<string>>(new Set());
   readonly movement = signal<MovementRequest | null>(null);
   readonly bankOpen = signal(false);
   readonly bankSaving = signal(false);
@@ -174,11 +178,11 @@ export class SourcesPage {
         ?.id ?? ''
     );
   }
-  updateBankField(
+  async updateBankField(
     source: PaymentSource,
     field: 'nickname' | 'institution' | 'lastDigits',
     event: Event,
-  ): void {
+  ): Promise<void> {
     const input = event.target as HTMLInputElement;
     const value = input.value.trim();
     if (field === 'lastDigits' && !/^\d{3,5}$/.test(value)) {
@@ -188,12 +192,32 @@ export class SourcesPage {
     }
     input.setCustomValidity('');
     if (!value && field !== 'institution') return;
-    this.store.updatePaymentSource({ ...source, [field]: value.slice(0, 80) || undefined });
-    this.snackbar.show(`${source.nickname} updated.`);
+    const saved = await this.persistSource(
+      { ...source, [field]: value.slice(0, 80) || undefined },
+      `${source.nickname} updated.`,
+    );
+    if (!saved && input.value.trim() === value)
+      input.value = String(
+        this.store.paymentSources().find((item) => item.id === source.id)?.[field] ?? '',
+      );
   }
-  archiveAccount(source: PaymentSource): void {
-    this.store.updatePaymentSource({ ...source, archived: true });
-    this.snackbar.show(`${source.nickname} archived. Its history is kept.`);
+  async archiveAccount(source: PaymentSource): Promise<void> {
+    await this.persistSource(
+      { ...source, archived: true },
+      `${source.nickname} archived. Its history is kept.`,
+    );
+  }
+  async restoreAccount(source: PaymentSource): Promise<void> {
+    if (this.restoringAccounts().has(source.id)) return;
+    this.restoringAccounts.update((ids) => new Set([...ids, source.id]));
+    try {
+      await this.persistSource(
+        { ...source, archived: false },
+        `${source.nickname} restored. Its saved balance and history are unchanged.`,
+      );
+    } finally {
+      this.restoringAccounts.update((ids) => new Set([...ids].filter((id) => id !== source.id)));
+    }
   }
   readonly visibleTransfers = computed(() =>
     this.store
@@ -353,23 +377,21 @@ export class SourcesPage {
     this.selectedSourceId.set(value);
   }
 
-  updateAmount(
+  async updateAmount(
     source: PaymentSource,
     event: Event,
     field: 'balanceMinor' | 'loadAmountMinor',
-  ): void {
+  ): Promise<void> {
     const value = parseMoneyToMinor((event.target as HTMLInputElement).value);
     if (value === null) return;
-    this.store.updatePaymentSource({ ...source, [field]: value });
-    this.snackbar.show(`${source.nickname} updated.`);
+    await this.persistSource({ ...source, [field]: value }, `${source.nickname} updated.`);
   }
 
-  updateLoadDay(source: PaymentSource, value: string): void {
-    this.store.updatePaymentSource({
-      ...source,
-      loadDay: Number(value),
-    });
-    this.snackbar.show(`${source.nickname} load date updated.`);
+  async updateLoadDay(source: PaymentSource, value: string): Promise<void> {
+    await this.persistSource(
+      { ...source, loadDay: Number(value) },
+      `${source.nickname} load date updated.`,
+    );
   }
 
   sanitizeLastDigits(event: Event): void {
@@ -380,23 +402,34 @@ export class SourcesPage {
     );
   }
 
-  updateLastDigits(source: PaymentSource, event: Event): void {
+  async updateLastDigits(source: PaymentSource, event: Event): Promise<void> {
     const input = event.target as HTMLInputElement;
     this.sanitizeLastDigits(event);
     if (!input.checkValidity()) {
       input.reportValidity();
       return;
     }
-    this.store.updatePaymentSource({
-      ...source,
-      lastDigits: input.value || undefined,
-    });
-    this.snackbar.show(`${source.nickname} last four digits updated.`);
+    await this.persistSource(
+      { ...source, lastDigits: input.value || undefined },
+      `${source.nickname} last four digits updated.`,
+    );
   }
 
-  toggle(source: PaymentSource, field: 'noLimit' | 'autoLoad'): void {
-    this.store.updatePaymentSource({ ...source, [field]: !source[field] });
-    this.snackbar.show(`${source.nickname} updated.`);
+  async toggle(source: PaymentSource, field: 'noLimit' | 'autoLoad'): Promise<void> {
+    await this.persistSource({ ...source, [field]: !source[field] }, `${source.nickname} updated.`);
+  }
+  private async persistSource(source: PaymentSource, message: string): Promise<boolean> {
+    try {
+      await this.store.updatePaymentSource(source);
+      this.snackbar.show(message);
+      return true;
+    } catch (error: unknown) {
+      this.snackbar.show(
+        error instanceof Error ? error.message : 'The account could not be saved. Please retry.',
+        'WARNING',
+      );
+      return false;
+    }
   }
 
   transactionLabel(transaction: CardTransaction): string {

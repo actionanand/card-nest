@@ -13,6 +13,22 @@ class Host {
 }
 
 describe('Indian national phone input', () => {
+  it('lets an oversized malformed legacy value be corrected without dropping unselected digits', () => {
+    const fixture = TestBed.createComponent(Host);
+    fixture.componentInstance.number.setValue('9876543210123');
+    fixture.detectChanges();
+    const input = (fixture.nativeElement as HTMLElement).querySelector('input')!;
+    expect(input.value).toBe('9876543210123');
+    input.value = '987654321012';
+    input.setSelectionRange(12, 12);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(fixture.componentInstance.number.value).toBe('987654321012');
+    expect(input.value).toBe('987654321012');
+    input.value = '9876543210';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(fixture.componentInstance.number.value).toBe('9876543210');
+    fixture.destroy();
+  });
   it.each(['9876543210', '+919876543210', '+91 9876543210', '+91-9876543210'])(
     'loads %s with one prefix and normalized persistence',
     (value) => {

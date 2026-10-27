@@ -66,6 +66,7 @@
           (click)="findAccounts()"
           [disabled]="activity.discovering()"
         >
+          <app-icon name="search" aria-hidden="true" />
           {{ activity.discovering() ? 'Checking saved alerts…' : 'Find bank accounts from SMS' }}
         </button>
         <p class="form-note">

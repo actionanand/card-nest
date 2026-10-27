@@ -11,6 +11,9 @@ import { SnackbarService } from '../../core/services/snackbar.service';
 import { ApplicationPinService } from '../../core/services/application-pin.service';
 import { AppLockService } from '../../core/services/app-lock.service';
 import { UtilitiesService } from '../utilities/utilities.service';
+import { App } from '../../app';
+import { NotificationService } from '../../core/services/notification.service';
+import { UiPreferencesService } from '../../core/services/ui-preferences.service';
 
 describe('Explicit backup destination choice', () => {
   const backup = { fileName: 'synthetic.cnbak', contents: 'synthetic-encrypted-file' };
@@ -48,6 +51,7 @@ describe('Explicit backup destination choice', () => {
   });
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
     localStorage.clear();
   });
   const create = async () => {
@@ -58,6 +62,68 @@ describe('Explicit backup destination choice', () => {
     await fixture.componentInstance.submitBackup(new Event('submit'));
     return fixture;
   };
+  it('keeps the selected FAB visible when actual Settings theme radios retain focus', async () => {
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn(() => ({ matches: false })),
+    );
+    vi.spyOn(Capacitor, 'isNativePlatform').mockReturnValue(true);
+    vi.spyOn(Capacitor, 'getPlatform').mockReturnValue('android');
+    TestBed.overrideProvider(NotificationService, {
+      useValue: {
+        enabled: signal(false),
+        reminderDaysBefore: signal(1),
+        lastError: signal(null),
+        setUtilityReminders: vi.fn(),
+        reschedule: vi.fn().mockResolvedValue(undefined),
+        shouldRequestNotificationPermission: vi.fn().mockResolvedValue(false),
+        refreshPermission: vi.fn(),
+      },
+    });
+    const settings = TestBed.createComponent(SettingsPage);
+    const app = TestBed.createComponent(App);
+    document.body.append(settings.nativeElement, app.nativeElement);
+    const preferences = TestBed.inject(UiPreferencesService);
+    preferences.setFloatingShortcutEnabled(true);
+    (TestBed.inject(SqliteDatabase).ready as ReturnType<typeof signal<boolean>>).set(true);
+    TestBed.inject(AppLockService).foreground.set(true);
+    settings.detectChanges();
+    app.detectChanges();
+    await app.whenStable();
+    try {
+      for (const mode of ['QUICK_TRANSACTION', 'SMS_SYNC'] as const) {
+        preferences.setFloatingShortcutMode(mode);
+        for (const theme of ['LIGHT', 'DARK', 'SYSTEM']) {
+          const radio = settings.nativeElement.querySelector(
+            `input[name="theme"][value="${theme}"]`,
+          ) as HTMLInputElement;
+          radio.focus();
+          radio.click();
+          await settings.whenStable();
+          app.detectChanges();
+          expect(settings.componentInstance.theme()).toBe(theme);
+          expect(app.componentInstance.floatingShortcutVisible()).toBe(true);
+          expect(app.nativeElement.querySelectorAll('.floating-shortcut-fab')).toHaveLength(1);
+        }
+      }
+      const text = settings.nativeElement.querySelector(
+        'input:not([type]), input[type="text"]',
+      ) as HTMLInputElement;
+      text.focus();
+      await app.whenStable();
+      app.detectChanges();
+      expect(app.componentInstance.floatingShortcutVisible()).toBe(false);
+      text.blur();
+      await app.whenStable();
+      app.detectChanges();
+      expect(app.componentInstance.floatingShortcutVisible()).toBe(true);
+    } finally {
+      settings.destroy();
+      app.destroy();
+      settings.nativeElement.remove();
+      app.nativeElement.remove();
+    }
+  });
   it('scrolls and focuses every Settings section without navigation or losing form state', () => {
     const fixture = TestBed.createComponent(SettingsPage);
     fixture.detectChanges();

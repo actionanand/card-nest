@@ -48,6 +48,10 @@ export class BankAccountSyncService {
       for (const profile of [...profiles]) {
         if (profile.paymentSourceId) {
           const source = sources.find((row) => row.id === profile.paymentSourceId);
+          if (source?.archived && !profile.archived)
+            conflicts.push(
+              `${profile.bankName}: linked Money Source is archived. Restore it in Money Sources or archive this monitoring profile; its stable link and history are preserved.`,
+            );
           if (
             profile.owner !== 'OWN' ||
             !source ||

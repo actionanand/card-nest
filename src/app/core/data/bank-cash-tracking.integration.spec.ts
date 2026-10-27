@@ -25,6 +25,7 @@ import { By } from '@angular/platform-browser';
 import { AppSelectPicker } from '../../shared/app-select-picker';
 import { Blob as NodeBlob } from 'node:buffer';
 import { BankActivityService } from '../../features/bank-activity/bank-activity.service';
+import { BankAccountSyncService } from '../../features/bank-activity/bank-account-sync.service';
 
 const { DatabaseSync } = process.getBuiltinModule('node:sqlite') as typeof import('node:sqlite');
 
@@ -49,6 +50,256 @@ vi.mock('@capacitor-community/sqlite', () => ({
 
 /** Real SQLite behind the native plugin contract. Every identifier here is fictional. */
 describe('Bank/UPI and Cash tracking with SQLite', () => {
+  const financialState = () => [
+    ...[
+      'card_transactions',
+      'credit_cards',
+      'source_transfers',
+      'source_balance_adjustments',
+      'transaction_split_groups',
+      'transaction_split_members',
+      'sms_candidates',
+      'sms_reconciliation',
+      'statements',
+      'categories',
+    ].map((table) => rows('SELECT * FROM ' + table + ' ORDER BY rowid')),
+    (
+      JSON.parse(
+        String(
+          rows("SELECT encrypted_value FROM app_preferences WHERE key='payment_sources'")[0]?.[
+            'encrypted_value'
+          ] ?? '[]',
+        ),
+      ) as PaymentSource[]
+    )
+      .filter((source) => source.balanceMinor !== undefined)
+      .map((source) => ({
+        id: source.id,
+        balanceMinor: source.balanceMinor,
+        balanceCutoverAt: source.balanceCutoverAt,
+        balanceSnapshotMinor: source.balanceSnapshotMinor,
+      }))
+      .sort((left, right) => left.id.localeCompare(right.id)),
+  ];
+  it('merges concurrent committed source edits, preserves later changes and refreshes the linked identity after navigation', async () => {
+    const { store, stored } = await boot();
+    const source = await store.addBankAccount({
+      nickname: 'Original',
+      institution: 'ICICI',
+      lastDigits: '00123',
+    });
+    await store.enableBankCashTracking({ [source.id]: 12000 });
+    const activity = TestBed.inject(BankActivityService);
+    await activity.reload();
+    const profile = activity.profiles().find((row) => row.paymentSourceId === source.id)!;
+    await activity.saveProfile({ ...profile, nickname: 'Independent monitor nickname' });
+    const before = financialState();
+    const otherSources = store.paymentSources().filter((row) => row.id !== source.id);
+    const current = store.paymentSources().find((row) => row.id === source.id)!;
+    const bankEdit = store.updatePaymentSource({ ...current, institution: 'HDFC Bank' });
+    const suffixEdit = store.updatePaymentSource({
+      ...current,
+      nickname: 'Later nickname',
+      lastDigits: '00007',
+    });
+    await Promise.all([bankEdit, suffixEdit, activity.reload(), activity.reload()]);
+    await activity.reload();
+    expect(store.paymentSources().find((row) => row.id === source.id)).toMatchObject({
+      institution: 'HDFC Bank',
+      nickname: 'Later nickname',
+      lastDigits: '00007',
+      balanceMinor: 12000,
+      balanceCutoverAt: current.balanceCutoverAt,
+    });
+    expect(activity.profiles().find((row) => row.id === profile.id)).toMatchObject({
+      paymentSourceId: source.id,
+      bankName: 'ICICI',
+      accountSuffix: '123',
+      nickname: 'Independent monitor nickname',
+    });
+    expect(activity.profiles()).toHaveLength(1);
+    expect(activity.accountSync.conflicts().join(' ')).toContain('linked identity changed');
+    expect(stored(source.id)).toBe(12000);
+    expect(financialState()).toEqual(before);
+    expect(store.paymentSources().filter((row) => row.id !== source.id)).toEqual(otherSources);
+  });
+  it.each(['source', 'profile'] as const)(
+    'preserves linked IDs and financial records when archiving/restoring the %s',
+    async (side) => {
+      const { store } = await boot();
+      const source = await store.addBankAccount({
+        nickname: 'Archive case',
+        institution: 'ICICI',
+        lastDigits: '00007',
+      });
+      await store.enableBankCashTracking({ [source.id]: 12000 });
+      const activity = TestBed.inject(BankActivityService);
+      await activity.reload();
+      const profile = activity.profiles().find((row) => row.paymentSourceId === source.id)!;
+      const before = financialState();
+      if (side === 'source') await store.updatePaymentSource({ ...source, archived: true });
+      else await activity.setArchived(profile.id, true);
+      await Promise.all([activity.reload(), activity.reload()]);
+      expect(activity.profiles()).toHaveLength(1);
+      expect(activity.profiles()[0]).toMatchObject({
+        id: profile.id,
+        paymentSourceId: source.id,
+        archived: side === 'profile',
+        accountSuffix: '007',
+      });
+      if (side === 'source')
+        expect(activity.accountSync.conflicts().join(' ')).toContain('archived');
+      if (side === 'source')
+        await store.updatePaymentSource({
+          ...store.paymentSources().find((row) => row.id === source.id)!,
+          archived: false,
+        });
+      else await activity.setArchived(profile.id, false);
+      await activity.reload();
+      expect(activity.profiles()[0].id).toBe(profile.id);
+      expect(financialState()).toEqual(before);
+    },
+  );
+  it('requires ownership confirmation, safely unlinks OWN to OTHERS, and does not re-enroll the family profile', async () => {
+    const { store } = await boot();
+    const activity = TestBed.inject(BankActivityService);
+    const family = await activity.saveProfile({
+      bankName: 'ICICI',
+      accountSuffix: '007',
+      owner: 'OTHERS',
+      holderName: 'Family',
+    });
+    await store.enableBankCashTracking({});
+    const before = financialState();
+    await expect(activity.saveProfile({ ...family, owner: 'OWN' })).rejects.toThrow('Confirm');
+    const own = await activity.saveProfile({ ...family, owner: 'OWN', confirmOwnershipSync: true });
+    const source = store.paymentSources().find((row) => row.id === own.paymentSourceId)!;
+    expect(source.lastDigits).toBe('007');
+    expect(source.balanceMinor).toBeUndefined();
+    await expect(
+      activity.saveProfile({ ...own, owner: 'OTHERS', holderName: 'Family' }),
+    ).rejects.toThrow('Only an account');
+    await activity.saveProfile({
+      ...own,
+      paymentSourceId: undefined,
+      owner: 'OTHERS',
+      holderName: 'Family',
+    });
+    await Promise.all([activity.accountSync.reconcile(), activity.accountSync.reconcile()]);
+    await activity.reload();
+    expect(activity.profiles()).toHaveLength(1);
+    expect(activity.profiles()[0].owner).toBe('OTHERS');
+    expect(activity.profiles()[0].paymentSourceId).toBeUndefined();
+    expect(store.paymentSources().find((row) => row.id === source.id)).toEqual(source);
+    expect(financialState()).toEqual(before);
+  });
+  it('rolls back failed reconciliation, retries concurrent calls once per identity and preserves links through encrypted restore', async () => {
+    const { store } = await boot();
+    const source = await store.addBankAccount({
+      nickname: 'Source nickname',
+      institution: 'ICICI',
+      lastDigits: '00123',
+    });
+    await store.enableBankCashTracking({ [source.id]: 12345 });
+    const before = financialState();
+    const sync = TestBed.inject(BankAccountSyncService);
+    sql.exec(
+      "CREATE TRIGGER fail_new_profile BEFORE INSERT ON bank_activity_profiles BEGIN SELECT RAISE(ABORT,'reconcile failure'); END",
+    );
+    await expect(sync.reconcile()).rejects.toThrow('reconcile failure');
+    expect(count('bank_activity_profiles')).toBe(0);
+    sql.exec('DROP TRIGGER fail_new_profile');
+    await Promise.all([sync.reconcile(), sync.reconcile(), sync.reconcile()]);
+    const activity = TestBed.inject(BankActivityService);
+    await activity.reload();
+    const profile = activity.profiles()[0];
+    await activity.saveProfile({ ...profile, nickname: 'Monitor nickname' });
+    expect(activity.profiles()).toHaveLength(1);
+    expect(activity.events()).toHaveLength(0);
+    await activity.saveManualEvent({
+      profileId: profile.id,
+      direction: 'DEBIT',
+      activityDate: '2026-10-25',
+    });
+    await activity.saveManualEvent({
+      profileId: profile.id,
+      direction: 'CREDIT',
+      activityDate: '2026-10-22',
+    });
+    const legacy = {
+      id: 'legacy-history',
+      profileId: profile.id,
+      direction: 'DEBIT',
+      activityDate: '2026-10-20',
+      origin: 'ANDROID_SMS',
+      verification: 'USER_CONFIRMED',
+      fingerprint: 'legacy-processed',
+      createdAt: '2026-10-20',
+      updatedAt: '2026-10-20',
+    };
+    sql
+      .prepare('INSERT INTO bank_activity_events VALUES(?,?,?,?,?,?,?,?,?,?)')
+      .run(
+        legacy.id,
+        profile.id,
+        legacy.activityDate,
+        legacy.direction,
+        legacy.origin,
+        legacy.verification,
+        legacy.fingerprint,
+        JSON.stringify(legacy),
+        legacy.createdAt,
+        legacy.updatedAt,
+      );
+    sql.exec('PRAGMA user_version=13');
+    vi.stubGlobal('crypto', webcrypto);
+    vi.stubGlobal('Blob', NodeBlob);
+    try {
+      const backup = await TestBed.inject(BackupService).create('synthetic-hardening-passphrase');
+      await store.disableBankCashTracking();
+      await activity.reload();
+      expect(count('bank_activity_profiles')).toBe(1);
+      const beforeFailure = rows('SELECT * FROM bank_activity_events ORDER BY id');
+      sql.exec(
+        "CREATE TRIGGER fail_monitor_restore BEFORE INSERT ON bank_activity_events BEGIN SELECT RAISE(ABORT,'monitor restore failure'); END",
+      );
+      await expect(
+        TestBed.inject(BackupService).restore(backup.contents, 'synthetic-hardening-passphrase'),
+      ).rejects.toThrow('monitor restore failure');
+      expect(rows('SELECT * FROM bank_activity_events ORDER BY id')).toEqual(beforeFailure);
+      expect(financialState()).toEqual(before);
+      sql.exec('DROP TRIGGER fail_monitor_restore');
+      await TestBed.inject(BackupService).restore(
+        backup.contents,
+        'synthetic-hardening-passphrase',
+      );
+      await activity.reload();
+      expect(
+        activity
+          .events()
+          .map((event) => event.activityDate)
+          .sort(),
+      ).toEqual(['2026-10-22', '2026-10-25']);
+      expect(
+        rows(
+          "SELECT payload FROM bank_activity_candidates WHERE fingerprint='legacy-processed'",
+        )[0]['payload'],
+      ).toContain('resolvedAt');
+      expect(activity.profiles()[0]).toMatchObject({
+        id: profile.id,
+        paymentSourceId: source.id,
+        nickname: 'Monitor nickname',
+      });
+      expect(store.paymentSources().find((row) => row.id === source.id)).toMatchObject({
+        nickname: 'Source nickname',
+        lastDigits: '00123',
+        balanceMinor: 12345,
+      });
+      expect(financialState()).toEqual(before);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
   it('stages bank discoveries, rolls back failed confirmation and records once with no financial side effects', async () => {
     const { store } = await boot();
     vi.spyOn(Capacitor, 'isNativePlatform').mockReturnValue(true);
@@ -663,6 +914,129 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     expect(store.transactions().some((item) => item.id === transaction.id)).toBe(false);
     expect(balance('source-cash')).toBe(balanceBefore);
     expect(stored('source-cash')).toBe(storedBalanceBefore);
+  });
+  it('distinguishes a committed purchase from a failed refresh and cannot double-post its balance on retry/restart', async () => {
+    const { store, balance, stored } = await boot();
+    await store.enableBankCashTracking({ 'source-cash': 20000 });
+    const item = purchase({
+      id: 'committed-refresh-failure',
+      amountMinor: 4500,
+      balanceTiming: 'AFTER_BASELINE',
+    });
+    const original = database.query.bind(database);
+    const read = vi.spyOn(database, 'query').mockImplementation(async (statement, values) => {
+      if (statement.startsWith('SELECT payload FROM card_transactions ORDER BY'))
+        throw new Error('Synthetic refresh failure');
+      return original(statement, values);
+    });
+    await expect(store.saveManualTransaction(item)).rejects.toMatchObject({
+      name: 'CommittedSaveRefreshError',
+      transactionId: item.id,
+    });
+    expect(count('card_transactions')).toBe(1);
+    expect(stored('source-cash')).toBe(15500);
+    expect(balance('source-cash')).toBe(15500);
+    read.mockRestore();
+    await store.saveManualTransaction(item);
+    expect(count('card_transactions')).toBe(1);
+    expect(stored('source-cash')).toBe(15500);
+    const restarted = TestBed.runInInjectionContext(() => new CardNestStore());
+    await restarted.initialisePreferences();
+    expect(restarted.transactions().filter((row) => row.id === item.id)).toHaveLength(1);
+    expect(restarted.paymentSources().find((row) => row.id === 'source-cash')?.balanceMinor).toBe(
+      15500,
+    );
+  });
+  it('rolls back a failed commit, retries the same purchase and commits its effect exactly once', async () => {
+    const { store, stored } = await boot();
+    await store.enableBankCashTracking({ 'source-cash': 20000 });
+    const item = purchase({
+      id: 'commit-retry',
+      amountMinor: 4500,
+      balanceTiming: 'AFTER_BASELINE',
+    });
+    vi.mocked(CapacitorSQLite.commitTransaction).mockRejectedValueOnce(new Error('Commit failed'));
+    await expect(store.saveManualTransaction(item)).rejects.toThrow('Commit failed');
+    expect(count('card_transactions')).toBe(0);
+    expect(stored('source-cash')).toBe(20000);
+    await Promise.all([store.saveManualTransaction(item), store.saveManualTransaction(item)]);
+    expect(count('card_transactions')).toBe(1);
+    expect(stored('source-cash')).toBe(15500);
+  });
+  it('reports transfer refresh failure as already committed and does not apply funding twice', async () => {
+    const { store, stored } = await boot();
+    store.addCard(card);
+    await settle();
+    const source = await store.addBankAccount({
+      nickname: 'Funding',
+      institution: 'ICICI',
+      lastDigits: '00123',
+    });
+    await store.enableBankCashTracking({ [source.id]: 100000 });
+    await store.setCardSettlementFunding(true);
+    await store.recordFundedPayment(card.id, 10000, 'Funded payment', source.id);
+    const item = {
+      ...store.transactions().find((row) => row.merchant === 'Funded payment')!,
+      amountMinor: 12000,
+    };
+    const original = database.query.bind(database);
+    const read = vi.spyOn(database, 'query').mockImplementation(async (statement, values) => {
+      if (statement.startsWith('SELECT payload FROM source_transfers'))
+        throw new Error('Transfer refresh failed');
+      return original(statement, values);
+    });
+    await expect(store.saveManualTransaction(item)).rejects.toMatchObject({
+      name: 'CommittedSaveRefreshError',
+      transactionId: item.id,
+    });
+    expect(stored(source.id)).toBe(88000);
+    expect(count('source_transfers')).toBe(1);
+    read.mockRestore();
+    await store.saveManualTransaction(item);
+    expect(stored(source.id)).toBe(88000);
+    expect(count('source_transfers')).toBe(1);
+    expect(count('card_transactions')).toBe(1);
+  });
+  it('rejects a mislabeled foreign-card currency without changing finance and accepts the actual card currency', async () => {
+    const { store } = await boot();
+    store.addCard({ ...card, currencyCode: 'USD' });
+    await settle();
+    const item = purchase({ id: 'foreign-card', cardId: card.id, amountMinor: 1234 });
+    await expect(store.saveManualTransaction(item)).rejects.toThrow('currency differs');
+    expect(count('card_transactions')).toBe(0);
+    await store.saveManualTransaction({ ...item, currencyCode: 'USD' });
+    expect(rows('SELECT currency_code,amount_minor FROM card_transactions')).toEqual([
+      { currency_code: 'USD', amount_minor: 1234 },
+    ]);
+  });
+  it('does not publish an uncommitted source identity or preserve it after a failed write', async () => {
+    const { store } = await boot();
+    const source = await store.addBankAccount({
+      nickname: 'Original',
+      institution: 'ICICI',
+      lastDigits: '00123',
+    });
+    await store.enableBankCashTracking({ [source.id]: 12000 });
+    const activity = TestBed.inject(BankActivityService);
+    await activity.reload();
+    const profilesBefore = rows('SELECT * FROM bank_activity_profiles');
+    const moneyBefore = financialState();
+    const before = store.paymentSources();
+    sql.exec(
+      "CREATE TRIGGER fail_source_identity BEFORE UPDATE ON app_preferences WHEN OLD.key='payment_sources' BEGIN SELECT RAISE(ABORT,'identity write failure'); END",
+    );
+    const pending = store.updatePaymentSource({
+      ...source,
+      nickname: 'Uncommitted',
+      lastDigits: '00007',
+    });
+    const reconciliation = activity.reload();
+    expect(store.paymentSources()).toEqual(before);
+    await expect(pending).rejects.toThrow('identity write failure');
+    await reconciliation;
+    expect(store.paymentSources()).toEqual(before);
+    expect(rows('SELECT * FROM bank_activity_profiles')).toEqual(profilesBefore);
+    expect(financialState()).toEqual(moneyBefore);
   });
 
   it('approves an ICICI-style UPI debit as spending with tracking off, keeping bank identity and no balance', async () => {

@@ -1,3 +1,4 @@
+import { CommittedSaveRefreshError } from '../../core/services/committed-save-refresh-error';
 import { suggestCategory } from '../../core/services/category-matcher';
 import {
   Component,
@@ -1826,6 +1827,7 @@ export class TransactionsPage {
       preserveSmsMarker: existing?.origin === 'SMS',
     });
     this.saving.set(true);
+    let refreshWarning: string | null = null;
     try {
       await this.store.saveManualTransaction(
         transaction,
@@ -1833,11 +1835,14 @@ export class TransactionsPage {
         value.unlinkConfirmed,
       );
     } catch (error: unknown) {
-      this.snackbar.show(
-        error instanceof Error ? error.message : 'Unable to save payment.',
-        'WARNING',
-      );
-      return;
+      if (error instanceof CommittedSaveRefreshError) refreshWarning = error.message;
+      else {
+        this.snackbar.show(
+          error instanceof Error ? error.message : 'Unable to save payment.',
+          'WARNING',
+        );
+        return;
+      }
     } finally {
       this.saving.set(false);
     }
@@ -1860,7 +1865,8 @@ export class TransactionsPage {
     }
     this.resetForm(value.cardId);
     this.closeForm();
-    this.snackbar.show(existing ? 'Transaction updated.' : 'Transaction added.');
+    if (refreshWarning) this.snackbar.show(refreshWarning, 'WARNING');
+    else this.snackbar.show(existing ? 'Transaction updated.' : 'Transaction added.');
   }
 
   private periodFor(transaction: CardTransaction): { key: string; label: string } {

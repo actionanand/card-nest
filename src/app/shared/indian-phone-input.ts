@@ -22,11 +22,13 @@ import { ControlValueAccessor, NG_VALUE_ACCESSOR } from '@angular/forms';
 export class IndianPhoneInput implements ControlValueAccessor {
   private readonly element = inject<ElementRef<HTMLInputElement>>(ElementRef);
   composing = false;
+  private correctingOversizedLegacy = false;
   private changed: (value: string) => void = () => undefined;
   touched: () => void = () => undefined;
   writeValue(value: string | null): void {
     const text = value ?? '';
     const digits = text.replace(/^\+91[\s.-]*/, '').replace(/[\s.-]/g, '');
+    this.correctingOversizedLegacy = digits.replace(/\D/g, '').length > 10;
     this.element.nativeElement.value = /^\d{10}$/.test(digits) ? digits : text;
   }
   registerOnChange(fn: (value: string) => void): void {
@@ -63,6 +65,12 @@ export class IndianPhoneInput implements ControlValueAccessor {
     if (this.composing) return;
     const input = this.element.nativeElement;
     const national = input.value.replace(/^\+91[\s.-]*/, '');
+    if (this.correctingOversizedLegacy && national.replace(/\D/g, '').length > 10) {
+      // Keep unselected legacy digits visible and invalid until the user repairs/replaces them.
+      this.changed(input.value);
+      return;
+    }
+    this.correctingOversizedLegacy = false;
     const caret = input.value
       .slice(0, input.selectionStart ?? input.value.length)
       .replace(/^\+91[\s.-]*/, '')

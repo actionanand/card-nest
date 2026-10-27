@@ -1,3 +1,5 @@
+vi.hoisted(() => vi.resetModules());
+
 import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
 import { Capacitor } from '@capacitor/core';
@@ -96,6 +98,89 @@ describe('Latest activity and identity reconciliation with real SQLite', () => {
   afterEach(() => {
     sql.close();
     vi.restoreAllMocks();
+  });
+  it('retains a completed discovery cursor, reads only new alerts and resumes after interruption', async () => {
+    const stage = async (id: string) =>
+      run(
+        'INSERT INTO sms_candidates(id,provider_id,event_at,kind,state,payload,updated_at) VALUES(?,?,?,?,?,?,?)',
+        [
+          id,
+          id,
+          '2026-10-25',
+          'BANK_DEBIT',
+          'PENDING',
+          JSON.stringify({
+            ...evidence(id, '2026-10-25'),
+            id,
+            eventDate: '2026-10-25',
+            dateFallback: false,
+          }),
+          '2026-10-25',
+        ],
+      );
+    await stage('scan-a');
+    await stage('scan-b');
+    const before = finance();
+    expect(await activity.discoverSavedEvidence()).toBe(2);
+    expect(await activity.discoverSavedEvidence()).toBe(0);
+    expect(finance()).toEqual(before);
+    await stage('scan-c');
+    vi.spyOn(activity, 'ingestAndroidSms').mockRejectedValueOnce(new Error('Interrupted scan'));
+    await expect(activity.discoverSavedEvidence()).rejects.toThrow('Interrupted scan');
+    expect(await activity.discoverSavedEvidence()).toBe(1);
+    expect(await activity.discoverSavedEvidence()).toBe(0);
+    expect(activity.candidates()).toHaveLength(3);
+  });
+  it('serializes overlapping reloads and keeps a newer committed source publication', async () => {
+    const own = await activity.saveProfile({
+      bankName: 'ICICI',
+      accountSuffix: '123',
+      owner: 'OWN',
+    });
+    enable();
+    const reconcile = sync.reconcile.bind(sync);
+    let release!: () => void;
+    let active = 0;
+    let peak = 0;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let firstReconcile = true;
+    vi.spyOn(sync, 'reconcile').mockImplementation(async () => {
+      active++;
+      peak = Math.max(peak, active);
+      const result = await reconcile();
+      if (firstReconcile) {
+        firstReconcile = false;
+        await gate;
+      }
+      active--;
+      return result;
+    });
+    const first = activity.reload();
+    // Wait for the real coordinator's commit, then model a later source-write publication.
+    const database = TestBed.inject(SqliteDatabase);
+    await database.atomic(async (tx) => {
+      const [row] = await tx.query<{ encrypted_value: string }>(
+        "SELECT encrypted_value FROM app_preferences WHERE key='payment_sources'",
+      );
+      const saved = JSON.parse(row.encrypted_value) as PaymentSource[];
+      const edited = saved.map((source) => ({ ...source, nickname: 'Later committed nickname' }));
+      await tx.run("UPDATE app_preferences SET encrypted_value=? WHERE key='payment_sources'", [
+        JSON.stringify(edited),
+      ]);
+      sources.set(edited);
+    });
+    const second = activity.reload();
+    release();
+    await Promise.all([first, second]);
+    expect(peak).toBe(1);
+    expect(sources()[0].nickname).toBe('Later committed nickname');
+    expect(activity.profiles().find((profile) => profile.id === own.id)?.paymentSourceId).toBe(
+      sources()[0].id,
+    );
+    expect(activity.profiles()).toHaveLength(1);
+    expect(activity.events()).toHaveLength(0);
   });
 
   it('replaces only the selected direction, suppresses stale/replayed SMS and preserves finance', async () => {

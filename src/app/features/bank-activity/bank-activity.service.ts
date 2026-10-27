@@ -71,11 +71,30 @@ export class BankActivityService {
     await this.reload();
   }
 
-  async reload(): Promise<void> {
+  private reloadFlight: Promise<void> | null = null;
+  private reloadRequested = false;
+  reload(): Promise<void> {
+    this.reloadRequested = true;
+    if (!this.reloadFlight) {
+      this.reloadFlight = this.drainReloads().finally(() => {
+        this.reloadFlight = null;
+      });
+    }
+    return this.reloadFlight;
+  }
+  private async drainReloads(): Promise<void> {
+    while (this.reloadRequested) {
+      this.reloadRequested = false;
+      await this.reloadCommittedState();
+    }
+  }
+  private async reloadCommittedState(): Promise<void> {
     if (!this.database.ready()) return;
     try {
+      const before = this.store.paymentSources();
       const sources = await this.accountSync.reconcile();
-      if (sources) this.store.paymentSources.set(sources);
+      // A later committed store update must not be overwritten by an older reconciliation result.
+      if (sources && this.store.paymentSources() === before) this.store.paymentSources.set(sources);
     } catch (error: unknown) {
       this.accountSync.error.set(
         error instanceof Error ? error.message : 'Bank account synchronization failed.',
@@ -365,6 +384,7 @@ export class BankActivityService {
           'SELECT rowid,payload FROM sms_candidates WHERE rowid>? AND payload IS NOT NULL ORDER BY rowid LIMIT 200',
           [cursor],
         );
+        if (!rows.length) break;
         for (const row of rows) {
           count++;
           this.discoveryProgress.set(count);
@@ -407,12 +427,12 @@ export class BankActivityService {
             }
           }
         }
-        cursor = rows.length === 200 ? rows.at(-1)!.rowid : 0;
+        if (rows.length) cursor = rows.at(-1)!.rowid;
         await this.database.run(
           "INSERT INTO app_preferences(key,encrypted_value) VALUES('bank_activity_discovery_cursor',?) ON CONFLICT(key) DO UPDATE SET encrypted_value=excluded.encrypted_value",
           [String(cursor)],
         );
-        if (!cursor) break;
+        if (rows.length < 200) break;
       }
       await this.reload();
       return count;

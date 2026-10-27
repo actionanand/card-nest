@@ -333,6 +333,28 @@
           </div>
         </article>
       }
+      @if (archivedBankAccounts().length) {
+        <details class="panel archived-bank-accounts" aria-label="Archived bank accounts">
+          <summary>Archived bank accounts</summary>
+          @for (source of archivedBankAccounts(); track source.id) {
+            <div>
+              <span
+                >{{ source.nickname }} · {{ source.institution || 'Bank/UPI' }}
+                {{ source.lastDigits ? ' · ••' + source.lastDigits.slice(-5) : '' }}</span
+              >
+              <button
+                class="btn"
+                type="button"
+                [disabled]="restoringAccounts().has(source.id)"
+                [attr.aria-label]="'Restore ' + source.nickname"
+                (click)="restoreAccount(source)"
+              >
+                {{ restoringAccounts().has(source.id) ? 'Restoring…' : 'Restore' }}
+              </button>
+            </div>
+          }
+        </details>
+      }
     </section>
   } @else {
     <section
