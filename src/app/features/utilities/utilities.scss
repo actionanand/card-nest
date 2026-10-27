@@ -516,3 +516,17 @@ app-profile-modal .utility-form {
   outline: 3px solid var(--accent);
   outline-offset: 3px;
 }
+
+.indian-phone-field {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.indian-phone-field > span {
+  flex: 0 0 auto;
+  font-weight: 600;
+}
+.indian-phone-field input {
+  min-width: 0;
+  flex: 1;
+}

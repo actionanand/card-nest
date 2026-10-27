@@ -3,6 +3,7 @@ import { TestBed } from '@angular/core/testing';
 import { ProfileModal } from './profile-modal';
 import { AppSelectPicker } from './app-select-picker';
 import axe from 'axe-core';
+import { readFileSync } from 'node:fs';
 @Component({
   imports: [ProfileModal, AppSelectPicker],
   template: `<app-profile-modal
@@ -22,6 +23,33 @@ class Host {
   closes = 0;
 }
 describe('Shared profile dialog', () => {
+  it('keeps centered constraints and responds to the keyboard visual viewport without stretching short forms', async () => {
+    const previous = Object.getOwnPropertyDescriptor(window, 'visualViewport');
+    const viewport = Object.assign(new EventTarget(), { height: 380, offsetTop: 20 });
+    Object.defineProperty(window, 'visualViewport', { configurable: true, value: viewport });
+    const fixture = TestBed.createComponent(Host);
+    try {
+      fixture.detectChanges();
+      await fixture.whenStable();
+      const dialog = (fixture.nativeElement as HTMLElement).querySelector('dialog')!;
+      expect(dialog.style.getPropertyValue('--profile-viewport-height')).toBe('380px');
+      viewport.height = 300;
+      viewport.offsetTop = 40;
+      viewport.dispatchEvent(new Event('resize'));
+      expect(dialog.style.getPropertyValue('--profile-viewport-height')).toBe('300px');
+      expect(dialog.style.getPropertyValue('--profile-viewport-top')).toBe('40px');
+      const styles = readFileSync('src/app/shared/profile-modal.ts', 'utf8');
+      expect(styles).toMatch(/margin:\s*auto;/);
+      expect(styles).toMatch(/overflow:\s*auto;/);
+      expect(styles).toContain('--profile-viewport-height');
+      expect(styles).not.toContain('margin: auto 0 0');
+      expect(styles).not.toMatch(/\sheight:\s*100/);
+    } finally {
+      fixture.destroy();
+      if (previous) Object.defineProperty(window, 'visualViewport', previous);
+      else Reflect.deleteProperty(window, 'visualViewport');
+    }
+  });
   it.each(['light', 'dark'])(
     'locks scrolling, labels fields, traps focus and composes with custom pickers in %s theme',
     async (theme) => {

@@ -13,6 +13,8 @@ describe('Indian Utilities page', () => {
   const mobiles = signal<readonly { id: string }[]>([]);
   const lpg = signal<readonly never[]>([]);
   const mock = {
+    deleteRecharge: vi.fn().mockResolvedValue(undefined),
+    deleteLpgEvent: vi.fn().mockResolvedValue(undefined),
     saveMobileProfile: vi.fn().mockResolvedValue({ id: 'saved-mobile' }),
     saveLpgProfile: vi.fn().mockResolvedValue({ id: 'saved-lpg' }),
     settings: state,
@@ -122,6 +124,42 @@ describe('Indian Utilities page', () => {
     fixture.detectChanges();
     expect(fixture.nativeElement.textContent).toContain('PNG · Coming Soon');
     expect(fixture.nativeElement.textContent).not.toContain('Add LPG connection');
+    fixture.destroy();
+  });
+  it('requires confirmation for recharge and cylinder deletion, preserves Cancel and reports persistence failure', async () => {
+    mock.deleteRecharge.mockClear();
+    mock.deleteLpgEvent.mockClear();
+    const fixture = TestBed.createComponent(UtilitiesPage);
+    const page = fixture.componentInstance;
+    await page.deleteRecharge({
+      id: 'recharge',
+      profileId: 'mobile',
+      startDate: '2026-10-25',
+      endDate: '2026-11-24',
+      planType: 'VOICE_DATA',
+      createdAt: '',
+      updatedAt: '',
+    });
+    expect(mock.deleteRecharge).not.toHaveBeenCalled();
+    page.deletion.set(null);
+    await page.confirmDeletion();
+    expect(mock.deleteRecharge).not.toHaveBeenCalled();
+    await page.deleteLpgEvent({
+      id: 'cylinder',
+      profileId: 'lpg',
+      eventDate: '2026-10-25',
+      eventType: 'STARTED',
+      createdAt: '',
+      updatedAt: '',
+    });
+    mock.deleteLpgEvent.mockRejectedValueOnce(new Error('Disk write failed'));
+    await page.confirmDeletion();
+    expect(page.deletion()?.id).toBe('cylinder');
+    expect(page.error()).toBe('Disk write failed');
+    await page.confirmDeletion();
+    expect(mock.deleteLpgEvent).toHaveBeenLastCalledWith('cylinder');
+    expect(page.deletion()).toBeNull();
+    expect(mock.deleteRecharge).not.toHaveBeenCalled();
     fixture.destroy();
   });
   it('layers every photo below its scrim and caption with contrast even over a white photo', () => {

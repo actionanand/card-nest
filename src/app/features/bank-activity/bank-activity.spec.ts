@@ -35,6 +35,7 @@ describe('Bank Activity date refresh', () => {
           useValue: {
             profiles: signal([profile]),
             events: signal([event]),
+            reviewNotice: signal(''),
             candidates: signal([]),
             summaryFor: (_profileId: string, today: string) => bankActivitySummary([event], today),
             eventsFor: () => [event],

@@ -145,12 +145,21 @@
                 [options]="mobileOptions"
               />
               <label
-                >Indian mobile number (optional)<input
-                  formControlName="mobileNumber"
-                  inputmode="tel"
-                  autocomplete="tel-national"
-                  placeholder="9876543210 or +91 9876543210"
-              /></label>
+                >Indian mobile number (optional)<span class="indian-phone-field"
+                  ><span aria-hidden="true">+91-</span
+                  ><input
+                    appIndianPhone
+                    formControlName="mobileNumber"
+                    aria-label="Indian mobile number, +91, ten national digits (optional)"
+                    placeholder="9876543210" /></span
+              ></label>
+              @if (
+                mobileForm.controls.mobileNumber.invalid && mobileForm.controls.mobileNumber.touched
+              ) {
+                <p class="form-error" role="alert">
+                  Enter exactly ten digits starting with 6, 7, 8 or 9, or leave the number empty.
+                </p>
+              }
             </div>
             @if (mobileForm.controls.subscriptionType.value === 'POSTPAID') {
               <p class="form-note">
@@ -713,4 +722,15 @@
       </div>
     </section>
   </div>
+}
+
+@if (deletion(); as choice) {
+  <app-confirmation-dialog
+    [title]="choice.title"
+    [message]="choice.message"
+    [busy]="saving()"
+    [error]="error()"
+    (confirmed)="confirmDeletion()"
+    (cancelled)="deletion.set(null)"
+  />
 }

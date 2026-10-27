@@ -34,10 +34,24 @@ import { lockDocumentScroll } from './document-scroll-lock';
     }
     dialog {
       position: fixed;
-      inset: 0;
+      inset: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom)
+        env(safe-area-inset-left);
+      top: calc(var(--profile-viewport-top, 0px) + env(safe-area-inset-top));
+      bottom: calc(
+        100dvh - var(--profile-viewport-height, 100dvh) - var(--profile-viewport-top, 0px) +
+          env(safe-area-inset-bottom)
+      );
       box-sizing: border-box;
-      width: min(40rem, calc(100% - 1.5rem));
-      max-height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 1.5rem);
+      width: min(
+        40rem,
+        calc(100% - env(safe-area-inset-left) - env(safe-area-inset-right) - 1.5rem)
+      );
+      max-height: calc(
+        var(--profile-viewport-height, 100dvh) - env(safe-area-inset-top) - env(
+            safe-area-inset-bottom
+          ) -
+          1.5rem
+      );
       margin: auto;
       padding: 0;
       border: 1px solid var(--line);
@@ -76,20 +90,8 @@ import { lockDocumentScroll } from './document-scroll-lock';
       padding: 1rem;
       min-width: 0;
     }
-    @media (max-width: 480px) {
-      dialog {
-        width: 100%;
-        max-height: calc(100dvh - env(safe-area-inset-top) - 0.75rem);
-        margin: auto 0 0;
-        border-radius: 1rem 1rem 0 0;
-        padding-bottom: env(safe-area-inset-bottom);
-      }
-      header {
-        padding-inline: max(1rem, env(safe-area-inset-left)) max(1rem, env(safe-area-inset-right));
-      }
-      .modal-content {
-        padding-inline: max(1rem, env(safe-area-inset-left)) max(1rem, env(safe-area-inset-right));
-      }
+    .modal-content:focus-within {
+      scroll-margin-block: 1rem;
     }
   `,
 })
@@ -105,6 +107,15 @@ export class ProfileModal {
       const dialog = this.dialog()?.nativeElement;
       if (!dialog) return;
       const unlock = lockDocumentScroll();
+      const viewport = window.visualViewport;
+      const resize = () => {
+        if (!viewport) return;
+        dialog.style.setProperty('--profile-viewport-height', `${viewport.height}px`);
+        dialog.style.setProperty('--profile-viewport-top', `${viewport.offsetTop}px`);
+      };
+      resize();
+      viewport?.addEventListener('resize', resize);
+      viewport?.addEventListener('scroll', resize);
       if (typeof dialog.showModal === 'function') dialog.showModal();
       else dialog.setAttribute('open', '');
       queueMicrotask(() => {
@@ -116,6 +127,8 @@ export class ProfileModal {
             ?.focus();
       });
       cleanup(() => {
+        viewport?.removeEventListener('resize', resize);
+        viewport?.removeEventListener('scroll', resize);
         unlock();
         if (typeof dialog.close === 'function') dialog.close();
         if (previous?.isConnected) previous.focus();

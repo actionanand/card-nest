@@ -23,6 +23,7 @@ import { indiaTodayIso } from './core/services/india-date';
 import { parseMoneyToMinor } from './core/services/money';
 import { UiPreferencesService } from './core/services/ui-preferences.service';
 import { UtilitiesService } from './features/utilities/utilities.service';
+import { BankActivityService } from './features/bank-activity/bank-activity.service';
 
 interface NativeLaunchBridge {
   hideSplash(): void;
@@ -58,6 +59,7 @@ export class App {
   readonly snackbar = inject(SnackbarService);
   readonly uiPreferences = inject(UiPreferencesService);
   readonly utilities = inject(UtilitiesService);
+  private readonly bankActivity = inject(BankActivityService);
   private readonly router = inject(Router);
   private readonly document = inject(DOCUMENT);
   private readonly destroyRef = inject(DestroyRef);
@@ -90,12 +92,24 @@ export class App {
       !this.appLock.locked() &&
       !this.blockingDialogOpen() &&
       !this.showNotificationPermissionConfirmation() &&
-      !this.snackbar.message() &&
       !this.keyboardInputFocused() &&
       !this.flashTransactionOpen(),
   );
 
   constructor() {
+    effect(() => {
+      this.store.paymentSources();
+      const enabled = this.store.bankCashTracking().enabled;
+      if (this.database.ready() && enabled) {
+        void this.bankActivity
+          .reload()
+          .catch((error: unknown) =>
+            this.bankActivity.accountSync.error.set(
+              error instanceof Error ? error.message : 'Bank account synchronization failed.',
+            ),
+          );
+      }
+    });
     this.refreshFabKeyboardState();
     const MutationObserverClass = this.document.defaultView?.MutationObserver;
     if (
@@ -105,7 +119,9 @@ export class App {
     ) {
       const refreshDialogState = () =>
         this.blockingDialogOpen.set(
-          !!this.document.querySelector('dialog[open], [role="dialog"][aria-modal="true"]'),
+          !!this.document.querySelector(
+            'dialog[open], [role="dialog"][aria-modal="true"], [role="alertdialog"][aria-modal="true"]',
+          ),
         );
       const observer = new MutationObserverClass(refreshDialogState);
       observer.observe(this.document.documentElement, {

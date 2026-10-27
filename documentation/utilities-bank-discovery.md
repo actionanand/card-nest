@@ -6,7 +6,7 @@ The reference screenshots show white captions over bright Mobile and Cooking Gas
 
 `ProfileModal` wraps a native HTML `dialog`. Mobile Add/Edit, LPG Add/Edit, and monitored-bank Add/Edit project their existing forms into it; recharge and cylinder-event workflows remain unchanged. The popup occupies the browser top layer, above floating app controls. Existing custom picker dialogs open on a higher top layer without fragile z-index competition.
 
-The dialog includes a labelled heading, initial field focus, a Tab loop, Escape and Android Back cancellation, an outside backdrop, shared nested scroll locking, and restoration to the invoking control. Cancellation is blocked during a save. Scrollable content uses dynamic viewport height and safe-area insets, with sticky form actions. A phone uses a bottom sheet; wider layouts use a centered popup. Failed persistence keeps the form and error visible. Existing saving guards prevent repeated Save taps from creating duplicate profiles. Native dialog behaviour also makes the background inert in supported browsers/WebViews.
+The dialog includes a labelled heading, initial field focus, a Tab loop, Escape and Android Back cancellation, an outside backdrop, shared nested scroll locking, and restoration to the invoking control. Cancellation is blocked during a save. Scrollable content uses dynamic viewport height and safe-area insets, with sticky form actions. Phones and larger screens use a centered popup with equal gutters and rounded corners. Safe-area insets and VisualViewport size/offset constrain it above the virtual keyboard. Short forms keep their natural height; long forms scroll beneath a sticky heading and action footer. Failed persistence keeps the form and error visible. Existing saving guards prevent repeated Save taps from creating duplicate profiles. Native dialog behaviour also makes the background inert in supported browsers/WebViews.
 
 ## Bank identities and profile creation
 
@@ -16,33 +16,33 @@ Legacy profile suffixes of four/five digits remain readable and compare by their
 
 `data/bank-aliases.json` centralizes the supplied ICICI/ICICI Bank, HDFC/HDFC Bank, SBI/State Bank of India and Axis/Axis Bank aliases. Matching is deterministic and compares bank identity and originating-account suffix independently. Unknown institutions require their own exact normalized name; unrelated banks are never equated by a suffix. Counterparty digits are never substituted for originating digits.
 
-Duplicate checks run inside the profile transaction and include archived profiles. The same stable payment-source ID cannot acquire a second monitoring profile. Same-bank suffix collisions require both explicit identity-conflict acknowledgement and a distinguishing nickname or holder name. Different banks may share a suffix. No balance or financial payment source is created or modified by profile creation.
+Duplicate checks run inside the profile transaction and include archived profiles. The same stable payment-source ID cannot acquire a second monitoring profile. Same-bank suffix collisions require both explicit identity-conflict acknowledgement and a distinguishing nickname or holder name. Different banks may share a suffix. With tracking off, profile creation changes monitoring only. With tracking on, eligible explicitly OWN identities also reconcile with Money Sources, without initializing balances.
 
 ## Confirmation-only SMS activity
 
-The existing SMS staging pipeline still supplies parsed evidence to `BankActivityService`; there is no second parser or provider scan. The forwarder honours the existing retention cutoff and parser version. A valid financial alert always queues a pending candidate, even when one bank/profile matches exactly. It never writes activity history or changes the last qualifying date automatically.
+The existing SMS staging pipeline still supplies parsed evidence to `BankActivityService`; there is no second parser or provider scan. The forwarder honours the existing retention cutoff and parser version. A valid financial alert queues a pending candidate if it can advance monitoring or its identity needs review. Uniquely identified older/same-date alerts are durably dismissed. It never writes activity history or changes the last qualifying date automatically.
 
 Match states distinguish unique hints, ambiguous profiles/sources, bank mismatch, suffix mismatch, missing identity, archived profiles and new accounts. A unique hint is preselected for review. Ambiguity clears automatic selection while preserving an explicit active-account choice. Missing or conflicting selections require a separate acknowledgement of independent verification. The user then sees **Record this account activity?** and must choose **Confirm activity**. Cancel writes nothing.
 
-Final approval rereads the candidate and active profile in a SQLite transaction, validates the date, direction, purpose and candidate identity, checks the selected account, and deduplicates by fingerprint. It inserts one activity event and resolves the candidate together. Every new SMS event uses `USER_CONFIRMED`, including an exact unique match. Signals publish only after commit; failed candidate resolution rolls back the inserted event. Old `SOURCE_MATCHED` history is retained and labelled as previously source matched.
+Final approval rereads the candidate and active profile in a SQLite transaction, validates the date, direction, purpose and candidate identity, checks the selected account, and deduplicates by fingerprint. It compares the persisted latest event in that direction, dismisses stale/equal evidence or replaces the older latest event, and resolves the candidate atomically. Every new SMS event uses `USER_CONFIRMED`, including an exact unique match. Signals publish only after commit; failed candidate resolution rolls back the inserted event. A retained legacy `SOURCE_MATCHED` latest event remains labelled as previously source matched. Redundant monitoring history is compacted by migration 14.
 
 Only Bank Activity events and candidate resolution change on approval. Purchases, split groups, source balances/snapshots, credit-card balances, transfers, reports and SMS financial review decisions remain untouched. Tests compare the actual persisted financial tables and signals before/after confirmation and after a forced rollback.
 
 ## Discovery and explicit synchronization
 
-**Discovered bank accounts** groups unmonitored pending evidence by normalized bank plus final-three hint. Incomplete identities remain separate. This is a provisional display grouping, not a merge of accounts or evidence fingerprints: different accounts can share three digits. The group displays the most recent qualifying event date, pending event count and unconfirmed ownership. Individual event suggestions remain reviewable, including cautious matching to an existing monitored profile.
+**Discovered Accounts** groups unmonitored pending evidence by normalized bank plus final-three hint. Incomplete identities remain separate. This is a provisional display grouping, not a merge of accounts or evidence fingerprints: different accounts can share three digits. The group displays the most recent qualifying event date, pending event count and unconfirmed ownership. Individual event suggestions remain reviewable, including cautious matching to an existing monitored profile.
 
-**Review & add account** opens the shared bank dialog with only bank name and suffix prefilled. Ownership is blank, and nickname, holder, remarks and source link are not inferred. Saving creates only a monitoring profile. Its historical suggestions still require individual review and confirmation. Cancel preserves the pending evidence. Dismiss atomically marks the group's exact fingerprints dismissed; rescanning the same evidence cannot immediately recreate it. New independent evidence can appear later.
+**Review & add account** opens the shared bank dialog with only bank name and suffix prefilled. Ownership is blank, and nickname, holder, remarks and source link are not inferred. Saving creates a monitoring profile and can reconcile an eligible OWN identity when tracking is enabled. Newer activity suggestions still require individual confirmation. Cancel preserves the pending evidence. Dismiss atomically marks the group's exact fingerprints dismissed; rescanning the same evidence cannot immediately recreate it. New independent evidence can appear later.
 
-On Android, **Find accounts from SMS** replays already-staged parsed alerts locally. It never reads the phone provider itself, requests permissions or scans on page open. The existing Android message-review link supplies the established authorization/scan workflow when more evidence is needed. Replay processes up to five 200-row batches per action and checkpoints its cursor. Repeating the action resumes after interruption; already-staged/resolved/dismissed fingerprints stay idempotent. Existing retention controls are applied. The web keeps manual monitoring fully functional and hides device discovery controls.
+On Android, **Find bank accounts from SMS** replays already-staged parsed alerts locally. It never reads the phone provider itself, requests permissions or scans on page open. Additional device scans and SMS permission use the normal SMS Sync entry point elsewhere in the app. Bank Activity has no redundant SMS Review button. Replay processes up to five 200-row batches per action and checkpoints its cursor. Repeating the action resumes after interruption; already-staged/resolved/dismissed fingerprints stay idempotent. Existing retention controls are applied. The web keeps manual monitoring fully functional and hides device discovery controls.
 
 Qualification retains the conservative completed-bank-event policy: supported debit/credit/transfer kinds and appropriate purchase, transfer, repayment, withdrawal or incoming purposes. Fallback dates, old/uncertain parser evidence, unsupported types, statements, reminders, OTPs, failed/reversed/pending events, fees, interest, mandates, automatic debits and NACH/ECS/EMI descriptions are excluded. Incoming activity also needs the existing supporting counterparty/merchant evidence. No qualification rule is loosened to increase discovery counts.
 
 ## Storage and privacy
 
-No SQLite schema migration is required. Existing profile/candidate JSON adds optional `manualOnly`, `kind`, `resolvedAt` and `resolvedProfileId` fields. Existing candidate rows provide dismissed/resolved fingerprint tombstones. Bank Activity stores only the fingerprint, normalized/display bank, final-three identifier, date, direction, purpose, safe optional reference and review metadata. It does not copy merchant text, raw SMS bodies, counterparty account digits, full account numbers or balances into discovery storage.
+Migration 14 retains only the newest valid debit and credit per profile. Equal-date legacy records resolve deterministically by ID; invalid/future dates and malformed payloads cannot become latest. Confirmed SMS fingerprints become compact resolved tombstones before redundant monitoring rows are removed. Reconciliation is atomic and idempotent, applies during old portable restores, and runs on load for legacy native imports. Existing profile/candidate JSON adds optional `manualOnly`, `kind`, `resolvedAt` and `resolvedProfileId` fields. Existing candidate rows provide dismissed/resolved fingerprint tombstones. Bank Activity stores only the fingerprint, normalized/display bank, final-three identifier, date, direction, purpose, safe optional reference and review metadata. It does not copy merchant text, raw SMS bodies, counterparty account digits, full account numbers or balances into discovery storage.
 
-The existing encrypted backup tables include profiles, activity events, candidate tombstones and replay preferences. Pending discovery, dismissed evidence, confirmed/manual history and manual-only profiles survive restart/restore. A portable restore resets only the local replay cursor because imported SQLite rowids are rebuilt; pending evidence remains intact and replay restarts idempotently. Older records without the new optional fields remain readable. Account archival does not relink or approve candidates. Native parser sources and permissions, Android version metadata, categories and the split/duplicate accounting algorithms are unchanged.
+The existing encrypted backup tables include profiles, activity events, candidate tombstones and replay preferences. Pending discoveries, dismissed/resolved fingerprints, latest confirmed/manual events, linked source IDs and manual-only profiles survive restart/restore. Deleting a latest event never restores discarded history. Unambiguous pending candidates compact to the newest relevant event per account/direction; ambiguous identities keep their evidence for manual review. A portable restore resets only the local replay cursor because imported SQLite rowids are rebuilt; pending evidence remains intact and replay restarts idempotently. Older records without the new optional fields remain readable. Account archival does not relink or approve candidates. Native parser sources and permissions, Android version metadata, categories and the split/duplicate accounting algorithms are unchanged.
 
 ## Verification and remaining device checks
 
@@ -50,29 +50,30 @@ Run the full Angular suite, lint, SMS fixtures, production web/Android builds, w
 
 The local preview server started, but the available in-app browser could not reach its localhost address. No rendered viewport or Android-device visual validation is claimed. Manually check 320/360/390/412px and desktop/tablet layouts, selected/unselected cards, large WebView fonts, long labels, light/dark colours, TalkBack, virtual keyboard resizing, safe areas, sticky actions, focus restoration after errors/success, nested picker Back behaviour and interrupted discovery on a real device.
 
-## Changed files
+## Android UI corrections and monitoring model (28 October 2026)
 
-Local validation on 27 October 2026 passed: 612 Angular tests across 51 files, all 160 freshly rerun native JUnit tests (zero skipped), 70 SMS fixtures, 9 Android integration checks, lint, TypeScript, whitespace and the all-template native-select scan. Production web/Android builds, web SMS isolation and Capacitor sync passed. Initial-bundle and existing cards stylesheet budget warnings remain below their error limits. Optional Windows compiler-cache, jsdom scrollTo and Gradle deprecation notices are non-failing. The browser preview was unavailable as explained above. Version metadata remains 1.1.12 / 52; no permissions or release/signing workflows changed.
+The Android-only FAB no longer depends on normal snackbar visibility. Theme-save notifications had removed it through that gate. Both modes share circular dimensions, background, border, shadow, placement and focus treatment. A shared `--on-accent` foreground provides white on the light-theme green and dark green on the dark-theme light green. The speech-bubble/sync badge and reduced-motion support remain. Snackbars sit above the FAB. App lock, background, keyboard, native dialogs and modal alert dialogs still suppress it. Mode and enablement preferences survive restart.
 
-Implementation and regression files (this report is also new):
+Mobile Add/Edit shows fixed `+91-` plus ten national digits. The accessor blocks invalid keyboard insertions, limits paste and selection replacement, and handles autofill/composition at commit. Existing +91 formats load as national digits. Empty is valid; partial numbers and first digits outside 6-9 are invalid for saving. Persistence remains `+91-9876543210`; WhatsApp and reminders use the existing normalizer.
 
-- `src/app/core/data/bank-cash-tracking.integration.spec.ts`
-- `src/app/core/data/sqlite-backup.integration.spec.ts`
-- `src/app/core/data/sqlite-database.ts`
-- `src/app/features/bank-activity/bank-activity-matching.spec.ts`
-- `src/app/features/bank-activity/bank-activity-matching.ts`
-- `src/app/features/bank-activity/bank-activity-model.ts`
-- `src/app/features/bank-activity/bank-activity-ui.spec.ts`
-- `src/app/features/bank-activity/bank-activity.html`
-- `src/app/features/bank-activity/bank-activity.scss`
-- `src/app/features/bank-activity/bank-activity.service.spec.ts`
-- `src/app/features/bank-activity/bank-activity.service.ts`
-- `src/app/features/bank-activity/bank-activity.ts`
-- `src/app/features/bank-activity/data/bank-aliases.json`
-- `src/app/features/sms-sync/sms-review.service.ts`
-- `src/app/features/utilities/utilities.html`
-- `src/app/features/utilities/utilities.scss`
-- `src/app/features/utilities/utilities.spec.ts`
-- `src/app/features/utilities/utilities.ts`
-- `src/app/shared/profile-modal.spec.ts`
-- `src/app/shared/profile-modal.ts`
+Bank Activity has **Discovered Accounts**, **Find Banks**, and **Bank Activities** tabs, with tablist/tab/tabpanel semantics, roving focus, arrows and Home/End. Only the selected panel is visible. Identifiable active monitored accounts are excluded from discoveries; conflicts remain reviewable. Find Banks explicitly replays local staged evidence and reports actual checked alerts, new account groups, existing-account suggestions and unresolved identity alerts. Opening a tab never scans the device, creates accounts from SMS or approves activity. Bank Activities shows active accounts, latest debit/credit, status and pending review, with archived accounts in a secondary section. Historical timelines are no longer shown.
+
+Manual newer activity replaces that direction only. Older/equal new entries explain the saved date and direct the user to **Correct activity date** for intentional corrections. Corrections preserve account, direction and event ID. SMS approval rereads persisted evidence and identity and always requires confirmation. Equal-date evidence preserves the confirmed record. Tombstones prevent stale/replaced evidence from replaying after deletion, restart, rescan or encrypted restore.
+
+### OWN-only account identity synchronization
+
+`BankAccountSyncService` depends on SQLite without circular store/service injection. With tracking enabled it checks stable source IDs first, then bank identity and compatible suffixes. A unique eligible OWN profile reuses an equivalent Bank/UPI source or creates one without balance fields. Eligible existing bank sources reuse or create an OWN profile with final-three digits, preserving the source's original three/four/five digits and leading zeros. Customized nicknames remain unchanged; account existence never initializes activity.
+
+OTHERS, manual-only, incomplete, cash, meal-card and archived identities are not automatically enrolled. Collisions involving bank/suffix, family profiles or archived profiles remain conflicts. Edit an OWN monitoring profile and explicitly choose the intended Money Source to resolve a conflict. Changing OTHERS to OWN needs separate explicit confirmation. Archival does not cascade to financial history. Turning tracking off deletes nothing.
+
+Triggers: tracking enablement, committed Money Source enrollment/metadata changes, monitored profile save/archive/restore, application reload and backup restore. Reconciliation is idempotent and writes only changed links or new identities. A new source and its monitoring link commit together. Balances, cutover snapshots, transactions, card outstanding, Pluxee, transfers, statements, split groups and SMS Review decisions are outside the coordinator's write set.
+
+### Deletion and baseline timing
+
+Activity, recharge and LPG event deletion use the existing shared confirmation component and exact selected ID/date. Cancel, Escape and Android Back never delete. Actions disable during persistence; repeated taps are guarded. Failures keep the choice/error visible; success follows commit. Deleting latest activity leaves that direction Unknown.
+
+Scoped 1.1rem radios keep balance-timing choices compact. New drafts preselect `AFTER_BASELINE`; existing saved answers and explicit selections survive unrelated edits. When ordering is ambiguous, the review checkbox explains double counting and the chosen balance effect. Date/source/timing changes invalidate that review. The existing atomic/idempotent financial posting code remains unchanged.
+
+### Validation and remaining physical checks
+
+Automated results and the modified-file inventory are recorded in the delivery report. Unit/SQLite tests and jsdom AXE checks do not establish physical WebView layout or colour correctness. Real Android verification remains required for theme cycling, mode persistence, snackbar clearance, 320/360/390/412px widths, gesture-navigation safe areas, large text, keyboards, sticky actions, nested picker layering, focus restoration, TalkBack and Back cancellation. No physical-device verification is claimed.

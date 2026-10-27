@@ -85,6 +85,8 @@ describe('Bank profile popup and confirmation-only discovery UI', () => {
     profiles,
     candidates,
     events: signal([]),
+    reviewNotice: signal(''),
+    deleteEvent: vi.fn().mockResolvedValue(undefined),
     discovering: signal(false),
     discoveryProgress: signal(0),
     saveProfile: vi.fn().mockResolvedValue(profile),
@@ -117,6 +119,76 @@ describe('Bank profile popup and confirmation-only discovery UI', () => {
     });
   });
   afterEach(() => vi.restoreAllMocks());
+  it('renders three accessible tabs, separates unique discoveries and keeps ambiguous identities reviewable', async () => {
+    profiles.set([profile]);
+    candidates.set([candidate]);
+    const fixture = TestBed.createComponent(BankActivityPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const page = fixture.componentInstance;
+    const tabs = fixture.nativeElement.querySelectorAll(
+      '[role="tab"]',
+    ) as NodeListOf<HTMLButtonElement>;
+    expect([...tabs].map((tab) => tab.textContent?.trim())).toEqual([
+      'Discovered Accounts',
+      'Find Banks',
+      'Bank Activities',
+    ]);
+    expect(page.discoveries()).toHaveLength(0);
+    expect(fixture.nativeElement.textContent).toContain('No new bank accounts found');
+    tabs[0].dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'End', bubbles: true, cancelable: true }),
+    );
+    fixture.detectChanges();
+    expect(page.activeTab()).toBe(2);
+    expect(tabs[2].getAttribute('aria-selected')).toBe('true');
+    expect(document.activeElement).toBe(tabs[2]);
+    expect(fixture.nativeElement.querySelector('#bank-panel-0').hidden).toBe(true);
+    expect(fixture.nativeElement.querySelector('#bank-panel-2').hidden).toBe(false);
+    profiles.set([profile, { ...profile, id: 'other' }]);
+    fixture.detectChanges();
+    expect(page.discoveries()[0].needsIdentification).toBe(true);
+    expect(activity.discoverSavedEvidence).not.toHaveBeenCalled();
+    fixture.destroy();
+  });
+  it('requires confirmation for deletion, preserves Cancel, guards repeated taps and keeps failures visible', async () => {
+    const fixture = TestBed.createComponent(BankActivityPage);
+    const page = fixture.componentInstance;
+    const event = {
+      id: 'selected',
+      profileId: profile.id,
+      activityDate: '2026-10-25',
+      direction: 'DEBIT',
+      origin: 'MANUAL',
+      verification: 'USER_CONFIRMED',
+      createdAt: '',
+      updatedAt: '',
+    } as const;
+    await page.deleteEvent(event);
+    expect(activity.deleteEvent).not.toHaveBeenCalled();
+    page.deletion.set(null);
+    await page.confirmDeletion();
+    expect(activity.deleteEvent).not.toHaveBeenCalled();
+    await page.deleteEvent(event);
+    let fail!: (reason: Error) => void;
+    activity.deleteEvent.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          fail = reject;
+        }),
+    );
+    const pending = page.confirmDeletion();
+    await page.confirmDeletion();
+    expect(activity.deleteEvent).toHaveBeenCalledTimes(1);
+    fail(new Error('Persistence failed'));
+    await pending;
+    expect(page.deletion()?.id).toBe(event.id);
+    expect(page.error()).toBe('Persistence failed');
+    await page.confirmDeletion();
+    expect(activity.deleteEvent).toHaveBeenLastCalledWith(event.id);
+    expect(page.deletion()).toBeNull();
+    fixture.destroy();
+  });
   it('uses a clean add/edit popup, validates exactly three digits and guards repeated saves', async () => {
     const fixture = TestBed.createComponent(BankActivityPage);
     const page = fixture.componentInstance;

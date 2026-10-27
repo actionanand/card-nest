@@ -7,7 +7,7 @@ import { SqliteDatabase } from './core/data/sqlite-database';
 import { CardNestStore } from './core/services/card-nest-store';
 import { AppLockService } from './core/services/app-lock.service';
 import { NotificationService } from './core/services/notification.service';
-import { SnackbarService } from './core/services/snackbar.service';
+import { SnackbarMessage, SnackbarService } from './core/services/snackbar.service';
 import { UiPreferencesService } from './core/services/ui-preferences.service';
 import { UtilitiesService } from './features/utilities/utilities.service';
 import { CardTransaction, CreditCard, PaymentSource } from './core/models/domain';
@@ -72,7 +72,7 @@ describe('App', () => {
   const ready = signal(false);
   const locked = signal(false);
   const foreground = signal(true);
-  const snackbarMessage = signal<null>(null);
+  const snackbarMessage = signal<SnackbarMessage | null>(null);
   const snackbarShow = vi.fn();
   const source = (): PaymentSource => ({
     id: 'preferred-source',
@@ -86,6 +86,7 @@ describe('App', () => {
   });
   const store = {
     cards,
+    bankCashTracking: signal({ enabled: false }),
     transactions,
     paymentSources: sources,
     activeCards: cards,
@@ -466,13 +467,13 @@ describe('App', () => {
     const darkTheme = themeStyles.match(/@mixin dark-theme\s*\{([^}]+)\}/)?.[1] ?? '';
     const message = appStyles.match(/\.sms-sync-fab-message\s*\{([^}]+)\}/)?.[1] ?? '';
     const badge = appStyles.match(/\.sms-sync-fab-badge\s*\{([^}]+)\}/)?.[1] ?? '';
-    expect(message).toMatch(/color:\s*var\(--surface\)/);
+    expect(message).toMatch(/color:\s*inherit/);
     expect(badge).toMatch(/border:\s*2px solid var\(--accent\)/);
     expect(badge).toMatch(/color:\s*var\(--accent\)/);
-    expect(badge).toMatch(/background:\s*var\(--surface\)/);
+    expect(badge).toMatch(/background:\s*var\(--on-accent\)/);
 
     for (const theme of [lightTheme, darkTheme]) {
-      const surface = themeHex(theme, 'surface');
+      const surface = themeHex(theme, 'on-accent');
       const accent = themeHex(theme, 'accent');
       expect(contrastRatio(surface, accent)).toBeGreaterThanOrEqual(3);
     }
@@ -483,5 +484,40 @@ describe('App', () => {
     );
     expect(appStyles).toMatch(/\.sms-sync-fab:active:not\(:disabled\)[^{]*\{[^}]*animation:/s);
     expect(appStyles).not.toMatch(/\.sms-sync-fab\s*\{[^}]*animation:\s*[^;]*(?:infinite|spin)/s);
+  });
+  it('keeps exactly one enabled FAB mounted across themes, snackbar display and mode changes', async () => {
+    const preferences = TestBed.inject(UiPreferencesService);
+    preferences.setFloatingShortcutEnabled(true);
+    ready.set(true);
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    for (const theme of ['LIGHT', 'DARK', 'LIGHT']) {
+      document.documentElement.dataset['theme'] = theme;
+      snackbarMessage.set({ id: 1, text: 'Theme saved', tone: 'INFO' });
+      for (const mode of ['QUICK_TRANSACTION', 'SMS_SYNC'] as const) {
+        preferences.setFloatingShortcutMode(mode);
+        fixture.detectChanges();
+        await fixture.whenStable();
+        expect(fixture.nativeElement.querySelectorAll('.floating-shortcut-fab')).toHaveLength(1);
+        expect(fixture.componentInstance.floatingShortcutVisible()).toBe(true);
+      }
+    }
+    const modal = document.createElement('section');
+    modal.setAttribute('role', 'alertdialog');
+    modal.setAttribute('aria-modal', 'true');
+    document.body.append(modal);
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(fixture.componentInstance.floatingShortcutVisible()).toBe(false);
+    modal.remove();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(fixture.componentInstance.floatingShortcutVisible()).toBe(true);
+    expect(
+      TestBed.runInInjectionContext(() => new UiPreferencesService()).floatingShortcutMode(),
+    ).toBe('SMS_SYNC');
+    fixture.destroy();
+    delete document.documentElement.dataset['theme'];
   });
 });

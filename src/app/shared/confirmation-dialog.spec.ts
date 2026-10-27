@@ -3,6 +3,29 @@ import { ConfirmationDialog } from './confirmation-dialog';
 import axe from 'axe-core';
 
 describe('Reusable confirmation focus and cancellation', () => {
+  it('disables both actions and ignores Back/Escape while persistence is running', () => {
+    const fixture = TestBed.createComponent(ConfirmationDialog);
+    fixture.componentRef.setInput('title', 'Delete account activity?');
+    fixture.componentRef.setInput('message', 'Selected debit');
+    fixture.componentRef.setInput('busy', true);
+    fixture.componentRef.setInput('error', 'Retry persistence');
+    const cancel = vi.fn(),
+      confirm = vi.fn();
+    fixture.componentInstance.cancelled.subscribe(cancel);
+    fixture.componentInstance.confirmed.subscribe(confirm);
+    fixture.detectChanges();
+    const buttons = [...(fixture.nativeElement as HTMLElement).querySelectorAll('button')];
+    expect(buttons.every((button) => button.disabled)).toBe(true);
+    window.dispatchEvent(new Event('cardnest:back', { cancelable: true }));
+    fixture.componentInstance.cancel();
+    fixture.componentInstance.confirm();
+    expect(cancel).not.toHaveBeenCalled();
+    expect(confirm).not.toHaveBeenCalled();
+    expect(fixture.nativeElement.querySelector('[role="alert"]').textContent).toBe(
+      'Retry persistence',
+    );
+    fixture.destroy();
+  });
   it.each(['light', 'dark'])(
     'supports keyboard, Back and screen-reader confirmation in %s theme',
     async (theme) => {

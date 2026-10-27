@@ -16,8 +16,8 @@ import { AppIcon } from './app-icon';
     <div
       class="confirmation-backdrop"
       tabindex="-1"
-      (click)="cancelled.emit()"
-      (keydown.escape)="$event.stopPropagation(); cancelled.emit()"
+      (click)="cancel()"
+      (keydown.escape)="$event.stopPropagation(); cancel()"
     >
       <section
         class="panel confirmation-dialog"
@@ -33,10 +33,13 @@ import { AppIcon } from './app-icon';
         <div>
           <h2 id="confirmation-title">{{ title() }}</h2>
           <p id="confirmation-message">{{ message() }}</p>
+          @if (error()) {
+            <p role="alert">{{ error() }}</p>
+          }
         </div>
         <div class="confirmation-actions">
-          <button class="btn" type="button" (click)="cancelled.emit()">Cancel</button>
-          <button class="btn danger-confirm" type="button" (click)="confirmed.emit()">
+          <button class="btn" type="button" [disabled]="busy()" (click)="cancel()">Cancel</button>
+          <button class="btn danger-confirm" type="button" [disabled]="busy()" (click)="confirm()">
             {{ confirmLabel() }}
           </button>
         </div>
@@ -119,7 +122,7 @@ export class ConfirmationDialog {
     const back = (event: Event) => {
       event.preventDefault();
       event.stopImmediatePropagation();
-      this.cancelled.emit();
+      this.cancel();
     };
     window.addEventListener('cardnest:back', back, { capture: true });
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -135,12 +138,17 @@ export class ConfirmationDialog {
     event.stopPropagation();
     if (event.key === 'Escape') {
       event.preventDefault();
-      this.cancelled.emit();
+      this.cancel();
     }
     if (event.key !== 'Tab') return;
     const buttons = [
       ...this.element.nativeElement.querySelectorAll<HTMLButtonElement>('button:not([disabled])'),
     ];
+    if (!buttons.length) {
+      event.preventDefault();
+      this.element.nativeElement.querySelector<HTMLElement>('[role="alertdialog"]')?.focus();
+      return;
+    }
     const first = buttons[0],
       last = buttons.at(-1);
     if (event.shiftKey && document.activeElement === first) {
@@ -154,6 +162,14 @@ export class ConfirmationDialog {
   readonly title = input.required<string>();
   readonly message = input.required<string>();
   readonly confirmLabel = input('Delete');
+  readonly busy = input(false);
+  readonly error = input<string | null>(null);
+  cancel(): void {
+    if (!this.busy()) this.cancelled.emit();
+  }
+  confirm(): void {
+    if (!this.busy()) this.confirmed.emit();
+  }
   readonly confirmed = output<void>();
   readonly cancelled = output<void>();
 }

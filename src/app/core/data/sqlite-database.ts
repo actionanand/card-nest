@@ -5,6 +5,7 @@ import { CLASSIFY_LEGACY_ADJUSTMENTS, DATABASE_MIGRATIONS } from './migrations';
 import { clearPlatformDiscovery, prunePlatformDiscovery } from './platform-data';
 import { INITIAL_DATA_KEY } from './app-initialization';
 import { reconcileCategoryCatalog } from './category-catalog';
+import { RECONCILE_BANK_ACTIVITY_LATEST } from './bank-activity-latest';
 
 interface JeepSqliteElement extends HTMLElement {
   wasmPath: string;
@@ -529,6 +530,14 @@ export class SqliteDatabase {
         }
       }
       await flushInserts();
+      for (const statement of RECONCILE_BANK_ACTIVITY_LATEST) {
+        await CapacitorSQLite.run({
+          database: this.databaseName,
+          statement,
+          values: [],
+          transaction: false,
+        });
+      }
       // Portable imports rebuild rowids. Pending evidence stays durable, but its local replay cursor must restart.
       await CapacitorSQLite.run({
         database: this.databaseName,

@@ -161,7 +161,7 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
       holderName: 'Fiction Jamie',
     });
     expect(activity.events()).toHaveLength(1);
-    expect(activity.candidates()).toHaveLength(2);
+    expect(activity.candidates()).toHaveLength(1);
     vi.stubGlobal('crypto', webcrypto);
     vi.stubGlobal('Blob', NodeBlob);
     try {
@@ -180,7 +180,7 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
       expect(
         rows("SELECT * FROM app_preferences WHERE key='bank_activity_discovery_cursor'"),
       ).toEqual([]);
-      expect(activity.candidates()).toHaveLength(2);
+      expect(activity.candidates()).toHaveLength(1);
       expect(activity.events()).toHaveLength(1);
       expect(activity.profiles()).toHaveLength(2);
       expect(JSON.stringify(rows('SELECT payload FROM bank_activity_candidates'))).not.toContain(

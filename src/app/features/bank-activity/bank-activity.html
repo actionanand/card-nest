@@ -7,9 +7,11 @@
         See how long each monitored account has gone without a qualifying customer transaction.
       </p>
     </div>
-    <button class="btn btn-primary" type="button" (click)="startProfile()">
-      <app-icon name="plus" /> Add account
-    </button>
+    @if (activeTab() === 2) {
+      <button class="btn btn-primary" type="button" (click)="startProfile()">
+        <app-icon name="plus" /> Add account
+      </button>
+    }
   </header>
   <aside class="activity-notice">
     <app-icon name="help" />
@@ -19,360 +21,355 @@
     </p>
   </aside>
 
+  <div class="bank-tabs" role="tablist" aria-label="Bank Activity sections">
+    @for (tab of tabs; track tab; let index = $index) {
+      <button
+        type="button"
+        role="tab"
+        [id]="'bank-tab-' + index"
+        [attr.aria-selected]="activeTab() === index"
+        [attr.aria-controls]="'bank-panel-' + index"
+        [attr.tabindex]="activeTab() === index ? 0 : -1"
+        (click)="activeTab.set(index)"
+        (keydown)="tabKey($event, index)"
+      >
+        {{ tab }}
+      </button>
+    }
+  </div>
+  @if (accountSync.error()) {
+    <p role="alert">{{ accountSync.error() }}</p>
+  }
+  @for (conflict of accountSync.conflicts(); track conflict) {
+    <p role="status">{{ conflict }}</p>
+  }
   @if (error() && !profileFormOpen()) {
     <p class="form-error" role="alert">{{ error() }}</p>
   }
   @if (discoveryNotice()) {
     <p role="status">{{ discoveryNotice() }}</p>
   }
-  <section class="discovery-actions" aria-label="Account discovery">
-    @if (android) {
-      <button
-        class="btn"
-        type="button"
-        (click)="findAccounts()"
-        [disabled]="activity.discovering()"
-      >
-        {{ activity.discovering() ? 'Checking saved alerts…' : 'Find accounts from SMS' }}</button
-      ><app-platform-tools />
-      <p class="form-note">
-        Checks financial alerts already staged locally. Use Android message review to authorize
-        access or scan more messages. Opening this page never scans your phone.
-      </p>
-    } @else {
-      <p class="form-note">
-        Device message discovery is available on Android. Add accounts and record activity manually
-        here.
-      </p>
+  @if (activity.reviewNotice()) {
+    <p role="status">{{ activity.reviewNotice() }}</p>
+  }
+  <section
+    role="tabpanel"
+    id="bank-panel-1"
+    aria-labelledby="bank-tab-1"
+    [hidden]="activeTab() !== 1"
+  >
+    <section class="discovery-actions" aria-label="Account discovery">
+      @if (android) {
+        <button
+          class="btn btn-primary"
+          type="button"
+          (click)="findAccounts()"
+          [disabled]="activity.discovering()"
+        >
+          {{ activity.discovering() ? 'Checking saved alerts…' : 'Find bank accounts from SMS' }}
+        </button>
+        <p class="form-note">
+          Checks financial alerts already staged locally. Use Android message review to authorize
+          access or scan more messages. Opening this page never scans your phone.
+        </p>
+      } @else {
+        <p class="form-note">
+          Device message discovery is available on Android. Add accounts and record activity
+          manually here.
+        </p>
+      }
+    </section>
+    @if (discoveries().length) {
+      <button class="btn" type="button" (click)="activeTab.set(0)">
+        Review discovered accounts
+      </button>
     }
   </section>
-  @if (discoveries().length) {
-    <section class="review-section" aria-labelledby="discovered-accounts-title">
-      <h2 id="discovered-accounts-title">Discovered bank accounts</h2>
-      <p>
-        Review provisional SMS account identities. A matching alert does not establish ownership or
-        create a monitoring profile.
-      </p>
-      @for (group of discoveries(); track group.id) {
-        <article class="review-candidate">
-          <strong
-            >{{ group.bankName }}
-            {{ group.accountSuffix ? ' · •••' + group.accountSuffix : '' }}</strong
-          >
-          <span class="status-badge unknown">
-            {{
-              group.needsIdentification ? 'Account needs identification' : 'New account candidate'
-            }}
-          </span>
-          <small>Found in financial SMS · Last qualifying event: {{ group.lastDate }}</small>
-          @if (group.needsIdentification) {
-            <p>
-              Existing monitoring details do not uniquely identify this account. Verify the bank and
-              suffix before adding or selecting a profile.
-            </p>
-          } @else {
-            <p>
-              No active profile matches this bank and suffix. Monitoring is not created until you
-              review and save a profile.
-            </p>
-          }
-          <small
-            >{{ group.events.length }} pending event suggestions. No activity has been
-            recorded.</small
-          >
-          <div class="profile-actions">
-            <button
-              class="btn btn-primary"
-              type="button"
-              (click)="reviewDiscovery(group.events[0])"
-            >
-              Review &amp; add account</button
-            ><button
-              class="btn"
-              type="button"
-              (click)="dismissDiscovery(discoveryFingerprints(group.events))"
-            >
-              Dismiss
-            </button>
-          </div>
-        </article>
-      }
-    </section>
-  }
-  @if (reviewCandidates().length) {
-    <section class="review-section" aria-labelledby="bank-activity-review-title">
-      <header>
-        <div>
-          <p class="eyebrow">Android SMS</p>
-          <h2 id="bank-activity-review-title">Activity needs review</h2>
-        </div>
-        <span class="status-badge attention">{{ reviewCandidates().length }} pending</span>
-      </header>
-      <p class="form-note">
-        Every newly discovered activity event requires confirmation, including unique account
-        matches. Select the monitored account only after verifying the bank and masked suffix. No
-        raw SMS text is stored.
-      </p>
-      @for (candidate of visibleReviewCandidates(); track candidate.fingerprint) {
-        <article class="review-candidate">
-          <div>
+  <section
+    role="tabpanel"
+    id="bank-panel-0"
+    aria-labelledby="bank-tab-0"
+    [hidden]="activeTab() !== 0"
+  >
+    @if (discoveries().length) {
+      <section class="review-section" aria-labelledby="discovered-accounts-title">
+        <h2 id="discovered-accounts-title">Discovered bank accounts</h2>
+        <p>
+          Review provisional SMS account identities. A matching alert does not establish ownership
+          or create a monitoring profile.
+        </p>
+        @for (group of discoveries(); track group.id) {
+          <article class="review-candidate">
             <strong
-              >{{ candidate.bankName || 'Bank not identified'
-              }}{{ candidate.accountSuffix ? ' · xx' + candidate.accountSuffix : '' }}</strong
-            ><small
-              >{{ candidate.activityDate }} ·
-              {{ candidate.direction === 'CREDIT' ? 'Credit' : 'Debit' }} ·
-              {{ candidate.purposeHint }}</small
+              >{{ group.bankName }}
+              {{ group.accountSuffix ? ' · •••' + group.accountSuffix : '' }}</strong
             >
-            @if (candidate.reference) {
-              <small>Ref {{ candidate.reference }}</small>
+            <span class="status-badge unknown">
+              {{
+                group.needsIdentification ? 'Account needs identification' : 'New account candidate'
+              }}
+            </span>
+            <small>Found in financial SMS · Last qualifying event: {{ group.lastDate }}</small>
+            @if (group.needsIdentification) {
+              <p>
+                Existing monitoring details do not uniquely identify this account. Verify the bank
+                and suffix before adding or selecting a profile.
+              </p>
+            } @else {
+              <p>
+                No active profile matches this bank and suffix. Monitoring is not created until you
+                review and save a profile.
+              </p>
             }
-          </div>
-          <p class="form-note">{{ reviewWarning(candidate) }}</p>
-          <app-select-picker
-            label="Choose monitored account"
-            [options]="reviewProfileOptions()"
-            [value]="reviewSelection()[candidate.fingerprint] ?? ''"
-            (valueChange)="setReviewProfile(candidate.fingerprint, $event)"
-          />
-          @if (selectionConflict(candidate)) {
-            <p class="form-error" role="alert">
-              Bank or account evidence does not match this selection, or verification is
-              unavailable.
-            </p>
-            <label class="check-field"
-              ><input
-                type="checkbox"
-                [checked]="mismatchAcknowledged()[candidate.fingerprint] ?? false"
-                (change)="acknowledgeMismatch(candidate.fingerprint, $event)"
-              />I independently verified this account despite the mismatch or missing evidence.
-              Record it as user-confirmed.</label
+            <small
+              >{{ group.events.length }} pending event suggestions. No activity has been
+              recorded.</small
             >
-          }
-          <div class="profile-actions">
-            <button
-              class="btn btn-primary"
-              type="button"
-              [disabled]="saving() || !reviewSelection()[candidate.fingerprint]"
-              (click)="approveCandidate(candidate.fingerprint)"
-            >
-              Review &amp; confirm activity</button
-            ><button
-              class="btn"
-              type="button"
-              [disabled]="saving()"
-              (click)="dismissDiscovery([candidate.fingerprint])"
-            >
-              Dismiss
-            </button>
-          </div>
-        </article>
-      }
-      @if (reviewLimit() < reviewCandidates().length) {
-        <button class="btn" type="button" (click)="reviewLimit.set(reviewLimit() + 20)">
-          Show more activity suggestions
-        </button>
-      }
-    </section>
-  }
-
-  @if (profileFormOpen()) {
-    <app-profile-modal
-      [title]="editingProfileId() ? 'Edit monitored bank account' : 'Add monitored bank account'"
-      [busy]="saving()"
-      (closed)="closeProfile()"
-      ><form class="activity-form" [formGroup]="profileForm" (submit)="saveProfile($event)">
-        <app-select-picker
-          label="Use existing CardNest bank account (optional)"
-          formControlName="paymentSourceId"
-          [options]="sourceOptions()"
-          [searchable]="true"
-        />
-        <label
-          >Bank name<input formControlName="bankName" maxlength="80" autocomplete="off" required
-        /></label>
-        @if (profileForm.controls.paymentSourceId.value) {
-          <p class="form-note">
-            The existing account is linked by stable source ID. Balance tracking and its saved
-            identifier remain unchanged.
-          </p>
+            <div class="profile-actions">
+              @if (group.needsIdentification) {
+                <button class="btn" type="button" (click)="activeTab.set(2)">
+                  Identify an existing account
+                </button>
+              }
+              <button
+                class="btn btn-primary"
+                type="button"
+                (click)="reviewDiscovery(group.events[0])"
+              >
+                Review &amp; add account</button
+              ><button
+                class="btn"
+                type="button"
+                (click)="dismissDiscovery(discoveryFingerprints(group.events))"
+              >
+                Dismiss
+              </button>
+            </div>
+          </article>
         }
+      </section>
+    }
+    @if (!discoveries().length) {
+      <section class="panel empty-state">
+        <h2>No new bank accounts found</h2>
+        <p>
+          All identifiable bank accounts from the checked SMS alerts are already monitored,
+          dismissed, or awaiting activity review.
+        </p>
+      </section>
+    }
+  </section>
+  <section
+    role="tabpanel"
+    id="bank-panel-2"
+    aria-labelledby="bank-tab-2"
+    [hidden]="activeTab() !== 2"
+  >
+    @if (reviewCandidates().length) {
+      <section class="review-section" aria-labelledby="bank-activity-review-title">
+        <header>
+          <div>
+            <p class="eyebrow">Android SMS</p>
+            <h2 id="bank-activity-review-title">Activity needs review</h2>
+          </div>
+          <span class="status-badge attention">{{ reviewCandidates().length }} pending</span>
+        </header>
+        <p class="form-note">
+          Every newly discovered activity event requires confirmation, including unique account
+          matches. Select the monitored account only after verifying the bank and masked suffix. No
+          raw SMS text is stored.
+        </p>
+        @for (candidate of visibleReviewCandidates(); track candidate.fingerprint) {
+          <article class="review-candidate">
+            <div>
+              <strong
+                >{{ candidate.bankName || 'Bank not identified'
+                }}{{ candidate.accountSuffix ? ' · xx' + candidate.accountSuffix : '' }}</strong
+              ><small
+                >{{ candidate.activityDate }} ·
+                {{ candidate.direction === 'CREDIT' ? 'Credit' : 'Debit' }} ·
+                {{ candidate.purposeHint }}</small
+              >
+              @if (candidate.reference) {
+                <small>Ref {{ candidate.reference }}</small>
+              }
+            </div>
+            <p class="form-note">{{ reviewWarning(candidate) }}</p>
+            <app-select-picker
+              label="Choose monitored account"
+              [options]="reviewProfileOptions()"
+              [value]="reviewSelection()[candidate.fingerprint] ?? ''"
+              (valueChange)="setReviewProfile(candidate.fingerprint, $event)"
+            />
+            @if (selectionConflict(candidate)) {
+              <p class="form-error" role="alert">
+                Bank or account evidence does not match this selection, or verification is
+                unavailable.
+              </p>
+              <label class="check-field"
+                ><input
+                  type="checkbox"
+                  [checked]="mismatchAcknowledged()[candidate.fingerprint] ?? false"
+                  (change)="acknowledgeMismatch(candidate.fingerprint, $event)"
+                />I independently verified this account despite the mismatch or missing evidence.
+                Record it as user-confirmed.</label
+              >
+            }
+            <div class="profile-actions">
+              <button
+                class="btn btn-primary"
+                type="button"
+                [disabled]="saving() || !reviewSelection()[candidate.fingerprint]"
+                (click)="approveCandidate(candidate.fingerprint)"
+              >
+                Review &amp; confirm activity</button
+              ><button
+                class="btn"
+                type="button"
+                [disabled]="saving()"
+                (click)="dismissDiscovery([candidate.fingerprint])"
+              >
+                Dismiss
+              </button>
+            </div>
+          </article>
+        }
+        @if (reviewLimit() < reviewCandidates().length) {
+          <button class="btn" type="button" (click)="reviewLimit.set(reviewLimit() + 20)">
+            Show more activity suggestions
+          </button>
+        }
+      </section>
+    }
+
+    @if (eventProfileId(); as profileId) {
+      <form class="panel activity-form" [formGroup]="eventForm" (submit)="saveEvent($event)">
+        <header>
+          <h2>{{ editingEventId() ? 'Correct activity date' : 'Record account activity' }}</h2>
+          <button class="btn" type="button" (click)="eventProfileId.set(null)">Close</button>
+        </header>
+        <p class="form-note">
+          This retains only the latest activity in each direction. It does not change any balance or
+          transaction.
+        </p>
         <div class="form-grid">
-          <label
-            >Account nickname (optional)<input formControlName="nickname" maxlength="80"
-          /></label>
-          @if (!hasLinkedSuffix()) {
-            <label
-              >Last 3 account digits<input
-                formControlName="accountSuffix"
-                inputmode="numeric"
-                maxlength="3"
-                placeholder="123"
-            /></label>
-          }
-          <p class="form-note">
-            Used together with the bank name to suggest matching SMS activity. Only the last three
-            digits are needed.
-          </p>
-          @if (profileForm.controls.paymentSourceId.value) {
-            <p class="form-note">Saved identifier: {{ linkedIdentifier() }}</p>
-          }
-          <label class="check-field"
-            ><input type="checkbox" formControlName="manualOnly" />Manual-only monitoring (no
-            automatic SMS account suggestion)</label
-          >
+          <label>Activity date<input type="date" formControlName="activityDate" required /></label>
           <app-select-picker
-            label="Account holder"
-            formControlName="owner"
-            [options]="ownerOptions"
+            label="Direction"
+            formControlName="direction"
+            [options]="directionOptions"
           />
-          @if (profileForm.controls.owner.value === 'OTHERS') {
-            <label>Holder name<input formControlName="holderName" maxlength="80" required /></label>
-          }
+          <label
+            >Reference (optional)<input
+              formControlName="reference"
+              maxlength="80"
+              autocomplete="off"
+          /></label>
         </div>
-        <label class="check-field"
-          ><input type="checkbox" formControlName="allowIdentityConflict" />This is a distinct
-          account if the bank and suffix also appear on another profile. I supplied a distinguishing
-          nickname or holder name.</label
-        >
-        <label
-          >Remarks (optional)<textarea
-            formControlName="remarks"
-            maxlength="300"
-            rows="2"
-          ></textarea>
-        </label>
         @if (error(); as message) {
           <p class="form-error" role="alert">{{ message }}</p>
         }
-        <div class="modal-actions">
-          <button class="btn" type="button" [disabled]="saving()" (click)="closeProfile()">
-            Cancel</button
-          ><button class="btn btn-primary" type="submit" [disabled]="saving()">Save profile</button>
+        <button class="btn btn-primary" type="submit" [disabled]="saving() || eventForm.invalid">
+          {{ editingEventId() ? 'Save correction' : 'Save activity' }}
+        </button>
+      </form>
+    }
+
+    @for (profile of activeProfiles(); track profile.id) {
+      <article class="panel activity-profile">
+        <header class="profile-heading">
+          <div>
+            <p class="eyebrow">
+              {{ profile.owner === 'OWN' ? 'Own account' : 'Other account'
+              }}{{ profile.holderName ? ' · ' + profile.holderName : '' }}
+            </p>
+            <h2 [id]="'bank-profile-' + profile.id" tabindex="-1">{{ profileLabel(profile) }}</h2>
+            <small>{{ profile.remarks || 'Activity only · no balances stored here' }}</small>
+          </div>
+          <span class="status-badge" [class]="statusClass(profile)">{{
+            statusLabel(profile)
+          }}</span>
+        </header>
+        <p class="elapsed">{{ activityText(profile) }}</p>
+        <div class="profile-actions">
+          <button class="btn btn-primary" type="button" (click)="startEvent(profile)">
+            <app-icon name="plus" /> Record activity</button
+          ><button class="btn" type="button" (click)="editProfile(profile)">Edit</button
+          ><button class="btn" type="button" (click)="archive(profile)">Archive</button>
         </div>
-      </form></app-profile-modal
-    >
-  }
-
-  @if (eventProfileId(); as profileId) {
-    <form class="panel activity-form" [formGroup]="eventForm" (submit)="saveEvent($event)">
-      <header>
-        <h2>{{ editingEventId() ? 'Correct activity date' : 'Record account activity' }}</h2>
-        <button class="btn" type="button" (click)="eventProfileId.set(null)">Close</button>
-      </header>
-      <p class="form-note">
-        This records activity history only. It does not change any balance or transaction.
-      </p>
-      <div class="form-grid">
-        <label>Activity date<input type="date" formControlName="activityDate" required /></label>
-        <app-select-picker
-          label="Direction"
-          formControlName="direction"
-          [options]="directionOptions"
-        />
-        <label
-          >Reference (optional)<input formControlName="reference" maxlength="80" autocomplete="off"
-        /></label>
-      </div>
-      @if (error(); as message) {
-        <p class="form-error" role="alert">{{ message }}</p>
-      }
-      <button class="btn btn-primary" type="submit" [disabled]="saving() || eventForm.invalid">
-        {{ editingEventId() ? 'Save correction' : 'Save activity' }}
-      </button>
-    </form>
-  }
-
-  @for (profile of activeProfiles(); track profile.id) {
-    <article class="panel activity-profile">
-      <header class="profile-heading">
-        <div>
-          <p class="eyebrow">
-            {{ profile.owner === 'OWN' ? 'Own account' : 'Other account'
-            }}{{ profile.holderName ? ' · ' + profile.holderName : '' }}
+        <div class="latest-activity">
+          <h3>Latest debit and credit</h3>
+          <p class="form-note">
+            Latest debit: {{ latestDate(profile, 'DEBIT') }} · Latest credit:
+            {{ latestDate(profile, 'CREDIT') }}
           </p>
-          <h2 [id]="'bank-profile-' + profile.id" tabindex="-1">{{ profileLabel(profile) }}</h2>
-          <small>{{ profile.remarks || 'Activity only · no balances stored here' }}</small>
+          @if (events(profile).length) {
+            <ol class="history-list">
+              @for (event of events(profile); track event.id) {
+                <li>
+                  <div>
+                    <strong
+                      >{{ event.activityDate }} ·
+                      {{ event.direction === 'CREDIT' ? 'Credit' : 'Debit' }}</strong
+                    ><small
+                      >{{
+                        event.origin === 'ANDROID_SMS'
+                          ? event.verification === 'SOURCE_MATCHED'
+                            ? 'Android SMS · previously source matched'
+                            : 'Android SMS · user confirmed'
+                          : 'Manual · user confirmed'
+                      }}{{ event.reference ? ' · Ref ' + event.reference : '' }}</small
+                    >
+                  </div>
+                  <div class="history-actions">
+                    <button
+                      class="icon-action"
+                      type="button"
+                      [attr.aria-label]="'Correct activity on ' + event.activityDate"
+                      (click)="editEvent(event)"
+                    >
+                      <app-icon name="edit" /></button
+                    ><button
+                      class="icon-action"
+                      type="button"
+                      [attr.aria-label]="'Remove activity on ' + event.activityDate"
+                      (click)="deleteEvent(event)"
+                    >
+                      <app-icon name="delete" />
+                    </button>
+                  </div>
+                </li>
+              }
+            </ol>
+          } @else {
+            <p class="empty-state">No qualifying activity has been recorded. Status is Unknown.</p>
+          }
         </div>
-        <span class="status-badge" [class]="statusClass(profile)">{{ statusLabel(profile) }}</span>
-      </header>
-      <p class="elapsed">{{ activityText(profile) }}</p>
-      <div class="profile-actions">
-        <button class="btn btn-primary" type="button" (click)="startEvent(profile)">
-          <app-icon name="plus" /> Record activity</button
-        ><button class="btn" type="button" (click)="editProfile(profile)">Edit</button
-        ><button class="btn" type="button" (click)="archive(profile)">Archive</button>
-      </div>
-      <details class="event-history" open>
-        <summary>
-          Qualifying activity history <span>({{ events(profile).length }})</span>
-        </summary>
-        @if (events(profile).length) {
-          <ol class="history-list">
-            @for (event of events(profile); track event.id) {
-              <li>
-                <div>
-                  <strong
-                    >{{ event.activityDate }} ·
-                    {{ event.direction === 'CREDIT' ? 'Credit' : 'Debit' }}</strong
-                  ><small
-                    >{{
-                      event.origin === 'ANDROID_SMS'
-                        ? event.verification === 'SOURCE_MATCHED'
-                          ? 'Android SMS · previously source matched'
-                          : 'Android SMS · user confirmed'
-                        : 'Manual · user confirmed'
-                    }}{{ event.reference ? ' · Ref ' + event.reference : '' }}</small
-                  >
-                </div>
-                <div class="history-actions">
-                  <button
-                    class="icon-action"
-                    type="button"
-                    [attr.aria-label]="'Correct activity on ' + event.activityDate"
-                    (click)="editEvent(event)"
-                  >
-                    <app-icon name="edit" /></button
-                  ><button
-                    class="icon-action"
-                    type="button"
-                    [attr.aria-label]="'Remove activity on ' + event.activityDate"
-                    (click)="deleteEvent(event)"
-                  >
-                    <app-icon name="delete" />
-                  </button>
-                </div>
-              </li>
-            }
-          </ol>
-        } @else {
-          <p class="empty-state">No qualifying activity has been recorded. Status is Unknown.</p>
+      </article>
+    } @empty {
+      <section class="panel empty-state">
+        <app-icon name="landmark" />
+        <h2>No monitored accounts</h2>
+        <p>
+          Add an existing CardNest bank account or create a standalone monitoring profile. No full
+          account number is collected.
+        </p>
+      </section>
+    }
+    @if (archivedProfiles().length) {
+      <details class="archived-list">
+        <summary>Archived accounts</summary>
+        @for (profile of archivedProfiles(); track profile.id) {
+          <div>
+            <span>{{ profileLabel(profile) }}</span
+            ><button class="btn" type="button" (click)="activity.setArchived(profile.id, false)">
+              Restore
+            </button>
+          </div>
         }
       </details>
-    </article>
-  } @empty {
-    <section class="panel empty-state">
-      <app-icon name="landmark" />
-      <h2>No monitored accounts</h2>
-      <p>
-        Add an existing CardNest bank account or create a standalone monitoring profile. No full
-        account number is collected.
-      </p>
-    </section>
-  }
-  @if (archivedProfiles().length) {
-    <details class="archived-list">
-      <summary>Archived accounts</summary>
-      @for (profile of archivedProfiles(); track profile.id) {
-        <div>
-          <span>{{ profileLabel(profile) }}</span
-          ><button class="btn" type="button" (click)="activity.setArchived(profile.id, false)">
-            Restore
-          </button>
-        </div>
-      }
-    </details>
-  }
+    }
+  </section>
 </div>
 
 @if (confirmation(); as choice) {
@@ -382,5 +379,100 @@
     confirmLabel="Confirm activity"
     (confirmed)="confirmActivity()"
     (cancelled)="confirmation.set(null)"
+  />
+}
+
+@if (profileFormOpen()) {
+  <app-profile-modal
+    [title]="editingProfileId() ? 'Edit monitored bank account' : 'Add monitored bank account'"
+    [busy]="saving()"
+    (closed)="closeProfile()"
+    ><form class="activity-form" [formGroup]="profileForm" (submit)="saveProfile($event)">
+      <app-select-picker
+        label="Use existing CardNest bank account (optional)"
+        formControlName="paymentSourceId"
+        [options]="sourceOptions()"
+        [searchable]="true"
+      />
+      <label
+        >Bank name<input formControlName="bankName" maxlength="80" autocomplete="off" required
+      /></label>
+      @if (profileForm.controls.paymentSourceId.value) {
+        <p class="form-note">
+          The existing account is linked by stable source ID. Balance tracking and its saved
+          identifier remain unchanged.
+        </p>
+      }
+      <div class="form-grid">
+        <label
+          >Account nickname (optional)<input formControlName="nickname" maxlength="80"
+        /></label>
+        @if (!hasLinkedSuffix()) {
+          <label
+            >Last 3 account digits<input
+              formControlName="accountSuffix"
+              inputmode="numeric"
+              maxlength="3"
+              placeholder="123"
+          /></label>
+        }
+        <p class="form-note">
+          Used together with the bank name to suggest matching SMS activity. Only the last three
+          digits are needed.
+        </p>
+        @if (profileForm.controls.paymentSourceId.value) {
+          <p class="form-note">Saved identifier: {{ linkedIdentifier() }}</p>
+        }
+        <label class="check-field"
+          ><input type="checkbox" formControlName="manualOnly" />Manual-only monitoring (no
+          automatic SMS account suggestion)</label
+        >
+        <app-select-picker
+          label="Account holder"
+          formControlName="owner"
+          [options]="ownerOptions"
+        />
+        @if (profileForm.controls.owner.value === 'OTHERS') {
+          <label>Holder name<input formControlName="holderName" maxlength="80" required /></label>
+        }
+      </div>
+      <label class="check-field"
+        ><input type="checkbox" formControlName="confirmOwnershipSync" />
+        If changing someone else's account to OWN, I confirm it is mine and may appear in Money
+        Sources.
+      </label>
+      <label class="check-field"
+        ><input type="checkbox" formControlName="allowIdentityConflict" />This is a distinct account
+        if the bank and suffix also appear on another profile. I supplied a distinguishing nickname
+        or holder name.</label
+      >
+      <label
+        >Remarks (optional)<textarea formControlName="remarks" maxlength="300" rows="2"></textarea>
+      </label>
+      @if (error(); as message) {
+        <p class="form-error" role="alert">{{ message }}</p>
+      }
+      <div class="modal-actions">
+        <button class="btn" type="button" [disabled]="saving()" (click)="closeProfile()">
+          Cancel</button
+        ><button class="btn btn-primary" type="submit" [disabled]="saving()">Save profile</button>
+      </div>
+    </form></app-profile-modal
+  >
+}
+
+@if (deletion(); as event) {
+  <app-confirmation-dialog
+    title="Delete account activity?"
+    [message]="
+      'This will remove the selected activity record from Bank Activity tracking. It will not delete bank transactions or change account balances. Selected: ' +
+      event.direction +
+      ' on ' +
+      event.activityDate
+    "
+    [busy]="saving()"
+    [error]="error()"
+    (confirmed)="confirmDeletion()"
+    (cancelled)="deletion.set(null)"
   />
 }

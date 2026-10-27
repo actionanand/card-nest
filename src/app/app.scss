@@ -183,7 +183,7 @@ main {
   place-items: center;
   border: 4px solid var(--surface);
   border-radius: 50%;
-  color: var(--surface);
+  color: var(--on-accent);
   background: var(--accent);
   box-shadow: 0 0.7rem 1.6rem rgb(20 60 43 / 32%);
   animation: floating-shortcut-enter 180ms ease-out both;
@@ -191,6 +191,12 @@ main {
 .floating-shortcut-fab:focus-visible {
   outline: 3px solid var(--ink);
   outline-offset: 3px;
+}
+.floating-shortcut-fab:hover {
+  background: var(--accent-strong);
+}
+.floating-shortcut-fab:active:not(:disabled) {
+  transform: scale(0.96);
 }
 .floating-shortcut-fab app-icon {
   width: min(1.55rem, 28px);
@@ -210,7 +216,7 @@ main {
   width: 1.55rem;
   height: 1.55rem;
   place-items: center;
-  color: var(--surface);
+  color: inherit;
 }
 .sms-sync-fab-message app-icon {
   width: 1.55rem;
@@ -227,7 +233,7 @@ main {
   border: 2px solid var(--accent);
   border-radius: 50%;
   color: var(--accent);
-  background: var(--surface);
+  background: var(--on-accent);
 }
 .sms-sync-fab-badge app-icon {
   width: 0.68rem;
@@ -364,7 +370,7 @@ main {
   position: fixed;
   z-index: 1200;
   right: max(1rem, env(safe-area-inset-right));
-  bottom: max(1rem, env(safe-area-inset-bottom));
+  bottom: calc(5.5rem + env(safe-area-inset-bottom));
   display: grid;
   width: min(24rem, calc(100vw - 2rem));
   gap: 0.4rem;
@@ -686,9 +692,9 @@ main {
   .snackbar-stack {
     left: max(0.75rem, env(safe-area-inset-left));
     right: max(0.75rem, env(safe-area-inset-right));
-    bottom: calc(6.5rem + env(safe-area-inset-bottom));
+    bottom: calc(10rem + env(safe-area-inset-bottom));
     width: auto;
-    max-height: calc(100dvh - 7.5rem - env(safe-area-inset-bottom));
+    max-height: calc(100dvh - 11rem - env(safe-area-inset-bottom));
   }
 }
 

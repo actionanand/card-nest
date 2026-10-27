@@ -8,7 +8,10 @@ import {
 } from './bank-activity-matching';
 import { Service, inject, signal } from '@angular/core';
 import { Capacitor } from '@capacitor/core';
-import { SqliteDatabase } from '../../core/data/sqlite-database';
+import { DatabaseSession, SqliteDatabase } from '../../core/data/sqlite-database';
+import { RECONCILE_BANK_ACTIVITY_LATEST } from '../../core/data/bank-activity-latest';
+import { indiaTodayIso } from '../../core/services/india-date';
+import { BankAccountSyncService } from './bank-account-sync.service';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import {
   BankActivityCandidate,
@@ -40,7 +43,10 @@ function validDate(value: string): boolean {
   const [year, month, day] = value.split('-').map(Number);
   const date = new Date(Date.UTC(year, month - 1, day));
   return (
-    date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
+    value <= indiaTodayIso() &&
+    date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day
   );
 }
 
@@ -55,6 +61,8 @@ function safeReference(value: string | undefined): string | undefined {
 export class BankActivityService {
   private readonly database = inject(SqliteDatabase);
   private readonly store = inject(CardNestStore);
+  readonly accountSync = inject(BankAccountSyncService);
+  readonly reviewNotice = signal('');
   readonly profiles = signal<readonly BankActivityProfile[]>([]);
   readonly events = signal<readonly BankActivityEvent[]>([]);
   readonly candidates = signal<readonly BankActivityCandidate[]>([]);
@@ -65,6 +73,18 @@ export class BankActivityService {
 
   async reload(): Promise<void> {
     if (!this.database.ready()) return;
+    try {
+      const sources = await this.accountSync.reconcile();
+      if (sources) this.store.paymentSources.set(sources);
+    } catch (error: unknown) {
+      this.accountSync.error.set(
+        error instanceof Error ? error.message : 'Bank account synchronization failed.',
+      );
+    }
+    await this.database.atomic(async (tx) => {
+      for (const statement of RECONCILE_BANK_ACTIVITY_LATEST) await tx.run(statement);
+      await this.compactCandidates(tx);
+    });
     const [profiles, events, candidates] = await Promise.all([
       this.database.query<{ payload: string }>(
         'SELECT payload FROM bank_activity_profiles ORDER BY created_at DESC',
@@ -107,11 +127,16 @@ export class BankActivityService {
     remarks?: string;
     manualOnly?: boolean;
     allowIdentityConflict?: boolean;
+    confirmOwnershipSync?: boolean;
   }): Promise<BankActivityProfile> {
     const previous = input.id
       ? this.profiles().find((profile) => profile.id === input.id)
       : undefined;
     if (input.id && !previous) throw new Error('Bank Activity profile not found.');
+    if (previous?.owner === 'OTHERS' && input.owner === 'OWN' && !input.confirmOwnershipSync)
+      throw new Error(
+        'Confirm that this is your account and may be synchronized with Money Sources.',
+      );
     const source = input.paymentSourceId
       ? this.store
           .paymentSources()
@@ -215,7 +240,8 @@ export class BankActivityService {
       );
     });
     this.profiles.update((items) => [profile, ...items.filter((item) => item.id !== profile.id)]);
-    return profile;
+    await this.reload();
+    return this.profiles().find((row) => row.id === profile.id) ?? profile;
   }
 
   async setArchived(profileId: string, archived: boolean): Promise<void> {
@@ -227,6 +253,7 @@ export class BankActivityService {
       [archived ? 1 : 0, JSON.stringify(updated), updated.updatedAt, profileId],
     );
     this.profiles.update((items) => items.map((item) => (item.id === profileId ? updated : item)));
+    await this.reload();
   }
 
   async saveManualEvent(input: {
@@ -339,6 +366,8 @@ export class BankActivityService {
           [cursor],
         );
         for (const row of rows) {
+          count++;
+          this.discoveryProgress.set(count);
           let value: unknown;
           try {
             value = JSON.parse(row.payload);
@@ -377,8 +406,6 @@ export class BankActivityService {
               });
             }
           }
-          count++;
-          this.discoveryProgress.set(count);
         }
         cursor = rows.length === 200 ? rows.at(-1)!.rowid : 0;
         await this.database.run(
@@ -395,7 +422,10 @@ export class BankActivityService {
   }
 
   async deleteEvent(eventId: string): Promise<void> {
-    await this.database.run('DELETE FROM bank_activity_events WHERE id=?', [eventId]);
+    await this.database.atomic(async (tx) => {
+      for (const statement of RECONCILE_BANK_ACTIVITY_LATEST.slice(0, 1)) await tx.run(statement);
+      await tx.run('DELETE FROM bank_activity_events WHERE id=?', [eventId]);
+    });
     this.events.update((items) => items.filter((item) => item.id !== eventId));
   }
 
@@ -404,7 +434,9 @@ export class BankActivityService {
     profileId: string,
     acknowledgeMismatch = false,
   ): Promise<BankActivityEvent | null> {
+    this.reviewNotice.set('');
     const timestamp = new Date().toISOString();
+    let notice = '';
     const event = await this.database.atomic(async (tx) => {
       const [candidateRow] = await tx.query<{ payload: string }>(
         'SELECT payload FROM bank_activity_candidates WHERE fingerprint=?',
@@ -447,6 +479,27 @@ export class BankActivityService {
         throw new Error(
           'The selected account conflicts with the evidence or cannot be verified. Explicitly acknowledge independent account verification before confirming.',
         );
+      const [latest] = await tx.query<{ activity_date: string }>(
+        'SELECT activity_date FROM bank_activity_events WHERE profile_id=? AND direction=? ORDER BY activity_date DESC LIMIT 1',
+        [profileId, candidate.direction],
+      );
+      if (latest && latest.activity_date >= candidate.activityDate) {
+        await tx.run('UPDATE bank_activity_candidates SET payload=? WHERE fingerprint=?', [
+          JSON.stringify({
+            ...candidate,
+            dismissed: true,
+            resolvedAt: timestamp,
+            resolvedProfileId: profileId,
+          }),
+          fingerprint,
+        ]);
+        notice = `This account already has a ${candidate.direction.toLowerCase()} on ${latest.activity_date}. The older or same-date suggestion has been dismissed.`;
+        return null;
+      }
+      await tx.run('DELETE FROM bank_activity_events WHERE profile_id=? AND direction=?', [
+        profileId,
+        candidate.direction,
+      ]);
       const record: BankActivityEvent = {
         id: crypto.randomUUID(),
         profileId,
@@ -478,10 +531,19 @@ export class BankActivityService {
         JSON.stringify({ ...candidate, resolvedAt: timestamp, resolvedProfileId: profileId }),
         fingerprint,
       ]);
+      await this.compactCandidates(tx);
       return record;
     });
+    this.reviewNotice.set(notice);
     this.candidates.update((items) => items.filter((item) => item.fingerprint !== fingerprint));
-    if (event) this.events.update((items) => [event, ...items]);
+    if (event)
+      this.events.update((items) => [
+        event,
+        ...items.filter(
+          (row) => row.profileId !== event.profileId || row.direction !== event.direction,
+        ),
+      ]);
+    await this.reload();
     return event;
   }
 
@@ -534,22 +596,56 @@ export class BankActivityService {
       createdAt: existing?.createdAt ?? timestamp,
       updatedAt: timestamp,
     };
-    await this.database.run(
-      `INSERT INTO bank_activity_events(id,profile_id,activity_date,direction,origin,verification,fingerprint,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET profile_id=excluded.profile_id,activity_date=excluded.activity_date,direction=excluded.direction,origin=excluded.origin,verification=excluded.verification,fingerprint=excluded.fingerprint,payload=excluded.payload,updated_at=excluded.updated_at`,
-      [
-        event.id,
+    await this.database.atomic(async (tx) => {
+      const [profile] = await tx.query<{ archived: number }>(
+        'SELECT payload,archived FROM bank_activity_profiles WHERE id=?',
+        [event.profileId],
+      );
+      if (!profile || profile.archived) throw new Error('Choose an active monitored account.');
+      const [latest] = await tx.query<{ id: string; activity_date: string }>(
+        'SELECT id,activity_date FROM bank_activity_events WHERE profile_id=? AND direction=? ORDER BY activity_date DESC LIMIT 1',
+        [event.profileId, event.direction],
+      );
+      if (input.id && latest?.id !== input.id)
+        throw new Error('The latest activity changed. Reopen the account before correcting it.');
+      if (latest && latest.id !== input.id && latest.activity_date >= event.activityDate)
+        throw new Error(
+          `This account already has a ${event.direction.toLowerCase()} on ${latest.activity_date}. Use Correct activity date for an intentional correction.`,
+        );
+      if (
+        existing &&
+        (existing.profileId !== input.profileId || existing.direction !== input.direction)
+      )
+        throw new Error('A date correction must keep the same account and direction.');
+      for (const statement of RECONCILE_BANK_ACTIVITY_LATEST.slice(0, 1)) await tx.run(statement);
+      await tx.run('DELETE FROM bank_activity_events WHERE profile_id=? AND direction=?', [
         event.profileId,
-        event.activityDate,
         event.direction,
-        event.origin,
-        event.verification,
-        event.fingerprint ?? null,
-        JSON.stringify(event),
-        timestamp,
-        timestamp,
-      ],
-    );
-    this.events.update((items) => [event, ...items.filter((item) => item.id !== event.id)]);
+      ]);
+      await tx.run(
+        `INSERT INTO bank_activity_events(id,profile_id,activity_date,direction,origin,verification,fingerprint,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET profile_id=excluded.profile_id,activity_date=excluded.activity_date,direction=excluded.direction,origin=excluded.origin,verification=excluded.verification,fingerprint=excluded.fingerprint,payload=excluded.payload,updated_at=excluded.updated_at`,
+        [
+          event.id,
+          event.profileId,
+          event.activityDate,
+          event.direction,
+          event.origin,
+          event.verification,
+          event.fingerprint ?? null,
+          JSON.stringify(event),
+          event.createdAt,
+          timestamp,
+        ],
+      );
+      await this.compactCandidates(tx);
+    });
+    this.events.update((items) => [
+      event,
+      ...items.filter(
+        (item) => item.profileId !== event.profileId || item.direction !== event.direction,
+      ),
+    ]);
+    await this.reload();
     return event;
   }
 
@@ -573,15 +669,81 @@ export class BankActivityService {
       purposeHint: input.purposeHint ?? 'UNKNOWN',
       createdAt,
     };
-    const inserted = await this.database.run(
-      'INSERT OR IGNORE INTO bank_activity_candidates(fingerprint,payload,created_at) VALUES(?,?,?)',
-      [candidate.fingerprint, JSON.stringify(candidate), createdAt],
+    const result = await this.database.atomic(async (tx) => {
+      const inserted = await tx.run(
+        'INSERT OR IGNORE INTO bank_activity_candidates(fingerprint,payload,created_at) VALUES(?,?,?)',
+        [candidate.fingerprint, JSON.stringify(candidate), createdAt],
+      );
+      const pending = await this.compactCandidates(tx);
+      let notice = '';
+      const match = this.match(candidate);
+      if (
+        inserted &&
+        match.suggestedId &&
+        !pending.some((row) => row.fingerprint === candidate.fingerprint)
+      ) {
+        const [latest] = await tx.query<{ activity_date: string }>(
+          'SELECT activity_date FROM bank_activity_events WHERE profile_id=? AND direction=? ORDER BY activity_date DESC LIMIT 1',
+          [match.suggestedId, candidate.direction],
+        );
+        if (latest && latest.activity_date >= candidate.activityDate)
+          notice = `This account already has a ${candidate.direction.toLowerCase()} on ${latest.activity_date}. The older or same-date suggestion has been dismissed.`;
+      }
+      return { pending, notice };
+    });
+    this.candidates.set(result.pending);
+    if (result.notice) this.reviewNotice.set(result.notice);
+  }
+
+  /** Only a uniquely established identity permits compaction; ambiguity stays reviewable. */
+  private async compactCandidates(tx: DatabaseSession): Promise<readonly BankActivityCandidate[]> {
+    const profileRows = await tx.query<{ payload: string }>(
+      'SELECT payload FROM bank_activity_profiles',
     );
-    if (!inserted) return;
-    this.candidates.update((items) =>
-      items.some((item) => item.fingerprint === candidate.fingerprint)
-        ? items
-        : [candidate, ...items],
+    const profiles = profileRows.map((row) => JSON.parse(row.payload) as BankActivityProfile);
+    const eventRows = await tx.query<{ payload: string }>(
+      'SELECT payload FROM bank_activity_events',
     );
+    const events = eventRows.map((row) => JSON.parse(row.payload) as BankActivityEvent);
+    const rows = await tx.query<{ payload: string }>(
+      'SELECT payload FROM bank_activity_candidates ORDER BY created_at ASC,fingerprint ASC',
+    );
+    const pending = rows
+      .map((row) => JSON.parse(row.payload) as BankActivityCandidate)
+      .filter((row) => !row.dismissed && !row.resolvedAt)
+      .sort(
+        (a, b) =>
+          b.activityDate.localeCompare(a.activityDate) ||
+          a.createdAt.localeCompare(b.createdAt) ||
+          a.fingerprint.localeCompare(b.fingerprint),
+      );
+    const kept = new Set<string>();
+    const result: BankActivityCandidate[] = [];
+    for (const candidate of pending) {
+      const match = activityMatch(candidate, profiles, this.store.paymentSources());
+      if (match.state !== 'UNIQUE' || !match.suggestedId) {
+        result.push(candidate);
+        continue;
+      }
+      const key = match.suggestedId + ':' + candidate.direction;
+      const latest = events.find(
+        (event) => event.profileId === match.suggestedId && event.direction === candidate.direction,
+      );
+      if ((latest && latest.activityDate >= candidate.activityDate) || kept.has(key)) {
+        await tx.run('UPDATE bank_activity_candidates SET payload=? WHERE fingerprint=?', [
+          JSON.stringify({
+            fingerprint: candidate.fingerprint,
+            dismissed: true,
+            resolvedProfileId: match.suggestedId,
+            resolvedAt: new Date().toISOString(),
+          }),
+          candidate.fingerprint,
+        ]);
+      } else {
+        kept.add(key);
+        result.push(candidate);
+      }
+    }
+    return result;
   }
 }

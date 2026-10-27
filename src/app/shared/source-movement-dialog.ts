@@ -1,4 +1,4 @@
-import { Component, OnInit, computed, inject, input, output, signal } from '@angular/core';
+import { Component, OnInit, computed, effect, inject, input, output, signal } from '@angular/core';
 import { BalanceTiming, SourceTransfer } from '../core/models/domain';
 import { CardNestStore } from '../core/services/card-nest-store';
 import { formatMoney, parseMoneyToMinor } from '../core/services/money';
@@ -104,6 +104,18 @@ export type SourceMovementMode = 'RECEIPT' | 'TRANSFER' | 'BALANCE';
                 /><span>It is already included in that balance — record only</span></label
               >
             </fieldset>
+            <label class="timing-review">
+              <input type="checkbox" [checked]="timingReviewed()" (change)="reviewTiming($event)" />
+              I checked the timing. Updating a movement already included in the balance would count
+              it twice.
+            </label>
+            <p class="movement-note" role="status">
+              {{
+                timing() === 'INCLUDED_IN_BASELINE'
+                  ? 'Record only: this movement is already included. No balance change will be applied.'
+                  : 'Update balances: confirm that this movement happened after the saved balance.'
+              }}
+            </p>
           }
           @if (mode() === 'RECEIPT') {
             <app-select-picker
@@ -128,7 +140,7 @@ export type SourceMovementMode = 'RECEIPT' | 'TRANSFER' | 'BALANCE';
               {{
                 editing()
                   ? 'Saving changes updates both balances together.'
-                  : 'Both balances change together. A transfer is never counted as spending or income.'
+                  : 'A transfer is never counted as spending or income. Any applicable balance changes commit together.'
               }}
             </p>
           }
@@ -140,7 +152,7 @@ export type SourceMovementMode = 'RECEIPT' | 'TRANSFER' | 'BALANCE';
             <button
               class="btn btn-primary"
               type="submit"
-              [disabled]="saving() || (timingNeeded() && !timing())"
+              [disabled]="saving() || (timingNeeded() && (!timing() || !timingReviewed()))"
             >
               {{ saving() ? 'Saving…' : submitLabel() }}
             </button>
@@ -213,9 +225,26 @@ export type SourceMovementMode = 'RECEIPT' | 'TRANSFER' | 'BALANCE';
     }
     .timing-choice .choice {
       display: flex;
-      align-items: center;
-      gap: 0.5rem;
+      align-items: flex-start;
+      justify-content: flex-start;
+      gap: 0.65rem;
       min-height: 44px;
+    }
+    .timing-choice input[type='radio'],
+    .timing-review input {
+      width: 1.1rem;
+      height: 1.1rem;
+      min-width: 1.1rem;
+      min-height: 1.1rem;
+      flex: 0 0 1.1rem;
+      margin: 0.15rem 0 0;
+      padding: 0;
+      accent-color: var(--accent);
+    }
+    .timing-review {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.65rem;
     }
     .movement-note,
     .movement-error {
@@ -251,7 +280,8 @@ export class SourceMovementDialog implements OnInit {
   readonly time = signal('');
   readonly description = signal('');
   readonly categoryId = signal('income');
-  readonly timing = signal<BalanceTiming | ''>('');
+  readonly timing = signal<BalanceTiming | ''>('AFTER_BASELINE');
+  readonly timingReviewed = signal(false);
   readonly saving = signal(false);
   readonly error = signal<string | null>(null);
   readonly editing = computed(() => !!this.transfer());
@@ -259,6 +289,22 @@ export class SourceMovementDialog implements OnInit {
   // Persisted ids are plain strings; a new draft simply starts from a UUID.
   private draftId: string = crypto.randomUUID();
   private initialized = false;
+  constructor() {
+    effect(() => {
+      this.fromId();
+      this.toId();
+      this.sourceId();
+      this.date();
+      this.time();
+      this.timing();
+      this.store.paymentSources();
+      this.store.bankCashTracking();
+      this.timingReviewed.set(false);
+    });
+  }
+  reviewTiming(event: Event): void {
+    this.timingReviewed.set((event.target as HTMLInputElement).checked);
+  }
 
   readonly timingNeeded = computed(() => {
     if (this.mode() === 'BALANCE') return false;
@@ -383,6 +429,12 @@ export class SourceMovementDialog implements OnInit {
     event.preventDefault();
     if (this.saving()) return;
     this.initialise();
+    if (this.timingNeeded() && (!this.timing() || !this.timingReviewed())) {
+      this.error.set(
+        'Review and confirm whether this movement is already included in the balance.',
+      );
+      return;
+    }
     const amount = parseMoneyToMinor(this.amount().trim());
     if (amount === null || (this.mode() !== 'BALANCE' && amount <= 0)) {
       this.error.set('Enter a valid amount.');
@@ -428,7 +480,9 @@ export class SourceMovementDialog implements OnInit {
         this.snackbar.show(
           this.loan()
             ? `${formatMoney(saved.amountMinor, 'INR')} loan repayment saved.`
-            : `${formatMoney(saved.amountMinor, 'INR')} moved. Both balances were updated together.`,
+            : saved.effects?.length
+              ? `${formatMoney(saved.amountMinor, 'INR')} moved. Both balances were updated together.`
+              : 'Movement recorded without changing confirmed balances.',
         );
       }
       this.saving.set(false);

@@ -435,7 +435,7 @@ describe('Durable first-run data, additive read migration and private portable b
       id: temporaryEvent.id,
       profileId: bankProfile.id,
       activityDate: '2026-04-21',
-      direction: 'CREDIT',
+      direction: 'DEBIT',
     });
     expect(correctedEvent.origin).toBe('MANUAL');
     expect(correctedEvent.createdAt).toBe(temporaryEvent.createdAt);
@@ -1610,6 +1610,6 @@ describe('Durable first-run data, additive read migration and private portable b
     ]);
     expect(vi.mocked(CapacitorSQLite.closeConnection)).toHaveBeenCalled();
     expect(CapacitorSQLite.createConnection).toHaveBeenCalledTimes(2);
-    expect(sql.prepare('PRAGMA user_version').get()?.['user_version']).toBe(13);
+    expect(sql.prepare('PRAGMA user_version').get()?.['user_version']).toBe(14);
   });
 });

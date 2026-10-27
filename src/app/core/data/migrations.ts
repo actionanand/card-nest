@@ -1,3 +1,5 @@
+import { RECONCILE_BANK_ACTIVITY_LATEST } from './bank-activity-latest';
+
 export interface DatabaseMigration {
   readonly version: number;
   readonly statements: readonly string[];
@@ -145,4 +147,5 @@ export const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
       `CREATE TABLE category_catalog_conflicts (id TEXT PRIMARY KEY NOT NULL,category_id TEXT NOT NULL,details TEXT NOT NULL,created_at TEXT NOT NULL)`,
     ],
   },
+  { version: 14, statements: RECONCILE_BANK_ACTIVITY_LATEST },
 ];

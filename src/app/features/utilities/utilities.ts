@@ -1,4 +1,6 @@
 import { ProfileModal } from '../../shared/profile-modal';
+import { ConfirmationDialog } from '../../shared/confirmation-dialog';
+import { IndianPhoneInput } from '../../shared/indian-phone-input';
 import { Component, computed, inject, signal } from '@angular/core';
 import { NgOptimizedImage } from '@angular/common';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
@@ -28,6 +30,8 @@ type UtilitySection = 'MOBILE' | 'GAS' | 'ELECTRICITY' | 'BROADBAND';
   selector: 'app-utilities-page',
   imports: [
     ProfileModal,
+    ConfirmationDialog,
+    IndianPhoneInput,
     ReactiveFormsModule,
     NgOptimizedImage,
     AppIcon,
@@ -55,6 +59,12 @@ export class UtilitiesPage {
   readonly validityMode = signal<'DAYS' | 'END_DATE'>('DAYS');
   readonly error = signal<string | null>(null);
   readonly saving = signal(false);
+  readonly deletion = signal<{
+    id: string;
+    kind: 'RECHARGE' | 'LPG';
+    title: string;
+    message: string;
+  } | null>(null);
   readonly whatsappPackages = signal<readonly WhatsAppPackage[]>([]);
   readonly whatsappNumber = signal('');
   readonly whatsappMessage = signal('');
@@ -107,7 +117,7 @@ export class UtilitiesPage {
     operator: new FormControl<MobileProfile['operator']>('JIO', { nonNullable: true }),
     mobileNumber: new FormControl('', {
       nonNullable: true,
-      validators: [Validators.maxLength(20)],
+      validators: [Validators.pattern(/^(?:|[6-9]\d{9}|\+91[ -]?[6-9]\d{9})$/)],
     }),
   });
   readonly rechargeForm = new FormGroup({
@@ -190,11 +200,17 @@ export class UtilitiesPage {
   editMobile(profile: MobileProfile): void {
     this.error.set(null);
     this.editingMobileId.set(profile.id);
+    let mobileNumber = profile.mobileNumber ?? '';
+    try {
+      mobileNumber = normalizeIndianMobileNumber(mobileNumber)?.slice(4) ?? '';
+    } catch {
+      /* Preserve malformed legacy data for explicit correction. */
+    }
     this.mobileForm.reset({
       personName: profile.personName,
       subscriptionType: profile.subscriptionType,
       operator: profile.operator,
-      mobileNumber: profile.mobileNumber ?? '',
+      mobileNumber,
     });
     this.mobileFormOpen.set(true);
   }
@@ -288,8 +304,13 @@ export class UtilitiesPage {
   }
 
   async deleteRecharge(recharge: MobileRecharge): Promise<void> {
-    await this.utilities.deleteRecharge(recharge.id);
-    this.snackbar.show('Recharge removed from history.', 'INFO');
+    this.error.set(null);
+    this.deletion.set({
+      id: recharge.id,
+      kind: 'RECHARGE',
+      title: 'Delete recharge record?',
+      message: `Remove the recharge starting ${recharge.startDate} from saved history?`,
+    });
   }
 
   rechargeEndDatePreview(): string {
@@ -427,8 +448,33 @@ export class UtilitiesPage {
   }
 
   async deleteLpgEvent(event: LpgEvent): Promise<void> {
-    await this.utilities.deleteLpgEvent(event.id);
-    this.snackbar.show('Cylinder event deleted.', 'INFO');
+    this.error.set(null);
+    this.deletion.set({
+      id: event.id,
+      kind: 'LPG',
+      title: 'Delete cylinder event?',
+      message: `Remove the cylinder event on ${event.eventDate} from Utilities history?`,
+    });
+  }
+
+  async confirmDeletion(): Promise<void> {
+    const choice = this.deletion();
+    if (!choice || this.saving()) return;
+    this.saving.set(true);
+    this.error.set(null);
+    try {
+      if (choice.kind === 'RECHARGE') await this.utilities.deleteRecharge(choice.id);
+      else await this.utilities.deleteLpgEvent(choice.id);
+      this.deletion.set(null);
+      this.snackbar.show(
+        choice.kind === 'RECHARGE' ? 'Recharge removed from history.' : 'Cylinder event deleted.',
+        'INFO',
+      );
+    } catch (error: unknown) {
+      this.error.set(error instanceof Error ? error.message : 'The record could not be deleted.');
+    } finally {
+      this.saving.set(false);
+    }
   }
 
   openWhatsApp(number?: string): void {

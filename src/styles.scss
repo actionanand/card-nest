@@ -12,6 +12,7 @@
   --muted: #5f6c65;
   --line: #dde3dd;
   --accent: #28684e;
+  --on-accent: #ffffff;
   --accent-strong: #17523b;
   --accent-soft: #e2efe8;
   --success: #28704f;
@@ -32,6 +33,7 @@
   --muted: #a3b1a9;
   --line: #2e3d35;
   --accent: #65b890;
+  --on-accent: #10291e;
   --accent-strong: #8fd0ae;
   --accent-soft: #203b2f;
   --success: #79c89e;
@@ -295,4 +297,14 @@ textarea {
   .form-grid {
     grid-template-columns: 1fr;
   }
+}
+
+/* Projected profile forms share a reachable footer while the native dialog scrolls. */
+.profile-modal .modal-actions {
+  position: sticky;
+  bottom: -1rem;
+  z-index: 1;
+  padding-block: 0.75rem;
+  background: var(--surface);
+  border-top: 1px solid var(--line);
 }

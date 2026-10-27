@@ -1,6 +1,5 @@
 import { ProfileModal } from '../../shared/profile-modal';
 import { ConfirmationDialog } from '../../shared/confirmation-dialog';
-import { PlatformTools } from '../../shared/platform-tools';
 import { Capacitor } from '@capacitor/core';
 import { finalThree, profileSuffix, normalizedBank } from './bank-activity-matching';
 import { BankActivityCandidate } from './bank-activity-model';
@@ -13,17 +12,11 @@ import { CardNestStore } from '../../core/services/card-nest-store';
 import { IndiaTodayClock } from '../../core/services/india-date';
 import { BankActivityEvent, BankActivityProfile } from './bank-activity-model';
 import { BankActivityService } from './bank-activity.service';
+import { BankAccountSyncService } from './bank-account-sync.service';
 
 @Component({
   selector: 'app-bank-activity-page',
-  imports: [
-    ProfileModal,
-    ConfirmationDialog,
-    PlatformTools,
-    ReactiveFormsModule,
-    AppIcon,
-    AppSelectPicker,
-  ],
+  imports: [ProfileModal, ConfirmationDialog, ReactiveFormsModule, AppIcon, AppSelectPicker],
   templateUrl: './bank-activity.html',
   styleUrl: './bank-activity.scss',
 })
@@ -37,7 +30,11 @@ export class BankActivityPage {
   readonly editingEventId = signal<string | null>(null);
   readonly error = signal<string | null>(null);
   readonly saving = signal(false);
-  readonly android = Capacitor.getPlatform() === 'android';
+  readonly android = Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android';
+  readonly tabs = ['Discovered Accounts', 'Find Banks', 'Bank Activities'] as const;
+  readonly activeTab = signal(0);
+  readonly deletion = signal<BankActivityEvent | null>(null);
+  readonly accountSync = inject(BankAccountSyncService);
   readonly discoveryNotice = signal('');
   readonly mismatchAcknowledged = signal<Readonly<Record<string, boolean>>>({});
   readonly confirmation = signal<{
@@ -53,7 +50,7 @@ export class BankActivityPage {
     >();
     for (const candidate of this.activity.candidates()) {
       const match = this.activity.match(candidate);
-      if (['UNIQUE', 'AMBIGUOUS', 'ARCHIVED'].includes(match.state)) continue;
+      if (['UNIQUE', 'ARCHIVED'].includes(match.state)) continue;
       const key =
         candidate.bankName && candidate.accountSuffix
           ? JSON.stringify([normalizedBank(candidate.bankName), candidate.accountSuffix])
@@ -76,7 +73,9 @@ export class BankActivityPage {
       needsIdentification: group.events.some((row) => this.activity.match(row).state !== 'NEW'),
     }));
   });
-  readonly reviewCandidates = computed(() => this.activity.candidates());
+  readonly reviewCandidates = computed(() =>
+    this.activity.candidates().filter((row) => this.activity.match(row).state !== 'NEW'),
+  );
   readonly reviewLimit = signal(20);
   readonly visibleReviewCandidates = computed(() =>
     this.reviewCandidates().slice(0, this.reviewLimit()),
@@ -134,6 +133,7 @@ export class BankActivityPage {
     holderName: new FormControl('', { nonNullable: true, validators: Validators.maxLength(80) }),
     manualOnly: new FormControl(false, { nonNullable: true }),
     allowIdentityConflict: new FormControl(false, { nonNullable: true }),
+    confirmOwnershipSync: new FormControl(false, { nonNullable: true }),
     remarks: new FormControl('', { nonNullable: true, validators: Validators.maxLength(300) }),
   });
   readonly eventForm = new FormGroup({
@@ -148,7 +148,7 @@ export class BankActivityPage {
   private readonly profileChanges = toSignal(this.profileForm.valueChanges);
   constructor() {
     effect(() => {
-      const candidates = this.reviewCandidates();
+      const candidates = this.activity.candidates();
       const explicit = this.explicitReviewSelections();
       const activeIds = new Set(
         this.activity
@@ -216,8 +216,10 @@ export class BankActivityPage {
     try {
       const count = await this.activity.discoverSavedEvidence();
       this.discoveryNotice.set(
-        count +
-          ' saved alerts checked. Suggestions remain pending until you confirm. If a large scan was interrupted, choose Find accounts again to continue.',
+        `${count} saved alerts checked. ${this.discoveries().filter((row) => !row.needsIdentification).length} new account suggestions; ${this.reviewCandidates().filter((row) => this.activity.match(row).state === 'UNIQUE').length} existing-account activity suggestions; ${this.activity.candidates().filter((row) => !['NEW', 'UNIQUE'].includes(this.activity.match(row).state)).length} unresolved identity alerts. ` +
+          (this.discoveries().some((row) => !row.needsIdentification)
+            ? 'Open Discovered Accounts to review.'
+            : 'No new bank accounts found'),
       );
     } catch (error: unknown) {
       this.error.set(
@@ -366,6 +368,7 @@ export class BankActivityPage {
         id: this.editingProfileId() ?? undefined,
       });
       this.profileFormOpen.set(false);
+      this.activeTab.set(2);
       this.discoveryNotice.set(
         'Monitoring profile saved. Related message suggestions still need individual review and confirmation.',
       );
@@ -422,7 +425,34 @@ export class BankActivityPage {
   }
 
   async deleteEvent(event: BankActivityEvent): Promise<void> {
-    await this.activity.deleteEvent(event.id);
+    this.error.set(null);
+    this.deletion.set(event);
+  }
+  async confirmDeletion(): Promise<void> {
+    const event = this.deletion();
+    if (!event || this.saving()) return;
+    this.saving.set(true);
+    this.error.set(null);
+    try {
+      await this.activity.deleteEvent(event.id);
+      this.deletion.set(null);
+      this.discoveryNotice.set('Activity deleted. Balances and transactions are unchanged.');
+    } catch (error: unknown) {
+      this.error.set(error instanceof Error ? error.message : 'Activity could not be deleted.');
+    } finally {
+      this.saving.set(false);
+    }
+  }
+  tabKey(event: KeyboardEvent, index: number): void {
+    let next: number;
+    if (event.key === 'ArrowRight') next = (index + 1) % this.tabs.length;
+    else if (event.key === 'ArrowLeft') next = (index + this.tabs.length - 1) % this.tabs.length;
+    else if (event.key === 'Home') next = 0;
+    else if (event.key === 'End') next = this.tabs.length - 1;
+    else return;
+    event.preventDefault();
+    this.activeTab.set(next);
+    document.getElementById('bank-tab-' + next)?.focus();
   }
 
   setReviewProfile(fingerprint: string, profileId: string): void {
@@ -482,7 +512,8 @@ export class BankActivityPage {
       this.discoveryNotice.set(
         event
           ? 'Account activity confirmed. Balances and financial transactions are unchanged.'
-          : 'This suggestion has already been resolved. No new activity was recorded.',
+          : this.activity.reviewNotice() ||
+              'This suggestion has already been resolved. No new activity was recorded.',
       );
       queueMicrotask(() => document.getElementById('bank-profile-' + choice.profileId)?.focus());
       this.reviewSelection.update((current) => {
@@ -499,5 +530,10 @@ export class BankActivityPage {
 
   events(profile: BankActivityProfile): readonly BankActivityEvent[] {
     return this.activity.eventsFor(profile.id);
+  }
+  latestDate(profile: BankActivityProfile, direction: 'DEBIT' | 'CREDIT'): string {
+    return (
+      this.events(profile).find((row) => row.direction === direction)?.activityDate ?? 'Unknown'
+    );
   }
 }
