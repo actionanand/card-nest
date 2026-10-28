@@ -55,6 +55,7 @@ import {
   readPaymentGroups,
 } from './payment-groups';
 import { indiaTimeOfDay, indiaTodayIso } from './india-date';
+import { currentLocalCalendar } from './device-date';
 import { APP_ENVIRONMENT } from './app-environment';
 import { initialiseAppData } from '../data/app-initialization';
 import {
@@ -1180,8 +1181,9 @@ export class CardNestStore {
       );
       const plan = row ? (JSON.parse(row.payload) as EmiPlan) : null;
       if (!plan || plan.status !== 'ACTIVE') return null;
-      const closedAt = new Date().toISOString();
-      const currentMonth = closedAt.slice(0, 7);
+      const instant = new Date();
+      const closedAt = instant.toISOString();
+      const currentMonth = currentLocalCalendar(instant).monthIso;
       const updatedPlan: EmiPlan = { ...plan, status: 'CANCELLED', closedAt };
       for (const transaction of (await this.readTransactionRows(tx)).filter(
         (item) => item.emiPlanId === planId && item.transactionDate.slice(0, 7) > currentMonth,
@@ -2287,16 +2289,24 @@ export class CardNestStore {
       : 'Unknown source';
   }
 
-  async materializeRecurringTransactions(asOf = today): Promise<void> {
+  async materializeRecurringTransactions(asOf?: string): Promise<void> {
     if (!this.database.ready()) return;
     const result = await this.database.atomic(async (tx) => {
+      const instant = new Date();
+      const cutoff = asOf ?? currentLocalCalendar(instant).dateIso;
       const rules = (
         await tx.query<{ payload: string }>('SELECT payload FROM recurring_rules ORDER BY rowid')
       ).map((row) => JSON.parse(row.payload) as RecurringRule);
       const cards = (await tx.query<{ payload: string }>('SELECT payload FROM credit_cards')).map(
         (row) => JSON.parse(row.payload) as CreditCard,
       );
-      const batch = this.recurringBatch(rules, await this.readTransactionRows(tx), asOf, cards);
+      const batch = this.recurringBatch(
+        rules,
+        await this.readTransactionRows(tx),
+        cutoff,
+        cards,
+        instant.toISOString(),
+      );
       if (!batch.changedRules.length && !batch.generated.length) return null;
       for (const transaction of batch.generated) await this.writeTransaction(tx, transaction);
       for (const rule of batch.changedRules) await this.writeRecurringRule(tx, rule);
@@ -2317,7 +2327,7 @@ export class CardNestStore {
       if (result.transactionId) await this.refreshCommittedLedger(result.transactionId);
     }
     // Non-card recurrence retains its existing transient behavior pending separate approval.
-    this.materializeNonCardRecurringTransactions(asOf);
+    this.materializeNonCardRecurringTransactions(asOf ?? today);
   }
 
   private recurringBatch(
@@ -2325,10 +2335,10 @@ export class CardNestStore {
     ledger: readonly CardTransaction[],
     asOf: string,
     cards: readonly CreditCard[],
+    nowStamp: string,
   ) {
     const generated: CardTransaction[] = [];
     const changedRules: RecurringRule[] = [];
-    const nowStamp = new Date().toISOString();
     const nextRules = rules.map((rule) => {
       let next = rule.nextOccurrenceDate;
       let guard = 0;

@@ -746,6 +746,12 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     sql.prepare(statement).all(...(values as SQLInputValue[]));
   const count = (table: string) => Number(rows(`SELECT COUNT(*) AS n FROM ${table}`)[0]['n']);
   const settle = () => database.atomic(async () => undefined);
+  const deviceZone = (timeZone: string | undefined) => {
+    const options = new Intl.DateTimeFormat().resolvedOptions();
+    return vi
+      .spyOn(Intl.DateTimeFormat.prototype, 'resolvedOptions')
+      .mockReturnValue({ ...options, timeZone } as Intl.ResolvedDateTimeFormatOptions);
+  };
   const card: CreditCard = {
     id: 'fiction-card',
     nickname: 'Fiction card',
@@ -1186,6 +1192,403 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     expect(store.emiPlans()[0].id).toBe(plan.id);
     expect(store.transactions()).toHaveLength(2);
   });
+  it.each([
+    ['Asia/Kolkata', '2030-10-31T19:00:00Z', '2030-11-01', 1],
+    ['UTC', '2030-10-31T19:00:00Z', '2030-11-01', 0],
+    ['America/New_York', '2030-10-31T19:00:00Z', '2030-11-01', 0],
+    [undefined, '2030-10-31T19:00:00Z', '2030-11-01', 1],
+    ['Invalid/Timezone', '2030-10-31T19:00:00Z', '2030-11-01', 1],
+    ['Asia/Kolkata', '2030-12-31T19:00:00Z', '2031-01-01', 1],
+    ['UTC', '2030-12-31T19:00:00Z', '2031-01-01', 0],
+    ['Asia/Kolkata', '2032-02-28T19:00:00Z', '2032-02-29', 1],
+    ['Asia/Kolkata', '2031-02-28T19:00:00Z', '2031-03-01', 1],
+  ])(
+    'evaluates persisted card recurrence in device timezone %s at %s',
+    async (zone, instant, due, expected) => {
+      const { store } = await boot();
+      store.addCard(card);
+      await settle();
+      const rule: RecurringRule = {
+        id: 'local-cutoff-rule',
+        cardId: card.id,
+        title: 'Local cutoff',
+        amountMinor: 1234,
+        categoryId: 'other',
+        frequency: 'MONTHLY',
+        startDate: due,
+        nextOccurrenceDate: due,
+        status: 'ACTIVE',
+        occurrenceLimit: 1,
+      };
+      await database.run(
+        'INSERT INTO recurring_rules(id,card_id,next_occurrence_date,status,payload) VALUES(?,?,?,?,?)',
+        [rule.id, card.id, due, rule.status, JSON.stringify(rule)],
+      );
+      deviceZone(zone);
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        vi.setSystemTime(new Date(instant));
+        await store.materializeRecurringTransactions();
+        expect(count('card_transactions')).toBe(expected);
+        if (expected)
+          expect(store.transactions()[0]).toMatchObject({
+            transactionDate: due,
+            amountMinor: 1234,
+            createdAt: new Date(instant).toISOString(),
+            updatedAt: new Date(instant).toISOString(),
+          });
+        else
+          expect(
+            rows('SELECT next_occurrence_date FROM recurring_rules')[0]['next_occurrence_date'],
+          ).toBe(due);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it('preserves explicit recurrence cutoffs and selected historical dates regardless of device timezone', async () => {
+    const { store } = await boot();
+    store.addCard(card);
+    await settle();
+    const historical = purchase({
+      id: 'local-explicit-history',
+      cardId: card.id,
+      transactionDate: '2026-08-07',
+    });
+    await store.saveManualTransaction(historical);
+    const saved = store.transactions().find((item) => item.id === historical.id)!;
+    const rule: RecurringRule = {
+      id: 'explicit-cutoff-rule',
+      cardId: card.id,
+      title: 'Explicit cutoff',
+      amountMinor: 1000,
+      categoryId: 'other',
+      frequency: 'MONTHLY',
+      startDate: '2030-11-01',
+      nextOccurrenceDate: '2030-11-01',
+      status: 'ACTIVE',
+      occurrenceLimit: 1,
+    };
+    await database.run(
+      'INSERT INTO recurring_rules(id,card_id,next_occurrence_date,status,payload) VALUES(?,?,?,?,?)',
+      [rule.id, card.id, rule.nextOccurrenceDate, rule.status, JSON.stringify(rule)],
+    );
+    const zone = deviceZone('Asia/Kolkata');
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date('2030-10-31T19:00:00Z'));
+      await store.materializeRecurringTransactions('2030-10-31');
+      expect(count('card_transactions')).toBe(1);
+      zone.mockReturnValue({ ...new Intl.DateTimeFormat().resolvedOptions(), timeZone: 'UTC' });
+      await store.materializeRecurringTransactions('2030-11-01');
+      expect(count('card_transactions')).toBe(2);
+      expect(store.transactions().find((item) => item.id === historical.id)).toEqual(saved);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('captures the current calendar when queued generation executes and rolls back the local-date batch on failure', async () => {
+    const { store } = await boot();
+    store.addCard(card);
+    await settle();
+    const rule: RecurringRule = {
+      id: 'queued-cutoff-rule',
+      cardId: card.id,
+      title: 'Queued cutoff',
+      amountMinor: 1000,
+      categoryId: 'other',
+      frequency: 'MONTHLY',
+      startDate: '2030-11-01',
+      nextOccurrenceDate: '2030-11-01',
+      status: 'ACTIVE',
+      occurrenceLimit: 1,
+    };
+    await database.run(
+      'INSERT INTO recurring_rules(id,card_id,next_occurrence_date,status,payload) VALUES(?,?,?,?,?)',
+      [rule.id, card.id, rule.nextOccurrenceDate, rule.status, JSON.stringify(rule)],
+    );
+    deviceZone('Asia/Kolkata');
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date('2030-10-31T18:29:59Z'));
+      let release!: () => void;
+      let started!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const entered = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      const blocker = database.atomic(async () => {
+        started();
+        await gate;
+      });
+      await entered;
+      const pending = store.materializeRecurringTransactions();
+      vi.setSystemTime(new Date('2030-10-31T18:30:00Z'));
+      release();
+      await Promise.all([blocker, pending]);
+      expect(count('card_transactions')).toBe(1);
+      expect(store.transactions()[0]).toMatchObject({
+        transactionDate: '2030-11-01',
+        createdAt: '2030-10-31T18:30:00.000Z',
+        updatedAt: '2030-10-31T18:30:00.000Z',
+      });
+      const nextRule: RecurringRule = { ...rule, id: 'failed-local-rule' };
+      await database.run(
+        'INSERT INTO recurring_rules(id,card_id,next_occurrence_date,status,payload) VALUES(?,?,?,?,?)',
+        [
+          nextRule.id,
+          card.id,
+          nextRule.nextOccurrenceDate,
+          nextRule.status,
+          JSON.stringify(nextRule),
+        ],
+      );
+      const before = financialState();
+      sql.exec(
+        "CREATE TRIGGER fail_local_recurrence BEFORE INSERT ON card_transactions BEGIN SELECT RAISE(ABORT,'local recurrence failure'); END",
+      );
+      await expect(store.materializeRecurringTransactions()).rejects.toThrow(
+        'local recurrence failure',
+      );
+      expect(financialState()).toEqual(before);
+      expect(
+        rows('SELECT next_occurrence_date FROM recurring_rules WHERE id=?', [nextRule.id])[0][
+          'next_occurrence_date'
+        ],
+      ).toBe('2030-11-01');
+      sql.exec('DROP TRIGGER fail_local_recurrence');
+      await Promise.all([
+        store.materializeRecurringTransactions(),
+        store.materializeRecurringTransactions(),
+      ]);
+      expect(count('card_transactions')).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps card occurrences idempotent across a repeated DST hour, timezone changes, relaunch and encrypted restore', async () => {
+    const { store } = await boot();
+    store.addCard({ ...card, excludeStatementDayTransactions: true });
+    await settle();
+    const rule: RecurringRule = {
+      id: 'travelling-rule',
+      cardId: card.id,
+      title: 'Travelling cutoff',
+      amountMinor: 1000,
+      categoryId: 'other',
+      frequency: 'MONTHLY',
+      startDate: '2026-11-01',
+      nextOccurrenceDate: '2026-11-01',
+      status: 'ACTIVE',
+      occurrenceLimit: 2,
+    };
+    await database.run(
+      'INSERT INTO recurring_rules(id,card_id,next_occurrence_date,status,payload) VALUES(?,?,?,?,?)',
+      [rule.id, card.id, rule.nextOccurrenceDate, rule.status, JSON.stringify(rule)],
+    );
+    const zone = deviceZone('America/New_York');
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date('2026-11-01T05:30:00Z'));
+      await store.materializeRecurringTransactions();
+      expect(count('card_transactions')).toBe(1);
+      const saved = store.transactions()[0];
+      vi.setSystemTime(new Date('2026-11-01T06:30:00Z'));
+      await store.materializeRecurringTransactions();
+      expect(count('card_transactions')).toBe(1);
+      vi.setSystemTime(new Date('2026-11-30T19:00:00Z'));
+      await store.materializeRecurringTransactions();
+      expect(count('card_transactions')).toBe(1);
+      zone.mockReturnValue({
+        ...new Intl.DateTimeFormat().resolvedOptions(),
+        timeZone: 'Asia/Kolkata',
+      });
+      await store.materializeRecurringTransactions();
+      expect(count('card_transactions')).toBe(2);
+      expect(store.transactions().find((item) => item.id === saved.id)).toEqual(saved);
+      const restarted = TestBed.runInInjectionContext(() => new CardNestStore());
+      await restarted.initialisePreferences();
+      expect(count('card_transactions')).toBe(2);
+      const before = [financialState(), rows('SELECT * FROM recurring_rules ORDER BY id')];
+      vi.stubGlobal('crypto', webcrypto);
+      vi.stubGlobal('Blob', NodeBlob);
+      const backups = TestBed.inject(BackupService);
+      const backup = await backups.create('synthetic-local-calendar-passphrase');
+      await backups.restore(backup.contents, 'synthetic-local-calendar-passphrase');
+      const restored = TestBed.runInInjectionContext(() => new CardNestStore());
+      await restored.initialisePreferences();
+      expect([financialState(), rows('SELECT * FROM recurring_rules ORDER BY id')]).toEqual(before);
+      expect(sql.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each([
+    ['Asia/Kolkata', '2030-10-31T19:00:00Z', '2030-11-01', false],
+    ['UTC', '2030-10-31T19:00:00Z', '2030-11-01', true],
+    ['America/New_York', '2030-10-31T19:00:00Z', '2030-11-01', true],
+    [undefined, '2030-10-31T19:00:00Z', '2030-11-01', false],
+    ['Invalid/Timezone', '2030-10-31T19:00:00Z', '2030-11-01', false],
+    ['Asia/Kolkata', '2030-12-31T19:00:00Z', '2031-01-01', false],
+    ['UTC', '2030-12-31T19:00:00Z', '2031-01-01', true],
+    ['Asia/Kolkata', '2032-02-29T19:00:00Z', '2032-03-01', false],
+  ])(
+    'closes EMI using device month %s at %s while preserving installment data',
+    async (zone, instant, startDate, firstCancelled) => {
+      const { store } = await boot();
+      store.addCard(card);
+      await settle();
+      const original = purchase({
+        id: 'local-month-emi',
+        cardId: card.id,
+        amountMinor: 120000,
+        transactionDate: startDate,
+      });
+      await store.saveManualTransaction(original);
+      const plan: EmiPlan = {
+        id: 'local-month-plan',
+        transactionId: original.id,
+        cardId: card.id,
+        convertedAmountMinor: original.amountMinor,
+        remainingPurchaseMinor: 0,
+        tenureMonths: 3,
+        annualRateBasisPoints: 1200,
+        interestType: 'STANDARD',
+        processingFeeMinor: 0,
+        taxMinor: 0,
+        startDate,
+        status: 'ACTIVE',
+      };
+      const schedule = createEmiSchedule(plan, card).map((item, index) => ({
+        ...item,
+        paid: index === 0,
+      }));
+      await store.saveEmiPlan(plan, schedule);
+      const beforeInstallments = rows('SELECT * FROM emi_installments ORDER BY installment_number');
+      const beforeTransactions = store.transactions();
+      deviceZone(zone);
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        vi.setSystemTime(new Date(instant));
+        await store.closeEmiPlan(plan.id);
+        expect(rows('SELECT * FROM emi_installments ORDER BY installment_number')).toEqual(
+          beforeInstallments,
+        );
+        expect(store.emiPlans()[0]).toMatchObject({
+          status: 'CANCELLED',
+          closedAt: new Date(instant).toISOString(),
+        });
+        for (const transaction of store.transactions()) {
+          const previous = beforeTransactions.find((item) => item.id === transaction.id)!;
+          const cancelled = transaction.emiInstallmentNumber === 1 ? firstCancelled : true;
+          expect(transaction).toEqual(
+            cancelled
+              ? { ...previous, emiCancelled: true, updatedAt: new Date(instant).toISOString() }
+              : previous,
+          );
+        }
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it('rolls back a device-local EMI closure commit and retries with one captured instant', async () => {
+    const { store } = await boot();
+    store.addCard(card);
+    await settle();
+    const original = purchase({
+      id: 'local-close-failure',
+      cardId: card.id,
+      amountMinor: 120000,
+      transactionDate: '2030-11-01',
+    });
+    await store.saveManualTransaction(original);
+    const plan: EmiPlan = {
+      id: 'local-close-failure-plan',
+      transactionId: original.id,
+      cardId: card.id,
+      convertedAmountMinor: original.amountMinor,
+      remainingPurchaseMinor: 0,
+      tenureMonths: 2,
+      annualRateBasisPoints: 0,
+      interestType: 'NO_COST',
+      processingFeeMinor: 0,
+      taxMinor: 0,
+      startDate: '2030-11-01',
+      status: 'ACTIVE',
+    };
+    await store.saveEmiPlan(plan, createEmiSchedule(plan, card));
+    const before = [
+      financialState(),
+      rows('SELECT * FROM emi_plans'),
+      rows('SELECT * FROM emi_installments'),
+    ];
+    const visible = store.transactions();
+    deviceZone('Asia/Kolkata');
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date('2030-11-30T18:29:59Z'));
+      vi.mocked(CapacitorSQLite.commitTransaction).mockRejectedValueOnce(
+        new Error('local closure commit failure'),
+      );
+      await expect(store.closeEmiPlan(plan.id)).rejects.toThrow('local closure commit failure');
+      expect([
+        financialState(),
+        rows('SELECT * FROM emi_plans'),
+        rows('SELECT * FROM emi_installments'),
+      ]).toEqual(before);
+      expect(store.transactions()).toEqual(visible);
+      const query = vi.mocked(CapacitorSQLite.query).getMockImplementation()!;
+      vi.mocked(CapacitorSQLite.query).mockImplementation(async (options) => {
+        if (options.statement?.startsWith('SELECT payload FROM card_transactions ORDER BY'))
+          vi.setSystemTime(new Date('2030-11-30T18:30:00Z'));
+        return query(options);
+      });
+      await store.closeEmiPlan(plan.id);
+      expect(store.emiPlans()[0].closedAt).toBe('2030-11-30T18:29:59.000Z');
+      expect(
+        store.transactions().find((item) => item.emiInstallmentNumber === 1)?.emiCancelled,
+      ).not.toBe(true);
+      expect(store.transactions().find((item) => item.emiInstallmentNumber === 2)).toMatchObject({
+        emiCancelled: true,
+        updatedAt: '2030-11-30T18:29:59.000Z',
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps the deferred non-card cutoff unchanged while card defaults resolve afresh', async () => {
+    const { store } = await boot();
+    const deferred = store as unknown as {
+      materializeNonCardRecurringTransactions(asOf: string): void;
+    };
+    const legacy = vi.spyOn(deferred, 'materializeNonCardRecurringTransactions');
+    await store.materializeRecurringTransactions();
+    const originalCutoff = legacy.mock.calls[0][0];
+    const before = financialState();
+    deviceZone('Asia/Kolkata');
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date('2030-10-31T19:00:00Z'));
+      await store.materializeRecurringTransactions();
+      expect(legacy).toHaveBeenLastCalledWith(originalCutoff);
+      await store.materializeRecurringTransactions('2030-11-02');
+      expect(legacy).toHaveBeenLastCalledWith('2030-11-02');
+      expect(financialState()).toEqual(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('atomically generates legacy card recurrence with rollback, concurrent retry, month-end limits and restart safety', async () => {
     const { store } = await boot();
     store.addCard(card);
