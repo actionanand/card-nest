@@ -1,4 +1,5 @@
 import { Component, computed, inject, signal } from '@angular/core';
+import { CommittedSaveRefreshError } from '../../core/services/committed-save-refresh-error';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { ActivatedRoute } from '@angular/router';
 import { EmiInstallment, EmiPlan, LoanCommitment, RecurringRule } from '../../core/models/domain';
@@ -210,16 +211,37 @@ export class LoansPage {
     const date = new Date(year, month - 1 + offset, 1, 12);
     this.emiStartForm.controls.startDate.setValue(this.localIso(date));
   }
-  saveEmiStart(event: SubmitEvent, plan: EmiPlan): void {
+  private readonly emiSaving = signal(false);
+
+  async saveEmiStart(event: SubmitEvent, plan: EmiPlan): Promise<void> {
     event.preventDefault();
+    if (this.emiSaving()) return;
     this.emiStartForm.markAllAsTouched();
     if (this.emiStartForm.invalid) return;
     const card = this.store.cards().find((item) => item.id === plan.cardId);
     if (!card) return;
     const updated = { ...plan, startDate: this.emiStartForm.controls.startDate.value };
-    this.store.saveEmiPlan(updated, createEmiSchedule(updated, card));
+    this.emiSaving.set(true);
+    let refreshWarning: string | null = null;
+    try {
+      await this.store.saveEmiPlan(updated, createEmiSchedule(updated, card));
+    } catch (error: unknown) {
+      if (error instanceof CommittedSaveRefreshError) refreshWarning = error.message;
+      else {
+        this.snackbar.show(
+          error instanceof Error ? error.message : 'Unable to save EMI plan.',
+          'WARNING',
+        );
+        return;
+      }
+    } finally {
+      this.emiSaving.set(false);
+    }
     this.editingEmiStartId.set(null);
-    this.snackbar.show('EMI start month updated.');
+    this.snackbar.show(
+      refreshWarning ?? 'EMI start month updated.',
+      refreshWarning ? 'WARNING' : 'SUCCESS',
+    );
   }
   emiTitle(plan: EmiPlan): string {
     return plan.originalMerchant || 'Card purchase';
@@ -297,13 +319,20 @@ export class LoansPage {
     this.repeatAmount.set(String(rule.amountMinor / 100));
     this.repeatAmountError.set(null);
   }
-  saveFutureRepeat(rule: RecurringRule): void {
+  async saveFutureRepeat(rule: RecurringRule): Promise<void> {
     const amountMinor = parseMoneyToMinor(this.repeatAmount());
     if (!amountMinor || amountMinor <= 0) {
       this.repeatAmountError.set('Enter a valid future transaction amount.');
       return;
     }
-    this.store.updateRecurringRule(rule.id, amountMinor);
+    try {
+      await this.store.updateRecurringRule(rule.id, amountMinor);
+    } catch (error: unknown) {
+      this.repeatAmountError.set(
+        error instanceof Error ? error.message : 'Unable to update recurring schedule.',
+      );
+      return;
+    }
     this.editingRepeatId.set(null);
     this.repeatAmountError.set(null);
     this.snackbar.show('Future recurring transactions will use the new amount.');
@@ -311,10 +340,18 @@ export class LoansPage {
   requestTerminateRepeat(rule: RecurringRule): void {
     this.terminateRepeatCandidate.set(rule);
   }
-  confirmTerminateRepeat(): void {
+  async confirmTerminateRepeat(): Promise<void> {
     const rule = this.terminateRepeatCandidate();
     if (!rule) return;
-    this.store.terminateRecurringRule(rule.id);
+    try {
+      await this.store.terminateRecurringRule(rule.id);
+    } catch (error: unknown) {
+      this.snackbar.show(
+        error instanceof Error ? error.message : 'Unable to stop recurring schedule.',
+        'WARNING',
+      );
+      return;
+    }
     this.terminateRepeatCandidate.set(null);
     this.snackbar.show('Upcoming recurring transactions were stopped.', 'INFO');
   }
@@ -331,10 +368,21 @@ export class LoansPage {
   requestCloseEmi(plan: EmiPlan): void {
     this.closeEmiCandidate.set(plan);
   }
-  confirmCloseEmi(): void {
+  async confirmCloseEmi(): Promise<void> {
     const plan = this.closeEmiCandidate();
-    if (!plan) return;
-    this.store.closeEmiPlan(plan.id);
+    if (!plan || this.emiSaving()) return;
+    this.emiSaving.set(true);
+    try {
+      await this.store.closeEmiPlan(plan.id);
+    } catch (error: unknown) {
+      this.snackbar.show(
+        error instanceof Error ? error.message : 'Unable to close EMI plan.',
+        'WARNING',
+      );
+      if (!(error instanceof CommittedSaveRefreshError)) return;
+    } finally {
+      this.emiSaving.set(false);
+    }
     this.closeEmiCandidate.set(null);
   }
   save(): void {

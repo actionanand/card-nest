@@ -185,6 +185,13 @@ export class SourcesPage {
   ): Promise<void> {
     const input = event.target as HTMLInputElement;
     const value = input.value.trim();
+    if (field === 'institution' && isEnrolledBankAccount(source) && !value) {
+      input.setCustomValidity('Enter a bank name.');
+      input.reportValidity();
+      this.snackbar.show('Enter a bank name.', 'WARNING');
+      input.value = source.institution ?? '';
+      return;
+    }
     if (field === 'lastDigits' && !/^\d{3,5}$/.test(value)) {
       input.setCustomValidity('Enter the last 3 to 5 digits.');
       input.reportValidity();

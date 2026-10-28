@@ -92,7 +92,7 @@ describe('wallet balance cutover and manual history', () => {
     store.deleteTransaction('fiction-historical');
     expect(store.paymentSources()[0].balanceMinor).toBe(123456);
   });
-  it('applies a deliberately duplicated meal purchase as a new event rather than copying a historical exclusion', () => {
+  it('applies a deliberately duplicated meal purchase as a new event rather than copying a historical exclusion', async () => {
     const historical: CardTransaction = {
       id: 'fiction-old',
       cardId: wallet.id,
@@ -107,7 +107,15 @@ describe('wallet balance cutover and manual history', () => {
       updatedAt: 'before',
     };
     store.addTransaction(historical);
-    const duplicate = store.duplicateTransaction(historical.id);
+    // This isolated cutover fixture has no database. SQLite durability is covered by integration tests.
+    const persistence = store as unknown as {
+      saveNewTransactionDraft(key: string, transaction: CardTransaction): Promise<void>;
+    };
+    const save = vi
+      .spyOn(persistence, 'saveNewTransactionDraft')
+      .mockImplementation(async (_key, transaction) => store.addTransaction(transaction));
+    const duplicate = await store.duplicateTransaction(historical.id);
+    expect(save).toHaveBeenCalledOnce();
     expect(duplicate?.sourceBalanceApplied).toBe(true);
     expect(store.paymentSources()[0].balanceMinor).toBe(121456);
     store.deleteTransaction(duplicate!.id);

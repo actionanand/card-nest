@@ -122,6 +122,26 @@ describe('Explicit FASTag wallet creation and feedback', () => {
     expect(source.archived).toBe(true);
     fixture.destroy();
   });
+  it('rejects an explicitly cleared enrolled bank name with feedback and preserves the saved value', async () => {
+    const fixture = setup();
+    const store = TestBed.inject(CardNestStore);
+    const source = {
+      ...store.paymentSources().find((row) => row.kind === 'DEBIT')!,
+      institution: 'ICICI',
+      lastDigits: '417',
+    };
+    const input = document.createElement('input');
+    input.value = '   ';
+    const update = vi.spyOn(store, 'updatePaymentSource');
+    const snackbar = vi.spyOn(TestBed.inject(SnackbarService), 'show');
+    await fixture.componentInstance.updateBankField(source, 'institution', {
+      target: input,
+    } as unknown as Event);
+    expect(update).not.toHaveBeenCalled();
+    expect(input.value).toBe('ICICI');
+    expect(input.validationMessage).toBe('Enter a bank name.');
+    expect(snackbar).toHaveBeenCalledExactlyOnceWith('Enter a bank name.', 'WARNING');
+  });
   it('orders wallet activity by event time and shows recorded time without using scan time', () => {
     const fixture = setup();
     const store = TestBed.inject(CardNestStore);

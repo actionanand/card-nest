@@ -164,7 +164,16 @@ export class App {
 
     afterNextRender(() => {
       (globalThis.window as NativeLaunchWindow | undefined)?.CardNestNative?.hideSplash();
-      this.store.materializeRecurringTransactions();
+      void Promise.resolve(this.store.materializeRecurringTransactions()).catch(
+        (error: unknown) => {
+          this.snackbar.show(
+            error instanceof Error
+              ? error.message
+              : 'Recurring transactions could not be saved. Reopen CardNest to retry.',
+            'WARNING',
+          );
+        },
+      );
       void this.openNotificationPermissionConfirmationIfNeeded();
     });
   }

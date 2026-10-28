@@ -1358,7 +1358,8 @@ export class TransactionsPage {
     this.showEmiForm.set(true);
   }
 
-  saveEmi(transaction: CardTransaction): void {
+  async saveEmi(transaction: CardTransaction): Promise<void> {
+    if (this.saving()) return;
     this.emiForm.markAllAsTouched();
     if (this.emiForm.invalid) return;
     const card = this.store.cards().find((item) => item.id === transaction.cardId);
@@ -1396,9 +1397,27 @@ export class TransactionsPage {
       notes: value.notes.trim() || undefined,
       forFriendsOrRelatives: value.forFriendsOrRelatives,
     };
-    this.store.saveEmiPlan(plan, createEmiSchedule(plan, card));
+    this.saving.set(true);
+    let refreshWarning: string | null = null;
+    try {
+      await this.store.saveEmiPlan(plan, createEmiSchedule(plan, card));
+    } catch (error: unknown) {
+      if (error instanceof CommittedSaveRefreshError) refreshWarning = error.message;
+      else {
+        this.snackbar.show(
+          error instanceof Error ? error.message : 'Unable to save EMI plan.',
+          'WARNING',
+        );
+        return;
+      }
+    } finally {
+      this.saving.set(false);
+    }
     this.showEmiForm.set(false);
-    this.snackbar.show(`Converted into ${value.months} EMI installments.`);
+    this.snackbar.show(
+      refreshWarning ?? `Converted into ${value.months} EMI installments.`,
+      refreshWarning ? 'WARNING' : 'SUCCESS',
+    );
   }
 
   openSplit(transaction: CardTransaction): void {
@@ -1639,11 +1658,22 @@ export class TransactionsPage {
     this.deleteCandidate.set(null);
     this.snackbar.show('Transaction deleted.', 'WARNING');
   }
-  duplicate(transaction: CardTransaction): void {
-    if (!this.canDuplicate(transaction)) return;
-    this.store.duplicateTransaction(transaction.id);
-    this.snackbar.show('Transaction duplicated.');
-    this.closeMenus();
+  async duplicate(transaction: CardTransaction): Promise<void> {
+    if (!this.canDuplicate(transaction) || this.saving()) return;
+    this.saving.set(true);
+    try {
+      const duplicate = await this.store.duplicateTransaction(transaction.id);
+      if (duplicate) this.snackbar.show('Transaction duplicated.');
+      this.closeMenus();
+    } catch (error: unknown) {
+      this.snackbar.show(
+        error instanceof Error ? error.message : 'Unable to duplicate transaction.',
+        'WARNING',
+      );
+      if (error instanceof CommittedSaveRefreshError) this.closeMenus();
+    } finally {
+      this.saving.set(false);
+    }
   }
   goToSource(transaction: CardTransaction): void {
     this.closeDetails();
@@ -1826,6 +1856,24 @@ export class TransactionsPage {
       newlyApprovedSms: false,
       preserveSmsMarker: existing?.origin === 'SMS',
     });
+    const recurringRule: RecurringRule | undefined =
+      !existing && value.repeat !== 'NONE'
+        ? {
+            id: recurringRuleId!,
+            cardId: value.cardId,
+            title: value.merchant.trim() || value.type.replace('_', ' '),
+            amountMinor,
+            categoryId: value.categoryId,
+            transactionType: value.type,
+            frequency: 'MONTHLY',
+            startDate: value.transactionDate,
+            occurrenceLimit: value.repeat === 'INFINITE' ? undefined : Number(value.repeat),
+            nextOccurrenceDate: this.nextMonthlyOccurrence(value.transactionDate),
+            status: 'ACTIVE',
+          }
+        : undefined;
+    const persistedCardRecurrence =
+      !!recurringRule && this.store.cards().some((card) => card.id === value.cardId);
     this.saving.set(true);
     let refreshWarning: string | null = null;
     try {
@@ -1833,6 +1881,7 @@ export class TransactionsPage {
         transaction,
         value.type === 'ADJUSTMENT' && !value.preserveLegacy ? value.relatedTransactionId : '',
         value.unlinkConfirmed,
+        persistedCardRecurrence ? recurringRule : undefined,
       );
     } catch (error: unknown) {
       if (error instanceof CommittedSaveRefreshError) refreshWarning = error.message;
@@ -1847,22 +1896,7 @@ export class TransactionsPage {
       this.saving.set(false);
     }
 
-    if (!existing && value.repeat !== 'NONE') {
-      const occurrenceLimit = value.repeat === 'INFINITE' ? undefined : Number(value.repeat);
-      this.store.addRecurringRule({
-        id: recurringRuleId!,
-        cardId: value.cardId,
-        title: value.merchant.trim() || value.type.replace('_', ' '),
-        amountMinor,
-        categoryId: value.categoryId,
-        transactionType: value.type,
-        frequency: 'MONTHLY',
-        startDate: value.transactionDate,
-        occurrenceLimit,
-        nextOccurrenceDate: this.nextMonthlyOccurrence(value.transactionDate),
-        status: 'ACTIVE',
-      });
-    }
+    if (recurringRule && !persistedCardRecurrence) await this.store.addRecurringRule(recurringRule);
     this.resetForm(value.cardId);
     this.closeForm();
     if (refreshWarning) this.snackbar.show(refreshWarning, 'WARNING');

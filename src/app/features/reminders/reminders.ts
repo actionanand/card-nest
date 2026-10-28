@@ -1,4 +1,5 @@
 import { Component, computed, inject, signal } from '@angular/core';
+import { CommittedSaveRefreshError } from '../../core/services/committed-save-refresh-error';
 import { RouterLink } from '@angular/router';
 import { CreditCard } from '../../core/models/domain';
 import {
@@ -215,30 +216,63 @@ export class RemindersPage {
   requestLinkedPayment(card: CreditCard, mode: LinkedPaymentMode): void {
     const amount = mode === 'DUE' ? this.linkedDueTotal(card) : this.linkedOutstandingTotal(card);
     if (amount <= 0) return;
+    this.linkedPaymentResults.clear();
     this.linkedPaymentCandidate.set({ card, mode });
   }
 
-  confirmLinkedPayment(): void {
+  private readonly paymentSaving = signal(false);
+  private readonly linkedPaymentResults = new Map<string, number>();
+
+  async confirmLinkedPayment(): Promise<void> {
     const candidate = this.linkedPaymentCandidate();
-    if (!candidate) return;
+    if (!candidate || this.paymentSaving()) return;
+    this.paymentSaving.set(true);
     let recordedTotal = 0;
     let paidCards = 0;
-    for (const card of this.linkedAccountCards(candidate.card)) {
-      const amount =
-        candidate.mode === 'DUE' ? this.linkedCardDue(card) : this.linkedCardOutstanding(card);
-      if (amount <= 0) continue;
-      this.store.recordPayment(
-        card.id,
-        amount,
-        candidate.mode === 'DUE' ? 'Linked account due payment' : 'Linked account outstanding paid',
+    let refreshWarning: string | null = null;
+    try {
+      for (const card of this.linkedAccountCards(candidate.card)) {
+        const completed = this.linkedPaymentResults.get(card.id);
+        if (completed !== undefined) {
+          recordedTotal += completed;
+          paidCards += 1;
+          continue;
+        }
+        const amount =
+          candidate.mode === 'DUE' ? this.linkedCardDue(card) : this.linkedCardOutstanding(card);
+        if (amount <= 0) continue;
+        try {
+          await this.store.recordPayment(
+            card.id,
+            amount,
+            candidate.mode === 'DUE'
+              ? 'Linked account due payment'
+              : 'Linked account outstanding paid',
+          );
+        } catch (error: unknown) {
+          if (!(error instanceof CommittedSaveRefreshError)) throw error;
+          refreshWarning = error.message;
+        }
+        this.linkedPaymentResults.set(card.id, amount);
+        recordedTotal += amount;
+        paidCards += 1;
+      }
+    } catch (error: unknown) {
+      this.snackbar.show(
+        error instanceof Error ? error.message : 'Unable to record payment.',
+        'WARNING',
       );
-      recordedTotal += amount;
-      paidCards += 1;
+      return;
+    } finally {
+      this.paymentSaving.set(false);
     }
+    this.linkedPaymentResults.clear();
     this.linkedPaymentCandidate.set(null);
     this.linkedBalanceCard.set(null);
     this.snackbar.show(
-      `${this.money(recordedTotal, candidate.card.currencyCode)} recorded across ${paidCards} ${paidCards === 1 ? 'card' : 'cards'}.`,
+      refreshWarning ??
+        `${this.money(recordedTotal, candidate.card.currencyCode)} recorded across ${paidCards} ${paidCards === 1 ? 'card' : 'cards'}.`,
+      refreshWarning ? 'WARNING' : 'SUCCESS',
     );
   }
 
@@ -485,12 +519,30 @@ export class RemindersPage {
     }
   }
 
-  recordPayment(): void {
+  async recordPayment(): Promise<void> {
     const item = this.paymentCandidate();
-    if (!item || item.amount <= 0) return;
-    this.store.recordPayment(item.card.id, item.amount, 'Reminder payment');
+    if (!item || item.amount <= 0 || this.paymentSaving()) return;
+    this.paymentSaving.set(true);
+    let refreshWarning: string | null = null;
+    try {
+      await this.store.recordPayment(item.card.id, item.amount, 'Reminder payment');
+    } catch (error: unknown) {
+      if (error instanceof CommittedSaveRefreshError) refreshWarning = error.message;
+      else {
+        this.snackbar.show(
+          error instanceof Error ? error.message : 'Unable to record payment.',
+          'WARNING',
+        );
+        return;
+      }
+    } finally {
+      this.paymentSaving.set(false);
+    }
     this.paymentCandidate.set(null);
-    this.snackbar.show(`${this.money(item.amount, item.card.currencyCode)} payment recorded.`);
+    this.snackbar.show(
+      refreshWarning ?? `${this.money(item.amount, item.card.currencyCode)} payment recorded.`,
+      refreshWarning ? 'WARNING' : 'SUCCESS',
+    );
   }
 
   private toReminder(card: CreditCard): PaymentReminder {

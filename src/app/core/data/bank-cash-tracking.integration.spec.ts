@@ -10,7 +10,14 @@ import { NATIVE_EXPORT } from '../services/native-export';
 import { AppLockService } from '../services/app-lock.service';
 import { indiaTodayIso } from '../services/india-date';
 import { calculateNetSpending } from '../services/money';
-import { CardTransaction, CreditCard, PaymentSource } from '../models/domain';
+import {
+  CardTransaction,
+  CreditCard,
+  EmiPlan,
+  PaymentSource,
+  RecurringRule,
+} from '../models/domain';
+import { createEmiSchedule } from '../services/emi';
 import { SmsReviewService } from '../../features/sms-sync/sms-review.service';
 import { SmsCandidate, SmsEvidence } from '../../features/sms-sync/sms-model';
 import {
@@ -26,6 +33,9 @@ import { AppSelectPicker } from '../../shared/app-select-picker';
 import { Blob as NodeBlob } from 'node:buffer';
 import { BankActivityService } from '../../features/bank-activity/bank-activity.service';
 import { BankAccountSyncService } from '../../features/bank-activity/bank-account-sync.service';
+import { CardsPage } from '../../features/cards/cards';
+import { RemindersPage } from '../../features/reminders/reminders';
+import { SnackbarService } from '../services/snackbar.service';
 
 const { DatabaseSync } = process.getBuiltinModule('node:sqlite') as typeof import('node:sqlite');
 
@@ -915,6 +925,677 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     expect(balance('source-cash')).toBe(balanceBefore);
     expect(stored('source-cash')).toBe(storedBalanceBefore);
   });
+  it('rejects clearing enrolled bank identity but preserves legacy blank institutions on unrelated edits', async () => {
+    const { store } = await boot();
+    const bank = await store.addBankAccount({
+      nickname: 'Salary',
+      institution: 'ICICI',
+      lastDigits: '417',
+    });
+    const before = financialState();
+    for (const institution of ['', '   ', undefined]) {
+      await expect(store.updatePaymentSource({ ...bank, institution })).rejects.toThrow(
+        'bank name',
+      );
+      expect(store.paymentSources().find((source) => source.id === bank.id)?.institution).toBe(
+        'ICICI',
+      );
+      expect(financialState()).toEqual(before);
+    }
+    const legacy = { ...bank, institution: undefined };
+    const sources = store
+      .paymentSources()
+      .map((source) => (source.id === bank.id ? legacy : source));
+    await database.run("UPDATE app_preferences SET encrypted_value=? WHERE key='payment_sources'", [
+      JSON.stringify(sources),
+    ]);
+    store.paymentSources.set(sources);
+    await store.updatePaymentSource({ ...legacy, nickname: 'Legacy renamed', archived: true });
+    expect(store.paymentSources().find((source) => source.id === bank.id)).toMatchObject({
+      nickname: 'Legacy renamed',
+      archived: true,
+    });
+    await store.updatePaymentSource({
+      ...store.paymentSources().find((source) => source.id === bank.id)!,
+      institution: 'ICICI Bank',
+    });
+    expect(store.paymentSources().find((source) => source.id === bank.id)?.institution).toBe(
+      'ICICI Bank',
+    );
+  });
+  it('rolls back duplicate writes, retries the same identity and preserves unapproved evidence copying', async () => {
+    const { store, stored } = await boot();
+    await store.updatePaymentSource({
+      ...store.paymentSources().find((source) => source.kind === 'MEAL')!,
+      balanceMinor: 10000,
+    });
+    const original = purchase({
+      id: 'duplicate-original',
+      cardId: 'source-meal',
+      origin: 'SMS',
+      reference: 'synthetic-reference',
+      attachmentIds: ['synthetic-receipt'],
+    });
+    await store.saveManualTransaction(original);
+    const before = financialState();
+    const visibleBefore = store.transactions();
+    sql.exec(
+      "CREATE TRIGGER fail_duplicate BEFORE INSERT ON card_transactions WHEN NEW.id <> 'duplicate-original' BEGIN SELECT RAISE(ABORT,'duplicate failure'); END",
+    );
+    await expect(store.duplicateTransaction(original.id)).rejects.toThrow('duplicate failure');
+    const failedId = vi
+      .mocked(CapacitorSQLite.run)
+      .mock.calls.filter(([options]) =>
+        options.statement?.includes('INSERT INTO card_transactions'),
+      )
+      .at(-1)![0].values![0];
+    expect(financialState()).toEqual(before);
+    expect(store.transactions()).toEqual(visibleBefore);
+    sql.exec('DROP TRIGGER fail_duplicate');
+    const [first, second] = await Promise.all([
+      store.duplicateTransaction(original.id),
+      store.duplicateTransaction(original.id),
+    ]);
+    expect(first!.id).toBe(second!.id);
+    expect(first!.id).toBe(failedId);
+    expect(count('card_transactions')).toBe(2);
+    expect(stored('source-meal')).toBe(8000);
+    expect(first).toMatchObject({
+      origin: 'SMS',
+      reference: original.reference,
+      attachmentIds: original.attachmentIds,
+    });
+    const restarted = TestBed.runInInjectionContext(() => new CardNestStore());
+    await restarted.initialisePreferences();
+    expect(
+      restarted.transactions().filter((transaction) => transaction.id === first!.id),
+    ).toHaveLength(1);
+  });
+
+  it('retries an unfunded payment after commit failure once and identifies committed refresh failures', async () => {
+    const { store } = await boot();
+    store.addCard(card);
+    await settle();
+    const before = financialState();
+    vi.mocked(CapacitorSQLite.commitTransaction).mockRejectedValueOnce(
+      new Error('payment commit failure'),
+    );
+    await expect(store.recordPayment(card.id, 1000, 'Synthetic payment')).rejects.toThrow(
+      'payment commit failure',
+    );
+    const failedId = vi
+      .mocked(CapacitorSQLite.run)
+      .mock.calls.filter(([options]) =>
+        options.statement?.includes('INSERT INTO card_transactions'),
+      )
+      .at(-1)![0].values![0];
+    expect(financialState()).toEqual(before);
+    expect(store.transactions()).toHaveLength(0);
+    await Promise.all([
+      store.recordPayment(card.id, 1000, 'Synthetic payment'),
+      store.recordPayment(card.id, 1000, 'Synthetic payment'),
+    ]);
+    expect(count('card_transactions')).toBe(1);
+    expect(rows('SELECT id FROM card_transactions')[0]['id']).toBe(failedId);
+    expect(store.cardOutstanding(card.id)).toBe(-1000);
+    vi.mocked(CapacitorSQLite.commitTransaction).mockImplementationOnce(async () => {
+      sql.exec('COMMIT');
+      vi.mocked(CapacitorSQLite.query).mockRejectedValueOnce(
+        new Error('Synthetic refresh failure'),
+      );
+      return { changes: { changes: 0 } };
+    });
+    await expect(store.recordPayment(card.id, 2000, 'Committed payment')).rejects.toMatchObject({
+      name: 'CommittedSaveRefreshError',
+    });
+    expect(count('card_transactions')).toBe(2);
+    expect(
+      store.transactions().filter((transaction) => transaction.merchant === 'Committed payment'),
+    ).toHaveLength(1);
+    const restarted = TestBed.runInInjectionContext(() => new CardNestStore());
+    await restarted.initialisePreferences();
+    expect(restarted.cardOutstanding(card.id)).toBe(-3000);
+  });
+  it('rolls back every EMI conversion stage and atomically reschedules and closes without changing the schedule formula', async () => {
+    const { store } = await boot();
+    store.addCard(card);
+    await settle();
+    const original = purchase({
+      id: 'emi-original',
+      cardId: card.id,
+      amountMinor: 120000,
+      merchant: 'Synthetic purchase',
+    });
+    await store.saveManualTransaction(original);
+    const plan: EmiPlan = {
+      id: 'synthetic-plan',
+      transactionId: original.id,
+      cardId: card.id,
+      convertedAmountMinor: original.amountMinor,
+      remainingPurchaseMinor: 0,
+      tenureMonths: 3,
+      annualRateBasisPoints: 1200,
+      interestType: 'STANDARD',
+      processingFeeMinor: 0,
+      taxMinor: 0,
+      startDate: today,
+      status: 'ACTIVE',
+      originalTransactionDate: original.transactionDate,
+      originalMerchant: original.merchant,
+    };
+    const schedule = createEmiSchedule(plan, card);
+    const state = () => [
+      financialState(),
+      rows('SELECT * FROM emi_plans'),
+      rows('SELECT * FROM emi_installments ORDER BY installment_number'),
+    ];
+    const before = state();
+    const visibleBefore = store.transactions();
+    for (const [table, operation] of [
+      ['card_transactions', 'INSERT'],
+      ['emi_plans', 'INSERT'],
+      ['emi_installments', 'INSERT'],
+    ] as const) {
+      sql.exec(
+        `CREATE TRIGGER fail_emi BEFORE ${operation} ON ${table} BEGIN SELECT RAISE(ABORT,'synthetic EMI failure'); END`,
+      );
+      await expect(store.saveEmiPlan(plan, schedule)).rejects.toThrow('synthetic EMI failure');
+      expect(state()).toEqual(before);
+      expect(store.transactions()).toEqual(visibleBefore);
+      expect(store.emiPlans()).toHaveLength(0);
+      sql.exec('DROP TRIGGER fail_emi');
+    }
+    vi.mocked(CapacitorSQLite.commitTransaction).mockRejectedValueOnce(
+      new Error('EMI commit failure'),
+    );
+    await expect(store.saveEmiPlan(plan, schedule)).rejects.toThrow('EMI commit failure');
+    expect(state()).toEqual(before);
+    await store.saveEmiPlan(plan, schedule);
+    expect(store.emiInstallments()).toMatchObject(schedule);
+    expect(
+      store
+        .transactions()
+        .map((item) => item.amountMinor)
+        .sort(),
+    ).toEqual(schedule.map((item) => item.totalMinor).sort());
+    const converted = state();
+    const nextPlan = { ...plan, startDate: `${Number(today.slice(0, 4)) + 1}-01-01` };
+    const nextSchedule = createEmiSchedule(nextPlan, card);
+    sql.exec(
+      "CREATE TRIGGER fail_reschedule BEFORE INSERT ON emi_installments WHEN NEW.installment_number=2 BEGIN SELECT RAISE(ABORT,'reschedule failure'); END",
+    );
+    await expect(store.saveEmiPlan(nextPlan, nextSchedule)).rejects.toThrow('reschedule failure');
+    expect(state()).toEqual(converted);
+    sql.exec('DROP TRIGGER fail_reschedule');
+    await Promise.all([
+      store.saveEmiPlan(nextPlan, nextSchedule),
+      store.saveEmiPlan(nextPlan, nextSchedule),
+    ]);
+    expect(count('card_transactions')).toBe(3);
+    expect(count('emi_installments')).toBe(3);
+    const rescheduled = state();
+    const visibleRescheduled = store.transactions();
+    sql.exec(
+      "CREATE TRIGGER fail_close BEFORE UPDATE ON emi_plans BEGIN SELECT RAISE(ABORT,'closure failure'); END",
+    );
+    await expect(store.closeEmiPlan(plan.id)).rejects.toThrow('closure failure');
+    expect(state()).toEqual(rescheduled);
+    expect(store.transactions()).toEqual(visibleRescheduled);
+    sql.exec('DROP TRIGGER fail_close');
+    await store.closeEmiPlan(plan.id);
+    expect(store.emiPlans()[0].status).toBe('CANCELLED');
+    expect(store.transactions().every((item) => item.emiCancelled)).toBe(true);
+    expect(store.emiInstallments().map((item) => item.totalMinor)).toEqual(
+      nextSchedule.map((item) => item.totalMinor),
+    );
+    const restarted = TestBed.runInInjectionContext(() => new CardNestStore());
+    await restarted.initialisePreferences();
+    expect(restarted.emiPlans()[0].status).toBe('CANCELLED');
+    expect(restarted.transactions()).toEqual(store.transactions());
+  });
+
+  it('publishes the committed EMI result and identifies a refresh failure without repeating conversion', async () => {
+    const { store } = await boot();
+    store.addCard(card);
+    await settle();
+    const original = purchase({ id: 'emi-refresh', cardId: card.id, amountMinor: 120000 });
+    await store.saveManualTransaction(original);
+    const plan: EmiPlan = {
+      id: 'refresh-plan',
+      transactionId: original.id,
+      cardId: card.id,
+      convertedAmountMinor: original.amountMinor,
+      remainingPurchaseMinor: 0,
+      tenureMonths: 2,
+      annualRateBasisPoints: 0,
+      interestType: 'NO_COST',
+      processingFeeMinor: 0,
+      taxMinor: 0,
+      startDate: today,
+      status: 'ACTIVE',
+    };
+    vi.mocked(CapacitorSQLite.commitTransaction).mockImplementationOnce(async () => {
+      sql.exec('COMMIT');
+      vi.mocked(CapacitorSQLite.query).mockRejectedValueOnce(new Error('EMI refresh failure'));
+      return { changes: { changes: 0 } };
+    });
+    await expect(store.saveEmiPlan(plan, createEmiSchedule(plan, card))).rejects.toMatchObject({
+      name: 'CommittedSaveRefreshError',
+    });
+    expect(count('card_transactions')).toBe(2);
+    expect(store.emiPlans()[0].id).toBe(plan.id);
+    expect(store.transactions()).toHaveLength(2);
+  });
+  it('atomically generates legacy card recurrence with rollback, concurrent retry, month-end limits and restart safety', async () => {
+    const { store } = await boot();
+    store.addCard(card);
+    await settle();
+    const rule: RecurringRule = {
+      id: 'legacy:monthly-rule',
+      cardId: card.id,
+      title: 'Synthetic repeat',
+      amountMinor: 1234,
+      categoryId: 'other',
+      frequency: 'MONTHLY',
+      startDate: '2026-01-31',
+      nextOccurrenceDate: '2026-01-31',
+      status: 'ACTIVE',
+      occurrenceLimit: 3,
+    };
+    await database.run(
+      'INSERT INTO recurring_rules(id,card_id,next_occurrence_date,status,payload) VALUES(?,?,?,?,?)',
+      [rule.id, card.id, rule.nextOccurrenceDate, rule.status, JSON.stringify(rule)],
+    );
+    store.recurringRules.set([rule]);
+    const before = [financialState(), rows('SELECT * FROM recurring_rules')];
+    for (const trigger of [
+      "BEFORE INSERT ON card_transactions WHEN NEW.transaction_date='2026-02-28'",
+      'BEFORE UPDATE ON recurring_rules',
+    ]) {
+      sql.exec(
+        `CREATE TRIGGER fail_recurring ${trigger} BEGIN SELECT RAISE(ABORT,'recurrence failure'); END`,
+      );
+      await expect(store.materializeRecurringTransactions('2026-03-31')).rejects.toThrow(
+        'recurrence failure',
+      );
+      expect([financialState(), rows('SELECT * FROM recurring_rules')]).toEqual(before);
+      expect(store.recurringRules()).toEqual([rule]);
+      expect(store.transactions()).toHaveLength(0);
+      sql.exec('DROP TRIGGER fail_recurring');
+    }
+    vi.mocked(CapacitorSQLite.commitTransaction).mockRejectedValueOnce(
+      new Error('recurrence commit failure'),
+    );
+    await expect(store.materializeRecurringTransactions('2026-03-31')).rejects.toThrow(
+      'recurrence commit failure',
+    );
+    expect([financialState(), rows('SELECT * FROM recurring_rules')]).toEqual(before);
+    vi.mocked(CapacitorSQLite.commitTransaction).mockImplementationOnce(async () => {
+      sql.exec('COMMIT');
+      vi.mocked(CapacitorSQLite.query).mockRejectedValueOnce(
+        new Error('Recurring refresh failure'),
+      );
+      return { changes: { changes: 0 } };
+    });
+    await expect(store.materializeRecurringTransactions('2026-03-31')).rejects.toMatchObject({
+      name: 'CommittedSaveRefreshError',
+    });
+    expect(count('card_transactions')).toBe(3);
+    expect(store.recurringRules()[0].status).toBe('COMPLETED');
+    await Promise.all([
+      store.materializeRecurringTransactions('2026-03-31'),
+      store.materializeRecurringTransactions('2026-03-31'),
+    ]);
+    expect(
+      rows('SELECT transaction_date,amount_minor FROM card_transactions ORDER BY transaction_date'),
+    ).toEqual([
+      { transaction_date: '2026-01-31', amount_minor: 1234 },
+      { transaction_date: '2026-02-28', amount_minor: 1234 },
+      { transaction_date: '2026-03-31', amount_minor: 1234 },
+    ]);
+    expect(store.recurringRules()[0]).toMatchObject({
+      id: rule.id,
+      status: 'COMPLETED',
+      nextOccurrenceDate: undefined,
+    });
+    const restarted = TestBed.runInInjectionContext(() => new CardNestStore());
+    await restarted.initialisePreferences();
+    await restarted.materializeRecurringTransactions('2026-12-31');
+    expect(count('card_transactions')).toBe(3);
+    expect(restarted.recurringRules()[0].id).toBe(rule.id);
+  });
+
+  it('creates a card entry and schedule together and never rewinds progress when a concurrent rule edit follows generation', async () => {
+    const { store } = await boot();
+    store.addCard(card);
+    await settle();
+    const rule: RecurringRule = {
+      id: 'initial-schedule',
+      cardId: card.id,
+      title: 'Initial repeat',
+      amountMinor: 1000,
+      categoryId: 'other',
+      frequency: 'MONTHLY',
+      startDate: '2026-01-31',
+      nextOccurrenceDate: '2026-02-28',
+      status: 'ACTIVE',
+    };
+    const first = purchase({
+      id: 'initial-recurring',
+      cardId: card.id,
+      transactionDate: rule.startDate,
+      recurringRuleId: rule.id,
+      generatedOccurrenceDate: rule.startDate,
+    });
+    sql.exec(
+      "CREATE TRIGGER fail_initial_rule BEFORE INSERT ON recurring_rules BEGIN SELECT RAISE(ABORT,'initial schedule failure'); END",
+    );
+    const before = financialState();
+    await expect(store.saveManualTransaction(first, '', false, rule)).rejects.toThrow(
+      'initial schedule failure',
+    );
+    expect(financialState()).toEqual(before);
+    expect(store.transactions()).toHaveLength(0);
+    sql.exec('DROP TRIGGER fail_initial_rule');
+    await store.saveManualTransaction(first, '', false, rule);
+    await Promise.all([
+      store.materializeRecurringTransactions('2026-02-28'),
+      store.updateRecurringRule(rule.id, 2000),
+    ]);
+    expect(store.recurringRules()[0]).toMatchObject({
+      nextOccurrenceDate: '2026-03-31',
+      amountMinor: 2000,
+    });
+    await store.materializeRecurringTransactions('2026-03-31');
+    expect(
+      rows('SELECT transaction_date,amount_minor FROM card_transactions ORDER BY transaction_date'),
+    ).toEqual([
+      { transaction_date: '2026-01-31', amount_minor: 1000 },
+      { transaction_date: '2026-02-28', amount_minor: 1000 },
+      { transaction_date: '2026-03-31', amount_minor: 2000 },
+    ]);
+    await store.terminateRecurringRule(rule.id);
+    await store.materializeRecurringTransactions('2027-12-31');
+    expect(count('card_transactions')).toBe(3);
+  });
+  it('uses configured card currency and India date for new payments and rejects foreign bank funding without writes', async () => {
+    const { store } = await boot();
+    store.addCard({ ...card, currencyCode: 'USD' });
+    await settle();
+    const source = await store.addBankAccount({
+      nickname: 'Funding',
+      institution: 'ICICI',
+      lastDigits: '417',
+    });
+    await store.enableBankCashTracking({ [source.id]: 100000 });
+    await store.setCardSettlementFunding(true);
+    const before = financialState();
+    await expect(
+      store.recordFundedPayment(card.id, 1000, 'Unsupported', source.id),
+    ).rejects.toThrow('only for INR');
+    expect(financialState()).toEqual(before);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date('2026-10-27T20:00:00.000Z'));
+      await store.recordPayment(card.id, 1234, 'Foreign unfunded');
+    } finally {
+      vi.useRealTimers();
+    }
+    const payment = store
+      .transactions()
+      .find((transaction) => transaction.merchant === 'Foreign unfunded')!;
+    expect(payment).toMatchObject({
+      currencyCode: 'USD',
+      transactionDate: '2026-10-28',
+      amountMinor: 1234,
+    });
+    const rule: RecurringRule = {
+      id: 'foreign-recurring',
+      cardId: card.id,
+      title: 'Foreign repeat',
+      amountMinor: 5678,
+      categoryId: 'other',
+      frequency: 'MONTHLY',
+      startDate: '2026-01-31',
+      nextOccurrenceDate: '2026-01-31',
+      status: 'ACTIVE',
+      occurrenceLimit: 2,
+    };
+    await store.addRecurringRule(rule);
+    expect(
+      store
+        .transactions()
+        .filter((transaction) => transaction.recurringRuleId === rule.id)
+        .map((transaction) => transaction.currencyCode),
+    ).toEqual(['USD', 'USD']);
+    expect(store.transactions().find((transaction) => transaction.id === payment.id)).toEqual(
+      payment,
+    );
+  });
+  it('shows no false UI success for failed payment or duplicate and closes a committed payment after refresh failure', async () => {
+    const { store } = await boot();
+    store.addCard(card);
+    await settle();
+    const original = purchase({ id: 'ui-original', cardId: card.id, amountMinor: 5000 });
+    await store.saveManualTransaction(original);
+    const cards = TestBed.createComponent(CardsPage);
+    const page = cards.componentInstance;
+    const snack = vi.spyOn(TestBed.inject(SnackbarService), 'show');
+    page.paymentCard.set(card);
+    page.paymentAmount.set('10');
+    page.paymentConfirmationOpen.set(true);
+    sql.exec(
+      "CREATE TRIGGER fail_ui_payment BEFORE INSERT ON card_transactions WHEN NEW.type='PAYMENT' BEGIN SELECT RAISE(ABORT,'UI payment failure'); END",
+    );
+    await page.confirmPayment();
+    expect(snack).not.toHaveBeenCalled();
+    expect(page.paymentError()).toBe('UI payment failure');
+    expect(page.paymentCard()).toEqual(card);
+    expect(count('card_transactions')).toBe(1);
+    sql.exec('DROP TRIGGER fail_ui_payment');
+    await Promise.all([page.confirmPayment(), page.confirmPayment()]);
+    expect(count('card_transactions')).toBe(2);
+    expect(page.paymentCard()).toBeNull();
+    expect(snack).toHaveBeenCalledOnce();
+    snack.mockClear();
+    page.paymentCard.set(card);
+    page.paymentAmount.set('20');
+    vi.mocked(CapacitorSQLite.commitTransaction).mockImplementationOnce(async () => {
+      sql.exec('COMMIT');
+      vi.mocked(CapacitorSQLite.query).mockRejectedValueOnce(new Error('UI refresh failure'));
+      return { changes: { changes: 0 } };
+    });
+    await page.confirmPayment();
+    expect(page.paymentCard()).toBeNull();
+    expect(snack).toHaveBeenCalledExactlyOnceWith(
+      expect.stringContaining('Transaction saved'),
+      'WARNING',
+    );
+    await page.confirmPayment();
+    expect(count('card_transactions')).toBe(3);
+    snack.mockClear();
+    const transactions = TestBed.createComponent(TransactionsPage);
+    sql.exec(
+      "CREATE TRIGGER fail_ui_duplicate BEFORE INSERT ON card_transactions WHEN NEW.type='PURCHASE' BEGIN SELECT RAISE(ABORT,'UI duplicate failure'); END",
+    );
+    await transactions.componentInstance.duplicate(original);
+    expect(snack).toHaveBeenCalledExactlyOnceWith('UI duplicate failure', 'WARNING');
+    expect(count('card_transactions')).toBe(3);
+    sql.exec('DROP TRIGGER fail_ui_duplicate');
+    await transactions.componentInstance.duplicate(original);
+    expect(count('card_transactions')).toBe(4);
+    cards.destroy();
+    transactions.destroy();
+  });
+
+  it('retries only the failed card after a partially completed linked reminder payment', async () => {
+    const { store } = await boot();
+    const second = { ...card, id: 'fiction-second', nickname: 'Second' };
+    store.addCard(card);
+    store.addCard(second);
+    await settle();
+    await store.saveManualTransaction(
+      purchase({ id: 'linked-first', cardId: card.id, amountMinor: 1000 }),
+    );
+    await store.saveManualTransaction(
+      purchase({ id: 'linked-second', cardId: second.id, amountMinor: 2000 }),
+    );
+    const fixture = TestBed.createComponent(RemindersPage);
+    const page = fixture.componentInstance;
+    vi.spyOn(page, 'linkedAccountCards').mockReturnValue([card, second]);
+    page.linkedPaymentCandidate.set({ card, mode: 'OUTSTANDING' });
+    const snack = vi.spyOn(TestBed.inject(SnackbarService), 'show');
+    sql.exec(
+      "CREATE TRIGGER fail_second_payment BEFORE INSERT ON card_transactions WHEN NEW.type='PAYMENT' AND NEW.card_id='fiction-second' BEGIN SELECT RAISE(ABORT,'Second card failure'); END",
+    );
+    await page.confirmLinkedPayment();
+    expect(snack).toHaveBeenCalledExactlyOnceWith('Second card failure', 'WARNING');
+    expect(rows("SELECT card_id,amount_minor FROM card_transactions WHERE type='PAYMENT'")).toEqual(
+      [{ card_id: card.id, amount_minor: 1000 }],
+    );
+    expect(page.linkedPaymentCandidate()).not.toBeNull();
+    sql.exec('DROP TRIGGER fail_second_payment');
+    await page.confirmLinkedPayment();
+    expect(
+      rows(
+        "SELECT card_id,amount_minor FROM card_transactions WHERE type='PAYMENT' ORDER BY card_id",
+      ),
+    ).toEqual([
+      { card_id: card.id, amount_minor: 1000 },
+      { card_id: second.id, amount_minor: 2000 },
+    ]);
+    expect(page.linkedPaymentCandidate()).toBeNull();
+    expect(store.cardOutstanding(card.id)).toBe(0);
+    expect(store.cardOutstanding(second.id)).toBe(0);
+    fixture.destroy();
+  });
+
+  it('round trips newly durable EMI, recurring entries and unfunded payments through encrypted backup without replay', async () => {
+    const { store } = await boot();
+    store.addCard({ ...card, excludeStatementDayTransactions: true });
+    await settle();
+    const original = purchase({
+      id: 'durable-backup-original',
+      cardId: card.id,
+      amountMinor: 120000,
+    });
+    await store.saveManualTransaction(original);
+    const plan: EmiPlan = {
+      id: 'durable-backup-plan',
+      transactionId: original.id,
+      cardId: card.id,
+      convertedAmountMinor: original.amountMinor,
+      remainingPurchaseMinor: 0,
+      tenureMonths: 2,
+      annualRateBasisPoints: 0,
+      interestType: 'NO_COST',
+      processingFeeMinor: 0,
+      taxMinor: 0,
+      startDate: today,
+      status: 'ACTIVE',
+    };
+    await store.saveEmiPlan(plan, createEmiSchedule(plan, card));
+    await store.recordPayment(card.id, 5000, 'Backup payment');
+    await store.addRecurringRule({
+      id: 'durable-backup-rule',
+      cardId: card.id,
+      title: 'Backup repeat',
+      amountMinor: 1000,
+      categoryId: 'other',
+      frequency: 'MONTHLY',
+      startDate: '2026-01-31',
+      nextOccurrenceDate: '2026-01-31',
+      status: 'ACTIVE',
+      occurrenceLimit: 2,
+    });
+    const before = [
+      financialState(),
+      rows('SELECT * FROM emi_plans ORDER BY id'),
+      rows('SELECT * FROM emi_installments ORDER BY id'),
+      rows('SELECT * FROM recurring_rules ORDER BY id'),
+    ];
+    vi.stubGlobal('crypto', webcrypto);
+    vi.stubGlobal('Blob', NodeBlob);
+    try {
+      const backups = TestBed.inject(BackupService);
+      const backup = await backups.create('synthetic-durable-backup-passphrase');
+      sql.exec(
+        "CREATE TRIGGER fail_durable_restore BEFORE INSERT ON emi_installments BEGIN SELECT RAISE(ABORT,'durable restore failure'); END",
+      );
+      await expect(
+        backups.restore(backup.contents, 'synthetic-durable-backup-passphrase'),
+      ).rejects.toThrow('durable restore failure');
+      expect([
+        financialState(),
+        rows('SELECT * FROM emi_plans ORDER BY id'),
+        rows('SELECT * FROM emi_installments ORDER BY id'),
+        rows('SELECT * FROM recurring_rules ORDER BY id'),
+      ]).toEqual(before);
+      sql.exec('DROP TRIGGER fail_durable_restore');
+      await backups.restore(backup.contents, 'synthetic-durable-backup-passphrase');
+      const restarted = TestBed.runInInjectionContext(() => new CardNestStore());
+      await restarted.initialisePreferences();
+      expect([
+        financialState(),
+        rows('SELECT * FROM emi_plans ORDER BY id'),
+        rows('SELECT * FROM emi_installments ORDER BY id'),
+        rows('SELECT * FROM recurring_rules ORDER BY id'),
+      ]).toEqual(before);
+      expect(sql.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+      expect(restarted.emiPlans()[0].id).toBe(plan.id);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('guards Bank/Cash balances and baselines while preserving wallet edits and audited balance operations', async () => {
+    const { store, stored } = await boot();
+    await store.enableBankCashTracking({ 'source-cash': 10000, 'source-debit': 20000 });
+    const before = financialState();
+    for (const source of store
+      .paymentSources()
+      .filter((row) => row.kind === 'CASH' || row.kind === 'DEBIT')) {
+      for (const patch of [
+        { balanceMinor: 30000 },
+        { balanceMinor: undefined },
+        { balanceSnapshotMinor: 30000 },
+        { balanceCutoverAt: undefined },
+        { balanceCutoverReason: 'MANUAL' as const },
+      ]) {
+        await expect(store.updatePaymentSource({ ...source, ...patch })).rejects.toThrow(
+          'Set Current Balance',
+        );
+        expect(financialState()).toEqual(before);
+      }
+      await store.updatePaymentSource({ ...source, nickname: `${source.nickname} renamed` });
+    }
+    await store.setSourceBalance('source-cash', 15000);
+    expect(stored('source-cash')).toBe(15000);
+    expect(count('source_balance_adjustments')).toBe(3);
+    for (const kind of ['MEAL', 'FASTAG'] as const) {
+      if (kind === 'FASTAG')
+        await store.addWallet({
+          id: 'synthetic-tag',
+          kind,
+          nickname: 'Tag',
+          noLimit: false,
+          autoLoad: false,
+          balanceMinor: 0,
+          archived: false,
+        });
+      const wallet = store.paymentSources().find((source) => source.kind === kind)!;
+      await store.updatePaymentSource({ ...wallet, balanceMinor: 25000 });
+      expect(stored(wallet.id)).toBe(25000);
+    }
+    const beforeFailure = store.paymentSources();
+    sql.exec(
+      "CREATE TRIGGER fail_guarded_identity BEFORE UPDATE ON app_preferences WHEN OLD.key='payment_sources' BEGIN SELECT RAISE(ABORT,'synthetic identity failure'); END",
+    );
+    await expect(
+      store.updatePaymentSource({ ...beforeFailure[0], nickname: 'Not saved' }),
+    ).rejects.toThrow('synthetic identity failure');
+    expect(store.paymentSources()).toEqual(beforeFailure);
+  });
   it('distinguishes a committed purchase from a failed refresh and cannot double-post its balance on retry/restart', async () => {
     const { store, balance, stored } = await boot();
     await store.enableBankCashTracking({ 'source-cash': 20000 });
@@ -1490,7 +2171,7 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     await expect(
       store.recordFundedPayment(card.id, 500_000, 'Card payment', icici.id),
     ).rejects.toThrow('Turn on bank deduction');
-    store.recordPayment(card.id, 10_000, 'Unfunded payment');
+    await store.recordPayment(card.id, 10_000, 'Unfunded payment');
     await settle();
     expect(balance(icici.id)).toBe(2_500_000);
     await store.setCardSettlementFunding(true);
