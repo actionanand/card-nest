@@ -150,6 +150,7 @@ export class TransactionsPage {
   readonly showEmiForm = signal(false);
   readonly showSplitForm = signal(false);
   readonly saving = signal(false);
+  private pendingCardRecurringIdentity: { transactionId: string; ruleId: string } | null = null;
   readonly splitTimingOptions = [
     { value: '', label: 'Choose only if the balance-confirmation day is ambiguous' },
     { value: 'AFTER_BASELINE', label: 'After the confirmed balance — apply this payment' },
@@ -1822,11 +1823,29 @@ export class TransactionsPage {
       );
       return;
     }
+    const newCardRecurrence =
+      !existing &&
+      value.repeat !== 'NONE' &&
+      this.store.cards().some((card) => card.id === value.cardId);
+    if (newCardRecurrence && !this.pendingCardRecurringIdentity)
+      this.pendingCardRecurringIdentity = {
+        transactionId: crypto.randomUUID(),
+        ruleId: crypto.randomUUID(),
+      };
     const recurringRuleId =
-      existing?.recurringRuleId ?? (value.repeat !== 'NONE' ? crypto.randomUUID() : undefined);
+      existing?.recurringRuleId ??
+      (value.repeat !== 'NONE'
+        ? newCardRecurrence
+          ? this.pendingCardRecurringIdentity!.ruleId
+          : crypto.randomUUID()
+        : undefined);
     const transaction: CardTransaction = {
       ...existing,
-      id: existing?.id ?? crypto.randomUUID(),
+      id:
+        existing?.id ??
+        (newCardRecurrence
+          ? this.pendingCardRecurringIdentity!.transactionId
+          : crypto.randomUUID()),
       cardId: value.cardId,
       type: value.type,
       amountMinor,
@@ -1868,7 +1887,10 @@ export class TransactionsPage {
             frequency: 'MONTHLY',
             startDate: value.transactionDate,
             occurrenceLimit: value.repeat === 'INFINITE' ? undefined : Number(value.repeat),
-            nextOccurrenceDate: this.nextMonthlyOccurrence(value.transactionDate),
+            nextOccurrenceDate: this.nextMonthlyOccurrence(
+              value.transactionDate,
+              !this.store.cards().some((card) => card.id === value.cardId),
+            ),
             status: 'ACTIVE',
           }
         : undefined;
@@ -1877,30 +1899,44 @@ export class TransactionsPage {
     this.saving.set(true);
     let refreshWarning: string | null = null;
     try {
-      await this.store.saveManualTransaction(
-        transaction,
-        value.type === 'ADJUSTMENT' && !value.preserveLegacy ? value.relatedTransactionId : '',
-        value.unlinkConfirmed,
-        persistedCardRecurrence ? recurringRule : undefined,
-      );
-    } catch (error: unknown) {
-      if (error instanceof CommittedSaveRefreshError) refreshWarning = error.message;
-      else {
-        this.snackbar.show(
-          error instanceof Error ? error.message : 'Unable to save payment.',
-          'WARNING',
+      try {
+        await this.store.saveManualTransaction(
+          transaction,
+          value.type === 'ADJUSTMENT' && !value.preserveLegacy ? value.relatedTransactionId : '',
+          value.unlinkConfirmed,
+          persistedCardRecurrence ? recurringRule : undefined,
         );
-        return;
+      } catch (error: unknown) {
+        if (error instanceof CommittedSaveRefreshError) refreshWarning = error.message;
+        else {
+          this.snackbar.show(
+            error instanceof Error ? error.message : 'Unable to save payment.',
+            'WARNING',
+          );
+          return;
+        }
       }
+      if (recurringRule && persistedCardRecurrence) {
+        try {
+          await this.store.materializeRecurringTransactions(undefined, recurringRule.id);
+        } catch (error: unknown) {
+          refreshWarning =
+            error instanceof CommittedSaveRefreshError
+              ? error.message
+              : 'Transaction and recurring schedule saved, but catch-up is incomplete. Reopen CardNest to retry due occurrences; do not enter the original transaction again.';
+        }
+      } else if (recurringRule) {
+        this.saving.set(false);
+        await this.store.addRecurringRule(recurringRule);
+      }
+      this.resetForm(value.cardId);
+      this.saving.set(false);
+      this.closeForm();
+      if (refreshWarning) this.snackbar.show(refreshWarning, 'WARNING');
+      else this.snackbar.show(existing ? 'Transaction updated.' : 'Transaction added.');
     } finally {
       this.saving.set(false);
     }
-
-    if (recurringRule && !persistedCardRecurrence) await this.store.addRecurringRule(recurringRule);
-    this.resetForm(value.cardId);
-    this.closeForm();
-    if (refreshWarning) this.snackbar.show(refreshWarning, 'WARNING');
-    else this.snackbar.show(existing ? 'Transaction updated.' : 'Transaction added.');
   }
 
   private periodFor(transaction: CardTransaction): { key: string; label: string } {
@@ -1988,6 +2024,7 @@ export class TransactionsPage {
   }
 
   private resetForm(sourceId: string): void {
+    this.pendingCardRecurringIdentity = null;
     this.categoryOverridden.set(false);
     this.receiptPreviews.set([]);
     this.receiptDraftDirty.set(false);
@@ -2033,13 +2070,28 @@ export class TransactionsPage {
     customStart: string,
   ): string | null {
     if (mode === 'CUSTOM') return /^\d{4}-\d{2}$/.test(customStart) ? `${customStart}-01` : null;
-    const date = new Date(`${transactionDate}T12:00:00`);
-    date.setDate(1);
-    if (mode === 'NEXT_MONTH') date.setMonth(date.getMonth() + 1);
+    const date = new Date(`${transactionDate}T12:00:00Z`);
+    date.setUTCDate(1);
+    if (mode === 'NEXT_MONTH') date.setUTCMonth(date.getUTCMonth() + 1);
     return date.toISOString().slice(0, 10);
   }
 
-  private nextMonthlyOccurrence(dateValue: string): string {
+  private nextMonthlyOccurrence(dateValue: string, legacyNonCard = false): string {
+    if (legacyNonCard) return this.nextNonCardMonthlyOccurrence(dateValue);
+    const date = new Date(`${dateValue}T12:00:00Z`);
+    const anchorDay = date.getUTCDate();
+    date.setUTCDate(1);
+    date.setUTCMonth(date.getUTCMonth() + 1);
+    date.setUTCDate(
+      Math.min(
+        anchorDay,
+        new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate(),
+      ),
+    );
+    return date.toISOString().slice(0, 10);
+  }
+  private nextNonCardMonthlyOccurrence(dateValue: string): string {
+    // Preserve the deferred non-card path rather than changing its schedule dates here.
     const date = new Date(`${dateValue}T12:00:00`);
     const anchorDay = date.getDate();
     date.setDate(1);

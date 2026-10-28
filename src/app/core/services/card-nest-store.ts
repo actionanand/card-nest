@@ -264,6 +264,7 @@ export class CardNestStore {
   readonly transactions = signal<readonly CardTransaction[]>([]);
   readonly paymentGroups = signal<readonly PaymentGroup[]>([]);
   readonly transactionWriteError = signal('');
+  readonly initialisationWarning = signal('');
   readonly categories = signal<readonly Category[]>(CATEGORIES);
   readonly categoryCatalog = signal<readonly CategoryCatalogEntry[]>([]);
   readonly categoryMigrationRecords = signal<readonly CategoryMigrationRecord[]>([]);
@@ -354,6 +355,7 @@ export class CardNestStore {
 
   async initialisePreferences(): Promise<void> {
     if (!this.database.ready()) return;
+    this.initialisationWarning.set('');
     await initialiseAppData(this.database, this.environment.seedDemoData, {
       categories: CATEGORIES,
       cards: SAMPLE_CARDS,
@@ -467,9 +469,42 @@ export class CardNestStore {
       statementRows.map((row) => JSON.parse(row.payload) as CardStatement),
     );
     await this.loadRecurringRules();
-    await this.materializeRecurringTransactions();
-    await this.loadEmiPlans();
-    await this.loadLoans();
+    let recurringFailure: { error: unknown } | undefined;
+    const historyFailures: { area: string; error: unknown }[] = [];
+    try {
+      await this.materializeRecurringTransactions();
+    } catch (error: unknown) {
+      recurringFailure = { error };
+    }
+    try {
+      await this.loadEmiPlans();
+    } catch (error: unknown) {
+      historyFailures.push({ area: 'EMI history could not be fully loaded', error });
+    }
+    try {
+      await this.loadLoans();
+    } catch (error: unknown) {
+      historyFailures.push({ area: 'Loan history could not be loaded', error });
+    }
+    const failures = [
+      ...historyFailures,
+      ...(recurringFailure
+        ? [{ area: 'Recurring generation failed', error: recurringFailure.error }]
+        : []),
+    ];
+    if (failures.length) {
+      const warning = failures
+        .map(
+          ({ area, error }) => `${area}: ${error instanceof Error ? error.message : String(error)}`,
+        )
+        .join('. ');
+      this.initialisationWarning.set(warning);
+      if (failures.length === 1) throw failures[0].error;
+      throw new AggregateError(
+        failures.map(({ error }) => error),
+        warning,
+      );
+    }
   }
 
   readonly smsSwipeActionsEnabled = signal(false);
@@ -2289,7 +2324,7 @@ export class CardNestStore {
       : 'Unknown source';
   }
 
-  async materializeRecurringTransactions(asOf?: string): Promise<void> {
+  async materializeRecurringTransactions(asOf?: string, ruleId?: string): Promise<void> {
     if (!this.database.ready()) return;
     const result = await this.database.atomic(async (tx) => {
       const instant = new Date();
@@ -2301,7 +2336,7 @@ export class CardNestStore {
         (row) => JSON.parse(row.payload) as CreditCard,
       );
       const batch = this.recurringBatch(
-        rules,
+        ruleId ? rules.filter((rule) => rule.id === ruleId) : rules,
         await this.readTransactionRows(tx),
         cutoff,
         cards,
@@ -2327,7 +2362,7 @@ export class CardNestStore {
       if (result.transactionId) await this.refreshCommittedLedger(result.transactionId);
     }
     // Non-card recurrence retains its existing transient behavior pending separate approval.
-    this.materializeNonCardRecurringTransactions(asOf ?? today);
+    if (!ruleId) this.materializeNonCardRecurringTransactions(asOf ?? today);
   }
 
   private recurringBatch(
@@ -2434,7 +2469,7 @@ export class CardNestStore {
             status = 'COMPLETED';
             next = undefined;
           } else {
-            next = this.nextRecurringDate(rule, occurrence);
+            next = this.nextLegacyNonCardRecurringDate(rule, occurrence);
           }
           guard += 1;
         }
@@ -2475,6 +2510,35 @@ export class CardNestStore {
   }
 
   private nextRecurringDate(rule: RecurringRule, occurrence: string): string {
+    const date = new Date(`${occurrence}T12:00:00Z`);
+    if (rule.frequency === 'WEEKLY') date.setUTCDate(date.getUTCDate() + 7);
+    else if (rule.frequency === 'BIWEEKLY') date.setUTCDate(date.getUTCDate() + 14);
+    else if (rule.frequency === 'DAILY') date.setUTCDate(date.getUTCDate() + 1);
+    else if (rule.frequency === 'YEARLY') date.setUTCFullYear(date.getUTCFullYear() + 1);
+    else {
+      const months =
+        rule.frequency === 'BIMONTHLY'
+          ? 2
+          : rule.frequency === 'QUARTERLY'
+            ? 3
+            : rule.frequency === 'HALF_YEARLY'
+              ? 6
+              : Math.max(1, rule.interval ?? 1);
+      const anchorDay = Number(rule.startDate.slice(8, 10));
+      date.setUTCDate(1);
+      date.setUTCMonth(date.getUTCMonth() + months);
+      date.setUTCDate(
+        Math.min(
+          anchorDay,
+          new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate(),
+        ),
+      );
+    }
+    return date.toISOString().slice(0, 10);
+  }
+
+  private nextLegacyNonCardRecurringDate(rule: RecurringRule, occurrence: string): string {
+    // Non-card recurrence retains its existing calendar behavior pending separate approval.
     const date = new Date(`${occurrence}T12:00:00`);
     if (rule.frequency === 'WEEKLY') date.setDate(date.getDate() + 7);
     else if (rule.frequency === 'BIWEEKLY') date.setDate(date.getDate() + 14);

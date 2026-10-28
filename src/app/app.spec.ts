@@ -86,6 +86,7 @@ describe('App', () => {
     archived: false,
   });
   const store = {
+    initialisationWarning: signal(''),
     cards,
     bankCashTracking: signal({ enabled: false }),
     transactions,
@@ -126,6 +127,7 @@ describe('App', () => {
     foreground.set(true);
     snackbarMessage.set(null);
     snackbarShow.mockClear();
+    store.initialisationWarning.set('');
     store.saveManualTransaction.mockReset();
     store.saveManualTransaction.mockImplementation(async (transaction) => {
       transactions.update((items) => [transaction, ...items]);
@@ -176,6 +178,18 @@ describe('App', () => {
   it('should create the app', () => {
     const fixture = TestBed.createComponent(App);
     expect(fixture.componentInstance).toBeTruthy();
+  });
+  it('completes rendering with a startup history warning and does not immediately retry financial generation', async () => {
+    store.initialisationWarning.set(
+      'EMI history could not be fully loaded: Synthetic EMI failure. Recurring generation failed: Synthetic schedule failure.',
+    );
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(fixture.componentInstance).toBeTruthy();
+    expect(snackbarShow).toHaveBeenCalledWith(store.initialisationWarning(), 'WARNING');
+    expect(store.materializeRecurringTransactions).not.toHaveBeenCalled();
+    fixture.destroy();
   });
   it('closes a durably saved Quick Transaction on refresh failure and prevents another submission', async () => {
     ready.set(true);
