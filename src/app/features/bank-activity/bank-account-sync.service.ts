@@ -19,8 +19,7 @@ export class BankAccountSyncService {
         "SELECT key,encrypted_value FROM app_preferences WHERE key IN ('payment_sources','bank_cash_tracking')",
       );
       const values = new Map(preferences.map((row) => [row.key, row.encrypted_value]));
-      if (!parseBankCashTracking(values.get('bank_cash_tracking')).enabled)
-        return { sources: null, conflicts: [] };
+      const trackingEnabled = parseBankCashTracking(values.get('bank_cash_tracking')).enabled;
       const raw: unknown = JSON.parse(values.get('payment_sources') ?? '[]');
       if (!Array.isArray(raw)) throw new Error('Saved Money Sources are invalid.');
       const sources = raw as PaymentSource[];
@@ -105,43 +104,44 @@ export class BankAccountSyncService {
         sourcesChanged = true;
         link(profile, source);
       }
-      for (const source of sources) {
-        if (
-          source.kind !== 'DEBIT' ||
-          source.archived ||
-          !finalThree(source.lastDigits) ||
-          !bankDisplayName(source.institution)
-        )
-          continue;
-        if (profiles.some((row) => row.paymentSourceId === source.id)) continue;
-        const possible = profiles.filter((row) => compatible(row, source));
-        const peers = sources.filter(
-          (row) =>
-            row.kind === 'DEBIT' &&
-            matchesBank(row.institution, source.institution) &&
-            finalThree(row.lastDigits) === finalThree(source.lastDigits),
-        );
-        if (possible.length || peers.length > 1) {
-          conflicts.push(
-            `${source.nickname}: account needs identification. Select the intended source in an OWN monitoring profile; family and archived profiles are preserved.`,
+      if (trackingEnabled)
+        for (const source of sources) {
+          if (
+            source.kind !== 'DEBIT' ||
+            source.archived ||
+            !finalThree(source.lastDigits) ||
+            !bankDisplayName(source.institution)
+          )
+            continue;
+          if (profiles.some((row) => row.paymentSourceId === source.id)) continue;
+          const possible = profiles.filter((row) => compatible(row, source));
+          const peers = sources.filter(
+            (row) =>
+              row.kind === 'DEBIT' &&
+              matchesBank(row.institution, source.institution) &&
+              finalThree(row.lastDigits) === finalThree(source.lastDigits),
           );
-          continue;
+          if (possible.length || peers.length > 1) {
+            conflicts.push(
+              `${source.nickname}: account needs identification. Select the intended source in an OWN monitoring profile; family and archived profiles are preserved.`,
+            );
+            continue;
+          }
+          const profile: BankActivityProfile = {
+            id: crypto.randomUUID(),
+            bankName: bankDisplayName(source.institution)!,
+            nickname: source.nickname,
+            accountSuffix: finalThree(source.lastDigits),
+            paymentSourceId: source.id,
+            owner: 'OWN',
+            archived: false,
+            manualOnly: false,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          };
+          profiles.push(profile);
+          changed.set(profile.id, profile);
         }
-        const profile: BankActivityProfile = {
-          id: crypto.randomUUID(),
-          bankName: bankDisplayName(source.institution)!,
-          nickname: source.nickname,
-          accountSuffix: finalThree(source.lastDigits),
-          paymentSourceId: source.id,
-          owner: 'OWN',
-          archived: false,
-          manualOnly: false,
-          createdAt: timestamp,
-          updatedAt: timestamp,
-        };
-        profiles.push(profile);
-        changed.set(profile.id, profile);
-      }
       for (const profile of changed.values())
         await tx.run(
           'INSERT INTO bank_activity_profiles(id,payment_source_id,bank_name,archived,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET payment_source_id=excluded.payment_source_id,payload=excluded.payload,updated_at=excluded.updated_at',

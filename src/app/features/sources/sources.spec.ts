@@ -95,73 +95,80 @@ describe('Explicit FASTag wallet creation and feedback', () => {
     await first;
     expect(fixture.componentInstance.walletSaving()).toBe(false);
   });
-  it('waits for identity persistence, reports a failure and restores the field without false success', async () => {
+  it('routes bank enrollment and identity editing to Discovered Accounts', () => {
     const fixture = setup();
-    const page = fixture.componentInstance;
-    const store = TestBed.inject(CardNestStore);
-    const source = store.paymentSources().find((row) => row.kind === 'DEBIT')!;
-    const input = document.createElement('input');
-    input.value = 'Unsaved nickname';
-    let reject!: (reason: Error) => void;
-    const update = vi.spyOn(store, 'updatePaymentSource').mockImplementationOnce(
-      () =>
-        new Promise<void>((_resolve, fail) => {
-          reject = fail;
-        }),
-    );
-    const snackbar = vi.spyOn(TestBed.inject(SnackbarService), 'show');
-    const pending = page.updateBankField(source, 'nickname', { target: input } as unknown as Event);
-    expect(snackbar).not.toHaveBeenCalled();
-    reject(new Error('Identity not saved'));
-    await pending;
-    expect(snackbar).toHaveBeenCalledExactlyOnceWith('Identity not saved', 'WARNING');
-    expect(input.value).toBe(source.nickname);
-    update.mockResolvedValueOnce();
-    input.value = 'Saved nickname';
-    await page.updateBankField(source, 'nickname', { target: input } as unknown as Event);
-    expect(snackbar).toHaveBeenLastCalledWith(`${source.nickname} updated.`);
+    const manage = fixture.nativeElement.querySelector(
+      '.manage-bank-accounts',
+    ) as HTMLAnchorElement | null;
+    expect(manage?.textContent).toContain('Manage bank accounts');
+    expect(manage?.getAttribute('href')).toContain('/bank-activity');
+    expect(fixture.nativeElement.textContent).not.toContain('Enrol a bank account');
+    expect(fixture.nativeElement.querySelector('form[formgroup="bankForm"]')).toBeNull();
     fixture.destroy();
   });
-  it('exposes an explicit restore action for an archived bank account without replacing its identity or history', async () => {
+  it('shows only complete bank totals and a read-only account breakdown', () => {
     const fixture = setup();
     const store = TestBed.inject(CardNestStore);
-    const source = {
-      ...store.paymentSources().find((row) => row.kind === 'DEBIT')!,
-      archived: true,
-      lastDigits: '00007',
-    };
-    store.paymentSources.set([source]);
+    store.paymentSources.set([
+      {
+        id: 'known-bank',
+        kind: 'DEBIT',
+        nickname: 'Everyday',
+        institution: 'ICICI Bank',
+        lastDigits: '45123',
+        balanceMinor: 100000,
+        balanceCutoverAt: '2026-10-28T10:00:00Z',
+        noLimit: true,
+        autoLoad: false,
+        archived: false,
+      },
+      {
+        id: 'unknown-bank',
+        kind: 'DEBIT',
+        nickname: 'Reserve',
+        institution: 'HDFC Bank',
+        lastDigits: '00007',
+        noLimit: true,
+        autoLoad: false,
+        archived: false,
+      },
+    ]);
+    store.bankCashTracking.set({ enabled: true, askCardSettlementFunding: false });
     fixture.detectChanges();
-    const update = vi.spyOn(store, 'updatePaymentSource').mockResolvedValue();
-    const restore = (fixture.nativeElement as HTMLElement).querySelector<HTMLButtonElement>(
-      'details[aria-label="Archived bank accounts"] button',
+    expect(fixture.componentInstance.bankBalanceSummary().status).toBe('INCOMPLETE');
+    expect(fixture.componentInstance.remainingLabel()).toContain('Incomplete');
+    expect(fixture.nativeElement.querySelector('.bank-balance-summary').textContent).toContain(
+      'Incomplete',
     );
-    expect(restore).not.toBeNull();
-    restore!.click();
-    await fixture.whenStable();
-    expect(update).toHaveBeenCalledWith({ ...source, archived: false });
-    expect(source.archived).toBe(true);
+    expect(
+      fixture.nativeElement.querySelector('.bank-balance-summary > header').textContent,
+    ).not.toContain('₹1,000.00');
+    const details = fixture.nativeElement.querySelector(
+      '.bank-balance-summary details',
+    ) as HTMLDetailsElement;
+    details.open = true;
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('.bank-balance-summary details input')).toBeNull();
+    expect(details.textContent).toContain('₹1,000.00');
+    expect(details.textContent).toContain('Balance not set');
+
+    store.paymentSources.update((sources) =>
+      sources.map((source) =>
+        source.id === 'unknown-bank'
+          ? { ...source, balanceMinor: 250000, balanceCutoverAt: '2026-10-28T10:00:00Z' }
+          : source,
+      ),
+    );
+    fixture.detectChanges();
+    expect(fixture.componentInstance.bankBalanceSummary()).toMatchObject({
+      status: 'KNOWN',
+      totalMinor: 350000,
+    });
+    expect(fixture.componentInstance.remainingLabel()).toContain('₹3,500.00');
+    expect(fixture.nativeElement.querySelector('.bank-balance-summary').textContent).toContain(
+      '₹3,500.00',
+    );
     fixture.destroy();
-  });
-  it('rejects an explicitly cleared enrolled bank name with feedback and preserves the saved value', async () => {
-    const fixture = setup();
-    const store = TestBed.inject(CardNestStore);
-    const source = {
-      ...store.paymentSources().find((row) => row.kind === 'DEBIT')!,
-      institution: 'ICICI',
-      lastDigits: '417',
-    };
-    const input = document.createElement('input');
-    input.value = '   ';
-    const update = vi.spyOn(store, 'updatePaymentSource');
-    const snackbar = vi.spyOn(TestBed.inject(SnackbarService), 'show');
-    await fixture.componentInstance.updateBankField(source, 'institution', {
-      target: input,
-    } as unknown as Event);
-    expect(update).not.toHaveBeenCalled();
-    expect(input.value).toBe('ICICI');
-    expect(input.validationMessage).toBe('Enter a bank name.');
-    expect(snackbar).toHaveBeenCalledExactlyOnceWith('Enter a bank name.', 'WARNING');
   });
   it('orders wallet activity by event time and shows recorded time without using scan time', () => {
     const fixture = setup();

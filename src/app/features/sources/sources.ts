@@ -16,12 +16,7 @@ import { AppDatePipe } from '../../core/services/date-format.service';
 import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { recordedTransactionTime } from '../../core/services/transaction-time';
-import {
-  bankCashTracked,
-  isBankOrCash,
-  isEnrolledBankAccount,
-  transferLabel,
-} from '../../core/services/source-balance';
+import { bankCashTracked, isBankOrCash, transferLabel } from '../../core/services/source-balance';
 import { SourceMovementDialog, SourceMovementMode } from '../../shared/source-movement-dialog';
 
 interface MovementRequest {
@@ -33,6 +28,7 @@ interface MovementRequest {
 }
 
 type SourceTab = 'ACCOUNTS' | 'ACTIVITY';
+type BalanceSummaryStatus = 'OFF' | 'NONE' | 'INCOMPLETE' | 'KNOWN';
 
 interface SourceCycleGroup {
   readonly key: string;
@@ -115,57 +111,34 @@ export class SourcesPage {
     }
   }
   readonly store = inject(CardNestStore);
-  readonly archivedBankAccounts = computed(() =>
-    this.store.paymentSources().filter((source) => source.kind === 'DEBIT' && source.archived),
-  );
-  readonly restoringAccounts = signal<ReadonlySet<string>>(new Set());
   readonly movement = signal<MovementRequest | null>(null);
-  readonly bankOpen = signal(false);
-  readonly bankSaving = signal(false);
-  readonly bankError = signal('');
-  readonly bankForm = new FormGroup({
-    nickname: new FormControl('', {
-      nonNullable: true,
-      validators: [Validators.required, Validators.maxLength(80)],
-    }),
-    institution: new FormControl('', {
-      nonNullable: true,
-      validators: [Validators.required, Validators.maxLength(80)],
-    }),
-    lastDigits: new FormControl('', {
-      nonNullable: true,
-      validators: [Validators.required, Validators.pattern(/^\d{3,5}$/)],
-    }),
-  });
-  bankToggled(event: Event): void {
-    this.bankOpen.set((event.target as HTMLDetailsElement).open);
-  }
-  async addBankAccount(event: Event): Promise<void> {
-    event.preventDefault();
-    if (!this.bankForm.valid || this.bankSaving()) {
-      this.bankForm.markAllAsTouched();
-      return;
-    }
-    this.bankError.set('');
-    this.bankSaving.set(true);
-    try {
-      const account = await this.store.addBankAccount(this.bankForm.getRawValue());
-      this.bankForm.reset();
-      this.bankOpen.set(false);
-      this.snackbar.show(`${this.store.sourceDetail(account.id)} enrolled.`);
-    } catch (error: unknown) {
-      this.bankError.set(error instanceof Error ? error.message : 'Account could not be saved.');
-      this.snackbar.show(this.bankError(), 'WARNING');
-    } finally {
-      this.bankSaving.set(false);
-    }
-  }
   readonly tracking = computed(() => this.store.bankCashTracking());
+  readonly bankBalanceSummary = computed(() => {
+    if (!this.tracking().enabled) return { status: 'OFF' as BalanceSummaryStatus };
+    const sources = this.store.bankAccounts();
+    if (!sources.length) return { status: 'NONE' as BalanceSummaryStatus };
+    if (!sources.every((source) => this.tracked(source)))
+      return { status: 'INCOMPLETE' as BalanceSummaryStatus };
+    const totalMinor = sources.reduce((sum, source) => sum + (source.balanceMinor ?? 0), 0);
+    return Number.isSafeInteger(totalMinor)
+      ? { status: 'KNOWN' as BalanceSummaryStatus, totalMinor }
+      : { status: 'INCOMPLETE' as BalanceSummaryStatus };
+  });
+  readonly liquidBalanceSummary = computed(() => {
+    if (!this.tracking().enabled) return { status: 'OFF' as BalanceSummaryStatus };
+    const sources = this.store
+      .paymentSources()
+      .filter((source) => isBankOrCash(source) && !source.archived);
+    if (!sources.length) return { status: 'NONE' as BalanceSummaryStatus };
+    if (!sources.every((source) => this.tracked(source)))
+      return { status: 'INCOMPLETE' as BalanceSummaryStatus };
+    const totalMinor = sources.reduce((sum, source) => sum + (source.balanceMinor ?? 0), 0);
+    return Number.isSafeInteger(totalMinor)
+      ? { status: 'KNOWN' as BalanceSummaryStatus, totalMinor }
+      : { status: 'INCOMPLETE' as BalanceSummaryStatus };
+  });
   isBankOrCash(source: PaymentSource): boolean {
     return isBankOrCash(source);
-  }
-  isEnrolled(source: PaymentSource): boolean {
-    return isEnrolledBankAccount(source);
   }
   tracked(source: PaymentSource): boolean {
     return bankCashTracked(source, this.tracking());
@@ -173,6 +146,17 @@ export class SourcesPage {
   balanceState(source: PaymentSource): 'TRACKED' | 'NOT_SET' | 'OFF' {
     if (!this.tracking().enabled) return 'OFF';
     return this.tracked(source) ? 'TRACKED' : 'NOT_SET';
+  }
+  bankAccountBalanceLabel(source: PaymentSource): string {
+    if (!this.tracking().enabled) return 'Not tracked';
+    return this.tracked(source) ? this.money(source.balanceMinor) : 'Balance not set';
+  }
+  liquidBalanceLabel(): string {
+    const summary = this.liquidBalanceSummary();
+    if (summary.status === 'OFF') return 'Balance tracking off';
+    if (summary.status === 'NONE') return 'No active Bank/Cash accounts';
+    if (summary.status === 'INCOMPLETE') return 'Incomplete · one or more balances not set';
+    return this.money(summary.totalMinor ?? 0);
   }
   openMovement(request: MovementRequest): void {
     this.movement.set(request);
@@ -182,54 +166,6 @@ export class SourcesPage {
       this.store.bankAccounts().find((source) => source.id !== excludeId && this.tracked(source))
         ?.id ?? ''
     );
-  }
-  async updateBankField(
-    source: PaymentSource,
-    field: 'nickname' | 'institution' | 'lastDigits',
-    event: Event,
-  ): Promise<void> {
-    const input = event.target as HTMLInputElement;
-    const value = input.value.trim();
-    if (field === 'institution' && isEnrolledBankAccount(source) && !value) {
-      input.setCustomValidity('Enter a bank name.');
-      input.reportValidity();
-      this.snackbar.show('Enter a bank name.', 'WARNING');
-      input.value = source.institution ?? '';
-      return;
-    }
-    if (field === 'lastDigits' && !/^\d{3,5}$/.test(value)) {
-      input.setCustomValidity('Enter the last 3 to 5 digits.');
-      input.reportValidity();
-      return;
-    }
-    input.setCustomValidity('');
-    if (!value && field !== 'institution') return;
-    const saved = await this.persistSource(
-      { ...source, [field]: value.slice(0, 80) || undefined },
-      `${source.nickname} updated.`,
-    );
-    if (!saved && input.value.trim() === value)
-      input.value = String(
-        this.store.paymentSources().find((item) => item.id === source.id)?.[field] ?? '',
-      );
-  }
-  async archiveAccount(source: PaymentSource): Promise<void> {
-    await this.persistSource(
-      { ...source, archived: true },
-      `${source.nickname} archived. Its history is kept.`,
-    );
-  }
-  async restoreAccount(source: PaymentSource): Promise<void> {
-    if (this.restoringAccounts().has(source.id)) return;
-    this.restoringAccounts.update((ids) => new Set([...ids, source.id]));
-    try {
-      await this.persistSource(
-        { ...source, archived: false },
-        `${source.nickname} restored. Its saved balance and history are unchanged.`,
-      );
-    } finally {
-      this.restoringAccounts.update((ids) => new Set([...ids].filter((id) => id !== source.id)));
-    }
   }
   readonly visibleTransfers = computed(() =>
     this.store
@@ -345,12 +281,39 @@ export class SourcesPage {
     const selected = this.selectedSource();
     const funds = (source: PaymentSource) =>
       isBankOrCash(source) ? this.tracked(source) : !source.noLimit;
-    if (selected) return funds(selected) ? (selected.balanceMinor ?? 0) : null;
-    const tracked = this.store.paymentSources().filter(funds);
+    if (selected)
+      return isBankOrCash(selected) && !this.tracking().enabled
+        ? null
+        : funds(selected)
+          ? (selected.balanceMinor ?? 0)
+          : null;
+    const activeSources = this.store.activePaymentSources();
+    const activeBankCash = activeSources.filter(isBankOrCash);
+    if (
+      this.tracking().enabled &&
+      activeBankCash.length > 0 &&
+      !activeBankCash.every((source) => this.tracked(source))
+    )
+      return null;
+    const tracked = activeSources.filter(funds);
     return tracked.length
       ? tracked.reduce((sum, source) => sum + (source.balanceMinor ?? 0), 0)
       : null;
   });
+  remainingLabel(): string {
+    const selected = this.selectedSource();
+    if (selected && isBankOrCash(selected)) {
+      if (!this.tracking().enabled) return 'Balance tracking off';
+      if (!this.tracked(selected)) return 'Balance not set';
+    }
+    if (!selected && this.tracking().enabled) {
+      const banks = this.store.activePaymentSources().filter(isBankOrCash);
+      if (banks.some((source) => !this.tracked(source)))
+        return 'Incomplete · one or more balances not set';
+    }
+    const remaining = this.remainingMinor();
+    return remaining === null ? 'Not tracked' : this.money(remaining);
+  }
 
   money(value: number | undefined): string {
     return formatMoney(value ?? 0, 'INR');

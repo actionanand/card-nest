@@ -108,7 +108,7 @@
               <button
                 type="button"
                 class="pay-from-trigger"
-                (click)="payFromOpen.set(true)"
+                (click)="openPayFrom()"
                 [attr.aria-expanded]="payFromOpen()"
                 aria-haspopup="listbox"
               >
@@ -140,9 +140,16 @@
                       <app-icon name="close" />
                     </button>
                   </div>
-                  @if (store.activeCards().length) {
+                  <label class="pay-from-search"
+                    >Search accounts<input
+                      type="search"
+                      [value]="payFromSearch()"
+                      (input)="updatePayFromSearch($event)"
+                      placeholder="Bank, nickname or last digits"
+                  /></label>
+                  @if (searchedPayFromCards().length) {
                     <p class="pay-from-group">Credit cards</p>
-                    @for (card of store.alphabeticalActiveCards(); track card.id) {
+                    @for (card of searchedPayFromCards(); track card.id) {
                       <button
                         type="button"
                         class="pay-from-option"
@@ -161,9 +168,9 @@
                       </button>
                     }
                   }
-                  @if (store.activePaymentSources().length) {
+                  @if (searchedPayFromSources().length) {
                     <p class="pay-from-group">Cash, bank &amp; meal card</p>
-                    @for (source of store.activePaymentSources(); track source.id) {
+                    @for (source of searchedPayFromSources(); track source.id) {
                       <button
                         type="button"
                         class="pay-from-option"
@@ -172,8 +179,21 @@
                         [attr.aria-selected]="form.controls.cardId.value === source.id"
                         (click)="selectPayFrom(source.id)"
                       >
-                        <span class="pay-from-option__name">{{ source.nickname }}</span>
-                        @if (source.lastDigits || source.institution) {
+                        <span class="pay-from-option__name">
+                          {{
+                            source.kind === 'DEBIT'
+                              ? source.institution || 'Bank/UPI'
+                              : source.nickname
+                          }}
+                          {{ source.kind === 'DEBIT' ? ' · ' + source.nickname : '' }}
+                        </span>
+                        @if (source.kind === 'DEBIT' && source.lastDigits) {
+                          <span class="pay-from-option__detail"
+                            >•••{{ source.lastDigits.slice(-3) }}</span
+                          >
+                        } @else if (
+                          source.kind !== 'DEBIT' && (source.lastDigits || source.institution)
+                        ) {
                           <span class="pay-from-option__detail">
                             @if (source.lastDigits) {
                               {{ source.lastDigits }}

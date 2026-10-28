@@ -144,6 +144,11 @@ describe('BankActivityService Android SMS matching', () => {
   let events: Map<string, BankActivityEvent>;
   let candidates: Map<string, string>;
   let statements: string[];
+  const paymentSources = Object.assign(() => sources, {
+    set: (next: typeof sources) => {
+      sources = next;
+    },
+  });
 
   const queryRows = async (statement: string, values: readonly unknown[] = []) => {
     if (statement.includes('FROM bank_activity_profiles WHERE id=?')) {
@@ -267,7 +272,7 @@ describe('BankActivityService Android SMS matching', () => {
       providers: [
         BankActivityService,
         { provide: SqliteDatabase, useValue: database },
-        { provide: CardNestStore, useValue: { paymentSources: () => sources } },
+        { provide: CardNestStore, useValue: { paymentSources } },
       ],
     });
     service = TestBed.inject(BankActivityService);
@@ -321,6 +326,16 @@ describe('BankActivityService Android SMS matching', () => {
       false,
     );
     expect(service.events()).toHaveLength(0);
+    expect(service.candidates()[0]).toMatchObject({
+      accountSuffix: '456',
+      bankName: 'Fictional Bank',
+    });
+    expect(service.profiles().find((row) => row.id === profile.id)).toMatchObject({
+      accountSuffix: '456',
+      bankName: 'Fictional Bank',
+    });
+    expect(service.match(service.candidates()[0]).state).toBe('UNIQUE');
+    expect(service.selectionMatches(service.candidates()[0], profile.id)).toBe(true);
     await service.approveCandidate('standalone-fingerprint', profile.id);
     expect(service.events()).toHaveLength(1);
     expect(service.events()[0].profileId).toBe(profile.id);

@@ -63,9 +63,17 @@ import { AppIcon } from './app-icon';
             </button>
           }
 
-          @if (store.alphabeticalActiveCards().length) {
+          <label class="picker-search"
+            >Search accounts<input
+              type="search"
+              [value]="query()"
+              (input)="query.set(searchValue($event))"
+              placeholder="Bank, nickname or last digits"
+          /></label>
+
+          @if (matchingCards().length) {
             <p class="picker-group">Credit cards</p>
-            @for (card of store.alphabeticalActiveCards(); track card.id) {
+            @for (card of matchingCards(); track card.id) {
               <button
                 type="button"
                 class="picker-option"
@@ -84,9 +92,9 @@ import { AppIcon } from './app-icon';
             }
           }
 
-          @if (store.activePaymentSources().length) {
+          @if (matchingSources().length) {
             <p class="picker-group">Cash, bank &amp; meal card</p>
-            @for (source of store.activePaymentSources(); track source.id) {
+            @for (source of matchingSources(); track source.id) {
               <button
                 type="button"
                 class="picker-option"
@@ -96,12 +104,17 @@ import { AppIcon } from './app-icon';
                 [attr.aria-selected]="value() === source.id"
                 (click)="select(source.id)"
               >
-                <span class="option-name">{{ source.nickname }}</span>
+                <span class="option-name"
+                  >{{ source.kind === 'DEBIT' ? source.institution || 'Bank/UPI' : source.nickname
+                  }}{{ source.kind === 'DEBIT' ? ' · ' + source.nickname : '' }}</span
+                >
                 <span class="option-detail">
-                  @if (source.lastDigits) {
+                  @if (source.kind === 'DEBIT' && source.lastDigits) {
+                    •••{{ source.lastDigits.slice(-3) }}
+                  } @else if (source.kind !== 'DEBIT' && source.lastDigits) {
                     {{ source.lastDigits }} ·
                   }
-                  {{ source.institution || source.kind }}
+                  {{ source.kind === 'DEBIT' ? 'Bank account' : source.institution || source.kind }}
                 </span>
                 @if (value() === source.id) {
                   <app-icon class="option-check" name="success" />
@@ -195,6 +208,26 @@ import { AppIcon } from './app-icon';
       color: var(--muted);
       background: var(--canvas);
     }
+    .picker-search {
+      display: grid;
+      gap: 0.35rem;
+      padding: 0.8rem 1.25rem;
+      color: var(--muted);
+      font-size: 0.75rem;
+      font-weight: 700;
+    }
+    .picker-search input {
+      box-sizing: border-box;
+      width: 100%;
+      min-height: 44px;
+      padding: 0.65rem 0.75rem;
+      border: 1px solid var(--line);
+      border-radius: 0.6rem;
+      color: var(--ink);
+      background: var(--canvas);
+      font: inherit;
+      font-weight: 400;
+    }
     .picker-header app-icon,
     .option-check {
       width: 1.05rem;
@@ -265,20 +298,41 @@ export class PaymentSourcePicker {
   readonly disabled = input(false);
   readonly valueChange = output<string>();
   readonly open = signal(false);
+  readonly query = signal('');
+  readonly matchingCards = computed(() => {
+    const terms = this.query().trim().toLowerCase().split(/\s+/).filter(Boolean);
+    return this.store.alphabeticalActiveCards().filter((card) => {
+      const searchable = `${card.nickname} ${card.issuerName} ${card.lastDigits}`.toLowerCase();
+      return terms.every((term) => searchable.includes(term));
+    });
+  });
+  readonly matchingSources = computed(() => {
+    const terms = this.query().trim().toLowerCase().split(/\s+/).filter(Boolean);
+    return this.store.activePaymentSources().filter((source) => {
+      const searchable =
+        `${source.institution ?? ''} ${source.nickname} ${source.lastDigits ?? ''} ${source.kind}`.toLowerCase();
+      return terms.every((term) => searchable.includes(term));
+    });
+  });
 
   readonly selectedLabel = computed(() => {
     if (!this.value()) return this.allowAutomatic() ? 'First available source' : 'Choose a source';
     const card = this.store.activeCards().find((item) => item.id === this.value());
     if (card) return `${card.nickname} · ${card.lastDigits} · ${card.issuerName}`;
     const source = this.store.activePaymentSources().find((item) => item.id === this.value());
-    return source
-      ? `${source.nickname}${source.lastDigits ? ` · ${source.lastDigits}` : ''}${source.institution ? ` · ${source.institution}` : ''}`
-      : 'Choose a source';
+    if (!source) return 'Choose a source';
+    if (source.kind === 'DEBIT')
+      return `${source.institution || 'Bank/UPI'} · ${source.nickname}${source.lastDigits ? ` · •••${source.lastDigits.slice(-3)}` : ''}`;
+    return `${source.nickname}${source.lastDigits ? ` · ${source.lastDigits}` : ''}${source.institution ? ` · ${source.institution}` : ''}`;
   });
 
   select(id: string): void {
     if (this.disabled()) return;
     this.valueChange.emit(id);
     this.open.set(false);
+    this.query.set('');
+  }
+  searchValue(event: Event): string {
+    return (event.target as HTMLInputElement).value;
   }
 }

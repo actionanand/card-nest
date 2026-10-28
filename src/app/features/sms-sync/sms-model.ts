@@ -380,7 +380,23 @@ function bankConflicts(source: PaymentSource, issuer: string | undefined): boole
   if (!issuer || !institution || institution === 'Primary bank') return false;
   const left = normalizedIssuer(institution);
   const right = normalizedIssuer(issuer);
-  return !!left && !!right && !left.includes(right) && !right.includes(left);
+  const knownBanks = new Set([
+    'hsbc',
+    'icici',
+    'hdfc',
+    'axis',
+    'pnb',
+    'scb',
+    'federal',
+    'idfc',
+    'au',
+    'kotak',
+    'rbl',
+    'sbi',
+    'bob',
+    'slice',
+  ]);
+  return knownBanks.has(left) && knownBanks.has(right) && left !== right;
 }
 
 /**
@@ -391,10 +407,16 @@ export function matchingBankAccounts(
   item: Pick<SmsEvidence, 'accountDigits' | 'issuer'>,
   sources: readonly PaymentSource[],
 ): readonly PaymentSource[] {
+  return matchingBankAccountCandidates(item, sources).filter((source) => !source.archived);
+}
+
+export function matchingBankAccountCandidates(
+  item: Pick<SmsEvidence, 'accountDigits' | 'issuer'>,
+  sources: readonly PaymentSource[],
+): readonly PaymentSource[] {
   return sources.filter(
     (source) =>
       source.kind === 'DEBIT' &&
-      !source.archived &&
       !!source.lastDigits &&
       accountSuffixMatches(item.accountDigits, source.lastDigits) &&
       !bankConflicts(source, item.issuer),
@@ -407,8 +429,8 @@ export function suggestedBankSources(
   sources: readonly PaymentSource[],
   settings: BankCashTrackingSettings,
 ): readonly string[] {
-  const matches = matchingBankAccounts(item, sources);
-  if (matches.length) return matches.length === 1 ? [matches[0].id] : [];
+  const matches = matchingBankAccountCandidates(item, sources);
+  if (matches.length) return matches.length === 1 && !matches[0].archived ? [matches[0].id] : [];
   if (settings.enabled) return [];
   const generic = sources.filter(
     (source) => source.kind === 'DEBIT' && !source.archived && !source.lastDigits,

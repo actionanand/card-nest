@@ -277,6 +277,9 @@
   .form-grid {
     grid-template-columns: minmax(0, 1fr);
   }
+  .evidence-filters {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .page-header {
@@ -321,13 +324,46 @@ app-profile-modal .activity-form {
   padding: 0;
 }
 .discovery-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
+  display: grid;
+  justify-items: center;
   gap: 0.6rem;
 }
+.discovery-actions > .btn {
+  width: fit-content;
+  max-width: 100%;
+  min-height: 48px;
+}
 .discovery-actions p {
-  flex-basis: 100%;
+  width: 100%;
+  max-width: 48rem;
+}
+.evidence-filters {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: end;
+  gap: 0.65rem;
+}
+.evidence-filters > label {
+  display: grid;
+  min-width: 0;
+  gap: 0.35rem;
+  font-size: 0.82rem;
+}
+.evidence-filters input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 44px;
+  padding: 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: 0.55rem;
+  color: var(--ink);
+  background: var(--canvas);
+  font: inherit;
+}
+.archived-list h3 {
+  margin: 0.75rem 0 0.2rem;
+  color: var(--ink);
+  font-size: 0.85rem;
 }
 .profile-actions .btn,
 .icon-action {

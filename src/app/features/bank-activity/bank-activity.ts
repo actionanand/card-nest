@@ -10,21 +10,48 @@ import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker
 import { AppIcon } from '../../shared/app-icon';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { IndiaTodayClock } from '../../core/services/india-date';
+import { formatMoney } from '../../core/services/money';
+import { bankCashTracked } from '../../core/services/source-balance';
 import { BankActivityEvent, BankActivityProfile } from './bank-activity-model';
 import { BankActivityService } from './bank-activity.service';
 import { BankAccountSyncService } from './bank-account-sync.service';
+import { SourceMovementDialog } from '../../shared/source-movement-dialog';
+import { PaymentSource } from '../../core/models/domain';
+import { ActivatedRoute } from '@angular/router';
+
+interface BankAccountCard {
+  readonly key: string;
+  readonly source?: PaymentSource;
+  readonly profile?: BankActivityProfile;
+  readonly bankName: string;
+  readonly nickname: string;
+  readonly suffix?: string;
+  readonly owner: BankActivityProfile['owner'];
+  readonly sourceArchived?: boolean;
+}
 
 @Component({
   selector: 'app-bank-activity-page',
-  imports: [ProfileModal, ConfirmationDialog, ReactiveFormsModule, AppIcon, AppSelectPicker],
+  imports: [
+    ProfileModal,
+    ConfirmationDialog,
+    ReactiveFormsModule,
+    AppIcon,
+    AppSelectPicker,
+    SourceMovementDialog,
+  ],
   templateUrl: './bank-activity.html',
   styleUrl: './bank-activity.scss',
 })
 export class BankActivityPage {
   readonly activity = inject(BankActivityService);
   readonly store = inject(CardNestStore);
+  private readonly route = inject(ActivatedRoute);
+  private readonly requestedSourceId = this.route.snapshot.queryParamMap.get('source') ?? '';
+  private readonly focusedRequestedSource = signal(false);
   private readonly dateClock = inject(IndiaTodayClock);
   readonly profileFormOpen = signal(false);
+  readonly editingMoneySourceId = signal<string | null>(null);
   readonly eventProfileId = signal<string | null>(null);
   readonly editingProfileId = signal<string | null>(null);
   readonly editingEventId = signal<string | null>(null);
@@ -35,12 +62,18 @@ export class BankActivityPage {
   readonly activeTab = signal(0);
   readonly deletion = signal<BankActivityEvent | null>(null);
   readonly accountSync = inject(BankAccountSyncService);
+  readonly balanceMovement = signal<{ sourceId: string } | null>(null);
   readonly discoveryNotice = signal('');
   readonly mismatchAcknowledged = signal<Readonly<Record<string, boolean>>>({});
   readonly confirmation = signal<{
     fingerprint: string;
     profileId: string;
     acknowledged: boolean;
+    message: string;
+  } | null>(null);
+  readonly identityConfirmation = signal<{
+    fingerprint: string;
+    profileId: string;
     message: string;
   } | null>(null);
   readonly discoveries = computed(() => {
@@ -73,12 +106,41 @@ export class BankActivityPage {
       needsIdentification: group.events.some((row) => this.activity.match(row).state !== 'NEW'),
     }));
   });
-  readonly reviewCandidates = computed(() =>
-    this.activity.candidates().filter((row) => this.activity.match(row).state !== 'NEW'),
-  );
+  readonly reviewCandidates = computed(() => this.activity.candidates());
+  readonly evidenceQuery = signal('');
+  readonly evidenceFilter = signal('ALL');
+  readonly evidenceFilterOptions: readonly AppSelectOption[] = [
+    { value: 'ALL', label: 'All evidence' },
+    { value: 'UNIDENTIFIED', label: 'Unidentified' },
+    { value: 'SUGGESTED', label: 'Suggested match' },
+    { value: 'NEEDS_REVIEW', label: 'Needs review' },
+    { value: 'ASSOCIATED', label: 'Already associated' },
+  ];
+  readonly filteredEvidence = computed(() => {
+    const query = this.evidenceQuery().trim().toLowerCase();
+    const status = this.evidenceFilter();
+    return this.reviewCandidates()
+      .filter((candidate) => status === 'ALL' || this.evidenceStatus(candidate) === status)
+      .filter(
+        (candidate) =>
+          !query ||
+          [
+            candidate.bankName,
+            candidate.accountSuffix,
+            candidate.activityDate,
+            candidate.direction,
+            candidate.purposeHint,
+            candidate.reference,
+          ]
+            .filter(Boolean)
+            .join(' ')
+            .toLowerCase()
+            .includes(query),
+      );
+  });
   readonly reviewLimit = signal(20);
   readonly visibleReviewCandidates = computed(() =>
-    this.reviewCandidates().slice(0, this.reviewLimit()),
+    this.filteredEvidence().slice(0, this.reviewLimit()),
   );
   private readonly explicitReviewSelections = signal<Readonly<Record<string, boolean>>>({});
   readonly reviewSelection = signal<Readonly<Record<string, string>>>({});
@@ -88,6 +150,48 @@ export class BankActivityPage {
   readonly activeProfiles = computed(() =>
     this.activity.profiles().filter((profile) => !profile.archived),
   );
+  readonly activeMoneySources = computed(() =>
+    this.store.paymentSources().filter((source) => source.kind === 'DEBIT' && !source.archived),
+  );
+  readonly archivedMoneySources = computed(() =>
+    this.store.paymentSources().filter((source) => source.kind === 'DEBIT' && source.archived),
+  );
+  readonly accountCards = computed<readonly BankAccountCard[]>(() => {
+    const allSources = this.store.paymentSources().filter((source) => source.kind === 'DEBIT');
+    const sources = allSources.filter((source) => !source.archived);
+    const profiles = this.activity.profiles();
+    const linkedIds = new Set(allSources.map((source) => source.id));
+    const sourceCards = sources.map((source) => ({
+      key: source.id,
+      source,
+      profile: profiles.find((profile) => profile.paymentSourceId === source.id),
+      bankName: source.institution || 'Bank/UPI',
+      nickname: source.nickname,
+      suffix: finalThree(source.lastDigits),
+      owner: 'OWN' as const,
+    }));
+    const standaloneProfiles = profiles
+      .filter(
+        (profile) =>
+          !profile.archived &&
+          (!profile.paymentSourceId ||
+            !linkedIds.has(profile.paymentSourceId) ||
+            allSources.find((source) => source.id === profile.paymentSourceId)?.archived),
+      )
+      .map((profile) => ({
+        key: `profile:${profile.id}`,
+        source: undefined,
+        profile,
+        bankName: profile.bankName,
+        nickname: profile.nickname || profile.holderName || 'Monitored account',
+        suffix: finalThree(profile.accountSuffix),
+        owner: profile.owner,
+        sourceArchived:
+          !!profile.paymentSourceId &&
+          !!allSources.find((source) => source.id === profile.paymentSourceId)?.archived,
+      }));
+    return [...sourceCards, ...standaloneProfiles];
+  });
   readonly archivedProfiles = computed(() =>
     this.activity.profiles().filter((profile) => profile.archived),
   );
@@ -136,6 +240,20 @@ export class BankActivityPage {
     confirmOwnershipSync: new FormControl(false, { nonNullable: true }),
     remarks: new FormControl('', { nonNullable: true, validators: Validators.maxLength(300) }),
   });
+  readonly moneySourceForm = new FormGroup({
+    nickname: new FormControl('', {
+      nonNullable: true,
+      validators: [Validators.required, Validators.maxLength(80)],
+    }),
+    institution: new FormControl('', {
+      nonNullable: true,
+      validators: [Validators.required, Validators.maxLength(80)],
+    }),
+    lastDigits: new FormControl('', {
+      nonNullable: true,
+      validators: [Validators.required, Validators.pattern(/^\d{3,5}$/)],
+    }),
+  });
   readonly eventForm = new FormGroup({
     activityDate: new FormControl(this.today, {
       nonNullable: true,
@@ -147,6 +265,17 @@ export class BankActivityPage {
 
   private readonly profileChanges = toSignal(this.profileForm.valueChanges);
   constructor() {
+    effect(() => {
+      const sourceId = this.requestedSourceId;
+      if (!sourceId || this.focusedRequestedSource()) return;
+      if (!this.accountCards().some((card) => card.source?.id === sourceId)) return;
+      this.focusedRequestedSource.set(true);
+      queueMicrotask(() => {
+        const card = document.getElementById('bank-account-' + sourceId);
+        card?.focus();
+        card?.scrollIntoView?.({ block: 'center' });
+      });
+    });
     effect(() => {
       const candidates = this.activity.candidates();
       const explicit = this.explicitReviewSelections();
@@ -164,7 +293,11 @@ export class BankActivityPage {
               next[candidate.fingerprint] = current[candidate.fingerprint] ?? '';
           } else {
             const match = this.activity.match(candidate);
-            if (match.suggestedId) next[candidate.fingerprint] = match.suggestedId;
+            const resolvedId =
+              candidate.resolvedAt && candidate.resolvedProfileId
+                ? candidate.resolvedProfileId
+                : match.suggestedId;
+            if (resolvedId && activeIds.has(resolvedId)) next[candidate.fingerprint] = resolvedId;
           }
         return next;
       });
@@ -252,10 +385,88 @@ export class BankActivityPage {
     return events.map((row) => row.fingerprint);
   }
   reviewWarning(candidate: BankActivityCandidate): string {
+    if (candidate.resolvedAt && candidate.resolvedProfileId) {
+      const profile = this.activity
+        .profiles()
+        .find((row) => row.id === candidate.resolvedProfileId);
+      return `Account identified as ${profile ? this.profileLabel(profile) : 'an unavailable account'}. Activity still requires separate confirmation.`;
+    }
     return this.activity.match(candidate).reason;
+  }
+  evidenceStatus(candidate: BankActivityCandidate): string {
+    if (candidate.resolvedAt && candidate.resolvedProfileId) return 'ASSOCIATED';
+    const state = this.activity.match(candidate).state;
+    if (state === 'UNIQUE') return 'SUGGESTED';
+    if (state === 'NEW') return 'UNIDENTIFIED';
+    return 'NEEDS_REVIEW';
+  }
+  evidenceStatusLabel(candidate: BankActivityCandidate): string {
+    const labels: Readonly<Record<string, string>> = {
+      ASSOCIATED: 'Account identified · activity pending',
+      SUGGESTED: 'Suggested match · confirm identity',
+      NEEDS_REVIEW: 'Needs review',
+      UNIDENTIFIED: 'Unidentified account',
+    };
+    return labels[this.evidenceStatus(candidate)] ?? 'Needs review';
+  }
+  maskedReference(value: string | undefined): string | undefined {
+    if (!value) return undefined;
+    return value.length > 4 ? `••••${value.slice(-4)}` : '••••';
+  }
+  canConfirmIdentity(candidate: BankActivityCandidate): boolean {
+    const state = this.activity.match(candidate).state;
+    const profileId = this.reviewSelection()[candidate.fingerprint];
+    const profile = this.activity.profiles().find((row) => row.id === profileId && !row.archived);
+    const suffix = finalThree(candidate.accountSuffix);
+    return (
+      !!profile &&
+      !!suffix &&
+      profileSuffix(profile, this.store.paymentSources()) === suffix &&
+      state !== 'BANK_MISMATCH' &&
+      state !== 'SUFFIX_MISMATCH' &&
+      state !== 'ARCHIVED'
+    );
+  }
+  requestIdentityConfirmation(fingerprint: string): void {
+    const profileId = this.reviewSelection()[fingerprint];
+    const candidate = this.activity.candidates().find((row) => row.fingerprint === fingerprint);
+    const profile = this.activity.profiles().find((row) => row.id === profileId && !row.archived);
+    if (!candidate || !profile || !this.canConfirmIdentity(candidate)) {
+      this.error.set(
+        'Choose one active account with a matching saved suffix before identifying this evidence.',
+      );
+      return;
+    }
+    this.identityConfirmation.set({
+      fingerprint,
+      profileId,
+      message:
+        `Associate this saved SMS evidence with ${this.profileLabel(profile)}? ` +
+        'This saves account identity only. It does not record Bank Activity, approve an SMS, create a transaction, or change a balance.',
+    });
+  }
+  async confirmIdentity(): Promise<void> {
+    const choice = this.identityConfirmation();
+    if (!choice || this.saving()) return;
+    this.identityConfirmation.set(null);
+    this.error.set(null);
+    this.saving.set(true);
+    try {
+      await this.activity.confirmCandidateIdentity(choice.fingerprint, choice.profileId);
+      this.discoveryNotice.set(
+        'Account identity saved. Related activity still requires separate review and confirmation; no transaction or balance changed.',
+      );
+    } catch (error: unknown) {
+      this.error.set(
+        error instanceof Error ? error.message : 'Account identity could not be saved.',
+      );
+    } finally {
+      this.saving.set(false);
+    }
   }
   selectionConflict(candidate: BankActivityCandidate): boolean {
     const id = this.reviewSelection()[candidate.fingerprint];
+    if (candidate.resolvedAt && candidate.resolvedProfileId === id) return false;
     return !!id && !this.activity.selectionMatches(candidate, id);
   }
   acknowledgeMismatch(fingerprint: string, event: Event): void {
@@ -266,6 +477,10 @@ export class BankActivityPage {
   }
   get today(): string {
     return this.dateClock.today();
+  }
+
+  value(event: Event): string {
+    return (event.target as HTMLInputElement).value;
   }
 
   statusLabel(profile: BankActivityProfile): string {
@@ -287,6 +502,123 @@ export class BankActivityPage {
         : status === 'LONG_INACTIVE'
           ? 'inactive'
           : 'unknown';
+  }
+
+  accountBalanceLabel(source?: PaymentSource): string {
+    if (!source || !this.store.bankCashTracking().enabled) return 'Not tracked';
+    if (!bankCashTracked(source, this.store.bankCashTracking())) return 'Balance not set';
+    return formatMoney(source.balanceMinor, 'INR');
+  }
+
+  canSetBalance(card: BankAccountCard): boolean {
+    return (
+      card.owner === 'OWN' &&
+      !!card.source &&
+      !card.source.archived &&
+      this.store.bankCashTracking().enabled
+    );
+  }
+
+  openBalance(card: BankAccountCard): void {
+    if (this.canSetBalance(card) && card.source)
+      this.balanceMovement.set({ sourceId: card.source.id });
+  }
+
+  startProfileForSource(source: PaymentSource): void {
+    this.startProfile();
+    this.profileForm.patchValue({
+      paymentSourceId: source.id,
+      bankName: source.institution ?? '',
+      nickname: source.nickname,
+      accountSuffix: finalThree(source.lastDigits) ?? '',
+      owner: 'OWN',
+      manualOnly: false,
+    });
+  }
+
+  editMoneySource(source: PaymentSource): void {
+    if (this.saving() || source.kind !== 'DEBIT' || source.archived) return;
+    this.error.set(null);
+    this.editingMoneySourceId.set(source.id);
+    this.moneySourceForm.reset({
+      nickname: source.nickname,
+      institution: source.institution ?? '',
+      lastDigits: source.lastDigits ?? '',
+    });
+  }
+
+  closeMoneySourceEditor(): void {
+    if (!this.saving()) this.editingMoneySourceId.set(null);
+  }
+
+  async saveMoneySourceIdentity(event: Event): Promise<void> {
+    event.preventDefault();
+    if (this.saving()) return;
+    this.moneySourceForm.markAllAsTouched();
+    if (this.moneySourceForm.invalid) return;
+    const sourceId = this.editingMoneySourceId();
+    if (!sourceId) return;
+    this.saving.set(true);
+    this.error.set(null);
+    try {
+      const source = await this.activity.updateOwnMoneySourceIdentity({
+        sourceId,
+        ...this.moneySourceForm.getRawValue(),
+      });
+      this.editingMoneySourceId.set(null);
+      this.discoveryNotice.set(
+        `${source.nickname} identity saved. Its balance, baseline and audit history are unchanged.`,
+      );
+    } catch (error: unknown) {
+      this.error.set(error instanceof Error ? error.message : 'Bank identity could not be saved.');
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  async archiveMoneySource(source: PaymentSource): Promise<void> {
+    if (this.saving()) return;
+    this.saving.set(true);
+    try {
+      await this.store.updatePaymentSource({ ...source, archived: true });
+      this.discoveryNotice.set(
+        `${source.nickname} Money Source archived. Its monitoring profile and financial history were not changed.`,
+      );
+    } catch (error: unknown) {
+      this.error.set(
+        error instanceof Error ? error.message : 'Money Source could not be archived.',
+      );
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  async restoreMoneySource(source: PaymentSource): Promise<void> {
+    if (this.saving()) return;
+    this.saving.set(true);
+    try {
+      await this.store.updatePaymentSource({ ...source, archived: false });
+      this.discoveryNotice.set(
+        `${source.nickname} Money Source restored. Its saved balance and history are unchanged.`,
+      );
+    } catch (error: unknown) {
+      this.error.set(
+        error instanceof Error ? error.message : 'Money Source could not be restored.',
+      );
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  async restoreMonitoring(profile: BankActivityProfile): Promise<void> {
+    try {
+      await this.activity.setArchived(profile.id, false);
+      this.discoveryNotice.set(`${this.profileLabel(profile)} monitoring restored.`);
+    } catch (error: unknown) {
+      this.error.set(
+        error instanceof Error ? error.message : 'Monitoring profile could not be restored.',
+      );
+    }
   }
 
   profileLabel(profile: BankActivityProfile): string {
@@ -341,6 +673,7 @@ export class BankActivityPage {
     if (this.saving()) return;
     this.profileForm.markAllAsTouched();
     const value = this.profileForm.getRawValue();
+    const returnToEvidence = this.activeTab() === 1;
     if (this.profileForm.invalid) {
       this.error.set(
         'Check the form. Last 3 account digits must contain exactly three numbers, such as 007.',
@@ -368,7 +701,7 @@ export class BankActivityPage {
         id: this.editingProfileId() ?? undefined,
       });
       this.profileFormOpen.set(false);
-      this.activeTab.set(2);
+      this.activeTab.set(returnToEvidence ? 1 : 0);
       this.discoveryNotice.set(
         'Monitoring profile saved. Related message suggestions still need individual review and confirmation.',
       );
@@ -480,7 +813,7 @@ export class BankActivityPage {
     const candidate = this.activity.candidates().find((row) => row.fingerprint === fingerprint);
     const profile = this.activity.profiles().find((row) => row.id === profileId && !row.archived);
     if (!candidate || !profile) return;
-    const conflict = !this.activity.selectionMatches(candidate, profileId);
+    const conflict = this.selectionConflict(candidate);
     const acknowledged = this.mismatchAcknowledged()[fingerprint] === true;
     if (conflict && !acknowledged) {
       this.error.set(

@@ -4,11 +4,13 @@ import {
   finalThree,
   matchesBank,
   profileSuffix,
+  recognizedBank,
   selectionMatches,
 } from './bank-activity-matching';
 import { Service, inject, signal } from '@angular/core';
 import { Capacitor } from '@capacitor/core';
 import { DatabaseSession, SqliteDatabase } from '../../core/data/sqlite-database';
+import { PaymentSource } from '../../core/models/domain';
 import { RECONCILE_BANK_ACTIVITY_LATEST } from '../../core/data/bank-activity-latest';
 import { indiaTodayIso } from '../../core/services/india-date';
 import { BankAccountSyncService } from './bank-account-sync.service';
@@ -117,10 +119,19 @@ export class BankActivityService {
     ]);
     this.profiles.set(profiles.map((row) => JSON.parse(row.payload) as BankActivityProfile));
     this.events.set(events.map((row) => JSON.parse(row.payload) as BankActivityEvent));
+    const recordedFingerprints = new Set(
+      events
+        .map((row) => (JSON.parse(row.payload) as BankActivityEvent).fingerprint)
+        .filter((fingerprint): fingerprint is string => !!fingerprint),
+    );
     this.candidates.set(
       candidates
         .map((row) => JSON.parse(row.payload) as BankActivityCandidate)
-        .filter((candidate) => !candidate.dismissed && !candidate.resolvedAt),
+        .filter(
+          (candidate) =>
+            !candidate.dismissed &&
+            !(candidate.resolvedAt && recordedFingerprints.has(candidate.fingerprint)),
+        ),
     );
   }
 
@@ -195,6 +206,10 @@ export class BankActivityService {
       throw new Error(
         'Enter the last three account digits, or explicitly choose manual-only monitoring.',
       );
+    if (input.owner === 'OWN' && !source && manualOnly && !previous)
+      throw new Error(
+        'A new OWN bank account needs the last three digits so CardNest can create its stable Money Source. Manual-only accounts are for OTHERS.',
+      );
     const timestamp = new Date().toISOString();
     const profile: BankActivityProfile = {
       id: previous?.id ?? crypto.randomUUID(),
@@ -261,6 +276,87 @@ export class BankActivityService {
     this.profiles.update((items) => [profile, ...items.filter((item) => item.id !== profile.id)]);
     await this.reload();
     return this.profiles().find((row) => row.id === profile.id) ?? profile;
+  }
+
+  async updateOwnMoneySourceIdentity(input: {
+    sourceId: string;
+    nickname: string;
+    institution: string;
+    lastDigits: string;
+  }): Promise<PaymentSource> {
+    const nickname = input.nickname.trim().slice(0, 80);
+    const institution = input.institution.trim().slice(0, 80);
+    const lastDigits = input.lastDigits.trim();
+    if (!nickname || !institution) throw new Error('Enter the account name and bank.');
+    if (!/^\d{3,5}$/.test(lastDigits)) throw new Error('Enter the last 3 to 5 account digits.');
+    const timestamp = new Date().toISOString();
+    const result = await this.database.atomic(async (tx) => {
+      const [preference] = await tx.query<{ encrypted_value: string }>(
+        "SELECT encrypted_value FROM app_preferences WHERE key='payment_sources'",
+      );
+      if (!preference) throw new Error('Saved Money Sources are unavailable.');
+      const raw: unknown = JSON.parse(preference.encrypted_value);
+      if (!Array.isArray(raw)) throw new Error('Saved Money Sources are invalid.');
+      const sources = raw as PaymentSource[];
+      const sourceIndex = sources.findIndex(
+        (source) => source.id === input.sourceId && source.kind === 'DEBIT',
+      );
+      if (sourceIndex < 0) throw new Error('Choose an existing OWN bank Money Source.');
+      const source = sources[sourceIndex];
+      if (source.archived) throw new Error('Restore this Money Source before editing it.');
+      const duplicate = sources.find(
+        (other) =>
+          other.id !== source.id &&
+          other.kind === 'DEBIT' &&
+          matchesBank(other.institution, institution) &&
+          other.lastDigits === lastDigits,
+      );
+      if (duplicate)
+        throw new Error(
+          duplicate.archived
+            ? 'An archived Money Source already has this bank and suffix. Restore it explicitly instead.'
+            : 'A Money Source with this bank and suffix already exists.',
+        );
+      const updatedSource: PaymentSource = {
+        ...source,
+        nickname,
+        institution,
+        lastDigits,
+      };
+      sources[sourceIndex] = updatedSource;
+      await tx.run("UPDATE app_preferences SET encrypted_value=? WHERE key='payment_sources'", [
+        JSON.stringify(sources),
+      ]);
+      const profileRows = await tx.query<{ payload: string }>(
+        'SELECT payload FROM bank_activity_profiles WHERE payment_source_id=?',
+        [source.id],
+      );
+      const updatedProfiles = profileRows.map((row) => {
+        const previous = JSON.parse(row.payload) as BankActivityProfile;
+        if (previous.owner !== 'OWN')
+          throw new Error('Only an OWN monitoring profile may link to this Money Source.');
+        const updated: BankActivityProfile = {
+          ...previous,
+          bankName: institution,
+          accountSuffix: finalThree(lastDigits),
+          updatedAt: timestamp,
+        };
+        return updated;
+      });
+      for (const profile of updatedProfiles)
+        await tx.run(
+          'UPDATE bank_activity_profiles SET bank_name=?,payload=?,updated_at=? WHERE id=?',
+          [profile.bankName, JSON.stringify(profile), profile.updatedAt, profile.id],
+        );
+      return { sources, updatedSource, updatedProfiles };
+    });
+    this.store.paymentSources.set(result.sources);
+    this.profiles.update((profiles) =>
+      profiles.map(
+        (profile) => result.updatedProfiles.find((updated) => updated.id === profile.id) ?? profile,
+      ),
+    );
+    return result.updatedSource;
   }
 
   async setArchived(profileId: string, archived: boolean): Promise<void> {
@@ -443,10 +539,102 @@ export class BankActivityService {
 
   async deleteEvent(eventId: string): Promise<void> {
     await this.database.atomic(async (tx) => {
+      const [event] = await tx.query<{ fingerprint?: string }>(
+        'SELECT fingerprint FROM bank_activity_events WHERE id=?',
+        [eventId],
+      );
+      if (event?.fingerprint) {
+        const [candidateRow] = await tx.query<{ payload: string }>(
+          'SELECT payload FROM bank_activity_candidates WHERE fingerprint=?',
+          [event.fingerprint],
+        );
+        if (candidateRow) {
+          const candidate = JSON.parse(candidateRow.payload) as BankActivityCandidate;
+          await tx.run('UPDATE bank_activity_candidates SET payload=? WHERE fingerprint=?', [
+            JSON.stringify({ ...candidate, dismissed: true }),
+            event.fingerprint,
+          ]);
+        }
+      }
       for (const statement of RECONCILE_BANK_ACTIVITY_LATEST.slice(0, 1)) await tx.run(statement);
       await tx.run('DELETE FROM bank_activity_events WHERE id=?', [eventId]);
     });
     this.events.update((items) => items.filter((item) => item.id !== eventId));
+  }
+
+  async confirmCandidateIdentity(
+    fingerprint: string,
+    profileId: string,
+  ): Promise<BankActivityCandidate> {
+    const timestamp = new Date().toISOString();
+    const candidate = await this.database.atomic(async (tx) => {
+      const [candidateRow] = await tx.query<{ payload: string }>(
+        'SELECT payload FROM bank_activity_candidates WHERE fingerprint=?',
+        [fingerprint],
+      );
+      if (!candidateRow) throw new Error('This bank evidence is no longer available.');
+      const saved = JSON.parse(candidateRow.payload) as BankActivityCandidate;
+      if (saved.dismissed) throw new Error('This bank evidence was dismissed.');
+      if (saved.fingerprint !== fingerprint) throw new Error('This bank evidence is invalid.');
+      const [recorded] = await tx.query<{ id: string }>(
+        'SELECT id FROM bank_activity_events WHERE fingerprint=?',
+        [fingerprint],
+      );
+      if (recorded) throw new Error('This evidence already has a confirmed activity record.');
+      if (saved.resolvedAt && saved.resolvedProfileId === profileId) return saved;
+      if (saved.resolvedAt && saved.resolvedProfileId !== profileId)
+        throw new Error('This evidence is already associated with another monitored account.');
+
+      const [profileRow] = await tx.query<{ payload: string; archived: number }>(
+        'SELECT payload,archived FROM bank_activity_profiles WHERE id=?',
+        [profileId],
+      );
+      if (!profileRow || profileRow.archived)
+        throw new Error('Choose an active monitored account.');
+      const profile = JSON.parse(profileRow.payload) as BankActivityProfile;
+      const [sourcesRow] = await tx.query<{ encrypted_value: string }>(
+        "SELECT encrypted_value FROM app_preferences WHERE key='payment_sources'",
+      );
+      let sources = this.store.paymentSources();
+      if (sourcesRow) {
+        const raw: unknown = JSON.parse(sourcesRow.encrypted_value);
+        if (!Array.isArray(raw)) throw new Error('Saved Money Sources are invalid.');
+        sources = raw as PaymentSource[];
+      }
+      const savedProfiles = (
+        await tx.query<{ payload: string }>('SELECT payload FROM bank_activity_profiles')
+      ).map((row) => JSON.parse(row.payload) as BankActivityProfile);
+      const linkedSource = profile.paymentSourceId
+        ? sources.find((source) => source.id === profile.paymentSourceId)
+        : undefined;
+      if (linkedSource?.archived)
+        throw new Error('Restore the linked Money Source before identifying this account.');
+      const evidenceSuffix = finalThree(saved.accountSuffix);
+      const savedSuffix = profileSuffix(profile, sources);
+      if (!evidenceSuffix || !savedSuffix || evidenceSuffix !== savedSuffix)
+        throw new Error('The saved account suffix does not match this SMS evidence.');
+      const bankIdentityKnown =
+        recognizedBank(saved.bankName) ||
+        savedProfiles.some((row) => matchesBank(row.bankName, saved.bankName)) ||
+        sources.some((source) => matchesBank(source.institution, saved.bankName));
+      if (bankIdentityKnown && !matchesBank(profile.bankName, saved.bankName))
+        throw new Error('The known bank identity conflicts with the selected account.');
+
+      const resolved = {
+        ...saved,
+        resolvedAt: timestamp,
+        resolvedProfileId: profile.id,
+      };
+      await tx.run('UPDATE bank_activity_candidates SET payload=? WHERE fingerprint=?', [
+        JSON.stringify(resolved),
+        fingerprint,
+      ]);
+      return resolved;
+    });
+    this.candidates.update((items) =>
+      items.map((item) => (item.fingerprint === fingerprint ? candidate : item)),
+    );
+    return candidate;
   }
 
   async approveCandidate(
@@ -469,7 +657,8 @@ export class BankActivityService {
       if (recorded) return null;
       if (!candidateRow) throw new Error('This activity suggestion is no longer available.');
       const candidate = JSON.parse(candidateRow.payload) as BankActivityCandidate;
-      if (candidate.resolvedAt) return null;
+      if (candidate.resolvedProfileId && candidate.resolvedProfileId !== profileId)
+        throw new Error('This evidence is identified with a different monitored account.');
       if (candidate.dismissed)
         throw new Error('This activity suggestion was dismissed and cannot be confirmed.');
       const [profileRow] = await tx.query<{ payload: string; archived: number }>(
@@ -494,7 +683,14 @@ export class BankActivityService {
         throw new Error('This activity evidence is invalid or no longer qualifies.');
       if (
         !selectionMatches(candidate, profile, this.store.paymentSources()) &&
-        !acknowledgeMismatch
+        !acknowledgeMismatch &&
+        !(
+          candidate.resolvedAt &&
+          candidate.resolvedProfileId === profileId &&
+          !recognizedBank(candidate.bankName) &&
+          finalThree(candidate.accountSuffix) ===
+            profileSuffix(profile, this.store.paymentSources())
+        )
       )
         throw new Error(
           'The selected account conflicts with the evidence or cannot be verified. Explicitly acknowledge independent account verification before confirming.',
@@ -548,7 +744,11 @@ export class BankActivityService {
         ],
       );
       await tx.run('UPDATE bank_activity_candidates SET payload=? WHERE fingerprint=?', [
-        JSON.stringify({ ...candidate, resolvedAt: timestamp, resolvedProfileId: profileId }),
+        JSON.stringify({
+          ...candidate,
+          resolvedAt: candidate.resolvedAt ?? timestamp,
+          resolvedProfileId: profileId,
+        }),
         fingerprint,
       ]);
       await this.compactCandidates(tx);
@@ -579,7 +779,11 @@ export class BankActivityService {
         );
         if (!row) continue;
         const candidate = JSON.parse(row.payload) as BankActivityCandidate;
-        if (!candidate.dismissed && !candidate.resolvedAt)
+        const [recorded] = await tx.query<{ id: string }>(
+          'SELECT id FROM bank_activity_events WHERE fingerprint=?',
+          [fingerprint],
+        );
+        if (!candidate.dismissed && !recorded)
           await tx.run('UPDATE bank_activity_candidates SET payload=? WHERE fingerprint=?', [
             JSON.stringify({ ...candidate, dismissed: true }),
             fingerprint,
@@ -725,12 +929,19 @@ export class BankActivityService {
       'SELECT payload FROM bank_activity_events',
     );
     const events = eventRows.map((row) => JSON.parse(row.payload) as BankActivityEvent);
+    const recordedFingerprints = new Set(
+      events
+        .map((event) => event.fingerprint)
+        .filter((fingerprint): fingerprint is string => !!fingerprint),
+    );
     const rows = await tx.query<{ payload: string }>(
       'SELECT payload FROM bank_activity_candidates ORDER BY created_at ASC,fingerprint ASC',
     );
     const pending = rows
       .map((row) => JSON.parse(row.payload) as BankActivityCandidate)
-      .filter((row) => !row.dismissed && !row.resolvedAt)
+      .filter(
+        (row) => !row.dismissed && !(row.resolvedAt && recordedFingerprints.has(row.fingerprint)),
+      )
       .sort(
         (a, b) =>
           b.activityDate.localeCompare(a.activityDate) ||
@@ -740,8 +951,20 @@ export class BankActivityService {
     const kept = new Set<string>();
     const result: BankActivityCandidate[] = [];
     for (const candidate of pending) {
+      if (candidate.resolvedAt && !recordedFingerprints.has(candidate.fingerprint)) {
+        result.push(candidate);
+        continue;
+      }
       const match = activityMatch(candidate, profiles, this.store.paymentSources());
       if (match.state !== 'UNIQUE' || !match.suggestedId) {
+        result.push(candidate);
+        continue;
+      }
+      const suggestedProfile = profiles.find((row) => row.id === match.suggestedId);
+      if (
+        !suggestedProfile ||
+        !selectionMatches(candidate, suggestedProfile, this.store.paymentSources())
+      ) {
         result.push(candidate);
         continue;
       }
@@ -752,7 +975,7 @@ export class BankActivityService {
       if ((latest && latest.activityDate >= candidate.activityDate) || kept.has(key)) {
         await tx.run('UPDATE bank_activity_candidates SET payload=? WHERE fingerprint=?', [
           JSON.stringify({
-            fingerprint: candidate.fingerprint,
+            ...candidate,
             dismissed: true,
             resolvedProfileId: match.suggestedId,
             resolvedAt: new Date().toISOString(),

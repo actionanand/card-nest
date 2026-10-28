@@ -79,6 +79,108 @@ describe('Independent bank and masked originating-account evidence', () => {
     });
     expect(activityMatch(candidate, [profile], []).reason).toContain('confirmation is required');
   });
+  it('suggests one account by suffix only when the bank is missing or unrecognized', () => {
+    for (const bankName of [undefined, 'Unrecognized issuer']) {
+      expect(activityMatch({ ...candidate, bankName }, [profile], [])).toMatchObject({
+        state: 'UNIQUE',
+        suggestedId: profile.id,
+      });
+      expect(activityMatch({ ...candidate, bankName }, [profile], []).reason).toContain(
+        'does not prove bank identity',
+      );
+    }
+    expect(activityMatch({ ...candidate, bankName: 'HDFC' }, [profile], []).state).toBe(
+      'BANK_MISMATCH',
+    );
+  });
+  it('counts archived and linked source identities when suffix-only matches are ambiguous', () => {
+    const unknownBank = { ...candidate, bankName: undefined };
+    const profileAmbiguity = activityMatch(
+      unknownBank,
+      [profile, { ...profile, id: 'archived', archived: true }],
+      [],
+    );
+    expect(profileAmbiguity.state).toBe('AMBIGUOUS');
+    expect(profileAmbiguity.suggestedId).toBeUndefined();
+    const sourceAmbiguity = activityMatch(
+      unknownBank,
+      [profile],
+      [
+        { id: 'active-source', kind: 'DEBIT', institution: 'ICICI', lastDigits: '123' },
+        {
+          id: 'archived-source',
+          kind: 'DEBIT',
+          institution: 'Fictional bank',
+          lastDigits: '123',
+          archived: true,
+        },
+      ],
+    );
+    expect(sourceAmbiguity.state).toBe('AMBIGUOUS');
+    expect(sourceAmbiguity.suggestedId).toBeUndefined();
+    const sourceOnly = activityMatch(
+      unknownBank,
+      [],
+      [{ id: 'source-only', kind: 'DEBIT', institution: 'ICICI', lastDigits: '123' }],
+    );
+    expect(sourceOnly).toMatchObject({ state: 'SOURCE_ONLY', sourceId: 'source-only' });
+    expect(sourceOnly.suggestedId).toBeUndefined();
+  });
+  it('distinguishes an exact-bank source without a monitoring profile from a bank conflict', () => {
+    expect(
+      activityMatch(
+        candidate,
+        [],
+        [{ id: 'existing-source', kind: 'DEBIT', institution: 'ICICI Bank', lastDigits: '45123' }],
+      ),
+    ).toMatchObject({ state: 'SOURCE_ONLY', sourceId: 'existing-source' });
+    expect(
+      activityMatch(
+        candidate,
+        [],
+        [
+          {
+            id: 'archived-source',
+            kind: 'DEBIT',
+            institution: 'ICICI Bank',
+            lastDigits: '45123',
+            archived: true,
+          },
+        ],
+      ),
+    ).toMatchObject({ state: 'ARCHIVED' });
+    expect(
+      activityMatch(
+        candidate,
+        [{ ...profile, paymentSourceId: 'archived-source' }],
+        [
+          {
+            id: 'archived-source',
+            kind: 'DEBIT',
+            institution: 'ICICI Bank',
+            lastDigits: '45123',
+            archived: true,
+          },
+        ],
+      ),
+    ).toMatchObject({ state: 'ARCHIVED' });
+    expect(
+      activityMatch(
+        candidate,
+        [],
+        [
+          { id: 'active-source', kind: 'DEBIT', institution: 'ICICI Bank', lastDigits: '45123' },
+          {
+            id: 'archived-source',
+            kind: 'DEBIT',
+            institution: 'ICICI Bank',
+            lastDigits: '45123',
+            archived: true,
+          },
+        ],
+      ),
+    ).toMatchObject({ state: 'AMBIGUOUS' });
+  });
   it('does not call a standalone profile unique when a matching linked source also exists', () => {
     const competingSource = {
       id: 'unlinked-source',
@@ -127,7 +229,7 @@ describe('Independent bank and masked originating-account evidence', () => {
       'MISSING',
     );
     expect(activityMatch({ ...candidate, bankName: undefined }, [profile], []).state).toBe(
-      'MISSING',
+      'UNIQUE',
     );
     expect(activityMatch(candidate, [], []).state).toBe('NEW');
     expect(

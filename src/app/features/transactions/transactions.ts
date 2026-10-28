@@ -262,6 +262,7 @@ export class TransactionsPage {
   readonly helpOpen = signal(false);
   readonly deleteCandidate = signal<CardTransaction | null>(null);
   readonly payFromOpen = signal(false);
+  readonly payFromSearch = signal('');
   readonly sourceFilterOpen = signal(false);
   readonly filtersOpen = signal(false);
   readonly actionMenuId = signal<string | null>(null);
@@ -396,10 +397,33 @@ export class TransactionsPage {
     })),
     ...this.alphabeticalPaymentSources().map((source) => ({
       value: source.id,
-      label: source.nickname,
-      detail: [source.lastDigits, source.institution || source.kind].filter(Boolean).join(' · '),
+      label:
+        source.kind === 'DEBIT'
+          ? `${source.institution || 'Bank/UPI'} · ${source.nickname}`
+          : source.nickname,
+      detail:
+        source.kind === 'DEBIT'
+          ? source.lastDigits
+            ? `•••${source.lastDigits.slice(-3)}`
+            : 'Bank account'
+          : [source.lastDigits, source.institution || source.kind].filter(Boolean).join(' · '),
     })),
   ]);
+  readonly searchedPayFromCards = computed(() => {
+    const terms = this.payFromSearch().trim().toLowerCase().split(/\s+/).filter(Boolean);
+    return this.store.alphabeticalActiveCards().filter((card) => {
+      const searchable = `${card.nickname} ${card.lastDigits} ${card.issuerName}`.toLowerCase();
+      return terms.every((term) => searchable.includes(term));
+    });
+  });
+  readonly searchedPayFromSources = computed(() => {
+    const terms = this.payFromSearch().trim().toLowerCase().split(/\s+/).filter(Boolean);
+    return this.store.activePaymentSources().filter((source) => {
+      const searchable =
+        `${source.institution ?? ''} ${source.nickname} ${source.lastDigits ?? ''} ${source.kind}`.toLowerCase();
+      return terms.every((term) => searchable.includes(term));
+    });
+  });
   readonly form = new FormGroup({
     cardId: new FormControl(this.defaultSourceId(), {
       nonNullable: true,
@@ -1112,13 +1136,24 @@ export class TransactionsPage {
     this.form.controls.cardId.setValue(id);
     this.form.controls.cardId.markAsDirty();
     this.payFromOpen.set(false);
+    this.payFromSearch.set('');
+  }
+  openPayFrom(): void {
+    this.payFromSearch.set('');
+    this.payFromOpen.set(true);
+  }
+  updatePayFromSearch(event: Event): void {
+    this.payFromSearch.set((event.target as HTMLInputElement).value);
   }
   selectedSourceLabel(): string {
     const id = this.form.controls.cardId.value;
     const card = this.store.activeCards().find((c) => c.id === id);
     if (card) return `${card.nickname} · ${card.lastDigits}`;
     const source = this.store.activePaymentSources().find((s) => s.id === id);
-    if (source) return `${source.nickname}${source.lastDigits ? ` · ${source.lastDigits}` : ''}`;
+    if (source)
+      return source.kind === 'DEBIT'
+        ? `${source.institution || 'Bank/UPI'} · ${source.nickname}${source.lastDigits ? ` · •••${source.lastDigits}` : ''}`
+        : `${source.nickname}${source.lastDigits ? ` · ${source.lastDigits}` : ''}`;
     return 'Select source';
   }
   edit(transaction: CardTransaction): void {

@@ -99,6 +99,30 @@ describe('Bank/UPI review model', () => {
     expect(bankSourceConflict(evidence(), sources[2])).toContain('bank differs');
     expect(bankSourceConflict(evidence(), sources[0])).toBe('');
   });
+  it('uses suffix-only SMS suggestions for unrecognized bank names but preserves known-bank conflicts', () => {
+    const unknownIssuer = evidence({ issuer: 'Unrecognized issuer' });
+    expect(matchingBankAccounts(unknownIssuer, sources).map((source) => source.id)).toEqual([
+      'icici',
+      'other-bank',
+    ]);
+    expect(suggestedBankSources(unknownIssuer, sources, on)).toEqual([]);
+    expect(bankSourceConflict(unknownIssuer, sources[2])).toBe('');
+    expect(bankSourceConflict(evidence(), sources[2])).toContain('bank differs');
+  });
+  it('does not auto-suggest an active SMS source when an archived account shares its suffix', () => {
+    const active = account({ id: 'active', institution: 'ICICI Bank', lastDigits: '417' });
+    const archived = account({
+      id: 'archived',
+      institution: 'Unrecognized issuer',
+      lastDigits: '00417',
+      archived: true,
+    });
+    const unknownIssuer = evidence({ issuer: undefined });
+    expect(
+      matchingBankAccounts(unknownIssuer, [active, archived]).map((source) => source.id),
+    ).toEqual(['active']);
+    expect(suggestedBankSources(unknownIssuer, [active, archived], on)).toEqual([]);
+  });
 
   it('matches HSBC bank repayment and card-purchase evidence without defaulting repayment to spending', () => {
     const hsbcAccount = account({

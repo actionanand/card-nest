@@ -1,5 +1,6 @@
 import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
+import { ActivatedRoute } from '@angular/router';
 import { BankActivityPage } from './bank-activity';
 import { BankActivityService } from './bank-activity.service';
 import { CardNestStore } from '../../core/services/card-nest-store';
@@ -79,6 +80,8 @@ describe('Bank profile popup and confirmation-only discovery UI', () => {
     createdAt: 'before',
   };
   const sources = signal<readonly PaymentSource[]>([]);
+  const requestedSourceId = signal('');
+  const bankCashTracking = signal({ enabled: false, askCardSettlementFunding: false });
   const profiles = signal<readonly BankActivityProfile[]>([]);
   const candidates = signal<readonly BankActivityCandidate[]>([]);
   const activity = {
@@ -91,6 +94,32 @@ describe('Bank profile popup and confirmation-only discovery UI', () => {
     discovering: signal(false),
     discoveryProgress: signal(0),
     saveProfile: vi.fn().mockResolvedValue(profile),
+    updateOwnMoneySourceIdentity: vi.fn().mockResolvedValue({
+      id: 'checking',
+      kind: 'DEBIT',
+      institution: 'HDFC Bank',
+      nickname: 'Updated checking',
+      lastDigits: '00007',
+      balanceMinor: 765400,
+      balanceCutoverAt: '2026-10-28T10:00:00Z',
+      noLimit: true,
+      autoLoad: false,
+      archived: false,
+    }),
+    setArchived: vi.fn().mockResolvedValue(undefined),
+    confirmCandidateIdentity: vi.fn(async (fingerprint: string, profileId: string) => {
+      const current = candidates().find((row) => row.fingerprint === fingerprint);
+      if (!current) throw new Error('Candidate not found');
+      const resolved = {
+        ...current,
+        resolvedAt: 'identity-confirmed',
+        resolvedProfileId: profileId,
+      };
+      candidates.update((items) =>
+        items.map((row) => (row.fingerprint === fingerprint ? resolved : row)),
+      );
+      return resolved;
+    }),
     approveCandidate: vi.fn().mockResolvedValue(null),
     dismissCandidate: vi.fn(),
     dismissCandidates: vi.fn(),
@@ -105,17 +134,54 @@ describe('Bank profile popup and confirmation-only discovery UI', () => {
   };
   beforeEach(() => {
     sources.set([]);
+    requestedSourceId.set('');
     profiles.set([]);
     candidates.set([]);
     vi.clearAllMocks();
     activity.saveProfile.mockReset().mockResolvedValue(profile);
+    activity.updateOwnMoneySourceIdentity.mockReset().mockResolvedValue({
+      id: 'checking',
+      kind: 'DEBIT',
+      institution: 'HDFC Bank',
+      nickname: 'Updated checking',
+      lastDigits: '00007',
+      balanceMinor: 765400,
+      balanceCutoverAt: '2026-10-28T10:00:00Z',
+      noLimit: true,
+      autoLoad: false,
+      archived: false,
+    });
+    activity.confirmCandidateIdentity.mockImplementation(async (fingerprint, profileId) => {
+      const current = candidates().find((row) => row.fingerprint === fingerprint);
+      if (!current) throw new Error('Candidate not found');
+      const resolved = {
+        ...current,
+        resolvedAt: 'identity-confirmed',
+        resolvedProfileId: profileId,
+      };
+      candidates.update((items) =>
+        items.map((row) => (row.fingerprint === fingerprint ? resolved : row)),
+      );
+      return resolved;
+    });
     activity.approveCandidate.mockReset().mockResolvedValue(null);
     vi.spyOn(Capacitor, 'getPlatform').mockReturnValue('web');
     TestBed.configureTestingModule({
       imports: [BankActivityPage],
       providers: [
+        {
+          provide: ActivatedRoute,
+          useValue: { snapshot: { queryParamMap: { get: () => requestedSourceId() } } },
+        },
         { provide: BankActivityService, useValue: activity },
-        { provide: CardNestStore, useValue: { paymentSources: sources } },
+        {
+          provide: CardNestStore,
+          useValue: {
+            paymentSources: sources,
+            bankCashTracking,
+            updatePaymentSource: vi.fn().mockResolvedValue(undefined),
+          },
+        },
       ],
     });
   });
@@ -136,7 +202,10 @@ describe('Bank profile popup and confirmation-only discovery UI', () => {
       'Bank Activities',
     ]);
     expect(page.discoveries()).toHaveLength(0);
-    expect(fixture.nativeElement.textContent).toContain('No new bank accounts found');
+    page.activeTab.set(1);
+    fixture.detectChanges();
+    expect(fixture.nativeElement.textContent).toContain('Bank identification evidence');
+    expect(fixture.nativeElement.textContent).toContain('Suggested match · confirm identity');
     tabs[0].dispatchEvent(
       new KeyboardEvent('keydown', { key: 'End', bubbles: true, cancelable: true }),
     );
@@ -149,7 +218,176 @@ describe('Bank profile popup and confirmation-only discovery UI', () => {
     profiles.set([profile, { ...profile, id: 'other' }]);
     fixture.detectChanges();
     expect(page.discoveries()[0].needsIdentification).toBe(true);
+    expect(fixture.nativeElement.textContent).not.toContain('Activity needs review');
     expect(activity.discoverSavedEvidence).not.toHaveBeenCalled();
+    fixture.destroy();
+  });
+  it('shows saved Money Sources and standalone OTHERS profiles on Discovered Accounts without tracked balances', async () => {
+    sources.set([
+      {
+        id: 'own-source',
+        kind: 'DEBIT',
+        institution: 'ICICI Bank',
+        nickname: 'Everyday',
+        lastDigits: '45123',
+        noLimit: true,
+        autoLoad: false,
+        archived: false,
+      },
+      {
+        id: 'archived-source',
+        kind: 'DEBIT',
+        institution: 'HDFC Bank',
+        nickname: 'Archived reserve',
+        lastDigits: '00007',
+        noLimit: true,
+        autoLoad: false,
+        archived: true,
+      },
+    ]);
+    profiles.set([
+      { ...profile, paymentSourceId: 'own-source', nickname: 'Monitoring nickname' },
+      { ...profile, id: 'family-profile', owner: 'OTHERS', holderName: 'Fiction Family' },
+    ]);
+    const fixture = TestBed.createComponent(BankActivityPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(fixture.nativeElement.textContent).toContain('Discovered Accounts');
+    expect(fixture.nativeElement.textContent).toContain('ICICI Bank · •••123');
+    expect(fixture.nativeElement.textContent).toContain('Everyday');
+    expect(fixture.nativeElement.textContent).toContain('Money Source: Linked');
+    expect(fixture.nativeElement.textContent).toContain('Not tracked');
+    expect(fixture.nativeElement.textContent).toContain('OTHERS · monitoring only');
+    expect(fixture.nativeElement.textContent).toContain('Fiction Family');
+    expect(fixture.nativeElement.textContent).toContain('Archived Money Sources');
+    expect(fixture.nativeElement.textContent).toContain('Archived reserve');
+    expect(fixture.nativeElement.querySelectorAll('.source-balance')).toHaveLength(0);
+    fixture.destroy();
+  });
+  it('opens the requested Money Source on Discovered Accounts and focuses its card', async () => {
+    const source: PaymentSource = {
+      id: 'navigate-source',
+      kind: 'DEBIT',
+      institution: 'ICICI Bank',
+      nickname: 'Everyday',
+      lastDigits: '45123',
+      noLimit: true,
+      autoLoad: false,
+      archived: false,
+    };
+    sources.set([source]);
+    profiles.set([{ ...profile, paymentSourceId: source.id }]);
+    requestedSourceId.set(source.id);
+    const fixture = TestBed.createComponent(BankActivityPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const card = fixture.nativeElement.querySelector(
+      '#bank-account-navigate-source',
+    ) as HTMLElement;
+    expect(fixture.componentInstance.activeTab()).toBe(0);
+    expect(card).not.toBeNull();
+    expect(document.activeElement).toBe(card);
+    fixture.destroy();
+  });
+  it('distinguishes known, unknown and untracked balances and keeps archive actions independent', async () => {
+    const ownSource: PaymentSource = {
+      id: 'own-balanced',
+      kind: 'DEBIT',
+      institution: 'ICICI Bank',
+      nickname: 'Everyday',
+      lastDigits: '45123',
+      balanceMinor: 765400,
+      balanceCutoverAt: '2026-10-28T10:00:00Z',
+      noLimit: true,
+      autoLoad: false,
+      archived: false,
+    };
+    const unknownSource: PaymentSource = {
+      id: 'own-unknown',
+      kind: 'DEBIT',
+      institution: 'HDFC Bank',
+      nickname: 'Reserve',
+      lastDigits: '00007',
+      noLimit: true,
+      autoLoad: false,
+      archived: false,
+    };
+    sources.set([ownSource, unknownSource]);
+    profiles.set([
+      { ...profile, paymentSourceId: ownSource.id },
+      { ...profile, id: 'family', owner: 'OTHERS', holderName: 'Fiction Family' },
+    ]);
+    const fixture = TestBed.createComponent(BankActivityPage);
+    const page = fixture.componentInstance;
+    fixture.detectChanges();
+    expect(page.accountBalanceLabel(ownSource)).toBe('Not tracked');
+    expect(
+      page.canSetBalance(page.accountCards().find((card) => card.source?.id === ownSource.id)!),
+    ).toBe(false);
+
+    bankCashTracking.set({ enabled: true, askCardSettlementFunding: false });
+    fixture.detectChanges();
+    expect(page.accountBalanceLabel(ownSource)).toContain('7,654.00');
+    expect(page.accountBalanceLabel(unknownSource)).toBe('Balance not set');
+    const ownCard = page.accountCards().find((card) => card.source?.id === ownSource.id)!;
+    const familyCard = page.accountCards().find((card) => card.profile?.id === 'family')!;
+    expect(page.canSetBalance(ownCard)).toBe(true);
+    expect(page.canSetBalance(familyCard)).toBe(false);
+
+    const updateSource = vi.spyOn(TestBed.inject(CardNestStore), 'updatePaymentSource');
+    await page.archiveMoneySource(ownSource);
+    expect(updateSource).toHaveBeenCalledWith({ ...ownSource, archived: true });
+    expect(activity.setArchived).not.toHaveBeenCalled();
+    await page.archive(profile);
+    expect(activity.setArchived).toHaveBeenCalledWith(profile.id, true);
+    expect(updateSource).toHaveBeenCalledTimes(1);
+    fixture.destroy();
+  });
+  it('edits OWN bank identity in a dialog without changing its source ID or balance', async () => {
+    const source: PaymentSource = {
+      id: 'checking',
+      kind: 'DEBIT',
+      institution: 'ICICI Bank',
+      nickname: 'Checking',
+      lastDigits: '45123',
+      balanceMinor: 765400,
+      balanceCutoverAt: '2026-10-28T10:00:00Z',
+      noLimit: true,
+      autoLoad: false,
+      archived: false,
+    };
+    sources.set([source]);
+    profiles.set([{ ...profile, paymentSourceId: source.id }]);
+    const fixture = TestBed.createComponent(BankActivityPage);
+    const page = fixture.componentInstance;
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const card = page.accountCards().find((item) => item.source?.id === source.id)!;
+    expect(card.suffix).toBe('123');
+    page.editMoneySource(source);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(fixture.nativeElement.querySelector('app-profile-modal dialog[open]')).not.toBeNull();
+    expect(page.moneySourceForm.getRawValue()).toEqual({
+      nickname: 'Checking',
+      institution: 'ICICI Bank',
+      lastDigits: '45123',
+    });
+    page.moneySourceForm.patchValue({
+      nickname: 'Updated checking',
+      institution: 'HDFC Bank',
+      lastDigits: '00007',
+    });
+    await page.saveMoneySourceIdentity(new Event('submit'));
+    expect(activity.updateOwnMoneySourceIdentity).toHaveBeenCalledWith({
+      sourceId: 'checking',
+      nickname: 'Updated checking',
+      institution: 'HDFC Bank',
+      lastDigits: '00007',
+    });
+    expect(page.discoveryNotice()).toContain('baseline and audit history are unchanged');
+    expect(source.id).toBe('checking');
+    expect(source.balanceMinor).toBe(765400);
     fixture.destroy();
   });
   it('requires confirmation for deletion, preserves Cancel, guards repeated taps and keeps failures visible', async () => {
@@ -305,22 +543,75 @@ describe('Bank profile popup and confirmation-only discovery UI', () => {
     expect(activity.discoverSavedEvidence).not.toHaveBeenCalled();
     fixture.destroy();
   });
-  it('distinguishes a new account candidate from an account that needs identification', async () => {
+  it('labels unidentified bank evidence and keeps it out of saved account cards', async () => {
     candidates.set([candidate]);
     const fixture = TestBed.createComponent(BankActivityPage);
+    const page = fixture.componentInstance;
     fixture.detectChanges();
     await fixture.whenStable();
-    expect(fixture.nativeElement.textContent).toContain('New account candidate');
-    expect(fixture.nativeElement.textContent).toContain('No active profile matches');
+    page.activeTab.set(1);
+    fixture.detectChanges();
+    expect(fixture.nativeElement.textContent).toContain('Unidentified account');
+    expect(fixture.nativeElement.textContent).toContain('No monitored account matches');
+    page.activeTab.set(0);
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('#bank-panel-0').textContent).not.toContain(
+      'Unidentified account',
+    );
 
     profiles.set([profile]);
     candidates.set([{ ...candidate, fingerprint: 'suffix-conflict', accountSuffix: '456' }]);
     fixture.detectChanges();
     await fixture.whenStable();
-    expect(fixture.nativeElement.textContent).toContain('Account needs identification');
-    expect(fixture.nativeElement.textContent).toContain('do not uniquely identify this account');
+    expect(fixture.nativeElement.textContent).toContain('Needs review');
+    expect(fixture.nativeElement.textContent).toContain(
+      'bank is monitored, but its account suffix does not match',
+    );
     expect(activity.saveProfile).not.toHaveBeenCalled();
     expect(activity.approveCandidate).not.toHaveBeenCalled();
+    fixture.destroy();
+  });
+  it('filters structured Find Banks evidence without starting a scan', async () => {
+    profiles.set([profile]);
+    candidates.set([
+      candidate,
+      { ...candidate, fingerprint: 'unidentified', bankName: undefined, accountSuffix: '999' },
+      { ...candidate, fingerprint: 'needs-review', bankName: 'HDFC', accountSuffix: '123' },
+      {
+        ...candidate,
+        fingerprint: 'associated',
+        resolvedAt: 'before',
+        resolvedProfileId: profile.id,
+      },
+    ]);
+    const fixture = TestBed.createComponent(BankActivityPage);
+    const page = fixture.componentInstance;
+    page.activeTab.set(1);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(page.evidenceStatus(candidate)).toBe('SUGGESTED');
+    expect(page.evidenceStatus(candidates()[1])).toBe('UNIDENTIFIED');
+    expect(page.evidenceStatus(candidates()[2])).toBe('NEEDS_REVIEW');
+    expect(page.evidenceStatus(candidates()[3])).toBe('ASSOCIATED');
+    expect(page.filteredEvidence().map((item) => item.fingerprint)).toEqual([
+      'fiction',
+      'unidentified',
+      'needs-review',
+      'associated',
+    ]);
+    for (const [filter, expected] of [
+      ['SUGGESTED', 'fiction'],
+      ['UNIDENTIFIED', 'unidentified'],
+      ['NEEDS_REVIEW', 'needs-review'],
+      ['ASSOCIATED', 'associated'],
+    ] as const) {
+      page.evidenceFilter.set(filter);
+      expect(page.filteredEvidence().map((item) => item.fingerprint)).toEqual([expected]);
+    }
+    page.evidenceFilter.set('ALL');
+    page.evidenceQuery.set('999');
+    expect(page.filteredEvidence().map((item) => item.fingerprint)).toEqual(['unidentified']);
+    expect(activity.discoverSavedEvidence).not.toHaveBeenCalled();
     fixture.destroy();
   });
   it('preselects only unique accounts, requires a confirmation dialog and preserves Cancel', async () => {
@@ -378,6 +669,47 @@ describe('Bank profile popup and confirmation-only discovery UI', () => {
     expect(page.confirmation()?.message).toContain('not source-verified');
     await page.confirmActivity();
     expect(activity.approveCandidate).toHaveBeenCalledWith(candidate.fingerprint, profile.id, true);
+    fixture.destroy();
+  });
+  it('confirms account identity without recording activity, then keeps activity confirmation separate', async () => {
+    profiles.set([profile]);
+    candidates.set([{ ...candidate, bankName: undefined }]);
+    const fixture = TestBed.createComponent(BankActivityPage);
+    const page = fixture.componentInstance;
+    page.activeTab.set(1);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(page.reviewSelection()[candidate.fingerprint]).toBe(profile.id);
+    const identityButton = [
+      ...fixture.nativeElement.querySelectorAll('.review-candidate button'),
+    ].find((button: HTMLButtonElement) =>
+      button.textContent?.includes('Confirm account identity'),
+    ) as HTMLButtonElement;
+    identityButton.click();
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('app-confirmation-dialog').textContent).toContain(
+      'This saves account identity only',
+    );
+    await page.confirmIdentity();
+    fixture.detectChanges();
+    expect(activity.confirmCandidateIdentity).toHaveBeenCalledWith(
+      candidate.fingerprint,
+      profile.id,
+    );
+    expect(activity.approveCandidate).not.toHaveBeenCalled();
+    expect(activity.events()).toHaveLength(0);
+    expect(fixture.nativeElement.textContent).toContain('Account identified · activity pending');
+    const activityButton = [
+      ...fixture.nativeElement.querySelectorAll('.review-candidate button'),
+    ].find((button: HTMLButtonElement) =>
+      button.textContent?.includes('Review & confirm activity'),
+    ) as HTMLButtonElement;
+    activityButton.click();
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('app-confirmation-dialog').textContent).toContain(
+      'Record this account activity?',
+    );
+    expect(activity.approveCandidate).not.toHaveBeenCalled();
     fixture.destroy();
   });
   it.each(['light', 'dark'])(

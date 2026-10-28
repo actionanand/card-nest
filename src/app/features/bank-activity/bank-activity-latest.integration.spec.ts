@@ -356,6 +356,21 @@ describe('Latest activity and identity reconciliation with real SQLite', () => {
       owner: 'OTHERS',
       holderName: 'Family',
     });
+    expect(
+      await query("SELECT * FROM app_preferences WHERE key='bank_cash_tracking'"),
+    ).toHaveLength(0);
+    expect(sources()).toHaveLength(1);
+    const createdWhileTrackingOff = sources()[0];
+    expect(createdWhileTrackingOff).toMatchObject({
+      institution: 'ICICI Bank',
+      lastDigits: '007',
+      nickname: 'Custom nickname',
+    });
+    expect(createdWhileTrackingOff.balanceMinor).toBeUndefined();
+    expect(createdWhileTrackingOff.balanceCutoverAt).toBeUndefined();
+    expect(activity.profiles().find((row) => row.id === own.id)?.paymentSourceId).toBe(
+      createdWhileTrackingOff.id,
+    );
     expect(await sync.reconcile()).toBeNull();
     enable();
     await activity.reload();
@@ -410,7 +425,27 @@ describe('Latest activity and identity reconciliation with real SQLite', () => {
       owner: 'OTHERS',
       holderName: 'Family',
     });
-    await activity.saveProfile({ bankName: 'HDFC', accountSuffix: '007', owner: 'OWN' });
+    const ownProfile = {
+      id: 'rollback-own-profile',
+      bankName: 'HDFC',
+      accountSuffix: '007',
+      owner: 'OWN',
+      archived: false,
+      createdAt: 'before',
+      updatedAt: 'before',
+    };
+    await run(
+      'INSERT INTO bank_activity_profiles(id,payment_source_id,bank_name,archived,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?)',
+      [
+        ownProfile.id,
+        null,
+        ownProfile.bankName,
+        0,
+        JSON.stringify(ownProfile),
+        ownProfile.createdAt,
+        ownProfile.updatedAt,
+      ],
+    );
     enable();
     sql.exec(
       "CREATE TRIGGER fail_link BEFORE UPDATE ON bank_activity_profiles BEGIN SELECT RAISE(ABORT,'link rollback'); END",

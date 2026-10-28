@@ -3,5 +3,18 @@
   { "id": "hdfc", "name": "HDFC Bank", "aliases": ["HDFC", "HDFC Bank"] },
   { "id": "hsbc", "name": "HSBC", "aliases": ["HSBC", "HSBC Bank"] },
   { "id": "sbi", "name": "State Bank of India", "aliases": ["SBI", "State Bank of India"] },
-  { "id": "axis", "name": "Axis Bank", "aliases": ["Axis", "Axis Bank"] }
+  { "id": "axis", "name": "Axis Bank", "aliases": ["Axis", "Axis Bank"] },
+  { "id": "pnb", "name": "Punjab National Bank", "aliases": ["PNB", "Punjab National Bank"] },
+  {
+    "id": "scb",
+    "name": "Standard Chartered",
+    "aliases": ["SCB", "Standard Chartered", "Standard Chartered Bank", "StanChart"]
+  },
+  { "id": "federal", "name": "Federal Bank", "aliases": ["Federal", "Federal Bank"] },
+  { "id": "idfc", "name": "IDFC FIRST Bank", "aliases": ["IDFC", "IDFC FIRST", "IDFC FIRST Bank"] },
+  { "id": "au", "name": "AU Small Finance Bank", "aliases": ["AU Bank", "AU Small Finance Bank"] },
+  { "id": "kotak", "name": "Kotak Mahindra Bank", "aliases": ["Kotak", "Kotak Mahindra Bank"] },
+  { "id": "rbl", "name": "RBL Bank", "aliases": ["RBL", "RBL Bank"] },
+  { "id": "bob", "name": "Bank of Baroda", "aliases": ["BOB", "Bank of Baroda"] },
+  { "id": "slice", "name": "Slice", "aliases": ["Slice"] }
 ]

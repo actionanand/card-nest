@@ -70,6 +70,7 @@ import {
   defaultBankPurpose,
   isBankEvidence,
   matchingBankAccounts,
+  matchingBankAccountCandidates,
   suggestedBankSources,
 } from './sms-model';
 
@@ -722,7 +723,7 @@ export class SmsSyncPage {
       { value: '', label: 'Do not deduct from a bank account' },
       ...this.store.cardSettlementFundingAccounts().map((source) => ({
         value: source.id,
-        label: this.store.sourceDetail(source.id),
+        label: `${source.institution || 'Bank/UPI'} · ${source.nickname}${source.lastDigits ? ` · •••${source.lastDigits.slice(-3)}` : ''}`,
         detail: this.balanceDetail(source.id),
       })),
     ];
@@ -820,14 +821,17 @@ export class SmsSyncPage {
     if (candidate.state === 'MATCHED_EXISTING')
       return 'Already added · Matched to existing transaction';
     if (isBankEvidence(candidate.item)) {
-      const matches = matchingBankAccounts(candidate.item, this.store.paymentSources());
+      const matches = matchingBankAccountCandidates(candidate.item, this.store.paymentSources());
       const chosen =
         this.selected()?.id === candidate.id ? this.bankEditor.controls.source.value : '';
       if (chosen && (matches.length !== 1 || matches[0].id !== chosen))
         return `Manually selected bank source: ${this.store.sourceDetail(chosen)}. This selection is not automatic SMS identity verification; check the bank and account before approval.`;
-      if (matches.length === 1) return this.store.sourceDetail(matches[0].id);
+      if (matches.length === 1 && !matches[0].archived)
+        return this.store.sourceDetail(matches[0].id);
+      if (matches.length === 1 && matches[0].archived)
+        return `Archived account match · ${matches[0].institution ?? 'Bank'} · •••${matches[0].lastDigits?.slice(-3) ?? ''}. Restore or identify an active account explicitly.`;
       return matches.length > 1
-        ? `Ambiguous · ${matches.length} matching accounts; choose one`
+        ? `Ambiguous · ${matches.length} matching accounts including archived accounts; choose an active account explicitly`
         : `${bankDisplayName(candidate.item.issuer) ?? 'Bank not identified'}${candidate.item.accountDigits ? ` · A/c ••${candidate.item.accountDigits}` : ''} · choose an account`;
     }
     const ids = candidate.item
@@ -972,19 +976,23 @@ export class SmsSyncPage {
   }
   bankSourceOptions(): readonly AppSelectOption[] {
     const item = this.bankItem();
+    const matchCandidates = item
+      ? matchingBankAccountCandidates(item, this.store.paymentSources())
+      : [];
     const matches = new Set(
-      item
-        ? matchingBankAccounts(item, this.store.paymentSources()).map((source) => source.id)
-        : [],
+      matchCandidates.filter((source) => !source.archived).map((source) => source.id),
     );
+    const ambiguous = matchCandidates.length > 1;
     return [
       { value: '', label: 'Select the bank account' },
       ...this.store.bankAccounts().map((source) => ({
         value: source.id,
-        label: this.store.sourceDetail(source.id),
-        detail: matches.has(source.id)
-          ? 'Matches the message suffix — verify before approval'
-          : this.balanceDetail(source.id),
+        label: `${source.institution || 'Bank/UPI'} · ${source.nickname}${source.lastDigits ? ` · •••${source.lastDigits.slice(-3)}` : ''}`,
+        detail: ambiguous
+          ? 'Ambiguous suffix — archived or active accounts also match; choose explicitly'
+          : matches.has(source.id)
+            ? 'Matches the message suffix — verify before approval'
+            : this.balanceDetail(source.id),
       })),
     ];
   }
@@ -1003,7 +1011,7 @@ export class SmsSyncPage {
         )
         .map((source) => ({
           value: source.id,
-          label: this.store.sourceDetail(source.id),
+          label: `${source.institution || 'Bank/UPI'} · ${source.nickname}${source.lastDigits ? ` · •••${source.lastDigits.slice(-3)}` : ''}`,
           detail:
             item?.counterpartyAccountDigits &&
             accountSuffixMatches(source.lastDigits, item.counterpartyAccountDigits)

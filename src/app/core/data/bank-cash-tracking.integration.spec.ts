@@ -466,6 +466,160 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     ).rejects.toThrow('already monitored');
     expect(activity.events()).toHaveLength(1);
   });
+  it('persists unknown-bank identity separately from activity approval through concurrency and encrypted restore', async () => {
+    const { store } = await boot();
+    vi.spyOn(Capacitor, 'isNativePlatform').mockReturnValue(true);
+    const activity = TestBed.inject(BankActivityService);
+    await activity.initialise();
+    const source = await store.addBankAccount({
+      nickname: 'Identity check account',
+      institution: 'ICICI Bank',
+      lastDigits: '45123',
+    });
+    const profile = await activity.saveProfile({
+      paymentSourceId: source.id,
+      bankName: 'ICICI Bank',
+      owner: 'OWN',
+    });
+    const evidence = {
+      fingerprint: 'unknown-bank-identity',
+      activityDate: today,
+      kind: 'BANK_DEBIT',
+      direction: 'DEBIT' as const,
+      purposeHint: 'PURCHASE',
+      accountDigits: '45123',
+      merchant: 'Synthetic merchant',
+      reference: 'IDENTITY-REF',
+      parserVersion: 3,
+      dateFallback: false,
+    };
+    await activity.ingestAndroidSms(evidence);
+    const before = financialState();
+    const fingerprint = evidence.fingerprint;
+    sql.exec(
+      "CREATE TRIGGER fail_identity_confirmation BEFORE UPDATE ON bank_activity_candidates BEGIN SELECT RAISE(ABORT,'synthetic identity rollback'); END",
+    );
+    await expect(activity.confirmCandidateIdentity(fingerprint, profile.id)).rejects.toThrow(
+      'synthetic identity rollback',
+    );
+    expect(count('bank_activity_events')).toBe(0);
+    expect(
+      JSON.parse(String(rows('SELECT payload FROM bank_activity_candidates')[0]['payload'])),
+    ).not.toHaveProperty('resolvedAt');
+    expect(financialState()).toEqual(before);
+    sql.exec('DROP TRIGGER fail_identity_confirmation');
+    const confirmations = await Promise.all([
+      activity.confirmCandidateIdentity(fingerprint, profile.id),
+      activity.confirmCandidateIdentity(fingerprint, profile.id),
+    ]);
+    expect(confirmations.every((item) => item.resolvedProfileId === profile.id)).toBe(true);
+    expect(count('bank_activity_events')).toBe(0);
+    expect(activity.events()).toHaveLength(0);
+    expect(activity.candidates()).toMatchObject([
+      {
+        fingerprint,
+        accountSuffix: '123',
+        resolvedProfileId: profile.id,
+      },
+    ]);
+    expect(activity.candidates()[0].dismissed).toBeUndefined();
+    expect(
+      JSON.parse(String(rows('SELECT payload FROM bank_activity_candidates')[0]['payload'])),
+    ).toMatchObject({
+      fingerprint,
+      reference: 'IDENTITY-REF',
+      resolvedProfileId: profile.id,
+    });
+    expect(financialState()).toEqual(before);
+
+    await activity.reload();
+    expect(activity.candidates()).toMatchObject([{ fingerprint, resolvedProfileId: profile.id }]);
+
+    vi.stubGlobal('crypto', webcrypto);
+    vi.stubGlobal('Blob', NodeBlob);
+    try {
+      const backup = await TestBed.inject(BackupService).create('synthetic-identity-passphrase');
+      await database.run('DELETE FROM bank_activity_candidates');
+      await activity.reload();
+      expect(activity.candidates()).toHaveLength(0);
+      await TestBed.inject(BackupService).restore(backup.contents, 'synthetic-identity-passphrase');
+      await activity.reload();
+      expect(activity.candidates()).toMatchObject([
+        { fingerprint, resolvedProfileId: profile.id, reference: 'IDENTITY-REF' },
+      ]);
+      expect(activity.events()).toHaveLength(0);
+      expect(financialState()).toEqual(before);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    await activity.approveCandidate(fingerprint, profile.id);
+    expect(count('bank_activity_events')).toBe(1);
+    expect(activity.events()).toMatchObject([
+      { profileId: profile.id, fingerprint, verification: 'USER_CONFIRMED' },
+    ]);
+    expect(activity.candidates()).toHaveLength(0);
+    expect(financialState()).toEqual(before);
+  });
+  it('updates OWN Money Source and monitoring identity atomically without changing balances or IDs', async () => {
+    const { store, stored } = await boot();
+    const source = await store.addBankAccount({
+      nickname: 'Original account',
+      institution: 'ICICI Bank',
+      lastDigits: '00123',
+    });
+    await store.enableBankCashTracking({ [source.id]: 765400 });
+    const activity = TestBed.inject(BankActivityService);
+    await activity.reload();
+    const profile = activity.profiles().find((row) => row.paymentSourceId === source.id)!;
+    const balance = store.paymentSources().find((row) => row.id === source.id)!;
+    const adjustments = count('source_balance_adjustments');
+
+    await activity.updateOwnMoneySourceIdentity({
+      sourceId: source.id,
+      nickname: 'Updated account',
+      institution: 'HDFC Bank',
+      lastDigits: '00007',
+    });
+    expect(store.paymentSources().find((row) => row.id === source.id)).toMatchObject({
+      id: source.id,
+      nickname: 'Updated account',
+      institution: 'HDFC Bank',
+      lastDigits: '00007',
+      balanceMinor: balance.balanceMinor,
+      balanceCutoverAt: balance.balanceCutoverAt,
+      balanceSnapshotMinor: balance.balanceSnapshotMinor,
+    });
+    expect(activity.profiles().find((row) => row.id === profile.id)).toMatchObject({
+      id: profile.id,
+      paymentSourceId: source.id,
+      bankName: 'HDFC Bank',
+      accountSuffix: '007',
+    });
+    expect(stored(source.id)).toBe(765400);
+    expect(count('source_balance_adjustments')).toBe(adjustments);
+
+    sql.exec(
+      "CREATE TRIGGER fail_identity_edit BEFORE UPDATE ON bank_activity_profiles BEGIN SELECT RAISE(ABORT,'identity edit rollback'); END",
+    );
+    await expect(
+      activity.updateOwnMoneySourceIdentity({
+        sourceId: source.id,
+        nickname: 'Should roll back',
+        institution: 'Axis Bank',
+        lastDigits: '00008',
+      }),
+    ).rejects.toThrow('identity edit rollback');
+    sql.exec('DROP TRIGGER fail_identity_edit');
+    expect(store.paymentSources().find((row) => row.id === source.id)).toMatchObject({
+      nickname: 'Updated account',
+      institution: 'HDFC Bank',
+      lastDigits: '00007',
+      balanceMinor: 765400,
+    });
+    expect(activity.profiles().find((row) => row.id === profile.id)?.bankName).toBe('HDFC Bank');
+    expect(count('source_balance_adjustments')).toBe(adjustments);
+  });
   it('replays only retained parsed bank evidence on explicit discovery, resumes safely and never resets review decisions', async () => {
     const { store } = await boot();
     vi.spyOn(Capacitor, 'isNativePlatform').mockReturnValue(true);
@@ -3584,6 +3738,61 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
       store.transactions().find((entry) => entry.id === second.id)?.splitGroupId,
     ).toBeUndefined();
     expect(count('card_transactions')).toBe(3);
+  });
+  it('searches and records the explicitly selected bank source with tracking off and no deduction', async () => {
+    const { store } = await boot();
+    const checking = await store.addBankAccount({
+      nickname: 'Everyday checking',
+      institution: 'ICICI Bank',
+      lastDigits: '45123',
+    });
+    const reserve = await store.addBankAccount({
+      nickname: 'Reserve',
+      institution: 'HDFC Bank',
+      lastDigits: '00007',
+    });
+    expect(store.bankCashTracking().enabled).toBe(false);
+    const fixture = TestBed.createComponent(TransactionsPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const page = fixture.componentInstance;
+    page.openAdd();
+    page.openPayFrom();
+    fixture.detectChanges();
+    const search = fixture.nativeElement.querySelector(
+      '.pay-from-search input',
+    ) as HTMLInputElement;
+    search.value = 'HDFC Reserve 007';
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+    fixture.detectChanges();
+    const options = fixture.nativeElement.querySelectorAll(
+      '.pay-from-option',
+    ) as NodeListOf<HTMLButtonElement>;
+    expect(options).toHaveLength(1);
+    expect(options[0].textContent).toContain('HDFC Bank');
+    expect(options[0].textContent).toContain('Reserve');
+    expect(options[0].textContent).toContain('•••007');
+    options[0].click();
+    expect(page.form.controls.cardId.value).toBe(reserve.id);
+    page.form.patchValue({
+      type: 'PURCHASE',
+      amount: '10',
+      transactionDate: today,
+      categoryId: 'other',
+      merchant: 'Synthetic bank purchase',
+    });
+    await page.save();
+    const saved = store
+      .transactions()
+      .find((transaction) => transaction.merchant === 'Synthetic bank purchase');
+    expect(saved).toMatchObject({ cardId: reserve.id, amountMinor: 1000 });
+    expect(
+      store.paymentSources().find((source) => source.id === reserve.id)?.balanceMinor,
+    ).toBeUndefined();
+    expect(
+      store.paymentSources().find((source) => source.id === checking.id)?.balanceMinor,
+    ).toBeUndefined();
+    fixture.destroy();
   });
   it('saves unlimited independent payment members, edits classification and unlinks without repeating source effects', async () => {
     const { store, balance } = await boot();
