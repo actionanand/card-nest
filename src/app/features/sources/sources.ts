@@ -1,4 +1,4 @@
-import { Component, ElementRef, computed, inject, signal, viewChild } from '@angular/core';
+import { Component, computed, inject, signal } from '@angular/core';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 import {
   CardTransaction,
@@ -10,6 +10,7 @@ import { CardNestStore } from '../../core/services/card-nest-store';
 import { formatMoney, parseMoneyToMinor } from '../../core/services/money';
 import { SnackbarService } from '../../core/services/snackbar.service';
 import { AppIcon } from '../../shared/app-icon';
+import { ProfileModal } from '../../shared/profile-modal';
 import { PaymentSourceLogo } from '../../shared/payment-source-logo';
 import { AppDatePipe } from '../../core/services/date-format.service';
 import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
@@ -44,6 +45,7 @@ interface SourceCycleGroup {
   selector: 'app-sources-page',
   imports: [
     RouterLink,
+    ProfileModal,
     AppIcon,
     PaymentSourceLogo,
     AppDatePipe,
@@ -57,9 +59,13 @@ interface SourceCycleGroup {
 export class SourcesPage {
   readonly walletOpen = signal(false);
   readonly walletSaving = signal(false);
-  readonly walletSummary = viewChild<ElementRef<HTMLElement>>('walletSummary');
-  walletToggled(event: Event): void {
-    this.walletOpen.set((event.target as HTMLDetailsElement).open);
+  openWallet(): void {
+    if (this.walletSaving()) return;
+    this.walletError.set('');
+    this.walletOpen.set(true);
+  }
+  closeWallet(): void {
+    if (!this.walletSaving()) this.walletOpen.set(false);
   }
   readonly walletError = signal('');
   readonly walletForm = new FormGroup({
@@ -100,7 +106,6 @@ export class SourcesPage {
       });
       this.walletForm.reset();
       this.walletOpen.set(false);
-      queueMicrotask(() => this.walletSummary()?.nativeElement.focus());
       this.snackbar.show('FASTag wallet created.');
     } catch (error: unknown) {
       this.walletError.set(error instanceof Error ? error.message : 'Wallet could not be saved.');

@@ -38,69 +38,51 @@
 }
 .fastag-create {
   margin-bottom: 1rem;
-  overflow: hidden;
 }
-.fastag-create summary {
+.fastag-trigger {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 0.75rem;
   padding: 1rem;
-  min-height: 44px;
-  cursor: pointer;
-  list-style: none;
+  min-height: 3.5rem;
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
   color: var(--accent);
+  background: var(--surface);
+  text-align: left;
+  cursor: pointer;
 }
-.fastag-create summary::-webkit-details-marker {
-  display: none;
-}
-.fastag-create summary > span {
+.fastag-trigger > span {
   display: grid;
   gap: 0.25rem;
 }
-.fastag-create summary small {
+.fastag-trigger small {
   color: var(--muted);
   font-weight: 400;
 }
-.fastag-create summary app-icon {
+.fastag-trigger app-icon {
   width: 1.2rem;
   height: 1.2rem;
 }
-.wallet-chevron {
-  transition: transform 0.18s ease;
+.wallet-form {
+  display: grid;
+  gap: 0.8rem;
+  min-width: 0;
 }
-.fastag-create[open] .wallet-chevron {
-  transform: rotate(180deg);
-}
-.wallet-body {
-  padding: 0 1rem 1rem;
-  border-top: 1px solid var(--line);
-}
-.wallet-body > p {
-  margin-block: 1rem;
+.wallet-form > p {
+  margin: 0;
   color: var(--muted);
   font-size: 0.8rem;
 }
-.wallet-body form {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));
-  align-items: end;
-  gap: 0.75rem;
-}
-.wallet-body label {
+.wallet-form label {
   min-width: 0;
 }
-.wallet-body [role='alert'] {
-  grid-column: 1 / -1;
-  color: var(--danger);
-}
-.wallet-body .btn {
-  justify-self: end;
-}
-@media (prefers-reduced-motion: reduce) {
-  .wallet-chevron {
-    transition: none;
-  }
+.wallet-form .modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
 }
 .source-add app-icon,
 .source-actions app-icon,

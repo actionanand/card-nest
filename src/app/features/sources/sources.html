@@ -9,34 +9,44 @@
       <app-icon name="plus" /><span>Add transaction</span>
     </a>
   </header>
-  <details class="panel fastag-create" [open]="walletOpen()" (toggle)="walletToggled($event)">
-    <summary #walletSummary>
-      <app-icon name="car" /><span
+  <section class="fastag-create">
+    <button class="fastag-trigger" type="button" (click)="openWallet()" aria-haspopup="dialog">
+      <app-icon name="car" />
+      <span
         ><strong>Add FASTag wallet</strong
         ><small>Track tolls and top-ups separately for each vehicle.</small></span
-      ><app-icon class="wallet-chevron" name="chevron_down" />
-    </summary>
-    <div class="wallet-body">
-      <p>
-        Choose your own vehicle and provider. A detected registration does not establish ownership.
-      </p>
-      <form [formGroup]="walletForm" (submit)="addFastag($event)">
+      >
+      <app-icon name="plus" />
+    </button>
+  </section>
+  @if (walletOpen()) {
+    <app-profile-modal title="Add FASTag wallet" [busy]="walletSaving()" (closed)="closeWallet()">
+      <form class="wallet-form" [formGroup]="walletForm" (submit)="addFastag($event)">
+        <p>
+          Choose your own vehicle and provider. A detected registration does not establish
+          ownership.
+        </p>
         <label>Wallet name<input formControlName="name" maxlength="80" required /></label>
         <label>Provider<input formControlName="provider" maxlength="80" /></label>
         <label>Vehicle registration<input formControlName="plate" maxlength="16" required /></label>
         @if (walletError()) {
-          <p role="alert">{{ walletError() }}</p>
+          <p class="form-error" role="alert">{{ walletError() }}</p>
         }
-        <button
-          type="submit"
-          class="btn btn-primary"
-          [disabled]="!walletForm.valid || walletSaving()"
-        >
-          {{ walletSaving() ? 'Creating…' : 'Create wallet' }}
-        </button>
+        <div class="modal-actions">
+          <button
+            type="submit"
+            class="btn btn-primary"
+            [disabled]="!walletForm.valid || walletSaving()"
+          >
+            {{ walletSaving() ? 'Creating…' : 'Create wallet' }}
+          </button>
+          <button class="btn" type="button" [disabled]="walletSaving()" (click)="closeWallet()">
+            Cancel
+          </button>
+        </div>
       </form>
-    </div>
-  </details>
+    </app-profile-modal>
+  }
 
   <details class="panel fastag-create" [open]="bankOpen()" (toggle)="bankToggled($event)">
     <summary>

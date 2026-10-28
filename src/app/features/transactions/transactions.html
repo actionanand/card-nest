@@ -33,7 +33,11 @@
     </div>
   </header>
   @if (combineOpen()) {
-    <app-payment-groups-panel [groupId]="manageGroupId()" (closed)="closeCombine()" />
+    <app-payment-groups-panel
+      [groupId]="manageGroupId()"
+      (closed)="closeCombine()"
+      (addTransaction)="openAddAfterCombine()"
+    />
   }
   @for (group of logicalGroups(); track group.id) {
     <details class="panel payment-group-summary">

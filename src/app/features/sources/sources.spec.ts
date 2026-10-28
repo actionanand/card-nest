@@ -23,6 +23,27 @@ describe('Explicit FASTag wallet creation and feedback', () => {
     });
     return fixture;
   };
+  it('opens FASTag creation in a dialog and restores focus after Cancel', async () => {
+    const fixture = setup();
+    const page = fixture.componentInstance;
+    page.walletOpen.set(false);
+    fixture.detectChanges();
+    const trigger = fixture.nativeElement.querySelector('.fastag-trigger') as HTMLButtonElement;
+    trigger.focus();
+    trigger.click();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(fixture.nativeElement.querySelector('app-profile-modal dialog[open]')).not.toBeNull();
+    const cancel = [...fixture.nativeElement.querySelectorAll('app-profile-modal button')].find(
+      (button: HTMLButtonElement) => button.textContent?.trim() === 'Cancel',
+    ) as HTMLButtonElement;
+    cancel.click();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(page.walletOpen()).toBe(false);
+    expect(document.activeElement).toBe(trigger);
+    fixture.destroy();
+  });
   it('shows success after saving, resets/collapses the form and preserves existing wallets and balances', async () => {
     const fixture = setup();
     const store = TestBed.inject(CardNestStore);

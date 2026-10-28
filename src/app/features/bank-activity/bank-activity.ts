@@ -392,6 +392,15 @@ export class BankActivityPage {
     this.eventForm.reset({ activityDate: this.today, direction: 'DEBIT', reference: '' });
   }
 
+  closeEvent(): void {
+    if (!this.saving()) this.eventProfileId.set(null);
+  }
+
+  eventProfileLabel(): string {
+    const profile = this.activity.profiles().find((item) => item.id === this.eventProfileId());
+    return profile ? this.profileLabel(profile) : '';
+  }
+
   editEvent(event: BankActivityEvent): void {
     this.error.set(null);
     this.editingEventId.set(event.id);

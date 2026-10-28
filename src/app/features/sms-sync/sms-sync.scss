@@ -280,12 +280,34 @@ details p,
 .clear {
   font-size: 0.75rem;
 }
+.review-preference-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.6rem;
+  margin-block: 0.65rem 0.8rem;
+}
+.review-preference-actions.single-action {
+  grid-template-columns: minmax(0, 1fr);
+}
+.review-preference-actions > button {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.swipe-enabled-state {
+  display: flex;
+  min-width: 0;
+  min-height: 44px;
+  align-items: center;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
 .candidate {
   padding-block: 0.85rem;
   border-top: 1px solid var(--line);
-}
-.swipe-enable {
-  margin-bottom: 0.8rem;
 }
 .review-loading-status {
   display: grid;

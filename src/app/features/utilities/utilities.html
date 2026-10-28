@@ -244,72 +244,83 @@
             <button class="btn" type="button" (click)="archiveMobile(profile)">Archive</button>
           </div>
           @if (rechargeProfileId() === profile.id) {
-            <form class="nested-form" [formGroup]="rechargeForm" (submit)="saveRecharge($event)">
-              <h4>{{ editingRechargeId() ? 'Edit recharge record' : 'Record recharge' }}</h4>
-              <app-select-picker
-                label="Recharge plan"
-                formControlName="planType"
-                [options]="planOptions"
-              />
-              <div class="form-grid">
+            <app-profile-modal
+              [title]="editingRechargeId() ? 'Edit recharge' : 'Add recharge'"
+              [busy]="saving()"
+              (closed)="closeRecharge()"
+              ><form
+                class="nested-form recharge-form"
+                [formGroup]="rechargeForm"
+                (submit)="saveRecharge($event)"
+              >
+                <app-select-picker
+                  label="Recharge plan"
+                  formControlName="planType"
+                  [options]="planOptions"
+                />
+                <div class="form-grid">
+                  <label
+                    >Amount (INR, optional)<input
+                      formControlName="amount"
+                      inputmode="decimal"
+                      placeholder="0.00"
+                  /></label>
+                  <label
+                    >Start date<input type="date" formControlName="startDate" required
+                  /></label>
+                </div>
+                <div class="segmented-control" aria-label="Set recharge validity">
+                  <button
+                    type="button"
+                    [class.active]="validityMode() === 'DAYS'"
+                    (click)="validityMode.set('DAYS')"
+                  >
+                    Validity days
+                  </button>
+                  <button
+                    type="button"
+                    [class.active]="validityMode() === 'END_DATE'"
+                    (click)="validityMode.set('END_DATE')"
+                  >
+                    Choose last active date
+                  </button>
+                </div>
+                @if (validityMode() === 'DAYS') {
+                  <label
+                    >Validity (whole days)<input
+                      formControlName="validityDays"
+                      inputmode="numeric"
+                      pattern="[0-9]+"
+                      required
+                  /></label>
+                  <p class="form-note">
+                    Last active date: {{ rechargeEndDatePreview() }}. The end date is inclusive.
+                  </p>
+                } @else {
+                  <label
+                    >Last active date<input type="date" formControlName="endDate" required
+                  /></label>
+                }
                 <label
-                  >Amount (INR, optional)<input
-                    formControlName="amount"
-                    inputmode="decimal"
-                    placeholder="0.00"
-                /></label>
-                <label>Start date<input type="date" formControlName="startDate" required /></label>
-              </div>
-              <div class="segmented-control" aria-label="Set recharge validity">
-                <button
-                  type="button"
-                  [class.active]="validityMode() === 'DAYS'"
-                  (click)="validityMode.set('DAYS')"
-                >
-                  Validity days
-                </button>
-                <button
-                  type="button"
-                  [class.active]="validityMode() === 'END_DATE'"
-                  (click)="validityMode.set('END_DATE')"
-                >
-                  Choose last active date
-                </button>
-              </div>
-              @if (validityMode() === 'DAYS') {
-                <label
-                  >Validity (whole days)<input
-                    formControlName="validityDays"
-                    inputmode="numeric"
-                    pattern="[0-9]+"
-                    required
-                /></label>
-                <p class="form-note">
-                  Last active date: {{ rechargeEndDatePreview() }}. The end date is inclusive.
-                </p>
-              } @else {
-                <label
-                  >Last active date<input type="date" formControlName="endDate" required
-                /></label>
-              }
-              <label
-                >Comment (optional)<textarea
-                  rows="2"
-                  maxlength="300"
-                  formControlName="comment"
-                ></textarea>
-              </label>
-              @if (error(); as message) {
-                <p class="form-error" role="alert">{{ message }}</p>
-              }
-              <div class="profile-actions">
-                <button class="btn btn-primary" type="submit" [disabled]="saving()">
-                  Save recharge</button
-                ><button class="btn" type="button" (click)="rechargeProfileId.set(null)">
-                  Cancel
-                </button>
-              </div>
-            </form>
+                  >Comment (optional)<textarea
+                    rows="2"
+                    maxlength="300"
+                    formControlName="comment"
+                  ></textarea>
+                </label>
+                @if (error(); as message) {
+                  <p class="form-error" role="alert">{{ message }}</p>
+                }
+                <div class="modal-actions">
+                  <button class="btn" type="button" [disabled]="saving()" (click)="closeRecharge()">
+                    Cancel
+                  </button>
+                  <button class="btn btn-primary" type="submit" [disabled]="saving()">
+                    {{ saving() ? 'Saving…' : 'Save recharge' }}
+                  </button>
+                </div>
+              </form></app-profile-modal
+            >
           }
           <div class="history-heading">
             <h4>Recharge history</h4>

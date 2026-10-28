@@ -48,23 +48,27 @@ describe('Combine payments controls', () => {
       fixture.detectChanges();
       await fixture.whenStable();
       const page = fixture.componentInstance;
+      const picker = fixture.debugElement.query(By.directive(AppSelectPicker))
+        .componentInstance as AppSelectPicker;
+      expect(picker.searchable()).toBe(true);
+      expect(fixture.nativeElement.querySelector('select')).toBeNull();
       page.chooseTarget('first');
       page.toggle('second');
       page.toggle('third');
+      page.step.set(3);
       page.bill.setValue('210');
       fixture.detectChanges();
       expect(page.preview()).toHaveLength(3);
       expect(page.billValue()).toBe(21000);
       expect(fixture.nativeElement.textContent).toContain('overpaid / unresolved');
-      const picker = fixture.debugElement.query(By.directive(AppSelectPicker))
-        .componentInstance as AppSelectPicker;
-      expect(picker.searchable()).toBe(true);
-      expect(fixture.nativeElement.querySelector('select')).toBeNull();
       const audit = await axe.run(fixture.nativeElement as HTMLElement, {
         runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa'] },
         rules: { 'color-contrast': { enabled: false } },
       });
       expect(audit.violations).toEqual([]);
+      page.reviewSave();
+      fixture.detectChanges();
+      expect(page.step()).toBe(4);
       await page.save();
       expect(store.combinePayments).toHaveBeenCalledWith(
         ['first', 'second', 'third'],
@@ -91,5 +95,24 @@ describe('Combine payments controls', () => {
     await fixture.whenStable();
     expect(page.target()).toBe('entry-40');
     expect(page.preview()[0].id).toBe('entry-40');
+  });
+  it('explains the empty state and offers the normal Add Transaction action', async () => {
+    store.transactions.set([]);
+    store.paymentGroups.set([]);
+    const fixture = TestBed.createComponent(PaymentGroupsPanel);
+    const page = fixture.componentInstance;
+    const addTransaction = vi.fn();
+    page.addTransaction.subscribe(addTransaction);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(fixture.nativeElement.textContent).toContain(
+      'No recorded purchases are available to combine.',
+    );
+    expect(fixture.nativeElement.textContent).toContain(
+      'Combine Payments never creates a fictional entry.',
+    );
+    (fixture.nativeElement.querySelector('.empty-state .btn-primary') as HTMLButtonElement).click();
+    expect(addTransaction).toHaveBeenCalledOnce();
+    fixture.destroy();
   });
 });

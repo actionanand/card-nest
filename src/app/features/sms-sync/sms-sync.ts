@@ -133,6 +133,7 @@ export class SmsSyncPage {
   readonly sync = inject(SmsReviewService);
   readonly store = inject(CardNestStore);
   private readonly snackbar = inject(SnackbarService);
+  readonly android = Capacitor.getPlatform() === 'android';
   readonly readFilter = signal('UNREAD');
   readonly hideAlreadyAdded = signal(true);
   readonly swipeEnabled = computed(

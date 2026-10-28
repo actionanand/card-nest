@@ -87,6 +87,7 @@ describe('Bank profile popup and confirmation-only discovery UI', () => {
     events: signal([]),
     reviewNotice: signal(''),
     deleteEvent: vi.fn().mockResolvedValue(undefined),
+    saveManualEvent: vi.fn().mockResolvedValue(undefined),
     discovering: signal(false),
     discoveryProgress: signal(0),
     saveProfile: vi.fn().mockResolvedValue(profile),
@@ -223,6 +224,60 @@ describe('Bank profile popup and confirmation-only discovery UI', () => {
     page.closeProfile();
     page.startProfile();
     expect(page.profileForm.controls.bankName.value).toBe('');
+    fixture.destroy();
+  });
+  it('records account activity in a focused modal without implying a financial transaction', async () => {
+    profiles.set([profile]);
+    const fixture = TestBed.createComponent(BankActivityPage);
+    const page = fixture.componentInstance;
+    page.activeTab.set(2);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const trigger = [
+      ...fixture.nativeElement.querySelectorAll('.activity-profile .profile-actions button'),
+    ].find((button: HTMLButtonElement) =>
+      button.textContent?.includes('Record activity'),
+    ) as HTMLButtonElement;
+    trigger.focus();
+    trigger.click();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const dialog = fixture.nativeElement.querySelector(
+      'app-profile-modal dialog[open]',
+    ) as HTMLElement;
+    expect(dialog).not.toBeNull();
+    expect(dialog.textContent).toContain('ICICI Bank · •••123');
+    expect(dialog.textContent).toContain('monitoring evidence, not a financial transaction');
+    expect(dialog.textContent).toContain('does not change balances, purchases, or imports');
+    (dialog.querySelector('button') as HTMLButtonElement).click();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(fixture.nativeElement.querySelector('app-profile-modal dialog[open]')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+    fixture.destroy();
+  });
+  it('keeps a failed Record Activity save error inside its popup', async () => {
+    profiles.set([profile]);
+    activity.saveManualEvent.mockRejectedValueOnce(new Error('Synthetic activity write failure'));
+    const fixture = TestBed.createComponent(BankActivityPage);
+    const page = fixture.componentInstance;
+    page.activeTab.set(2);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const trigger = [
+      ...fixture.nativeElement.querySelectorAll('.activity-profile .profile-actions button'),
+    ].find((button: HTMLButtonElement) =>
+      button.textContent?.includes('Record activity'),
+    ) as HTMLButtonElement;
+    trigger.click();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    await page.saveEvent(new Event('submit'));
+    fixture.detectChanges();
+    expect(
+      fixture.nativeElement.querySelector('app-profile-modal [role="alert"]')?.textContent,
+    ).toContain('Synthetic activity write failure');
+    expect(fixture.nativeElement.querySelector('.bank-activity-page > p[role="alert"]')).toBeNull();
     fixture.destroy();
   });
   it('opens one provisional discovery for related evidence, prefills only identity and preserves it on Cancel', async () => {

@@ -255,6 +255,12 @@ export class UtilitiesPage {
     });
   }
 
+  closeRecharge(): void {
+    if (this.saving()) return;
+    this.rechargeProfileId.set(null);
+    this.error.set(null);
+  }
+
   editRecharge(recharge: MobileRecharge): void {
     this.error.set(null);
     this.editingRechargeId.set(recharge.id);

@@ -403,15 +403,35 @@
         >
           Clear filters
         </button>
+      </div>
+      <div class="review-preference-actions" [class.single-action]="!android">
         <button
           id="restore-default-review-filters"
           class="btn"
           type="button"
+          aria-label="Restore default review filters"
           (click)="requestRestoreFilters()"
           [disabled]="restoringFilters()"
         >
-          Restore default filters
+          Restore defaults
         </button>
+        @if (android) {
+          @if (swipeEnabled()) {
+            <p class="muted swipe-enabled-state" role="status">
+              Swipe right to review and add · swipe left to dismiss
+            </p>
+          } @else {
+            <button
+              class="btn"
+              type="button"
+              aria-label="Enable SMS Review swipe actions"
+              (click)="enableSwipeActions()"
+              [disabled]="loading()"
+            >
+              Enable swipe
+            </button>
+          }
+        }
       </div>
       @if (!(sync.reconciling() || (loading() && !sync.candidates().length))) {
         <p class="muted" [attr.role]="loading() ? null : 'status'">
@@ -423,18 +443,6 @@
                 : sync.total() + ' results for these filters'
           }}
         </p>
-      }
-      @if (swipeEnabled()) {
-        <p class="muted">Swipe right to review and add · swipe left to dismiss</p>
-      } @else {
-        <button
-          class="btn swipe-enable"
-          type="button"
-          (click)="enableSwipeActions()"
-          [disabled]="loading()"
-        >
-          Enable swipe actions
-        </button>
       }
       @if (sync.reconciling() || (loading() && !sync.candidates().length)) {
         <div class="review-loading-status" role="status" aria-live="polite">

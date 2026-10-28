@@ -205,6 +205,10 @@ export class TransactionsPage {
     this.combineOpen.set(false);
     queueMicrotask(() => document.getElementById('combine-payments')?.focus());
   }
+  openAddAfterCombine(): void {
+    this.closeCombine();
+    globalThis.setTimeout(() => this.openAdd());
+  }
   groupEntries(ids: readonly string[]): readonly CardTransaction[] {
     return this.store.transactions().filter((entry) => ids.includes(entry.id));
   }

@@ -43,7 +43,7 @@
   @for (conflict of accountSync.conflicts(); track conflict) {
     <p role="status">{{ conflict }}</p>
   }
-  @if (error() && !profileFormOpen()) {
+  @if (error() && !profileFormOpen() && !eventProfileId()) {
     <p class="form-error" role="alert">{{ error() }}</p>
   }
   @if (discoveryNotice()) {
@@ -243,37 +243,50 @@
       </section>
     }
 
-    @if (eventProfileId(); as profileId) {
-      <form class="panel activity-form" [formGroup]="eventForm" (submit)="saveEvent($event)">
-        <header>
-          <h2>{{ editingEventId() ? 'Correct activity date' : 'Record account activity' }}</h2>
-          <button class="btn" type="button" (click)="eventProfileId.set(null)">Close</button>
-        </header>
-        <p class="form-note">
-          This retains only the latest activity in each direction. It does not change any balance or
-          transaction.
-        </p>
-        <div class="form-grid">
-          <label>Activity date<input type="date" formControlName="activityDate" required /></label>
-          <app-select-picker
-            label="Direction"
-            formControlName="direction"
-            [options]="directionOptions"
-          />
-          <label
-            >Reference (optional)<input
-              formControlName="reference"
-              maxlength="80"
-              autocomplete="off"
-          /></label>
-        </div>
-        @if (error(); as message) {
-          <p class="form-error" role="alert">{{ message }}</p>
-        }
-        <button class="btn btn-primary" type="submit" [disabled]="saving() || eventForm.invalid">
-          {{ editingEventId() ? 'Save correction' : 'Save activity' }}
-        </button>
-      </form>
+    @if (eventProfileId()) {
+      <app-profile-modal
+        [title]="editingEventId() ? 'Correct Bank Activity' : 'Record Bank Activity'"
+        [busy]="saving()"
+        (closed)="closeEvent()"
+        ><form class="activity-form" [formGroup]="eventForm" (submit)="saveEvent($event)">
+          <p class="form-note"><strong>Account:</strong> {{ eventProfileLabel() }}</p>
+          <p class="form-note">
+            This records monitoring evidence, not a financial transaction. It retains only the
+            latest activity in each direction and does not change balances, purchases, or imports.
+          </p>
+          <div class="form-grid">
+            <label
+              >Activity date<input type="date" formControlName="activityDate" required
+            /></label>
+            <app-select-picker
+              label="Direction"
+              formControlName="direction"
+              [options]="directionOptions"
+            />
+            <label
+              >Reference (optional)<input
+                formControlName="reference"
+                maxlength="80"
+                autocomplete="off"
+            /></label>
+          </div>
+          @if (error(); as message) {
+            <p class="form-error" role="alert">{{ message }}</p>
+          }
+          <div class="modal-actions">
+            <button class="btn" type="button" [disabled]="saving()" (click)="closeEvent()">
+              Cancel
+            </button>
+            <button
+              class="btn btn-primary"
+              type="submit"
+              [disabled]="saving() || eventForm.invalid"
+            >
+              {{ saving() ? 'Saving…' : editingEventId() ? 'Save correction' : 'Save activity' }}
+            </button>
+          </div>
+        </form></app-profile-modal
+      >
     }
 
     @for (profile of activeProfiles(); track profile.id) {

@@ -56,6 +56,25 @@ const demoCandidate = (): SmsCandidate => ({
 });
 
 describe('SMS review privacy and explicit approval UI', () => {
+  it('keeps Restore defaults beside Android Enable swipe and retains the enabled hint', async () => {
+    vi.mocked(Capacitor.getPlatform).mockReturnValue('android');
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const row = fixture.nativeElement.querySelector('.review-preference-actions') as HTMLElement;
+    expect(row.classList.contains('single-action')).toBe(false);
+    expect([...row.querySelectorAll('button')].map((button) => button.textContent?.trim())).toEqual(
+      ['Restore defaults', 'Enable swipe'],
+    );
+    expect(row.querySelector('#restore-default-review-filters')?.getAttribute('aria-label')).toBe(
+      'Restore default review filters',
+    );
+    swipePreference.set(true);
+    fixture.detectChanges();
+    expect(row.querySelectorAll('button')).toHaveLength(1);
+    expect(row.textContent).toContain('Swipe right to review and add');
+    fixture.destroy();
+  });
   it('restores a bank repayment draft using its saved purpose before checking category compatibility', async () => {
     const fixture = TestBed.createComponent(SmsSyncPage);
     const page = fixture.componentInstance;
@@ -708,7 +727,9 @@ describe('SMS review privacy and explicit approval UI', () => {
       sync.reconciling.set(true);
       fixture.detectChanges();
       const status = fixture.nativeElement.querySelector('.review-loading-status') as HTMLElement;
-      const swipe = fixture.nativeElement.querySelector('.swipe-enable') as HTMLElement;
+      const actions = fixture.nativeElement.querySelector(
+        '.review-preference-actions',
+      ) as HTMLElement;
       expect(status.getAttribute('role')).toBe('status');
       expect(status.getAttribute('aria-live')).toBe('polite');
       expect(status.textContent).toContain('Loading review items…');
@@ -716,8 +737,9 @@ describe('SMS review privacy and explicit approval UI', () => {
       expect(status.querySelector('.review-loading-spinner')?.getAttribute('aria-hidden')).toBe(
         'true',
       );
-      expect(swipe.classList.contains('swipe-enable')).toBe(true);
-      expect(swipe.contains(status)).toBe(false);
+      expect(actions.querySelector('#restore-default-review-filters')).not.toBeNull();
+      expect(actions.querySelector('[aria-label="Enable SMS Review swipe actions"]')).toBeNull();
+      expect(actions.contains(status)).toBe(false);
       const audit = await axe.run(status, {
         runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa'] },
         rules: { 'color-contrast': { enabled: false } },

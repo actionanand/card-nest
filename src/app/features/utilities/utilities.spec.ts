@@ -15,6 +15,7 @@ describe('Indian Utilities page', () => {
   const mock = {
     deleteRecharge: vi.fn().mockResolvedValue(undefined),
     deleteLpgEvent: vi.fn().mockResolvedValue(undefined),
+    saveRecharge: vi.fn().mockResolvedValue({ id: 'saved-recharge' }),
     saveMobileProfile: vi.fn().mockResolvedValue({ id: 'saved-mobile' }),
     saveLpgProfile: vi.fn().mockResolvedValue({ id: 'saved-lpg' }),
     settings: state,
@@ -39,6 +40,7 @@ describe('Indian Utilities page', () => {
     cylinderOptions: [{ value: 'NORMAL', label: 'Normal' }],
     lpgEventOptions: [{ value: 'STARTED', label: 'Cylinder installed / started using' }],
     rechargesFor: () => [],
+    suggestedRechargeStart: () => '2026-10-28',
     eventsFor: () => [],
     mobileSummary: (profile: Pick<MobileProfile, 'id' | 'subscriptionType'>, today: string) =>
       mobileActivitySummary(
@@ -84,6 +86,7 @@ describe('Indian Utilities page', () => {
   beforeEach(() => {
     mock.saveMobileProfile.mockReset().mockResolvedValue({ id: 'saved-mobile' });
     mock.saveLpgProfile.mockReset().mockResolvedValue({ id: 'saved-lpg' });
+    mock.saveRecharge.mockReset().mockResolvedValue({ id: 'saved-recharge' });
     state.set({ showIndianUtilities: true, utilityReminders: false });
     mobiles.set([]);
     lpg.set([]);
@@ -233,6 +236,69 @@ describe('Indian Utilities page', () => {
     expect(mock.saveMobileProfile).toHaveBeenCalledTimes(before);
     page.startAddMobile();
     expect(page.mobileForm.controls.personName.value).toBe('');
+    fixture.destroy();
+  });
+  it('adds and edits recharge records in a popup while preserving validation and saved values', async () => {
+    const profile: MobileProfile = {
+      id: 'mobile-for-recharge',
+      kind: 'MOBILE',
+      personName: 'Fiction Morgan',
+      operator: 'JIO',
+      subscriptionType: 'PREPAID',
+      archived: false,
+      createdAt: 'before',
+      updatedAt: 'before',
+    };
+    mobiles.set([profile]);
+    const fixture = TestBed.createComponent(UtilitiesPage);
+    const page = fixture.componentInstance;
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const trigger = [...fixture.nativeElement.querySelectorAll('.profile-actions button')].find(
+      (button: HTMLButtonElement) => button.textContent?.includes('Add recharge'),
+    ) as HTMLButtonElement;
+    trigger.focus();
+    trigger.click();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(fixture.nativeElement.querySelector('app-profile-modal dialog[open]')).not.toBeNull();
+    expect(fixture.nativeElement.textContent).toContain('Add recharge');
+    expect(page.rechargeForm.controls.startDate.value).toBeTruthy();
+    expect(page.validityMode()).toBe('DAYS');
+    page.rechargeForm.controls.amount.setValue('10');
+    await page.saveRecharge(new Event('submit'));
+    expect(mock.saveRecharge).toHaveBeenCalledWith(
+      expect.objectContaining({ profileId: profile.id, amountMinor: 1000, validityDays: 30 }),
+    );
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(fixture.nativeElement.querySelector('app-profile-modal dialog[open]')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+
+    page.editRecharge({
+      id: 'existing-recharge',
+      profileId: profile.id,
+      planType: 'DATA_ONLY',
+      amountMinor: 25000,
+      startDate: '2026-10-01',
+      endDate: '2026-10-30',
+      comment: 'Synthetic plan note',
+      createdAt: 'before',
+      updatedAt: 'before',
+    });
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(fixture.nativeElement.textContent).toContain('Edit recharge');
+    expect(page.rechargeForm.getRawValue()).toMatchObject({
+      planType: 'DATA_ONLY',
+      amount: '250',
+      startDate: '2026-10-01',
+      endDate: '2026-10-30',
+      comment: 'Synthetic plan note',
+    });
+    page.closeRecharge();
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('app-profile-modal dialog[open]')).toBeNull();
     fixture.destroy();
   });
   it('uses the same popup for LPG creation and editing without changing cylinder-event controls', async () => {
