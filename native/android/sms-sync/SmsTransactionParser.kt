@@ -266,7 +266,7 @@ object SmsTransactionParser {
         kind == Kind.PAYMENT_INITIATED -> "CARD_REPAYMENT"
         direction == "DEBIT" && has("credit\\s*card\\s*(?:bill|payment|dues?)|towards.{0,40}\\bcard\\b|\\bbbps\\b") -> "CARD_REPAYMENT"
         direction == "DEBIT" && has("\\batm\\b|cash withdrawal|withdrawn") -> "CASH_WITHDRAWAL"
-        kind in setOf(Kind.BANK_TRANSFER, Kind.BANK_DEBIT, Kind.BANK_CREDIT) && counterpartyAccount != null -> "ACCOUNT_TRANSFER"
+        kind in setOf(Kind.BANK_TRANSFER, Kind.BANK_DEBIT, Kind.BANK_CREDIT) && counterpartyRaw != null -> "ACCOUNT_TRANSFER"
         direction == "CREDIT" -> "INCOMING"
         direction == "DEBIT" -> "PURCHASE"
         else -> null

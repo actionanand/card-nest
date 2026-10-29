@@ -53,6 +53,17 @@ class SmsBankParserTest {
     assertNull(r.issuer)
   }
 
+  @Test fun maskedPrimaryAndCounterpartyIdentifiersRemainDistinctOnTransfers() {
+    val r = parse("Your a/c 432xxxxx765 is debited for Rs. 96280.00 on 22-10-2026 10:47 and credited to a/c 765xxxx007 (UPI Ref no 735182094616).")
+    assertEquals(SmsTransactionParser.Kind.BANK_TRANSFER, r.kind)
+    assertEquals("DEBIT", r.direction)
+    assertEquals("765", r.accountDigits)
+    assertEquals("432•••••765", r.accountMask)
+    assertEquals("007", r.counterpartyAccountDigits)
+    assertEquals("765••••007", r.counterpartyAccountMask)
+    assertEquals("ACCOUNT_TRANSFER", r.purposeHint)
+  }
+
   @Test fun a4DebitToPersonIsCustomerDebitNotInternalTransfer() {
     val r = parse("ICICI Bank Acct XX417 debited for Rs 8100.00 on 22-Oct-26; ALEX MORGAN credited. UPI:735182094615.")
     assertEquals(SmsTransactionParser.Kind.BANK_DEBIT, r.kind)
