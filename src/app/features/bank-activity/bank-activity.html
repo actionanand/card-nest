@@ -227,7 +227,15 @@
           </header>
           <p class="form-note">
             Money Source:
-            {{ account.source ? 'Linked' : account.sourceArchived ? 'Archived' : 'Not linked' }}
+            {{
+              account.source
+                ? account.profile?.paymentSourceId === account.source.id
+                  ? 'Linked to monitoring'
+                  : 'Saved source · not linked'
+                : account.sourceArchived
+                  ? 'Archived'
+                  : 'Not linked'
+            }}
             · Balance:
             {{ accountBalanceLabel(account.source) }}
           </p>

@@ -255,7 +255,7 @@ describe('Bank profile popup and confirmation-only discovery UI', () => {
     expect(fixture.nativeElement.textContent).toContain('Discovered Accounts');
     expect(fixture.nativeElement.textContent).toContain('ICICI Bank · •••123');
     expect(fixture.nativeElement.textContent).toContain('Everyday');
-    expect(fixture.nativeElement.textContent).toContain('Money Source: Linked');
+    expect(fixture.nativeElement.textContent).toContain('Money Source: Linked to monitoring');
     expect(fixture.nativeElement.textContent).toContain('Not tracked');
     expect(fixture.nativeElement.textContent).toContain('OTHERS · monitoring only');
     expect(fixture.nativeElement.textContent).toContain('Fiction Family');
