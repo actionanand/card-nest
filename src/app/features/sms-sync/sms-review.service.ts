@@ -6,6 +6,7 @@ import { SqliteDatabase, DatabaseSession } from '../../core/data/sqlite-database
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { AppLockService } from '../../core/services/app-lock.service';
 import { indiaTodayIso } from '../../core/services/india-date';
+import { parseBankAccountIdentifier } from '../../core/services/bank-account-identifier';
 import { matchesTransactionType, isPurchasePayment } from '../../core/services/money';
 import {
   BalanceTiming,
@@ -1018,14 +1019,28 @@ export class SmsReviewService {
         `SELECT value FROM sms_sync_state WHERE key='retention_cutoff'`,
       );
       for (const incoming of items) {
+        const accountRaw = incoming.accountMask ?? incoming.accountDigits;
+        const account = accountRaw ? parseBankAccountIdentifier(accountRaw) : undefined;
+        const counterpartyRaw =
+          incoming.counterpartyAccountMask ?? incoming.counterpartyAccountDigits;
+        const counterparty = counterpartyRaw
+          ? parseBankAccountIdentifier(counterpartyRaw)
+          : undefined;
+        const sanitized = {
+          ...incoming,
+          accountDigits: account?.suffix,
+          accountMask: account?.mask,
+          counterpartyAccountDigits: counterparty?.suffix,
+          counterpartyAccountMask: counterparty?.mask,
+        };
         // Parser fixes may change a receipt-fallback fingerprint. Retain the old identity/decision.
         const [old] =
-          incoming.legacyId && incoming.legacyId !== incoming.id
+          sanitized.legacyId && sanitized.legacyId !== sanitized.id
             ? await tx.query<{ id: string }>('SELECT id FROM sms_candidates WHERE id=?', [
-                incoming.legacyId,
+                sanitized.legacyId,
               ])
             : [];
-        const item = old ? { ...incoming, id: old.id } : incoming;
+        const item = old ? { ...sanitized, id: old.id } : sanitized;
         if (!retention || item.eventDate >= retention.value)
           activityCandidates.push({
             fingerprint: item.id,
@@ -1035,7 +1050,9 @@ export class SmsReviewService {
             direction: bankDirection(item),
             purposeHint: item.purposeHint,
             accountDigits: item.accountDigits,
+            accountMask: item.accountMask,
             counterpartyAccountDigits: item.counterpartyAccountDigits,
+            counterpartyAccountMask: item.counterpartyAccountMask,
             issuer: item.issuer,
             reference: item.reference,
             dateFallback: item.dateFallback,

@@ -1057,22 +1057,18 @@
               @if (needsEnrollment()) {
                 <div class="bank-enrol">
                   <p>
-                    No enrolled account matches A/c ••{{ bankItem()?.accountDigits }}. Enrol it only
-                    if this account is yours.
+                    No enrolled account matches A/c
+                    {{
+                      accountIdentifierLabel(bankItem()?.accountMask, bankItem()?.accountDigits)
+                    }}. Review its identity in Find Banks before adding it.
                   </p>
-                  <label
-                    >Bank name<input
-                      [formControl]="enrollBankName"
-                      maxlength="80"
-                      placeholder="For example, ICICI Bank"
-                  /></label>
                   <button
                     type="button"
                     class="btn"
-                    [disabled]="!enrollBankName.valid || saving()"
+                    [disabled]="saving()"
                     (click)="enrollFromMessage()"
                   >
-                    Enrol A/c ••{{ bankItem()?.accountDigits }} as my account
+                    <app-icon name="landmark" /> Open Find Banks
                   </button>
                 </div>
               }
@@ -1373,7 +1369,12 @@
               <dt>Source evidence</dt>
               <dd>
                 {{ item.issuer || 'Unknown issuer' }} ·
-                {{ item.cardDigits || item.accountDigits || 'No suffix' }} ·
+                {{
+                  item.cardDigits ||
+                    accountIdentifierLabel(item.accountMask, item.accountDigits) ||
+                    'No suffix'
+                }}
+                ·
                 {{ item.vehicleNumber || '' }}
               </dd>
               <dt>Extracted description</dt>
@@ -1389,7 +1390,14 @@
                         : 'Not identified'
                   }}
                   @if (item.counterpartyAccountDigits) {
-                    · Other account ••{{ item.counterpartyAccountDigits }} (ownership not assumed)
+                    · Other account
+                    {{
+                      accountIdentifierLabel(
+                        item.counterpartyAccountMask,
+                        item.counterpartyAccountDigits
+                      )
+                    }}
+                    (ownership not assumed)
                   }
                 </dd>
               }

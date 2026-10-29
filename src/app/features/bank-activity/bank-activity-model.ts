@@ -10,6 +10,7 @@ export interface BankActivityProfile {
   readonly bankName: string;
   readonly nickname?: string;
   readonly accountSuffix?: string;
+  readonly accountMask?: string;
   readonly owner: BankActivityOwner;
   readonly holderName?: string;
   readonly remarks?: string;
@@ -40,6 +41,7 @@ export interface BankActivityCandidate {
   readonly direction: BankActivityDirection;
   readonly bankName?: string;
   readonly accountSuffix?: string;
+  readonly accountMask?: string;
   readonly reference?: string;
   readonly purposeHint: string;
   readonly createdAt: string;

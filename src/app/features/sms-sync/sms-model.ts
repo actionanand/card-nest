@@ -64,6 +64,7 @@ export interface SmsEvidence {
   merchantEvidence?: string;
   cardDigits?: string;
   accountDigits?: string;
+  accountMask?: string;
   issuer?: string;
   reference?: string;
   reportedBalanceMinor?: number;
@@ -78,6 +79,7 @@ export interface SmsEvidence {
   /** Movement of the customer's own account. Counterparty wording never sets this. */
   direction?: 'DEBIT' | 'CREDIT';
   counterpartyAccountDigits?: string;
+  counterpartyAccountMask?: string;
   purposeHint?:
     | 'PURCHASE'
     | 'INCOMING'
@@ -364,6 +366,8 @@ export function bankDisplayName(issuer: string | undefined): string | undefined 
     sbi: 'State Bank of India',
     bob: 'Bank of Baroda',
     slice: 'Slice',
+    yes: 'Yes Bank',
+    indusind: 'IndusInd Bank',
   };
   return names[normalizedIssuer(issuer)] ?? issuer;
 }
@@ -395,8 +399,14 @@ function bankConflicts(source: PaymentSource, issuer: string | undefined): boole
     'sbi',
     'bob',
     'slice',
+    'yes',
+    'indusind',
   ]);
-  return knownBanks.has(left) && knownBanks.has(right) && left !== right;
+  const explicitBankName = /\b(bank|banc|credit union|small finance|financial institution)\b/i.test(
+    issuer,
+  );
+  const trustworthyIssuer = knownBanks.has(right) || explicitBankName;
+  return trustworthyIssuer && !!left && !!right && left !== right;
 }
 
 /**
@@ -515,6 +525,8 @@ export function normalizedIssuer(value: string | undefined): string {
     [/federal/, 'federal'],
     [/kotak/, 'kotak'],
     [/rbl|ratnakar/, 'rbl'],
+    [/yesbank|^yes$/, 'yes'],
+    [/indusind/, 'indusind'],
     [/sodexo|pluxee/, 'pluxee'],
   ];
   return (

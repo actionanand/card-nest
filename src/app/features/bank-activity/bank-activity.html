@@ -7,6 +7,11 @@
         See how long each monitored account has gone without a qualifying customer transaction.
       </p>
     </div>
+    @if (returnSmsCandidate) {
+      <button class="btn" type="button" (click)="returnToSmsReview()">
+        <app-icon name="arrow_left" /> Return to SMS review
+      </button>
+    }
     @if (activeTab() === 0) {
       <button class="btn btn-primary" type="button" (click)="startProfile()">
         <app-icon name="plus" /> Add bank manually
@@ -109,7 +114,11 @@
             <div>
               <strong
                 >{{ candidate.bankName || 'Bank not identified'
-                }}{{ candidate.accountSuffix ? ' · •••' + candidate.accountSuffix : '' }}</strong
+                }}{{
+                  candidate.accountSuffix
+                    ? ' · ' + accountIdentifierLabel(candidate.accountMask, candidate.accountSuffix)
+                    : ''
+                }}</strong
               ><small
                 >{{ candidate.activityDate }} ·
                 {{ candidate.direction === 'CREDIT' ? 'Credit' : 'Debit' }} ·
@@ -122,7 +131,7 @@
             <span class="status-badge attention">{{ evidenceStatusLabel(candidate) }}</span>
           </header>
           <p class="form-note">{{ reviewWarning(candidate) }}</p>
-          @if (candidate.resolvedAt && candidate.resolvedProfileId) {
+          @if (hasTrustedIdentityAssociation(candidate)) {
             <div class="profile-actions">
               <button
                 class="btn btn-primary"
@@ -286,7 +295,11 @@
               <div>
                 <span
                   >{{ source.institution || 'Bank/UPI' }} · {{ source.nickname
-                  }}{{ source.lastDigits ? ' · •••' + source.lastDigits : '' }}</span
+                  }}{{
+                    source.lastDigits
+                      ? ' · ' + accountIdentifierLabel(source.accountMask, source.lastDigits)
+                      : ''
+                  }}</span
                 >
                 <button
                   class="btn"
@@ -506,16 +519,16 @@
         /></label>
         @if (!hasLinkedSuffix()) {
           <label
-            >Last 3 account digits<input
-              formControlName="accountSuffix"
-              inputmode="numeric"
-              maxlength="3"
-              placeholder="123"
+            >Masked or full account identifier<input
+              formControlName="accountIdentifier"
+              autocomplete="off"
+              maxlength="60"
+              placeholder="••••765"
           /></label>
         }
         <p class="form-note">
-          Used together with the bank name to suggest matching SMS activity. Only the last three
-          digits are needed.
+          Used to suggest matching SMS activity. Only a masked hint and the last three digits are
+          saved.
         </p>
         @if (profileForm.controls.paymentSourceId.value) {
           <p class="form-note">Saved identifier: {{ linkedIdentifier() }}</p>
@@ -572,10 +585,10 @@
       <label>Account nickname<input formControlName="nickname" maxlength="80" required /></label>
       <label>Bank name<input formControlName="institution" maxlength="80" required /></label>
       <label
-        >Masked account digits<input
-          formControlName="lastDigits"
-          inputmode="numeric"
-          maxlength="5"
+        >Masked or full account identifier<input
+          formControlName="accountIdentifier"
+          autocomplete="off"
+          maxlength="60"
           required
       /></label>
       <p class="form-note">

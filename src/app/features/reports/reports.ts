@@ -1,6 +1,7 @@
 import { Component, computed, inject, signal } from '@angular/core';
 import { ExportPeriod } from '../../core/models/export';
 import { CardNestStore } from '../../core/services/card-nest-store';
+import { displayBankAccountSuffix } from '../../core/services/bank-account-identifier';
 import { ExportService } from '../../core/services/export.service';
 import { formatMoney, spendingContribution } from '../../core/services/money';
 import { bankCashTracked, isBankOrCash } from '../../core/services/source-balance';
@@ -243,7 +244,7 @@ export class ReportsPage {
     [...this.store.activeCards(), ...this.store.activePaymentSources()]
       .map((source) => ({
         id: source.id,
-        name: `${source.nickname}${'lastDigits' in source && source.lastDigits ? ` ${source.lastDigits}` : ''}`,
+        name: `${source.nickname}${'lastDigits' in source && source.lastDigits ? ` ${'kind' in source && source.kind === 'DEBIT' ? displayBankAccountSuffix(source.lastDigits) : source.lastDigits}` : ''}`,
         amount: this.expenses()
           .filter((item) => item.cardId === source.id)
           .reduce((sum, item) => sum + spendingContribution(item), 0),

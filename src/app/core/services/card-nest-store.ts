@@ -20,6 +20,7 @@ import {
 } from '../models/domain';
 import { DatabaseSession, SqliteDatabase } from '../data/sqlite-database';
 import { walletEffectApplies } from './wallet-anchor';
+import { displayBankAccountSuffix, parseBankAccountIdentifier } from './bank-account-identifier';
 import {
   BANK_CASH_TRACKING_KEY,
   DEFAULT_BANK_CASH_TRACKING,
@@ -1468,6 +1469,27 @@ export class CardNestStore {
     const previous = this.paymentSources().find((source) => source.id === updated.id);
     if (!previous || previous.kind !== updated.kind)
       throw new Error('Choose an existing payment source of the same kind.');
+    const bankIdentityChanged =
+      updated.kind === 'DEBIT' &&
+      (updated.lastDigits !== previous.lastDigits || updated.accountMask !== previous.accountMask);
+    if (bankIdentityChanged) {
+      const rawIdentifier =
+        updated.accountMask !== previous.accountMask && updated.accountMask
+          ? updated.accountMask
+          : updated.lastDigits;
+      if (rawIdentifier) {
+        const identifier = parseBankAccountIdentifier(rawIdentifier);
+        if (!identifier)
+          throw new Error('Enter a masked identifier with at least three account digits.');
+        updated = {
+          ...updated,
+          lastDigits: identifier.suffix,
+          accountMask: identifier.mask,
+        };
+      } else {
+        updated = { ...updated, accountMask: undefined };
+      }
+    }
     if (!updated.nickname.trim() || updated.nickname.length > 80)
       throw new Error('Enter an account nickname of up to 80 characters.');
     if (updated.kind === 'DEBIT' && updated.lastDigits && !/^\d{3,5}$/.test(updated.lastDigits))
@@ -1844,20 +1866,24 @@ export class CardNestStore {
   async addBankAccount(input: {
     nickname: string;
     institution: string;
-    lastDigits: string;
+    lastDigits?: string;
+    accountIdentifier?: string;
   }): Promise<PaymentSource> {
     const nickname = input.nickname.trim().slice(0, 80);
     const institution = input.institution.trim().slice(0, 80);
-    const lastDigits = input.lastDigits.trim();
+    const rawIdentifier = input.accountIdentifier ?? input.lastDigits ?? '';
+    const identifier = parseBankAccountIdentifier(rawIdentifier);
     if (!nickname || !institution) throw new Error('Enter the account name and bank.');
-    if (!/^\d{3,5}$/.test(lastDigits))
-      throw new Error('Enter the last 3 to 5 digits shown in your bank messages.');
+    if (!identifier)
+      throw new Error('Enter a masked account identifier with at least three digits.');
+    const lastDigits = identifier.suffix;
     const account: PaymentSource = {
       id: `bank-${crypto.randomUUID()}`,
       nickname,
       kind: 'DEBIT',
       institution,
       lastDigits,
+      accountMask: identifier.mask,
       noLimit: true,
       autoLoad: false,
       archived: false,
@@ -1879,7 +1905,7 @@ export class CardNestStore {
           (item) =>
             item.kind === 'DEBIT' &&
             !item.archived &&
-            item.lastDigits === lastDigits &&
+            item.lastDigits?.slice(-3) === lastDigits &&
             sameBank(item.institution),
         )
       )
@@ -2307,7 +2333,7 @@ export class CardNestStore {
     return (
       (card ? `${card.nickname}${card.deletedAt ? ' (deleted card)' : ''}` : undefined) ??
       (source
-        ? `${source.nickname}${source.lastDigits ? ` ${source.lastDigits}` : ''}`
+        ? `${source.nickname}${source.lastDigits ? ` ${source.kind === 'DEBIT' ? displayBankAccountSuffix(source.lastDigits) : source.lastDigits}` : ''}`
         : undefined) ??
       'Unknown source'
     );

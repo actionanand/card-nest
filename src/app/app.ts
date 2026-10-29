@@ -246,7 +246,13 @@ export class App {
       ...this.store.activePaymentSources().map((source) => source.id),
     ];
     const preferred = this.store.flashTransactionSourceId();
-    this.flashSourceId.set(availableIds.includes(preferred) ? preferred : (availableIds[0] ?? ''));
+    const activeSources = this.store.activePaymentSources();
+    const fallback =
+      this.store.alphabeticalActiveCards()[0]?.id ??
+      (activeSources.filter((source) => source.kind === 'DEBIT').length > 1
+        ? ''
+        : (activeSources[0]?.id ?? ''));
+    this.flashSourceId.set(availableIds.includes(preferred) ? preferred : fallback);
     this.flashAmount.set('');
     this.flashMerchant.set('');
     this.flashError.set(null);

@@ -20,11 +20,13 @@ import {
   BalanceTiming,
   CardTransaction,
   EmiPlan,
+  PaymentSource,
   RecurringRule,
   SourceTransfer,
   TransactionType,
 } from '../../core/models/domain';
 import { CardNestStore } from '../../core/services/card-nest-store';
+import { displayBankAccountSuffix } from '../../core/services/bank-account-identifier';
 import {
   formatMoney,
   parseMoneyToMinor,
@@ -298,7 +300,7 @@ export class TransactionsPage {
     return source
       ? {
           id,
-          label: `${source.nickname}${source.lastDigits ? ` ${source.lastDigits}` : ''}`,
+          label: `${source.nickname}${source.lastDigits ? ` ${source.kind === 'DEBIT' ? displayBankAccountSuffix(source.lastDigits) : source.lastDigits}` : ''}`,
           kind: 'PAYMENT_SOURCE',
         }
       : null;
@@ -905,7 +907,7 @@ export class TransactionsPage {
       .activePaymentSources()
       .find((item) => item.id === this.sourceFilter());
     return source
-      ? `${source.nickname}${source.lastDigits ? ` · ${source.lastDigits}` : ''}`
+      ? `${source.nickname}${source.lastDigits ? ` · ${source.kind === 'DEBIT' ? displayBankAccountSuffix(source.lastDigits) : source.lastDigits}` : ''}`
       : 'All cards and sources';
   }
   updateCategory(value: string): void {
@@ -1152,9 +1154,15 @@ export class TransactionsPage {
     const source = this.store.activePaymentSources().find((s) => s.id === id);
     if (source)
       return source.kind === 'DEBIT'
-        ? `${source.institution || 'Bank/UPI'} · ${source.nickname}${source.lastDigits ? ` · •••${source.lastDigits}` : ''}`
+        ? `${source.institution || 'Bank/UPI'} · ${source.nickname}${source.lastDigits ? ` · ${displayBankAccountSuffix(source.lastDigits)}` : ''}`
         : `${source.nickname}${source.lastDigits ? ` · ${source.lastDigits}` : ''}`;
     return 'Select source';
+  }
+  accountIdentifierLabel(source: PaymentSource): string {
+    return displayBankAccountSuffix(source.lastDigits);
+  }
+  transactionAccountIdentifierLabel(suffix?: string): string {
+    return displayBankAccountSuffix(suffix);
   }
   edit(transaction: CardTransaction): void {
     if (this.saving()) return;
@@ -2054,12 +2062,12 @@ export class TransactionsPage {
   }
 
   private defaultSourceId(): string {
-    return (
-      this.requestedSourceId ??
-      this.store.activeCards()[0]?.id ??
-      this.store.activePaymentSources()[0]?.id ??
-      ''
-    );
+    if (this.requestedSourceId) return this.requestedSourceId;
+    const firstCardId = this.store.activeCards()[0]?.id;
+    if (firstCardId) return firstCardId;
+    const sources = this.store.activePaymentSources();
+    if (sources.filter((source) => source.kind === 'DEBIT').length > 1) return '';
+    return sources[0]?.id ?? '';
   }
 
   private resetForm(sourceId: string): void {

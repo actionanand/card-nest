@@ -9,6 +9,7 @@ import {
 import { indiaTimeOfDay, indiaTodayIso } from './india-date';
 import { transactionEffect } from './money';
 import { walletEffectApplies } from './wallet-anchor';
+import { displayBankAccountSuffix } from './bank-account-identifier';
 
 export const BANK_CASH_TRACKING_KEY = 'bank_cash_tracking';
 
@@ -29,7 +30,8 @@ export function bankAccountLabel(source: PaymentSource): string {
   if (source.kind === 'CASH') return source.nickname;
   const institution = source.institution?.trim();
   const name = institution && institution !== 'Primary bank' ? institution : source.nickname;
-  return source.lastDigits ? `${name} · A/c ••${source.lastDigits}` : name;
+  const identifier = displayBankAccountSuffix(source.lastDigits);
+  return identifier ? `${name} · A/c ${identifier}` : name;
 }
 
 export function parseBankCashTracking(raw: string | null | undefined): BankCashTrackingSettings {

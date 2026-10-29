@@ -13,6 +13,10 @@ import { DatabaseSession, SqliteDatabase } from '../../core/data/sqlite-database
 import { PaymentSource } from '../../core/models/domain';
 import { RECONCILE_BANK_ACTIVITY_LATEST } from '../../core/data/bank-activity-latest';
 import { indiaTodayIso } from '../../core/services/india-date';
+import {
+  displayBankAccountIdentifier,
+  parseBankAccountIdentifier,
+} from '../../core/services/bank-account-identifier';
 import { BankAccountSyncService } from './bank-account-sync.service';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import {
@@ -32,7 +36,9 @@ export interface AndroidBankActivityEvidence {
   readonly direction?: 'DEBIT' | 'CREDIT';
   readonly purposeHint?: string;
   readonly accountDigits?: string;
+  readonly accountMask?: string;
   readonly counterpartyAccountDigits?: string;
+  readonly counterpartyAccountMask?: string;
   readonly issuer?: string;
   readonly reference?: string;
   readonly dateFallback?: boolean;
@@ -152,6 +158,7 @@ export class BankActivityService {
     bankName: string;
     nickname?: string;
     accountSuffix?: string;
+    accountIdentifier?: string;
     owner: BankActivityProfile['owner'];
     holderName?: string;
     remarks?: string;
@@ -188,18 +195,23 @@ export class BankActivityService {
     const holderName = input.owner === 'OTHERS' ? input.holderName?.trim().slice(0, 80) : undefined;
     if (input.owner === 'OTHERS' && !holderName) throw new Error('Enter the account holder name.');
     const sourceSuffix = finalThree(source?.lastDigits);
+    const rawIdentifier = input.accountIdentifier?.trim();
+    const parsedIdentifier = rawIdentifier ? parseBankAccountIdentifier(rawIdentifier) : undefined;
+    if (rawIdentifier && !parsedIdentifier)
+      throw new Error('Enter a masked identifier with at least three numeric account digits.');
     const legacyUnchanged =
       !!previous &&
       input.accountSuffix === previous.accountSuffix &&
       !!finalThree(previous.accountSuffix);
     if (
       !sourceSuffix &&
+      !parsedIdentifier &&
       input.accountSuffix &&
       !/^\d{3}$/.test(input.accountSuffix) &&
       !legacyUnchanged
     )
       throw new Error('Enter exactly three numeric account digits.');
-    const suffix = sourceSuffix ?? finalThree(input.accountSuffix);
+    const suffix = sourceSuffix ?? parsedIdentifier?.suffix ?? finalThree(input.accountSuffix);
     const manualOnly =
       input.manualOnly === true || (input.manualOnly === undefined && !!previous && !suffix);
     if (!suffix && !manualOnly)
@@ -210,6 +222,12 @@ export class BankActivityService {
       throw new Error(
         'A new OWN bank account needs the last three digits so CardNest can create its stable Money Source. Manual-only accounts are for OTHERS.',
       );
+    const accountMask = source
+      ? (source.accountMask ??
+        (displayBankAccountIdentifier(undefined, source.lastDigits) || undefined))
+      : (parsedIdentifier?.mask ??
+        previous?.accountMask ??
+        (displayBankAccountIdentifier(undefined, suffix) || undefined));
     const timestamp = new Date().toISOString();
     const profile: BankActivityProfile = {
       id: previous?.id ?? crypto.randomUUID(),
@@ -217,6 +235,7 @@ export class BankActivityService {
       bankName,
       nickname: input.nickname?.trim().slice(0, 80) || undefined,
       accountSuffix: suffix,
+      accountMask,
       manualOnly,
       owner: input.owner,
       holderName,
@@ -282,13 +301,17 @@ export class BankActivityService {
     sourceId: string;
     nickname: string;
     institution: string;
-    lastDigits: string;
+    lastDigits?: string;
+    accountIdentifier?: string;
   }): Promise<PaymentSource> {
     const nickname = input.nickname.trim().slice(0, 80);
     const institution = input.institution.trim().slice(0, 80);
-    const lastDigits = input.lastDigits.trim();
+    const rawIdentifier = input.accountIdentifier ?? input.lastDigits ?? '';
+    const identifier = parseBankAccountIdentifier(rawIdentifier);
     if (!nickname || !institution) throw new Error('Enter the account name and bank.');
-    if (!/^\d{3,5}$/.test(lastDigits)) throw new Error('Enter the last 3 to 5 account digits.');
+    if (!identifier)
+      throw new Error('Enter a masked identifier with at least three account digits.');
+    const lastDigits = identifier.suffix;
     const timestamp = new Date().toISOString();
     const result = await this.database.atomic(async (tx) => {
       const [preference] = await tx.query<{ encrypted_value: string }>(
@@ -309,7 +332,7 @@ export class BankActivityService {
           other.id !== source.id &&
           other.kind === 'DEBIT' &&
           matchesBank(other.institution, institution) &&
-          other.lastDigits === lastDigits,
+          finalThree(other.lastDigits) === lastDigits,
       );
       if (duplicate)
         throw new Error(
@@ -322,6 +345,7 @@ export class BankActivityService {
         nickname,
         institution,
         lastDigits,
+        accountMask: identifier.mask,
       };
       sources[sourceIndex] = updatedSource;
       await tx.run("UPDATE app_preferences SET encrypted_value=? WHERE key='payment_sources'", [
@@ -338,7 +362,8 @@ export class BankActivityService {
         const updated: BankActivityProfile = {
           ...previous,
           bankName: institution,
-          accountSuffix: finalThree(lastDigits),
+          accountSuffix: lastDigits,
+          accountMask: identifier.mask,
           updatedAt: timestamp,
         };
         return updated;
@@ -514,7 +539,9 @@ export class BankActivityService {
                 purposeHint: text('purposeHint'),
                 issuer: text('issuer'),
                 accountDigits: text('accountDigits'),
+                accountMask: text('accountMask'),
                 counterpartyAccountDigits: text('counterpartyAccountDigits'),
+                counterpartyAccountMask: text('counterpartyAccountMask'),
                 reference: text('reference'),
                 merchant: text('merchant'),
                 dateFallback: false,
@@ -581,10 +608,6 @@ export class BankActivityService {
         [fingerprint],
       );
       if (recorded) throw new Error('This evidence already has a confirmed activity record.');
-      if (saved.resolvedAt && saved.resolvedProfileId === profileId) return saved;
-      if (saved.resolvedAt && saved.resolvedProfileId !== profileId)
-        throw new Error('This evidence is already associated with another monitored account.');
-
       const [profileRow] = await tx.query<{ payload: string; archived: number }>(
         'SELECT payload,archived FROM bank_activity_profiles WHERE id=?',
         [profileId],
@@ -592,6 +615,11 @@ export class BankActivityService {
       if (!profileRow || profileRow.archived)
         throw new Error('Choose an active monitored account.');
       const profile = JSON.parse(profileRow.payload) as BankActivityProfile;
+      if (profile.manualOnly)
+        throw new Error('Manual-only profiles cannot be confirmed as SMS account identities.');
+      if (saved.resolvedAt && saved.resolvedProfileId === profileId) return saved;
+      if (saved.resolvedAt && saved.resolvedProfileId !== profileId)
+        throw new Error('This evidence is already associated with another monitored account.');
       const [sourcesRow] = await tx.query<{ encrypted_value: string }>(
         "SELECT encrypted_value FROM app_preferences WHERE key='payment_sources'",
       );
@@ -657,8 +685,6 @@ export class BankActivityService {
       if (recorded) return null;
       if (!candidateRow) throw new Error('This activity suggestion is no longer available.');
       const candidate = JSON.parse(candidateRow.payload) as BankActivityCandidate;
-      if (candidate.resolvedProfileId && candidate.resolvedProfileId !== profileId)
-        throw new Error('This evidence is identified with a different monitored account.');
       if (candidate.dismissed)
         throw new Error('This activity suggestion was dismissed and cannot be confirmed.');
       const [profileRow] = await tx.query<{ payload: string; archived: number }>(
@@ -668,6 +694,12 @@ export class BankActivityService {
       if (!profileRow || profileRow.archived)
         throw new Error('Choose an active monitored account.');
       const profile = JSON.parse(profileRow.payload) as BankActivityProfile;
+      if (
+        candidate.resolvedProfileId &&
+        candidate.resolvedProfileId !== profileId &&
+        !profile.manualOnly
+      )
+        throw new Error('This evidence is identified with a different monitored account.');
       if (
         candidate.fingerprint !== fingerprint ||
         (candidate.kind !== undefined &&
@@ -687,6 +719,7 @@ export class BankActivityService {
         !(
           candidate.resolvedAt &&
           candidate.resolvedProfileId === profileId &&
+          !profile.manualOnly &&
           !recognizedBank(candidate.bankName) &&
           finalThree(candidate.accountSuffix) ===
             profileSuffix(profile, this.store.paymentSources())
@@ -882,13 +915,19 @@ export class BankActivityService {
     accountSuffix?: string,
   ): Promise<void> {
     const createdAt = new Date().toISOString();
+    const parsedIdentifier = input.accountMask
+      ? parseBankAccountIdentifier(input.accountMask)
+      : undefined;
     const candidate: BankActivityCandidate = {
       fingerprint: input.fingerprint,
       activityDate: input.activityDate,
       direction: input.direction,
       bankName: bankDisplayName(input.issuer),
       kind: input.kind,
-      accountSuffix,
+      accountSuffix: finalThree(accountSuffix),
+      accountMask:
+        parsedIdentifier?.mask ??
+        (displayBankAccountIdentifier(undefined, accountSuffix) || undefined),
       reference: safeReference(input.reference),
       purposeHint: input.purposeHint ?? 'UNKNOWN',
       createdAt,

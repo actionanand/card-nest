@@ -33,13 +33,41 @@ object SmsTransactionParser {
     /** Review hint only: PURCHASE, INCOMING, ACCOUNT_TRANSFER, CARD_REPAYMENT, LOAN_REPAYMENT, CASH_WITHDRAWAL. */
     val purposeHint: String? = null,
     /** Informational card balance field; never the primary transaction amount. */
-    val amountDueMinor: Long? = null
+    val amountDueMinor: Long? = null,
+    val accountMask: String? = null,
+    val counterpartyAccountMask: String? = null
   )
+  private data class AccountIdentifier(val suffix: String, val mask: String)
+
+  private fun accountIdentifier(raw: String?): AccountIdentifier? {
+    if (raw.isNullOrBlank() || raw.any { !(it in '0'..'9' || it in "xX*•●× -") }) return null
+    val compact = raw.filter { it in '0'..'9' || it in "xX*•●×" }
+    val lastMask = compact.indexOfLast { it in "xX*•●×" }
+    val trailingDigits = (if (lastMask < 0) compact else compact.substring(lastMask + 1))
+      .filter { it in '0'..'9' }
+    if (trailingDigits.length < 3) return null
+    val suffix = trailingDigits.takeLast(3)
+    val firstMask = compact.indexOfFirst { it in "xX*•●×" }
+    val digits = compact.filter { it in '0'..'9' }
+    val prefix = when {
+      firstMask >= 0 -> compact.substring(0, firstMask).filter { it in '0'..'9' }.take(3)
+      digits.length >= 6 -> digits.take(3)
+      else -> ""
+    }
+    val hidden = when {
+      firstMask >= 0 -> (compact.length - prefix.length - 3).coerceAtLeast(1)
+      digits.length >= 6 -> digits.length - 6
+      else -> 3
+    }
+    return AccountIdentifier(suffix, prefix + "•".repeat(hidden) + suffix)
+  }
+
   private fun rx(s: String) = Regex(s, RegexOption.IGNORE_CASE)
   private const val DATE_TIME = "\\b(?:[0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{1,2}[-/][0-9]{1,2}[-/](?:[0-9]{4}|[0-9]{2})|[0-9]{1,2}[-/ ][A-Za-z]{3,9}[-/ ](?:[0-9]{4}|[0-9]{2})|(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) [A-Za-z]{3} [0-9]{1,2} [0-9]{4})(?:(?: at)? [0-9]{1,2}:[0-9]{2}(?::[0-9]{1,2})?(?: [AP]M)?)?"
   private const val NUMBER = "((?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+|[0-9]{1,2}(?:,[0-9]{2})+,[0-9]{3})(?:\\.[0-9]{1,2})?)(?![0-9]|\\.[0-9]|,[0-9])"
   private const val MONEY = "(?:₹|\\bINR\\b|\\bRs\\.?)[\\s:.]*(?:Dr\\.?\\s*)?"
-  private const val ACCOUNT_MENTION = "\\b(?:acct|acc|a/c|account)\\s*(?:no\\.?\\s*)?(?:[0-9]*[x*]+)([0-9]{3,5})\\b"
+  private const val ACCOUNT_TOKEN = "[0-9xX*•●×](?:[0-9xX*•●× -]{1,60}[0-9xX*•●×])?"
+  private const val ACCOUNT_MENTION = "\\b(?:acct|acc|a/c|account)\\s*(?:no\\.?\\s*)?($ACCOUNT_TOKEN)\\b"
   private val money = rx(MONEY + NUMBER)
   private fun minor(s: String?): Long? = try {
     s?.replace(",", "")?.let { BigDecimal(it).movePointRight(2).longValueExact() }
@@ -172,10 +200,13 @@ object SmsTransactionParser {
       ?: if (meal) rx("\\b(?:meal card|wallet|card)(?:\\s+(?:number|no\\.?|ending(?:\\s+(?:with|in))?))?\\s*[:#-]?\\s*(?:[x*]\\s*)*([0-9]{4})\\b").find(flat)?.groupValues?.get(1) else null
     val accounts = accountMentions.map { it.groupValues[1] }
     val account = primaryMention?.groupValues?.get(1)
-    val counterpartyAccount = accounts.firstOrNull { it != account }
+    val primaryIdentifier = accountIdentifier(account)
+    val counterpartyRaw = accounts.firstOrNull { it != account }
+    val counterpartyIdentifier = accountIdentifier(counterpartyRaw)
     val issuer = listOf("Pluxee" to "pluxee|sodexo", "Axis" to "axis", "ICICI" to "icici",
       "HDFC" to "hdfc", "HSBC" to "hsbc", "PNB" to "pnb", "AMEX" to "amex|american express", "Standard Chartered" to "stanchart|standard chartered",
-      "Federal" to "federal", "BOBCARD" to "bobcard", "IDFC FIRST" to "idfc", "AU Bank" to "au bank", "Slice" to "slice")
+      "Federal" to "federal", "BOBCARD" to "bobcard", "IDFC FIRST" to "idfc", "AU Bank" to "au bank", "Slice" to "slice",
+      "Yes Bank" to "yes bank|yesbank", "IndusInd Bank" to "indusind")
       .firstOrNull { has(it.second) }?.first
     val ref = rx("\\b(?:UPI\\s*(?:ref(?:erence)?\\s*(?:no\\.?)?)?|RRN|UTR|Ref(?:erence)?\\s*(?:No\\.?|ID)?)\\s*[:#.]?\\s*([A-Z0-9]{9,30})\\b")
       .find(flat)?.groupValues?.get(1)
@@ -209,7 +240,7 @@ object SmsTransactionParser {
     val cleanMerchant = merchant?.split(rx("\\b(?:t&cs|terms and conditions|manage|you can manage|unsubscribe|contact support|ref(?:erence)?|utr|rrn|visit|click|not you|if not you|to dispute|call|sms block)\\b"))?.firstOrNull()
       ?.trim()?.trimEnd('.', ',', ';')?.takeIf { it.isNotBlank() && !rx("^(?:[0-9\\W]+|(?:[a-z0-9-]+\\.)+[a-z]{2,}(?:/.*)?|[a-z0-9]{18,})$").matches(it) }?.take(100)
     return Result(kind, amount, event.first.toLocalDate().toString(), cleanMerchant,
-      digits, account, issuer, ref, value(flat, if (meal)
+      digits, primaryIdentifier?.suffix, issuer, ref, value(flat, if (meal)
         "(?:(?:current\\s+)?meal wallet balance|current balance|(?:avl|available|wallet)\\.?\\s*bal(?:ance)?\\.?)(?:\\s+is)?"
         else "current meal wallet balance is|current balance|(?:avl|available|wallet)\\.?\\s*bal(?:ance)?\\.?"),
       if (tag) rx("\\b[A-Z]{2}\\s?[0-9]{1,2}\\s?[A-Z]{1,3}\\s?[0-9]{4}\\b").find(flat)?.value?.replace(" ", "")?.uppercase(Locale.ROOT) else null,
@@ -227,7 +258,8 @@ object SmsTransactionParser {
       balancePosition = if (meal && has("(?:current\\s+)?meal wallet balance|current balance|(?:available|avl|wallet) bal(?:ance)?") && !has("before|opening balance")) "AFTER" else "UNKNOWN",
       eventTimeExplicit = event.third,
       standingInstructionReference = rx("\\bSI Hub Id\\s+([A-Z0-9]{6,40})\\b").find(flat)?.groupValues?.get(1),
-      direction = direction, counterpartyAccountDigits = counterpartyAccount,
+      direction = direction,
+      counterpartyAccountDigits = counterpartyIdentifier?.suffix,
       purposeHint = when {
         !bank -> null
         kind == Kind.LOAN_DEBIT -> "LOAN_REPAYMENT"
@@ -240,6 +272,8 @@ object SmsTransactionParser {
         else -> null
       },
       amountDueMinor = amountDue,
+      accountMask = primaryIdentifier?.mask,
+      counterpartyAccountMask = counterpartyIdentifier?.mask,
       legacyId = if (kind == Kind.STATEMENT || kind == Kind.PAYMENT_REMINDER) fingerprint(text) else null)
   }
 

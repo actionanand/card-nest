@@ -570,7 +570,9 @@
               @if (source.lastDigits || source.institution) {
                 <span class="pay-from-option__detail">
                   @if (source.lastDigits) {
-                    {{ source.lastDigits }}
+                    {{
+                      source.kind === 'DEBIT' ? accountIdentifierLabel(source) : source.lastDigits
+                    }}
                   }
                   @if (source.lastDigits && source.institution) {
                     ·
@@ -896,7 +898,7 @@
             <dd>
               {{ transaction.bankName || 'Bank not identified' }}
               @if (transaction.accountSuffix) {
-                · A/c ••{{ transaction.accountSuffix }}
+                · A/c {{ transactionAccountIdentifierLabel(transaction.accountSuffix) }}
               }
             </dd>
           </div>

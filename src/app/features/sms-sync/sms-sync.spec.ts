@@ -318,6 +318,7 @@ describe('SMS review privacy and explicit approval UI', () => {
   const navigation = signal<{ extras: { info?: unknown; state?: Record<string, unknown> } } | null>(
     null,
   );
+  const routerNavigate = vi.fn().mockResolvedValue(true);
   const swipePreference = signal(false);
   const setDurableUiPreference = vi.fn().mockResolvedValue(undefined);
   const sync = {
@@ -456,7 +457,7 @@ describe('SMS review privacy and explicit approval UI', () => {
     TestBed.configureTestingModule({
       imports: [SmsSyncPage],
       providers: [
-        { provide: Router, useValue: { currentNavigation: navigation } },
+        { provide: Router, useValue: { currentNavigation: navigation, navigate: routerNavigate } },
         { provide: SmsReviewService, useValue: sync },
         {
           provide: CardNestStore,
@@ -1743,6 +1744,33 @@ describe('SMS review privacy and explicit approval UI', () => {
     };
     page.open(credit);
     expect(page.bankEditor.controls.purpose.value).toBe('');
+  });
+  it('saves the same SMS review draft before opening Find Banks for identity enrollment', async () => {
+    const candidate = demoCandidate();
+    candidate.kind = 'BANK_DEBIT';
+    candidate.item = {
+      ...candidate.item!,
+      kind: 'BANK_DEBIT',
+      direction: 'DEBIT',
+      accountDigits: '765',
+      accountMask: '432•••••765',
+      issuer: 'ICICI Bank',
+    };
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    const page = fixture.componentInstance;
+    page.open(candidate);
+    await fixture.whenStable();
+
+    await page.enrollFromMessage();
+
+    expect(sync.savePurchaseReview).toHaveBeenCalledWith(
+      candidate.id,
+      expect.objectContaining({ mode: 'BANK', transactionDate: candidate.item.eventDate }),
+    );
+    expect(routerNavigate).toHaveBeenCalledWith(['/bank-activity'], {
+      queryParams: { discoverCandidate: candidate.id },
+    });
+    fixture.destroy();
   });
 
   it('keeps a CRED repayment visible in SMS Review when bank tracking is off', async () => {

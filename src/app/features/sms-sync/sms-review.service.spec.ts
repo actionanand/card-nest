@@ -197,6 +197,31 @@ describe('SMS approved import integrity', () => {
       decision: 'newer choice',
     });
   });
+  it('stores only masked hints and final-three digits for primary and counterparty SMS identifiers', async () => {
+    const primary = '4321234567890417';
+    const counterparty = '7650987654321007';
+    const stageEvidence = service as unknown as {
+      stage(items: readonly SmsEvidence[]): Promise<void>;
+    };
+
+    await stageEvidence.stage([
+      evidence({
+        accountDigits: primary,
+        counterpartyAccountDigits: counterparty,
+      }),
+    ]);
+
+    const payload = rows<{ payload: string }>('SELECT payload FROM sms_candidates')[0].payload;
+    const saved = JSON.parse(payload) as SmsEvidence;
+    expect(saved).toMatchObject({
+      accountDigits: '417',
+      accountMask: '432••••••••••417',
+      counterpartyAccountDigits: '007',
+      counterpartyAccountMask: '765••••••••••007',
+    });
+    expect(payload).not.toContain(primary);
+    expect(payload).not.toContain(counterparty);
+  });
   it('isolates rapid Undo tokens, preserves newer read actions, and expires dismissal Undo after seven seconds', async () => {
     const first = stage(evidence());
     const second = stage(evidence({ id: 'b'.repeat(64) }));

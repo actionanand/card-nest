@@ -16,5 +16,11 @@
   { "id": "kotak", "name": "Kotak Mahindra Bank", "aliases": ["Kotak", "Kotak Mahindra Bank"] },
   { "id": "rbl", "name": "RBL Bank", "aliases": ["RBL", "RBL Bank"] },
   { "id": "bob", "name": "Bank of Baroda", "aliases": ["BOB", "Bank of Baroda"] },
-  { "id": "slice", "name": "Slice", "aliases": ["Slice"] }
+  { "id": "slice", "name": "Slice", "aliases": ["Slice"] },
+  { "id": "yes", "name": "Yes Bank", "aliases": ["Yes", "Yes Bank", "Yes Bank Limited"] },
+  {
+    "id": "indusind",
+    "name": "IndusInd Bank",
+    "aliases": ["IndusInd", "IndusInd Bank", "IndusInd Bank Limited"]
+  }
 ]

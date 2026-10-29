@@ -254,6 +254,8 @@ export interface PaymentSource {
   kind: PaymentSourceKind;
   institution?: string;
   lastDigits?: string;
+  /** Masked display identifier only; complete account numbers are never persisted here. */
+  accountMask?: string;
   noLimit: boolean;
   balanceMinor?: Money;
   loadAmountMinor?: Money;

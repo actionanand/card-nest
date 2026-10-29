@@ -22,7 +22,7 @@ import {
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
 import { debounceTime, Observable } from 'rxjs';
-import { Router } from '@angular/router';
+import { ActivatedRoute, Router } from '@angular/router';
 import { Capacitor } from '@capacitor/core';
 import { SmsSwipe } from './sms-swipe';
 import { AppIcon } from '../../shared/app-icon';
@@ -45,6 +45,7 @@ import {
   needsBaselineConfirmation,
 } from '../../core/services/source-balance';
 import { BalanceTiming } from '../../core/models/domain';
+import { displayBankAccountSuffix } from '../../core/services/bank-account-identifier';
 import {
   paymentMethodDetailConfig as getPaymentMethodDetailConfig,
   paymentMethodsFor,
@@ -133,6 +134,8 @@ const CANDIDATE_MENU_ITEM_HEIGHT = 44;
 export class SmsSyncPage {
   readonly sync = inject(SmsReviewService);
   readonly store = inject(CardNestStore);
+  private readonly route = inject(ActivatedRoute, { optional: true });
+  private readonly requestedReviewId = this.route?.snapshot.queryParamMap.get('review') ?? '';
   private readonly snackbar = inject(SnackbarService);
   readonly android = Capacitor.getPlatform() === 'android';
   readonly readFilter = signal('UNREAD');
@@ -572,11 +575,11 @@ export class SmsSyncPage {
     void this.savePurchaseChoice(bank);
   }
 
-  private async savePurchaseChoice(bank = false): Promise<void> {
+  private async savePurchaseChoice(bank = false): Promise<boolean> {
     const candidate = this.selected();
-    if (!candidate || this.hydratingReview) return;
+    if (!candidate || this.hydratingReview) return false;
     const value = (bank ? this.bankEditor : this.editor).getRawValue();
-    if (!candidate.item || !['PENDING', 'DEFERRED'].includes(candidate.state)) return;
+    if (!candidate.item || !['PENDING', 'DEFERRED'].includes(candidate.state)) return false;
     const draft: PurchaseReviewDraft = {
       mode: bank ? 'BANK' : 'CARD',
       source: value.source,
@@ -598,10 +601,12 @@ export class SmsSyncPage {
     };
     try {
       await this.sync.savePurchaseReview(candidate.id, draft);
+      return true;
     } catch {
       this.error.set(
         'Review choice could not be saved. Keep this review open and retry before leaving.',
       );
+      return false;
     }
   }
 
@@ -832,7 +837,7 @@ export class SmsSyncPage {
         return `Archived account match · ${matches[0].institution ?? 'Bank'} · •••${matches[0].lastDigits?.slice(-3) ?? ''}. Restore or identify an active account explicitly.`;
       return matches.length > 1
         ? `Ambiguous · ${matches.length} matching accounts including archived accounts; choose an active account explicitly`
-        : `${bankDisplayName(candidate.item.issuer) ?? 'Bank not identified'}${candidate.item.accountDigits ? ` · A/c ••${candidate.item.accountDigits}` : ''} · choose an account`;
+        : `${bankDisplayName(candidate.item.issuer) ?? 'Bank not identified'}${candidate.item.accountDigits ? ` · A/c ${displayBankAccountSuffix(candidate.item.accountDigits)}` : ''} · choose an account`;
     }
     const ids = candidate.item
       ? eligibleSources(candidate.item, this.store.cards(), this.store.paymentSources())
@@ -894,10 +899,6 @@ export class SmsSyncPage {
       nonNullable: true,
       validators: [Validators.maxLength(500)],
     }),
-  });
-  readonly enrollBankName = new FormControl('', {
-    nonNullable: true,
-    validators: [Validators.required, Validators.maxLength(80)],
   });
   private readonly bankEditorChanges = toSignal(this.bankEditor.valueChanges);
   readonly bankItem = computed(() => {
@@ -1104,7 +1105,9 @@ export class SmsSyncPage {
     const item = this.bankItem();
     if (!item) return '';
     const bank = bankDisplayName(item.issuer) ?? 'Bank not identified';
-    const account = item.accountDigits ? `A/c ••${item.accountDigits}` : 'Account not identified';
+    const account = item.accountDigits
+      ? `A/c ${displayBankAccountSuffix(item.accountDigits)}`
+      : 'Account not identified';
     const direction = bankDirection(item);
     return `${bank} · ${account} · ${
       direction === 'DEBIT'
@@ -1168,18 +1171,16 @@ export class SmsSyncPage {
       ? `Balance ${this.money(source.balanceMinor)}`
       : 'Balance not tracked';
   }
-  enrollFromMessage(): void {
+  accountIdentifierLabel(mask?: string, suffix?: string): string {
+    return displayBankAccountSuffix(suffix);
+  }
+  async enrollFromMessage(): Promise<void> {
     const item = this.bankItem();
-    if (!item?.accountDigits || !this.enrollBankName.valid || this.saving()) return;
-    const bank = this.enrollBankName.value.trim();
-    void this.run(async () => {
-      const account = await this.store.addBankAccount({
-        nickname: `${bank} A/c`,
-        institution: bank,
-        lastDigits: item.accountDigits!,
-      });
-      this.bankEditor.controls.source.setValue(account.id);
-      this.snackbar.show(`${this.store.sourceDetail(account.id)} enrolled.`);
+    const candidate = this.selected();
+    if (!item?.accountDigits || !candidate || this.saving()) return;
+    if (!(await this.savePurchaseChoice(true))) return;
+    await this.router.navigate(['/bank-activity'], {
+      queryParams: { discoverCandidate: candidate.id },
     });
   }
   approveBankEvent(event: Event): void {
@@ -1413,6 +1414,14 @@ export class SmsSyncPage {
   });
   constructor() {
     const destroyRef = inject(DestroyRef);
+    let restoredRequestedReview = false;
+    effect(() => {
+      if (!this.requestedReviewId || restoredRequestedReview) return;
+      const candidate = this.sync.candidates().find((row) => row.id === this.requestedReviewId);
+      if (!candidate) return;
+      restoredRequestedReview = true;
+      this.open(candidate);
+    });
     let splitKey = '';
     let splitLedger: readonly unknown[] = [];
     effect(() => {
@@ -1794,7 +1803,6 @@ export class SmsSyncPage {
       const settings = this.store.bankCashTracking();
       const sources = suggestedBankSources(item, this.store.paymentSources(), settings);
       const purpose = defaultBankPurpose(item, settings);
-      this.enrollBankName.reset(bankDisplayName(item.issuer) ?? '');
       this.bankEditor.reset({
         purpose,
         source: sources.length === 1 ? sources[0] : '',

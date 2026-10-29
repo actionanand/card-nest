@@ -109,6 +109,23 @@ describe('Bank/UPI review model', () => {
     expect(bankSourceConflict(unknownIssuer, sources[2])).toBe('');
     expect(bankSourceConflict(evidence(), sources[2])).toContain('bank differs');
   });
+  it('rejects shared-suffix suggestions for Yes Bank, IndusInd and explicit regional bank conflicts', () => {
+    const hdfc = account({ id: 'hdfc', institution: 'HDFC Bank', lastDigits: '417' });
+    const icici = account({ id: 'icici', institution: 'ICICI Bank', lastDigits: '417' });
+    const yesAccount = account({ id: 'yes', institution: 'Yes Bank', lastDigits: '417' });
+    const indusAccount = account({ id: 'indus', institution: 'IndusInd Bank', lastDigits: '417' });
+    expect(normalizedIssuer('YES BANK')).toBe('yes');
+    expect(bankDisplayName('yesbank')).toBe('Yes Bank');
+    expect(matchingBankAccounts(evidence({ issuer: 'Yes Bank' }), [hdfc])).toEqual([]);
+    expect(suggestedBankSources(evidence({ issuer: 'Yes Bank' }), [hdfc], on)).toEqual([]);
+    expect(matchingBankAccounts(evidence({ issuer: 'IndusInd Bank' }), [icici])).toEqual([]);
+    expect(suggestedBankSources(evidence({ issuer: 'IndusInd Bank' }), [icici], on)).toEqual([]);
+    expect(matchingBankAccounts(evidence({ issuer: 'HDFC Bank' }), [yesAccount])).toEqual([]);
+    expect(matchingBankAccounts(evidence({ issuer: 'Some Regional Bank' }), [icici])).toEqual([]);
+    expect(
+      matchingBankAccounts(evidence({ issuer: undefined }), [yesAccount, indusAccount]),
+    ).toHaveLength(2);
+  });
   it('does not auto-suggest an active SMS source when an archived account shares its suffix', () => {
     const active = account({ id: 'active', institution: 'ICICI Bank', lastDigits: '417' });
     const archived = account({

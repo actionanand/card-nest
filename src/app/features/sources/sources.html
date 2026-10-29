@@ -113,7 +113,8 @@
               <div class="bank-balance-row">
                 <span>
                   <strong>{{ source.institution || 'Bank/UPI' }}</strong>
-                  · {{ source.nickname }}{{ source.lastDigits ? ' · •••' + source.lastDigits : '' }}
+                  · {{ source.nickname
+                  }}{{ source.lastDigits ? ' · ' + accountIdentifier(source) : '' }}
                 </span>
                 <span>
                   {{ bankAccountBalanceLabel(source) }}

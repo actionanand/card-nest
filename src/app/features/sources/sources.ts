@@ -7,6 +7,7 @@ import {
   TransactionType,
 } from '../../core/models/domain';
 import { CardNestStore } from '../../core/services/card-nest-store';
+import { displayBankAccountSuffix } from '../../core/services/bank-account-identifier';
 import { formatMoney, parseMoneyToMinor } from '../../core/services/money';
 import { SnackbarService } from '../../core/services/snackbar.service';
 import { AppIcon } from '../../shared/app-icon';
@@ -215,7 +216,12 @@ export class SourcesPage {
     ...this.store.activePaymentSources().map((source) => ({
       value: source.id,
       label: source.nickname,
-      detail: [source.lastDigits, source.institution].filter(Boolean).join(' · '),
+      detail: [
+        source.kind === 'DEBIT' ? displayBankAccountSuffix(source.lastDigits) : source.lastDigits,
+        source.institution,
+      ]
+        .filter(Boolean)
+        .join(' · '),
     })),
   ]);
   readonly selectedSource = computed(() =>
@@ -322,8 +328,12 @@ export class SourcesPage {
   sourceName(sourceId: string): string {
     const source = this.store.paymentSources().find((item) => item.id === sourceId);
     return source
-      ? `${source.nickname}${source.lastDigits ? ` ${source.lastDigits}` : ''}`
+      ? `${source.nickname}${source.lastDigits ? ` ${source.kind === 'DEBIT' ? displayBankAccountSuffix(source.lastDigits) : source.lastDigits}` : ''}`
       : 'Source';
+  }
+
+  accountIdentifier(source: PaymentSource): string {
+    return displayBankAccountSuffix(source.lastDigits);
   }
 
   categoryName(categoryId: string): string {

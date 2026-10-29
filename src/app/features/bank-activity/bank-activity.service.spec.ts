@@ -51,6 +51,47 @@ describe('BankActivityService Android SMS matching', () => {
       service.saveProfile({ bankName: 'ICICI', owner: 'OTHERS', accountSuffix: '123' }),
     ).rejects.toThrow('holder name');
   });
+  it('rejects identity-only SMS association for manual-only profiles but preserves explicit activity acknowledgement', async () => {
+    const manual = await service.saveProfile({
+      bankName: 'Fictional Bank',
+      accountSuffix: '456',
+      owner: 'OTHERS',
+      holderName: 'Fiction Manual Account',
+      manualOnly: true,
+    });
+    const evidence = makeEvidence('manual-only-identity', {
+      issuer: undefined,
+      accountDigits: '456',
+    });
+    await service.ingestAndroidSms(evidence);
+    expect(service.match(service.candidates()[0]).state).toBe('NEW');
+    await expect(service.confirmCandidateIdentity(evidence.fingerprint, manual.id)).rejects.toThrow(
+      'Manual-only',
+    );
+    expect(service.events()).toHaveLength(0);
+
+    const payload = JSON.parse(candidates.get(evidence.fingerprint)!) as {
+      fingerprint: string;
+      [key: string]: unknown;
+    };
+    candidates.set(
+      evidence.fingerprint,
+      JSON.stringify({
+        ...payload,
+        resolvedAt: 'legacy-association',
+        resolvedProfileId: manual.id,
+      }),
+    );
+    await service.reload();
+    expect(service.candidates()).toHaveLength(1);
+    await expect(service.approveCandidate(evidence.fingerprint, manual.id)).rejects.toThrow(
+      'acknowledge',
+    );
+    await service.approveCandidate(evidence.fingerprint, manual.id, true);
+    expect(service.events()).toMatchObject([
+      { profileId: manual.id, fingerprint: evidence.fingerprint, verification: 'USER_CONFIRMED' },
+    ]);
+  });
   it.each(['9123', '45123'])(
     'derives %s through the stable linked source while preserving its saved suffix',
     async (suffix) => {

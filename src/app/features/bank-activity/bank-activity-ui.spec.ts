@@ -1,6 +1,6 @@
 import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
-import { ActivatedRoute } from '@angular/router';
+import { ActivatedRoute, Router } from '@angular/router';
 import { BankActivityPage } from './bank-activity';
 import { BankActivityService } from './bank-activity.service';
 import { CardNestStore } from '../../core/services/card-nest-store';
@@ -47,7 +47,7 @@ describe('Bank profile popup and confirmation-only discovery UI', () => {
       fixture.detectChanges();
       await fixture.whenStable();
       expect(page.sourceOptions().find((row) => row.value === 'checking')?.label).toContain(
-        'Checking · •••' + suffix,
+        'Checking · •••' + suffix.slice(-3),
       );
       expect(page.sourceOptions().find((row) => row.value === 'savings')?.label).toContain(
         'Savings · •••123',
@@ -55,7 +55,7 @@ describe('Bank profile popup and confirmation-only discovery UI', () => {
       expect(page.linkedIdentifier()).toContain('activity matching: •••123');
       await page.saveProfile(new Event('submit'));
       expect(activity.saveProfile).toHaveBeenCalledWith(
-        expect.objectContaining({ paymentSourceId: 'checking', accountSuffix: '123' }),
+        expect.objectContaining({ paymentSourceId: 'checking', accountIdentifier: '•••123' }),
       );
       expect(sources()[0].lastDigits).toBe(suffix);
       fixture.destroy();
@@ -81,6 +81,8 @@ describe('Bank profile popup and confirmation-only discovery UI', () => {
   };
   const sources = signal<readonly PaymentSource[]>([]);
   const requestedSourceId = signal('');
+  const requestedDiscoveryFingerprint = signal('');
+  const routerNavigate = vi.fn().mockResolvedValue(true);
   const bankCashTracking = signal({ enabled: false, askCardSettlementFunding: false });
   const profiles = signal<readonly BankActivityProfile[]>([]);
   const candidates = signal<readonly BankActivityCandidate[]>([]);
@@ -135,6 +137,7 @@ describe('Bank profile popup and confirmation-only discovery UI', () => {
   beforeEach(() => {
     sources.set([]);
     requestedSourceId.set('');
+    requestedDiscoveryFingerprint.set('');
     profiles.set([]);
     candidates.set([]);
     vi.clearAllMocks();
@@ -171,8 +174,20 @@ describe('Bank profile popup and confirmation-only discovery UI', () => {
       providers: [
         {
           provide: ActivatedRoute,
-          useValue: { snapshot: { queryParamMap: { get: () => requestedSourceId() } } },
+          useValue: {
+            snapshot: {
+              queryParamMap: {
+                get: (key: string) =>
+                  key === 'source'
+                    ? requestedSourceId()
+                    : key === 'discoverCandidate'
+                      ? requestedDiscoveryFingerprint()
+                      : null,
+              },
+            },
+          },
         },
+        { provide: Router, useValue: { navigate: routerNavigate } },
         { provide: BankActivityService, useValue: activity },
         {
           provide: CardNestStore,
@@ -289,6 +304,26 @@ describe('Bank profile popup and confirmation-only discovery UI', () => {
     expect(document.activeElement).toBe(card);
     fixture.destroy();
   });
+  it('opens Find Banks for a requested SMS candidate and returns to that review', async () => {
+    const smsCandidate = { ...candidate, fingerprint: 'sms-review-candidate' };
+    candidates.set([smsCandidate]);
+    requestedDiscoveryFingerprint.set(smsCandidate.fingerprint);
+    const fixture = TestBed.createComponent(BankActivityPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+
+    expect(activity.discoverSavedEvidence).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(fixture.componentInstance.profileFormOpen()).toBe(true));
+    expect(fixture.componentInstance.activeTab()).toBe(1);
+    expect(fixture.componentInstance.profileForm.controls.accountIdentifier.value).toBe('•••123');
+    expect(fixture.componentInstance.returnSmsCandidate).toBe(smsCandidate.fingerprint);
+
+    fixture.componentInstance.returnToSmsReview();
+    expect(routerNavigate).toHaveBeenCalledWith(['/sms-sync'], {
+      queryParams: { review: smsCandidate.fingerprint },
+    });
+    fixture.destroy();
+  });
   it('distinguishes known, unknown and untracked balances and keeps archive actions independent', async () => {
     const ownSource: PaymentSource = {
       id: 'own-balanced',
@@ -371,19 +406,19 @@ describe('Bank profile popup and confirmation-only discovery UI', () => {
     expect(page.moneySourceForm.getRawValue()).toEqual({
       nickname: 'Checking',
       institution: 'ICICI Bank',
-      lastDigits: '45123',
+      accountIdentifier: '•••123',
     });
     page.moneySourceForm.patchValue({
       nickname: 'Updated checking',
       institution: 'HDFC Bank',
-      lastDigits: '00007',
+      accountIdentifier: '00007',
     });
     await page.saveMoneySourceIdentity(new Event('submit'));
     expect(activity.updateOwnMoneySourceIdentity).toHaveBeenCalledWith({
       sourceId: 'checking',
       nickname: 'Updated checking',
       institution: 'HDFC Bank',
-      lastDigits: '00007',
+      accountIdentifier: '00007',
     });
     expect(page.discoveryNotice()).toContain('baseline and audit history are unchanged');
     expect(source.id).toBe('checking');
@@ -437,10 +472,10 @@ describe('Bank profile popup and confirmation-only discovery UI', () => {
     await fixture.whenStable();
     expect(fixture.nativeElement.querySelector('app-profile-modal dialog[open]')).not.toBeNull();
     expect(fixture.nativeElement.textContent).toContain('Add monitored bank account');
-    page.profileForm.patchValue({ bankName: 'ICICI', accountSuffix: '12' });
+    page.profileForm.patchValue({ bankName: 'ICICI', accountIdentifier: '12' });
     await page.saveProfile(new Event('submit'));
     expect(activity.saveProfile).not.toHaveBeenCalled();
-    page.profileForm.controls.accountSuffix.setValue('007');
+    page.profileForm.controls.accountIdentifier.setValue('007');
     let release!: (value: BankActivityProfile) => void;
     activity.saveProfile.mockImplementationOnce(
       () => new Promise((resolve) => (release = resolve)),
@@ -452,12 +487,12 @@ describe('Bank profile popup and confirmation-only discovery UI', () => {
     await first;
     expect(page.profileFormOpen()).toBe(false);
     expect(activity.saveProfile).toHaveBeenCalledWith(
-      expect.objectContaining({ accountSuffix: '007', owner: 'OWN' }),
+      expect.objectContaining({ accountIdentifier: '007', owner: 'OWN' }),
     );
     page.editProfile({ ...profile, accountSuffix: '45123' });
     fixture.detectChanges();
     await fixture.whenStable();
-    expect(page.profileForm.controls.accountSuffix.value).toBe('123');
+    expect(page.profileForm.controls.accountIdentifier.value).toBe('•••123');
     expect(fixture.nativeElement.textContent).toContain('Edit monitored bank account');
     page.closeProfile();
     page.startProfile();
@@ -531,7 +566,7 @@ describe('Bank profile popup and confirmation-only discovery UI', () => {
     await fixture.whenStable();
     expect(page.profileForm.getRawValue()).toMatchObject({
       bankName: 'ICICI',
-      accountSuffix: '123',
+      accountIdentifier: '•••123',
       nickname: '',
       owner: '',
       holderName: '',
@@ -711,6 +746,47 @@ describe('Bank profile popup and confirmation-only discovery UI', () => {
     );
     expect(activity.approveCandidate).not.toHaveBeenCalled();
     fixture.destroy();
+  });
+  it('does not trust manual-only profiles for automatic or identity-only SMS association', async () => {
+    const manualProfile: BankActivityProfile = {
+      ...profile,
+      id: 'manual-only-profile',
+      owner: 'OTHERS',
+      holderName: 'Fiction Manual Holder',
+      manualOnly: true,
+    };
+    profiles.set([manualProfile]);
+    candidates.set([{ ...candidate, bankName: undefined }]);
+    const fixture = TestBed.createComponent(BankActivityPage);
+    const page = fixture.componentInstance;
+    page.activeTab.set(1);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(page.reviewSelection()[candidate.fingerprint]).toBeUndefined();
+    page.setReviewProfile(candidate.fingerprint, manualProfile.id);
+    expect(page.canConfirmIdentity(candidates()[0])).toBe(false);
+    page.requestIdentityConfirmation(candidate.fingerprint);
+    expect(page.identityConfirmation()).toBeNull();
+    fixture.destroy();
+
+    candidates.set([
+      {
+        ...candidate,
+        bankName: undefined,
+        resolvedAt: 'legacy-association',
+        resolvedProfileId: manualProfile.id,
+      },
+    ]);
+    const legacyFixture = TestBed.createComponent(BankActivityPage);
+    const legacyPage = legacyFixture.componentInstance;
+    legacyPage.activeTab.set(1);
+    legacyFixture.detectChanges();
+    await legacyFixture.whenStable();
+    expect(legacyPage.evidenceStatus(candidates()[0])).toBe('NEEDS_REVIEW');
+    expect(legacyPage.reviewSelection()[candidate.fingerprint]).toBeUndefined();
+    legacyPage.setReviewProfile(candidate.fingerprint, manualProfile.id);
+    expect(legacyPage.selectionConflict(candidates()[0])).toBe(true);
+    legacyFixture.destroy();
   });
   it.each(['light', 'dark'])(
     'labels bank profile inputs and custom controls accessibly in %s theme',

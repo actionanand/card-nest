@@ -118,7 +118,7 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     expect(store.paymentSources().find((row) => row.id === source.id)).toMatchObject({
       institution: 'HDFC Bank',
       nickname: 'Later nickname',
-      lastDigits: '00007',
+      lastDigits: '007',
       balanceMinor: 12000,
       balanceCutoverAt: current.balanceCutoverAt,
     });
@@ -303,7 +303,7 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
       });
       expect(store.paymentSources().find((row) => row.id === source.id)).toMatchObject({
         nickname: 'Source nickname',
-        lastDigits: '00123',
+        lastDigits: '123',
         balanceMinor: 12345,
       });
       expect(financialState()).toEqual(before);
@@ -327,7 +327,7 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
       owner: 'OWN',
     });
     expect(profile.accountSuffix).toBe('123');
-    expect(store.paymentSources().find((row) => row.id === source.id)?.lastDigits).toBe('45123');
+    expect(store.paymentSources().find((row) => row.id === source.id)?.lastDigits).toBe('123');
     const payment = purchase({
       id: 'financial-preserved',
       merchant: 'Fiction meal',
@@ -561,6 +561,63 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     expect(activity.candidates()).toHaveLength(0);
     expect(financialState()).toEqual(before);
   });
+  it('blocks manual-only SMS identity bypass while preserving explicitly acknowledged activity review', async () => {
+    const { store } = await boot();
+    vi.spyOn(Capacitor, 'isNativePlatform').mockReturnValue(true);
+    const activity = TestBed.inject(BankActivityService);
+    await activity.initialise();
+    const manual = await activity.saveProfile({
+      bankName: 'Fictional Bank',
+      accountSuffix: '007',
+      owner: 'OTHERS',
+      holderName: 'Fiction Manual Holder',
+      manualOnly: true,
+    });
+    const before = financialState();
+    const item = evidence({ issuer: undefined, accountDigits: '007' });
+    await activity.ingestAndroidSms({
+      fingerprint: item.id,
+      activityDate: item.eventDate,
+      kind: item.kind,
+      direction: 'DEBIT',
+      purposeHint: 'PURCHASE',
+      accountDigits: item.accountDigits,
+      parserVersion: 3,
+      dateFallback: false,
+    });
+    const candidate = activity.candidates()[0];
+    expect(activity.match(candidate).state).toBe('NEW');
+    await expect(
+      activity.confirmCandidateIdentity(candidate.fingerprint, manual.id),
+    ).rejects.toThrow('Manual-only');
+    await expect(activity.approveCandidate(candidate.fingerprint, manual.id)).rejects.toThrow(
+      'acknowledge',
+    );
+    expect(activity.events()).toHaveLength(0);
+    expect(financialState()).toEqual(before);
+
+    await database.run('UPDATE bank_activity_candidates SET payload=? WHERE fingerprint=?', [
+      JSON.stringify({
+        ...candidate,
+        resolvedAt: 'legacy-association',
+        resolvedProfileId: manual.id,
+      }),
+      candidate.fingerprint,
+    ]);
+    await activity.reload();
+    expect(activity.candidates()).toHaveLength(1);
+    await expect(activity.approveCandidate(candidate.fingerprint, manual.id)).rejects.toThrow(
+      'acknowledge',
+    );
+    await activity.approveCandidate(candidate.fingerprint, manual.id, true);
+    expect(activity.events()).toMatchObject([
+      { profileId: manual.id, fingerprint: candidate.fingerprint, verification: 'USER_CONFIRMED' },
+    ]);
+    expect(financialState()).toEqual(before);
+    expect(store.paymentSources()).toEqual(
+      expect.not.arrayContaining([expect.objectContaining({ institution: 'Fictional Bank' })]),
+    );
+  });
   it('updates OWN Money Source and monitoring identity atomically without changing balances or IDs', async () => {
     const { store, stored } = await boot();
     const source = await store.addBankAccount({
@@ -579,13 +636,13 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
       sourceId: source.id,
       nickname: 'Updated account',
       institution: 'HDFC Bank',
-      lastDigits: '00007',
+      lastDigits: '007',
     });
     expect(store.paymentSources().find((row) => row.id === source.id)).toMatchObject({
       id: source.id,
       nickname: 'Updated account',
       institution: 'HDFC Bank',
-      lastDigits: '00007',
+      lastDigits: '007',
       balanceMinor: balance.balanceMinor,
       balanceCutoverAt: balance.balanceCutoverAt,
       balanceSnapshotMinor: balance.balanceSnapshotMinor,
@@ -614,7 +671,7 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     expect(store.paymentSources().find((row) => row.id === source.id)).toMatchObject({
       nickname: 'Updated account',
       institution: 'HDFC Bank',
-      lastDigits: '00007',
+      lastDigits: '007',
       balanceMinor: 765400,
     });
     expect(activity.profiles().find((row) => row.id === profile.id)?.bankName).toBe('HDFC Bank');
@@ -857,6 +914,45 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     await fixture.whenStable();
     expect(page.form.controls.categoryId.value).toBe('household');
     fixture.destroy();
+  });
+  it('leaves the manual transaction source blank when multiple active banks need a deliberate choice', async () => {
+    const { store } = await boot();
+    await store.addBankAccount({
+      nickname: 'First fictional bank',
+      institution: 'Synthetic Bank',
+      lastDigits: '123',
+    });
+    await store.addBankAccount({
+      nickname: 'Second fictional bank',
+      institution: 'Sample Bank',
+      lastDigits: '456',
+    });
+    const fixture = TestBed.createComponent(TransactionsPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(fixture.componentInstance.form.controls.cardId.value).toBe('');
+    fixture.destroy();
+  });
+  it('normalizes complete identifiers passed to the generic bank source update boundary', async () => {
+    const { store } = await boot();
+    const source = await store.addBankAccount({
+      nickname: 'Boundary test bank',
+      institution: 'Synthetic Bank',
+      lastDigits: '123',
+    });
+    const completeIdentifier = '4321234567890456';
+    await store.updatePaymentSource({
+      ...source,
+      lastDigits: completeIdentifier,
+      accountMask: undefined,
+    });
+
+    const updated = store.paymentSources().find((item) => item.id === source.id)!;
+    expect(updated).toMatchObject({ lastDigits: '456', accountMask: '432••••••••••456' });
+    const payload = rows(
+      "SELECT encrypted_value FROM app_preferences WHERE key='payment_sources'",
+    )[0]['encrypted_value'];
+    expect(String(payload)).not.toContain(completeIdentifier);
   });
   it('adds canonical names without duplicate aliases and preserves custom names, IDs and settings on reload', async () => {
     const { store } = await boot();
@@ -3383,13 +3479,21 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     const first = await store.addBankAccount({
       nickname: 'Fiction primary',
       institution: 'Synthetic Bank',
-      lastDigits: '417',
+      accountIdentifier: '4321234567890417',
     });
     const second = await store.addBankAccount({
       nickname: 'Fiction reserve',
       institution: 'Sample Credit Union',
       lastDigits: '7316',
     });
+    expect(first).toMatchObject({
+      lastDigits: '417',
+      accountMask: '432••••••••••417',
+    });
+    const storedSources = rows(
+      "SELECT encrypted_value FROM app_preferences WHERE key='payment_sources'",
+    )[0]['encrypted_value'];
+    expect(String(storedSources)).not.toContain('4321234567890417');
     await store.enableBankCashTracking({
       [first.id]: 1_000_000,
       [second.id]: 500_000,
@@ -3516,7 +3620,8 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
             id: second.id,
             nickname: 'Fiction reserve',
             institution: 'Sample Credit Union',
-            lastDigits: '7316',
+            lastDigits: '316',
+            accountMask: '•••316',
             archived: true,
             balanceMinor: 512_345,
           }),
@@ -4675,7 +4780,7 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     expect(
       store.transactions().some((item) => item.id === old.id && item.cardId === icici.id),
     ).toBe(true);
-    expect(store.sourceDetail(icici.id)).toBe('ICICI Bank · A/c ••417');
+    expect(store.sourceDetail(icici.id)).toBe('ICICI Bank · A/c •••417');
     expect(await store.deleteCategory('other')).toBe(false);
     expect(store.categories().some((category) => category.id === 'other')).toBe(true);
   });

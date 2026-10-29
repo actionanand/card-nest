@@ -321,6 +321,30 @@ describe('App', () => {
     fixture.destroy();
   });
 
+  it('requires an explicit Quick Transaction bank choice when multiple banks are active', async () => {
+    const preferences = TestBed.inject(UiPreferencesService);
+    preferences.setFloatingShortcutEnabled(true);
+    preferences.setFloatingShortcutMode('QUICK_TRANSACTION');
+    ready.set(true);
+    sources.set([
+      source(),
+      { ...source(), id: 'second-bank', nickname: 'Second bank', lastDigits: '456' },
+    ]);
+    store.flashTransactionSourceId.set('archived-or-removed');
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges();
+    await fixture.whenStable();
+
+    fixture.componentInstance.openFlashTransaction();
+    expect(fixture.componentInstance.flashSourceId()).toBe('');
+    fixture.componentInstance.closeFlashTransaction();
+
+    store.flashTransactionSourceId.set('second-bank');
+    fixture.componentInstance.openFlashTransaction();
+    expect(fixture.componentInstance.flashSourceId()).toBe('second-bank');
+    fixture.destroy();
+  });
+
   it('keeps form data after save failure and retries with the same transaction ID', async () => {
     const preferences = TestBed.inject(UiPreferencesService);
     preferences.setFloatingShortcutEnabled(true);

@@ -11,13 +11,17 @@ import { AppIcon } from '../../shared/app-icon';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { IndiaTodayClock } from '../../core/services/india-date';
 import { formatMoney } from '../../core/services/money';
+import {
+  displayBankAccountIdentifier,
+  displayBankAccountSuffix,
+} from '../../core/services/bank-account-identifier';
 import { bankCashTracked } from '../../core/services/source-balance';
 import { BankActivityEvent, BankActivityProfile } from './bank-activity-model';
 import { BankActivityService } from './bank-activity.service';
 import { BankAccountSyncService } from './bank-account-sync.service';
 import { SourceMovementDialog } from '../../shared/source-movement-dialog';
 import { PaymentSource } from '../../core/models/domain';
-import { ActivatedRoute } from '@angular/router';
+import { ActivatedRoute, Router } from '@angular/router';
 
 interface BankAccountCard {
   readonly key: string;
@@ -47,7 +51,11 @@ export class BankActivityPage {
   readonly activity = inject(BankActivityService);
   readonly store = inject(CardNestStore);
   private readonly route = inject(ActivatedRoute);
+  private readonly router = inject(Router);
   private readonly requestedSourceId = this.route.snapshot.queryParamMap.get('source') ?? '';
+  private readonly requestedDiscoveryFingerprint =
+    this.route.snapshot.queryParamMap.get('discoverCandidate') ?? '';
+  readonly returnSmsCandidate = this.route.snapshot.queryParamMap.get('discoverCandidate') ?? '';
   private readonly focusedRequestedSource = signal(false);
   private readonly dateClock = inject(IndiaTodayClock);
   readonly profileFormOpen = signal(false);
@@ -199,7 +207,7 @@ export class BankActivityPage {
     { value: '', label: 'Standalone monitored account' },
     ...this.bankSources().map((source) => ({
       value: source.id,
-      label: `${source.institution || 'Bank'} · ${source.nickname}${finalThree(source.lastDigits) ? ` · •••${source.lastDigits}` : ' · no saved suffix'}`,
+      label: `${source.institution || 'Bank'} · ${source.nickname}${finalThree(source.lastDigits) ? ` · ${displayBankAccountSuffix(source.lastDigits)}` : ' · no saved suffix'}`,
     })),
   ]);
   readonly reviewProfileOptions = computed<readonly AppSelectOption[]>(() => [
@@ -229,9 +237,13 @@ export class BankActivityPage {
     paymentSourceId: new FormControl('', { nonNullable: true }),
     bankName: new FormControl('', { nonNullable: true, validators: Validators.maxLength(80) }),
     nickname: new FormControl('', { nonNullable: true, validators: Validators.maxLength(80) }),
-    accountSuffix: new FormControl('', {
+    accountIdentifier: new FormControl('', {
       nonNullable: true,
-      validators: Validators.pattern(/^(?:|\d{3})$/),
+      validators: [
+        Validators.maxLength(60),
+        Validators.minLength(3),
+        Validators.pattern(/^(?:|[0-9xX*•●×\s-]+)$/),
+      ],
     }),
     owner: new FormControl<'OWN' | 'OTHERS' | ''>('OWN', { nonNullable: true }),
     holderName: new FormControl('', { nonNullable: true, validators: Validators.maxLength(80) }),
@@ -249,9 +261,13 @@ export class BankActivityPage {
       nonNullable: true,
       validators: [Validators.required, Validators.maxLength(80)],
     }),
-    lastDigits: new FormControl('', {
+    accountIdentifier: new FormControl('', {
       nonNullable: true,
-      validators: [Validators.required, Validators.pattern(/^\d{3,5}$/)],
+      validators: [
+        Validators.required,
+        Validators.maxLength(60),
+        Validators.pattern(/^[0-9xX*•●×\s-]+$/),
+      ],
     }),
   });
   readonly eventForm = new FormGroup({
@@ -265,6 +281,10 @@ export class BankActivityPage {
 
   private readonly profileChanges = toSignal(this.profileForm.valueChanges);
   constructor() {
+    if (this.requestedDiscoveryFingerprint) {
+      this.activeTab.set(1);
+      queueMicrotask(() => void this.findAccounts(this.requestedDiscoveryFingerprint));
+    }
     effect(() => {
       const sourceId = this.requestedSourceId;
       if (!sourceId || this.focusedRequestedSource()) return;
@@ -285,6 +305,12 @@ export class BankActivityPage {
           .filter((row) => !row.archived)
           .map((row) => row.id),
       );
+      const automaticIds = new Set(
+        this.activity
+          .profiles()
+          .filter((row) => !row.archived && !row.manualOnly)
+          .map((row) => row.id),
+      );
       this.reviewSelection.update((current) => {
         const next: Record<string, string> = {};
         for (const candidate of candidates)
@@ -293,11 +319,16 @@ export class BankActivityPage {
               next[candidate.fingerprint] = current[candidate.fingerprint] ?? '';
           } else {
             const match = this.activity.match(candidate);
-            const resolvedId =
+            const resolvedProfile =
               candidate.resolvedAt && candidate.resolvedProfileId
-                ? candidate.resolvedProfileId
+                ? this.activity.profiles().find((row) => row.id === candidate.resolvedProfileId)
+                : undefined;
+            const resolvedId =
+              resolvedProfile && !resolvedProfile.manualOnly
+                ? resolvedProfile.id
                 : match.suggestedId;
-            if (resolvedId && activeIds.has(resolvedId)) next[candidate.fingerprint] = resolvedId;
+            if (resolvedId && automaticIds.has(resolvedId))
+              next[candidate.fingerprint] = resolvedId;
           }
         return next;
       });
@@ -308,12 +339,14 @@ export class BankActivityPage {
         const source = this.store.paymentSources().find((row) => row.id === id);
         if (source) {
           this.profileForm.controls.bankName.setValue(source.institution ?? '');
-          this.profileForm.controls.accountSuffix.setValue(finalThree(source.lastDigits) ?? '');
+          this.profileForm.controls.accountIdentifier.setValue(
+            source.accountMask ?? displayBankAccountIdentifier(undefined, source.lastDigits),
+          );
         }
       });
     for (const control of [
       this.profileForm.controls.bankName,
-      this.profileForm.controls.accountSuffix,
+      this.profileForm.controls.accountIdentifier,
       this.profileForm.controls.paymentSourceId,
     ])
       control.valueChanges
@@ -329,7 +362,7 @@ export class BankActivityPage {
       .find((row) => row.id === this.profileForm.controls.paymentSourceId.value);
     const suffix = finalThree(source?.lastDigits);
     return suffix
-      ? '•••' + source!.lastDigits + ' (activity matching: •••' + suffix + ')'
+      ? `${displayBankAccountSuffix(source?.lastDigits)} (activity matching: •••${suffix})`
       : 'No trustworthy suffix saved. Enter the last three digits or choose manual-only monitoring.';
   }
   hasLinkedSuffix(): boolean {
@@ -343,15 +376,19 @@ export class BankActivityPage {
   closeProfile(): void {
     if (!this.saving()) this.profileFormOpen.set(false);
   }
-  async findAccounts(): Promise<void> {
+  async findAccounts(candidateFingerprint?: string): Promise<void> {
     if (this.activity.discovering()) return;
     this.error.set(null);
     try {
       const count = await this.activity.discoverSavedEvidence();
+      const requestedCandidate = candidateFingerprint
+        ? this.activity.candidates().find((row) => row.fingerprint === candidateFingerprint)
+        : undefined;
+      if (requestedCandidate) this.reviewDiscovery(requestedCandidate);
       this.discoveryNotice.set(
         `${count} saved alerts checked. ${this.discoveries().filter((row) => !row.needsIdentification).length} new account suggestions; ${this.reviewCandidates().filter((row) => this.activity.match(row).state === 'UNIQUE').length} existing-account activity suggestions; ${this.activity.candidates().filter((row) => !['NEW', 'UNIQUE'].includes(this.activity.match(row).state)).length} unresolved identity alerts. ` +
           (this.discoveries().some((row) => !row.needsIdentification)
-            ? 'Open Discovered Accounts to review.'
+            ? 'Review the suggestions below.'
             : 'No new bank accounts found'),
       );
     } catch (error: unknown) {
@@ -362,11 +399,18 @@ export class BankActivityPage {
       );
     }
   }
+  returnToSmsReview(): void {
+    if (this.returnSmsCandidate)
+      void this.router.navigate(['/sms-sync'], {
+        queryParams: { review: this.returnSmsCandidate },
+      });
+  }
   reviewDiscovery(candidate: BankActivityCandidate): void {
     this.startProfile();
     this.profileForm.patchValue({
       bankName: candidate.bankName ?? '',
-      accountSuffix: candidate.accountSuffix ?? '',
+      accountIdentifier:
+        candidate.accountMask ?? displayBankAccountIdentifier(undefined, candidate.accountSuffix),
       owner: '',
       manualOnly: !candidate.accountSuffix,
     });
@@ -389,12 +433,20 @@ export class BankActivityPage {
       const profile = this.activity
         .profiles()
         .find((row) => row.id === candidate.resolvedProfileId);
+      if (profile?.manualOnly)
+        return 'A legacy association points to a manual-only profile. It is not an automatic SMS identity; select an account and confirm activity explicitly.';
       return `Account identified as ${profile ? this.profileLabel(profile) : 'an unavailable account'}. Activity still requires separate confirmation.`;
     }
     return this.activity.match(candidate).reason;
   }
   evidenceStatus(candidate: BankActivityCandidate): string {
-    if (candidate.resolvedAt && candidate.resolvedProfileId) return 'ASSOCIATED';
+    if (candidate.resolvedAt && candidate.resolvedProfileId) {
+      const profile = this.activity
+        .profiles()
+        .find((row) => row.id === candidate.resolvedProfileId);
+      if (profile && !profile.manualOnly) return 'ASSOCIATED';
+      return 'NEEDS_REVIEW';
+    }
     const state = this.activity.match(candidate).state;
     if (state === 'UNIQUE') return 'SUGGESTED';
     if (state === 'NEW') return 'UNIDENTIFIED';
@@ -420,6 +472,7 @@ export class BankActivityPage {
     const suffix = finalThree(candidate.accountSuffix);
     return (
       !!profile &&
+      !profile.manualOnly &&
       !!suffix &&
       profileSuffix(profile, this.store.paymentSources()) === suffix &&
       state !== 'BANK_MISMATCH' &&
@@ -466,8 +519,15 @@ export class BankActivityPage {
   }
   selectionConflict(candidate: BankActivityCandidate): boolean {
     const id = this.reviewSelection()[candidate.fingerprint];
-    if (candidate.resolvedAt && candidate.resolvedProfileId === id) return false;
+    const profile = id ? this.activity.profiles().find((row) => row.id === id) : undefined;
+    if (candidate.resolvedAt && candidate.resolvedProfileId === id && !profile?.manualOnly)
+      return false;
     return !!id && !this.activity.selectionMatches(candidate, id);
+  }
+  hasTrustedIdentityAssociation(candidate: BankActivityCandidate): boolean {
+    if (!candidate.resolvedAt || !candidate.resolvedProfileId) return false;
+    const profile = this.activity.profiles().find((row) => row.id === candidate.resolvedProfileId);
+    return !!profile && !profile.archived && !profile.manualOnly;
   }
   acknowledgeMismatch(fingerprint: string, event: Event): void {
     this.mismatchAcknowledged.update((current) => ({
@@ -530,7 +590,8 @@ export class BankActivityPage {
       paymentSourceId: source.id,
       bankName: source.institution ?? '',
       nickname: source.nickname,
-      accountSuffix: finalThree(source.lastDigits) ?? '',
+      accountIdentifier:
+        source.accountMask ?? displayBankAccountIdentifier(undefined, source.lastDigits),
       owner: 'OWN',
       manualOnly: false,
     });
@@ -543,7 +604,8 @@ export class BankActivityPage {
     this.moneySourceForm.reset({
       nickname: source.nickname,
       institution: source.institution ?? '',
-      lastDigits: source.lastDigits ?? '',
+      accountIdentifier:
+        source.accountMask ?? displayBankAccountIdentifier(undefined, source.lastDigits),
     });
   }
 
@@ -626,6 +688,10 @@ export class BankActivityPage {
     return `${profile.bankName}${suffix ? ` · •••${suffix}` : ' · manual only'}${profile.nickname ? ` · ${profile.nickname}` : ''}`;
   }
 
+  accountIdentifierLabel(mask?: string, suffix?: string): string {
+    return displayBankAccountSuffix(suffix);
+  }
+
   activityText(profile: BankActivityProfile): string {
     const summary = this.activity.summaryFor(profile.id, this.today);
     if (summary.lastActivityDate === undefined) return 'No known qualifying transaction';
@@ -640,7 +706,7 @@ export class BankActivityPage {
       paymentSourceId: '',
       bankName: '',
       nickname: '',
-      accountSuffix: '',
+      accountIdentifier: '',
       owner: 'OWN',
       manualOnly: false,
       allowIdentityConflict: false,
@@ -658,7 +724,8 @@ export class BankActivityPage {
       paymentSourceId: profile.paymentSourceId ?? '',
       bankName: profile.bankName,
       nickname: profile.nickname ?? '',
-      accountSuffix: finalThree(profile.accountSuffix) ?? '',
+      accountIdentifier:
+        profile.accountMask ?? displayBankAccountIdentifier(undefined, profile.accountSuffix),
       manualOnly: profile.manualOnly ?? !profileSuffix(profile, this.store.paymentSources()),
       allowIdentityConflict: false,
       owner: profile.owner,
@@ -676,7 +743,7 @@ export class BankActivityPage {
     const returnToEvidence = this.activeTab() === 1;
     if (this.profileForm.invalid) {
       this.error.set(
-        'Check the form. Last 3 account digits must contain exactly three numbers, such as 007.',
+        'Enter a masked identifier with at least three numeric digits, or choose manual-only monitoring.',
       );
       return;
     }
