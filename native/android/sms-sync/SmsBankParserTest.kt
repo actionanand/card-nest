@@ -16,7 +16,7 @@ class SmsBankParserTest {
     assertEquals(810000L, r.amountMinor)
     assertEquals(7432050L, r.reportedBalanceMinor)
     assertEquals("Slice", r.issuer)
-    assertEquals("7316", r.accountDigits)
+    assertEquals("316", r.accountDigits)
     assertEquals("ALEX MORGAN", r.merchant)
     assertEquals("735182094615", r.reference)
     assertEquals("2026-10-22", r.eventDate)
@@ -30,7 +30,8 @@ class SmsBankParserTest {
     assertEquals(9627100L, a2.amountMinor)
     assertEquals(9628518L, a2.reportedBalanceMinor)
     assertEquals("Standard Chartered", a2.issuer)
-    assertEquals("6042", a2.accountDigits)
+    assertEquals("042", a2.accountDigits)
+    assertEquals("456•••••042", a2.accountMask)
     assertEquals("2026-10-22", a2.eventDate)
     assertNull(a2.merchant)
     val a6 = parse("Dear Customer, there is an NEFT credit of INR 98,270.00 in your account 456xxxx6042 on 24/07/2026.Available Balance:INR 98,274.00 -StanChart")
@@ -45,8 +46,8 @@ class SmsBankParserTest {
     assertEquals(SmsTransactionParser.Kind.BANK_TRANSFER, r.kind)
     assertEquals("DEBIT", r.direction)
     assertEquals(9628000L, r.amountMinor)
-    assertEquals("6042", r.accountDigits)
-    assertEquals("7316", r.counterpartyAccountDigits)
+    assertEquals("042", r.accountDigits)
+    assertEquals("316", r.counterpartyAccountDigits)
     assertEquals("735182094616", r.reference)
     assertEquals("ACCOUNT_TRANSFER", r.purposeHint)
     assertTrue(r.eventTimeExplicit)
@@ -62,6 +63,18 @@ class SmsBankParserTest {
     assertEquals("007", r.counterpartyAccountDigits)
     assertEquals("765••••007", r.counterpartyAccountMask)
     assertEquals("ACCOUNT_TRANSFER", r.purposeHint)
+    assertTrue(requireNotNull(r.accountDigits).matches(Regex("[0-9]{3}")))
+    assertTrue(requireNotNull(r.counterpartyAccountDigits).matches(Regex("[0-9]{3}")))
+    assertFalse(requireNotNull(r.accountMask).contains(Regex("[0-9]{4,}")))
+    assertFalse(requireNotNull(r.counterpartyAccountMask).contains(Regex("[0-9]{4,}")))
+    val queued = SmsQueue.json(r, "synthetic-provider")
+    assertEquals("765", queued.getString("accountDigits"))
+    assertEquals("432•••••765", queued.getString("accountMask"))
+    assertEquals("007", queued.getString("counterpartyAccountDigits"))
+    assertEquals("765••••007", queued.getString("counterpartyAccountMask"))
+    assertEquals("DEBIT", queued.getString("direction"))
+    assertEquals("BANK_TRANSFER", queued.getString("kind"))
+    assertEquals("ACCOUNT_TRANSFER", queued.getString("purposeHint"))
   }
 
   @Test fun a4DebitToPersonIsCustomerDebitNotInternalTransfer() {
@@ -89,8 +102,8 @@ class SmsBankParserTest {
   @Test fun a7PrimaryCreditIsNotTheSendersDebit() {
     val r = parse("Your a/c no. XXXXXXX6042 is credited for Rs. 3000.00 on 31-08-2026 06:46 and debited from a/c no. XXXXXXXXXXXXX9081 (UPI Ref no 735182094618)")
     assertEquals("CREDIT", r.direction)
-    assertEquals("6042", r.accountDigits)
-    assertEquals("9081", r.counterpartyAccountDigits)
+    assertEquals("042", r.accountDigits)
+    assertEquals("081", r.counterpartyAccountDigits)
     assertEquals(300000L, r.amountMinor)
     assertEquals("2026-08-31", r.eventDate)
     assertNull(r.merchant)
@@ -131,9 +144,11 @@ class SmsBankParserTest {
     assertEquals(10029000L, lower.amountMinor)
     assertEquals("home rent portal", lower.merchant)
     assertEquals("2026-10-07", lower.eventDate)
-    for ((mask, suffix) in listOf("XX417" to "417", "XX6042" to "6042", "**12345" to "12345", "123xxxx6042" to "6042")) {
+    for ((mask, suffix) in listOf("XX417" to "417", "XX6042" to "042", "**12345" to "345", "123xxxx6042" to "042")) {
       val r = parse("Bank Acct $mask debited for INR 60.00 on 04/10/2026; COFFEE STA credited.")
       assertEquals(suffix, r.accountDigits)
+      assertTrue(requireNotNull(r.accountDigits).matches(Regex("[0-9]{3}")))
+      assertEquals(if (mask == "123xxxx6042") "123•••••042" else if (mask == "**12345") "••••345" else if (mask == "XX417") "••417" else "•••$suffix", r.accountMask)
       assertEquals("COFFEE STA", r.merchant)
     }
   }
@@ -158,7 +173,8 @@ class SmsBankParserTest {
     val r = parse("INR 6520.66 is paid from HSBC account XXXXXX2006 to CRED Club on 26-Oct-26 with ref 735182094701. If this is not done by you, call 18005550123 to report.")
     assertEquals(SmsTransactionParser.Kind.PAYMENT_INITIATED, r.kind)
     assertEquals("HSBC", r.issuer)
-    assertEquals("2006", r.accountDigits)
+    assertEquals("006", r.accountDigits)
+    assertEquals("•••••••006", r.accountMask)
     assertEquals(652066L, r.amountMinor)
     assertEquals("DEBIT", r.direction)
     assertEquals("CRED Club", r.merchant)
@@ -170,7 +186,8 @@ class SmsBankParserTest {
     val queued = SmsQueue.json(r, "synthetic-provider")
     assertEquals("PAYMENT_INITIATED", queued.getString("kind"))
     assertEquals("HSBC", queued.getString("issuer"))
-    assertEquals("2006", queued.getString("accountDigits"))
+    assertEquals("006", queued.getString("accountDigits"))
+    assertEquals("•••••••006", queued.getString("accountMask"))
     assertEquals("CRED Club", queued.getString("merchant"))
     assertEquals(652066L, queued.getLong("amountMinor"))
   }
@@ -277,8 +294,8 @@ class SmsBankParserTest {
   @Test fun counterpartyAccountMentionedBeforeCustomerAccount() {
     val r = parse("Rs 500.00 debited from a/c XX9081 has been credited to your a/c XX6042 on 12-10-2026. UPI Ref 735182094630")
     assertEquals("CREDIT", r.direction)
-    assertEquals("6042", r.accountDigits)
-    assertEquals("9081", r.counterpartyAccountDigits)
+    assertEquals("042", r.accountDigits)
+    assertEquals("081", r.counterpartyAccountDigits)
     assertEquals(50000L, r.amountMinor)
     assertNotEquals("PURCHASE", r.purposeHint)
     assertTrue(r.requiresReview)
@@ -288,8 +305,8 @@ class SmsBankParserTest {
     val r = parse("Dear Customer, a/c XX9081 debited and your a/c XX6042 credited for INR 1,200.00 on 03-10-2026. IMPS Ref 735182094631")
     assertEquals(SmsTransactionParser.Kind.BANK_CREDIT, r.kind)
     assertEquals("CREDIT", r.direction)
-    assertEquals("6042", r.accountDigits)
-    assertEquals("9081", r.counterpartyAccountDigits)
+    assertEquals("042", r.accountDigits)
+    assertEquals("081", r.counterpartyAccountDigits)
     assertEquals(120000L, r.amountMinor)
     assertEquals("ACCOUNT_TRANSFER", r.purposeHint)
   }
@@ -306,16 +323,16 @@ class SmsBankParserTest {
   @Test fun reversedCreditedDebitedOrderFollowsCustomerAccount() {
     val debit = parse("Payee a/c XX9081 credited with Rs 650.00 on 05-10-2026; your a/c XX6042 debited. UPI Ref 735182094633")
     assertEquals("DEBIT", debit.direction)
-    assertEquals("6042", debit.accountDigits)
-    assertEquals("9081", debit.counterpartyAccountDigits)
+    assertEquals("042", debit.accountDigits)
+    assertEquals("081", debit.counterpartyAccountDigits)
     assertEquals("ACCOUNT_TRANSFER", debit.purposeHint)
     val credit = parse("Credited INR 650.00 to your A/c XX6042 on 05-10-2026; debited from a/c XX9081. UPI Ref 735182094634")
     assertEquals("CREDIT", credit.direction)
-    assertEquals("6042", credit.accountDigits)
+    assertEquals("042", credit.accountDigits)
     val sent = parse("Rs.650.00 sent to A/c XX9081 from A/c XX6042 on 05-10-2026. UPI Ref 735182094636")
     assertEquals("DEBIT", sent.direction)
-    assertEquals("6042", sent.accountDigits)
-    assertEquals("9081", sent.counterpartyAccountDigits)
+    assertEquals("042", sent.accountDigits)
+    assertEquals("081", sent.counterpartyAccountDigits)
   }
 
   @Test fun balanceOnlyAlertIsNotATransaction() {
@@ -331,7 +348,8 @@ class SmsBankParserTest {
     val loan = parse("Home Loan account XX7788 credited with EMI Rs 9,800.00 on 09-10-2026; your A/c XX6042 debited.")
     assertEquals(SmsTransactionParser.Kind.LOAN_DEBIT, loan.kind)
     assertEquals("DEBIT", loan.direction)
-    assertEquals("6042", loan.accountDigits)
+    assertEquals("042", loan.accountDigits)
+    assertEquals("788", loan.counterpartyAccountDigits)
     assertEquals("LOAN_REPAYMENT", loan.purposeHint)
   }
 

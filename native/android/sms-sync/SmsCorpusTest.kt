@@ -45,7 +45,10 @@ class SmsCorpusTest(private val fixture: JSONObject, private val oracle: String)
     assertEquals(Instant.parse("2026-10-19T12:00:00Z").toEpochMilli(), result.receivedAt)
     references[fixture.getString("id")]?.let { assertEquals(it,result.reference) }
     merchants[fixture.getString("id")]?.let { assertEquals(it,result.merchant) }
-    accounts[fixture.getString("id")]?.let { assertEquals(it,result.accountDigits) }
+    accounts[fixture.getString("id")]?.let {
+      assertEquals(it,result.accountDigits)
+      assertTrue(requireNotNull(result.accountDigits).matches(Regex("[0-9]{3}")))
+    }
     if (fixture.getString("id") in setOf("BASE-14","BASE-15","BASE-30","BASE-31","BASE-32","BASE-33")) {
       assertEquals("AMEX",result.issuer); assertEquals("AMERICAN_EXPRESS",result.cardNetwork)
     }
@@ -59,8 +62,8 @@ class SmsCorpusTest(private val fixture: JSONObject, private val oracle: String)
   }
   companion object {
     private val accounts = mapOf("BASE-04" to "444","BASE-05" to "444","BASE-06" to "444","BASE-07" to "444","BASE-08" to "444",
-      "BASE-35" to "4040","BASE-36" to "4040","BASE-37" to "6060","BASE-41" to "444","BASE-56" to "1516",
-      "EXTRA-05" to "444","EXTRA-06" to "444","EXTRA-07" to "4040")
+      "BASE-35" to "040","BASE-36" to "040","BASE-37" to "060","BASE-41" to "444","BASE-56" to "516",
+      "EXTRA-05" to "444","EXTRA-06" to "444","EXTRA-07" to "040")
     private val references = mapOf("BASE-04" to "910667248461","BASE-05" to "926571136735","BASE-06" to "911121549053","BASE-07" to "953963767557",
       "BASE-08" to "994098391434","BASE-09" to "960864318957","BASE-10" to "928994255740","BASE-11" to "935212789417","BASE-12" to "988317120750",
       "BASE-17" to "SYNTHREF123456","BASE-18" to "915349566827","BASE-26" to "987089660905","BASE-29" to "981536729229","BASE-35" to "972429848961",
