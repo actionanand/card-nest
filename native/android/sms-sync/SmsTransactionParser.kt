@@ -51,12 +51,12 @@ object SmsTransactionParser {
     val digits = compact.filter { it in '0'..'9' }
     val prefix = when {
       firstMask >= 0 -> compact.substring(0, firstMask).filter { it in '0'..'9' }.take(3)
-      digits.length >= 6 -> digits.take(3)
+      digits.length >= 6 -> digits.take(minOf(3, digits.length - 4))
       else -> ""
     }
     val hidden = when {
       firstMask >= 0 -> (compact.length - prefix.length - 3).coerceAtLeast(1)
-      digits.length >= 6 -> digits.length - 6
+      digits.length >= 6 -> (digits.length - prefix.length - 3).coerceAtLeast(1)
       else -> 3
     }
     return AccountIdentifier(suffix, prefix + "•".repeat(hidden) + suffix)

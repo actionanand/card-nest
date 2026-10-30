@@ -77,6 +77,69 @@ class SmsBankParserTest {
     assertEquals("ACCOUNT_TRANSFER", queued.getString("purposeHint"))
   }
 
+  @Test fun completeBankIdentifiersAlwaysHideAMiddleDigit() {
+    val examples = listOf(
+      Triple("123456", "456", "12•456"),
+      Triple("000007", "007", "00•007"),
+      Triple("432123456700", "700", "432••••••700"),
+      Triple("432xxxxx765", "765", "432•••••765"),
+      Triple("XXX007", "007", "•••007"),
+      Triple("***007", "007", "•••007"),
+      Triple("•••007", "007", "•••007"),
+    )
+    for ((identifier, suffix, mask) in examples) {
+      val result = parse("Bank Acct $identifier debited INR 100 on 20-Sep-26")
+      assertEquals(suffix, result.accountDigits)
+      assertEquals(mask, result.accountMask)
+      assertTrue(requireNotNull(result.accountMask).contains('•'))
+      if (identifier.all { it in '0'..'9' }) assertNotEquals(identifier, result.accountMask)
+      assertEquals(SmsTransactionParser.Kind.BANK_DEBIT, result.kind)
+      assertEquals("DEBIT", result.direction)
+      assertEquals("PURCHASE", result.purposeHint)
+      assertEquals(10000L, result.amountMinor)
+      assertNull(result.cardDigits)
+      val queued = SmsQueue.json(result, "synthetic-provider")
+      assertEquals(suffix, queued.getString("accountDigits"))
+      assertEquals(mask, queued.getString("accountMask"))
+    }
+  }
+
+  @Test fun completePrimaryAndCounterpartyTransfersKeepSafeMasks() {
+    for (direction in listOf("DEBIT", "CREDIT")) {
+      val message = if (direction == "DEBIT")
+        "Your a/c 123456 is debited for Rs. 100 on 22-10-2026 10:47 and credited to a/c 000007 (UPI Ref no 735182094616)."
+      else
+        "Your a/c 000007 is credited for Rs. 100 on 22-10-2026 10:47 and debited from a/c 123456 (UPI Ref no 735182094616)."
+      val result = parse(message)
+      val primarySuffix = if (direction == "DEBIT") "456" else "007"
+      val primaryMask = if (direction == "DEBIT") "12•456" else "00•007"
+      val counterpartySuffix = if (direction == "DEBIT") "007" else "456"
+      val counterpartyMask = if (direction == "DEBIT") "00•007" else "12•456"
+      assertEquals(primarySuffix, result.accountDigits)
+      assertEquals(primaryMask, result.accountMask)
+      assertEquals(counterpartySuffix, result.counterpartyAccountDigits)
+      assertEquals(counterpartyMask, result.counterpartyAccountMask)
+      assertEquals(SmsTransactionParser.Kind.BANK_TRANSFER, result.kind)
+      assertEquals(direction, result.direction)
+      assertEquals("ACCOUNT_TRANSFER", result.purposeHint)
+      assertEquals(10000L, result.amountMinor)
+      assertEquals("735182094616", result.reference)
+      assertNull(result.cardDigits)
+      val queued = SmsQueue.json(result, "synthetic-provider")
+      assertEquals(primarySuffix, queued.getString("accountDigits"))
+      assertEquals(primaryMask, queued.getString("accountMask"))
+      assertEquals(counterpartySuffix, queued.getString("counterpartyAccountDigits"))
+      assertEquals(counterpartyMask, queued.getString("counterpartyAccountMask"))
+      assertEquals(direction, queued.getString("direction"))
+      assertEquals("BANK_TRANSFER", queued.getString("kind"))
+      assertEquals("ACCOUNT_TRANSFER", queued.getString("purposeHint"))
+      assertFalse(queued.getString("accountMask").contains("123456"))
+      assertFalse(queued.getString("accountMask").contains("000007"))
+      assertFalse(queued.getString("counterpartyAccountMask").contains("123456"))
+      assertFalse(queued.getString("counterpartyAccountMask").contains("000007"))
+    }
+  }
+
   @Test fun a4DebitToPersonIsCustomerDebitNotInternalTransfer() {
     val r = parse("ICICI Bank Acct XX417 debited for Rs 8100.00 on 22-Oct-26; ALEX MORGAN credited. UPI:735182094615.")
     assertEquals(SmsTransactionParser.Kind.BANK_DEBIT, r.kind)
