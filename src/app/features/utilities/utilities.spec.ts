@@ -4,15 +4,19 @@ import { UtilitiesPage } from './utilities';
 import { UtilitiesService } from './utilities.service';
 import { WhatsAppService } from './whatsapp.service';
 import { SnackbarService } from '../../core/services/snackbar.service';
-import { mobileActivitySummary, lpgUsageSummary } from './utilities-calculations';
-import { LpgProfile, MobileProfile } from './utilities-model';
+import { addCalendarDays, mobileActivitySummary, lpgUsageSummary } from './utilities-calculations';
+import { LpgProfile, MobileProfile, MobileRecharge } from './utilities-model';
+import { ProfileModal } from '../../shared/profile-modal';
+import { By } from '@angular/platform-browser';
 import { readFileSync } from 'node:fs';
 
 describe('Indian Utilities page', () => {
   const state = signal({ showIndianUtilities: true, utilityReminders: false });
   const mobiles = signal<readonly { id: string }[]>([]);
   const lpg = signal<readonly never[]>([]);
+  const recharges = signal<readonly MobileRecharge[]>([]);
   const mock = {
+    deleteMobileProfile: vi.fn().mockResolvedValue(undefined),
     deleteRecharge: vi.fn().mockResolvedValue(undefined),
     deleteLpgEvent: vi.fn().mockResolvedValue(undefined),
     saveRecharge: vi.fn().mockResolvedValue({ id: 'saved-recharge' }),
@@ -22,7 +26,7 @@ describe('Indian Utilities page', () => {
     showIndianUtilities: computed(() => state().showIndianUtilities),
     utilityReminders: computed(() => state().utilityReminders),
     mobileProfiles: mobiles,
-    mobileRecharges: signal<readonly never[]>([]),
+    mobileRecharges: recharges,
     lpgProfiles: lpg,
     lpgEvents: signal<readonly never[]>([]),
     operatorOptions: [
@@ -39,7 +43,7 @@ describe('Indian Utilities page', () => {
     lpgProviderOptions: [{ value: 'HPCL', label: 'HPCL' }],
     cylinderOptions: [{ value: 'NORMAL', label: 'Normal' }],
     lpgEventOptions: [{ value: 'STARTED', label: 'Cylinder installed / started using' }],
-    rechargesFor: () => [],
+    rechargesFor: (profileId: string) => recharges().filter((row) => row.profileId === profileId),
     suggestedRechargeStart: () => '2026-10-28',
     eventsFor: () => [],
     mobileSummary: (profile: Pick<MobileProfile, 'id' | 'subscriptionType'>, today: string) =>
@@ -87,6 +91,10 @@ describe('Indian Utilities page', () => {
     mock.saveMobileProfile.mockReset().mockResolvedValue({ id: 'saved-mobile' });
     mock.saveLpgProfile.mockReset().mockResolvedValue({ id: 'saved-lpg' });
     mock.saveRecharge.mockReset().mockResolvedValue({ id: 'saved-recharge' });
+    mock.deleteMobileProfile.mockReset().mockResolvedValue(undefined);
+    mock.deleteRecharge.mockReset().mockResolvedValue(undefined);
+    mock.setMobileArchived.mockClear();
+    recharges.set([]);
     state.set({ showIndianUtilities: true, utilityReminders: false });
     mobiles.set([]);
     lpg.set([]);
@@ -301,6 +309,215 @@ describe('Indian Utilities page', () => {
     expect(fixture.nativeElement.querySelector('app-profile-modal dialog[open]')).toBeNull();
     fixture.destroy();
   });
+  it('shows active and scheduled recharges separately and keeps every expired record in history', async () => {
+    const profile: MobileProfile = {
+      id: 'history-mobile',
+      kind: 'MOBILE',
+      personName: 'Fiction History',
+      operator: 'JIO',
+      subscriptionType: 'PREPAID',
+      archived: false,
+      createdAt: 'before',
+      updatedAt: 'before',
+    };
+    mobiles.set([profile]);
+    const fixture = TestBed.createComponent(UtilitiesPage);
+    const page = fixture.componentInstance;
+    const today = page.today;
+    const plan = (
+      id: string,
+      startDate: string,
+      endDate: string,
+      planType: MobileRecharge['planType'] = 'VOICE_DATA',
+    ): MobileRecharge => ({
+      id,
+      profileId: profile.id,
+      planType,
+      startDate,
+      endDate,
+      amountMinor: 12345,
+      comment: id,
+      createdAt: 'before',
+      updatedAt: 'before',
+    });
+    const expired = plan(
+      'expired-only-record',
+      addCalendarDays(today, -30),
+      addCalendarDays(today, -1),
+    );
+    recharges.set([
+      expired,
+      plan('active-voice', today, addCalendarDays(today, 10)),
+      plan('active-data', today, today, 'DATA_ONLY'),
+      plan('future-plan', addCalendarDays(today, 11), addCalendarDays(today, 40)),
+    ]);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const main = fixture.nativeElement.querySelector('.mobile-profile') as HTMLElement;
+    expect(main.querySelectorAll('.active-recharges li')).toHaveLength(2);
+    expect(main.querySelectorAll('.scheduled-recharges li')).toHaveLength(1);
+    expect(main.textContent).not.toContain(expired.comment);
+    const historyTrigger = [...main.querySelectorAll('button')].find((button) =>
+      button.textContent?.includes('Recharge history'),
+    )!;
+    historyTrigger.focus();
+    historyTrigger.click();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(fixture.nativeElement.querySelectorAll('.recharge-history li')).toHaveLength(4);
+    expect(fixture.nativeElement.querySelector('.recharge-history').textContent).toContain(
+      'Expired',
+    );
+    expect(fixture.nativeElement.querySelector('.recharge-history').textContent).toContain(
+      'Scheduled',
+    );
+    expect(fixture.nativeElement.querySelector('.recharge-history').textContent).toContain(
+      'Active',
+    );
+    (
+      fixture.nativeElement.querySelector(
+        `[aria-label="Edit recharge starting ${expired.startDate}"]`,
+      ) as HTMLButtonElement
+    ).click();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(page.rechargeHistoryProfileId()).toBe(profile.id);
+    expect(page.editingRechargeId()).toBe(expired.id);
+    expect(page.rechargeForm.getRawValue()).toMatchObject({
+      startDate: expired.startDate,
+      endDate: expired.endDate,
+      amount: '123.45',
+      comment: expired.comment,
+    });
+    expect(fixture.nativeElement.querySelector('.recharge-history')).toBeNull();
+    page.closeRecharge();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(fixture.nativeElement.querySelectorAll('.recharge-history li')).toHaveLength(4);
+    expect(document.activeElement?.id).toBe('recharge-history-edit-' + expired.id);
+    await page.deleteRecharge(expired);
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('app-confirmation-dialog')).not.toBeNull();
+    expect(fixture.nativeElement.querySelector('app-profile-modal')).toBeNull();
+    await page.confirmDeletion();
+    expect(mock.deleteRecharge).toHaveBeenCalledWith(expired.id);
+    expect(recharges()).toHaveLength(4);
+    page.closeRechargeHistory();
+    recharges.set([expired]);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(document.activeElement).toBe(historyTrigger);
+    expect(main.textContent).toContain('No active recharge recorded');
+    expect(main.textContent).not.toContain(expired.comment);
+    fixture.destroy();
+  });
+
+  it('keeps recharge drafts and dialog context on failed saves and blocks dismissal or duplicate submissions while saving', async () => {
+    const profile: MobileProfile = {
+      id: 'draft-mobile',
+      kind: 'MOBILE',
+      personName: 'Fiction Draft',
+      operator: 'JIO',
+      subscriptionType: 'PREPAID',
+      archived: false,
+      createdAt: 'before',
+      updatedAt: 'before',
+    };
+    mobiles.set([profile]);
+    const fixture = TestBed.createComponent(UtilitiesPage);
+    const page = fixture.componentInstance;
+    page.startRecharge(profile);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    page.rechargeForm.patchValue({ amount: '250', comment: 'Keep my draft' });
+    let reject!: (error: Error) => void;
+    mock.saveRecharge.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, fail) => {
+          reject = fail;
+        }),
+    );
+    const save = page.saveRecharge(new Event('submit'));
+    await page.saveRecharge(new Event('submit'));
+    fixture.detectChanges();
+    const modal = fixture.debugElement.query(By.directive(ProfileModal))
+      .componentInstance as ProfileModal;
+    const closed = vi.spyOn(modal.closed, 'emit');
+    modal.cancel(new Event('cancel', { cancelable: true }));
+    modal.back(new Event('cardnest:back', { cancelable: true }));
+    page.closeRecharge();
+    expect(closed).not.toHaveBeenCalled();
+    expect(page.rechargeProfileId()).toBe(profile.id);
+    expect(mock.saveRecharge).toHaveBeenCalledTimes(1);
+    reject(new Error('Synthetic recharge write failure'));
+    await save;
+    fixture.detectChanges();
+    expect(page.rechargeProfileId()).toBe(profile.id);
+    expect(page.rechargeForm.getRawValue()).toMatchObject({
+      amount: '250',
+      comment: 'Keep my draft',
+    });
+    expect(fixture.nativeElement.querySelector('[role="alert"]').textContent).toContain(
+      'Synthetic recharge write failure',
+    );
+    await page.saveRecharge(new Event('submit'));
+    expect(page.rechargeProfileId()).toBeNull();
+    fixture.destroy();
+  });
+
+  it.each([false, true])(
+    'confirms permanent mobile deletion with dependent count and keeps archive separate (archived=%s)',
+    async (archived) => {
+      const profile: MobileProfile = {
+        id: 'delete-mobile',
+        kind: 'MOBILE',
+        personName: 'Fiction Delete',
+        operator: 'JIO',
+        subscriptionType: 'PREPAID',
+        archived,
+        createdAt: 'before',
+        updatedAt: 'before',
+      };
+      mobiles.set([profile]);
+      recharges.set(
+        [1, 2].map((number) => ({
+          id: `dependent-${number}`,
+          profileId: profile.id,
+          planType: 'VOICE_DATA',
+          startDate: '2026-10-01',
+          endDate: '2026-10-30',
+          createdAt: 'before',
+          updatedAt: 'before',
+        })),
+      );
+      const fixture = TestBed.createComponent(UtilitiesPage);
+      const page = fixture.componentInstance;
+      fixture.detectChanges();
+      await fixture.whenStable();
+      const button = fixture.nativeElement.querySelector('.delete-mobile') as HTMLButtonElement;
+      expect(button).not.toBeNull();
+      button.click();
+      fixture.detectChanges();
+      expect(page.deletion()?.message).toContain('Fiction Delete');
+      expect(page.deletion()?.message).toContain('all 2 saved recharge records');
+      expect(page.deletion()?.message).toContain('permanently deleted');
+      expect(mock.deleteMobileProfile).not.toHaveBeenCalled();
+      page.deletion.set(null);
+      await page.confirmDeletion();
+      expect(mock.deleteMobileProfile).not.toHaveBeenCalled();
+      page.requestMobileDeletion(profile);
+      mock.deleteMobileProfile.mockRejectedValueOnce(new Error('Synthetic deletion failure'));
+      await page.confirmDeletion();
+      expect(page.deletion()?.id).toBe(profile.id);
+      expect(page.error()).toBe('Synthetic deletion failure');
+      await page.confirmDeletion();
+      expect(mock.deleteMobileProfile).toHaveBeenLastCalledWith(profile.id);
+      expect(page.deletion()).toBeNull();
+      expect(mock.setMobileArchived).not.toHaveBeenCalled();
+      fixture.destroy();
+    },
+  );
+
   it('uses the same popup for LPG creation and editing without changing cylinder-event controls', async () => {
     const fixture = TestBed.createComponent(UtilitiesPage);
     const page = fixture.componentInstance;

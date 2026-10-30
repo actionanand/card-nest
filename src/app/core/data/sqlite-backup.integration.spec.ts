@@ -336,6 +336,203 @@ describe('Durable first-run data, additive read migration and private portable b
     }
   });
 
+  it.each([false, true])(
+    'atomically deletes a mobile profile and its recharges (archived=%s) without touching other data',
+    async (archived) => {
+      await database.initialise();
+      const store = TestBed.inject(CardNestStore);
+      await store.initialisePreferences();
+      const utilities = TestBed.inject(UtilitiesService);
+      await utilities.initialise();
+      const profile = await utilities.saveMobileProfile({
+        personName: 'Deletion target',
+        subscriptionType: 'PREPAID',
+        operator: 'JIO',
+      });
+      const other = await utilities.saveMobileProfile({
+        personName: 'Keep mobile',
+        subscriptionType: 'POSTPAID',
+        operator: 'AIRTEL',
+      });
+      for (const profileId of [profile.id, profile.id, other.id])
+        await utilities.saveRecharge({
+          profileId,
+          planType: 'VOICE_DATA',
+          startDate: '2026-10-01',
+          validityDays: 30,
+        });
+      const lpg = await utilities.saveLpgProfile({
+        connectionName: 'Keep LPG',
+        provider: 'INDANE',
+        commercial: false,
+        cylinderSize: 'NORMAL',
+        estimatedUsageDays: 25,
+      });
+      await utilities.saveLpgEvent({
+        profileId: lpg.id,
+        eventType: 'STARTED',
+        eventDate: '2026-10-01',
+      });
+      await store.addBankAccount({
+        nickname: 'Keep bank',
+        institution: 'Synthetic Bank',
+        lastDigits: '007',
+      });
+      await store.saveManualTransaction({
+        id: 'keep-c1-purchase',
+        cardId: 'source-cash',
+        type: 'PURCHASE',
+        amountMinor: 12345,
+        currencyCode: 'INR',
+        transactionDate: indiaTodayIso(),
+        categoryId: 'other',
+        attachmentIds: [],
+        createdAt: '2026-10-01T12:00:00Z',
+        updatedAt: '2026-10-01T12:00:00Z',
+      });
+      await database.run(
+        "INSERT INTO sms_candidates(id,provider_id,event_at,kind,state,payload,updated_at) VALUES('keep-c1-sms','synthetic','2026-10-01','BANK_DEBIT','PENDING','{}','before')",
+      );
+      const savedRecharges = utilities.rechargesFor(profile.id);
+      const financialTables = [
+        'credit_cards',
+        'card_transactions',
+        'sms_candidates',
+        'sms_reconciliation',
+        'source_transfers',
+        'source_balance_adjustments',
+        'transaction_split_groups',
+        'transaction_split_members',
+        'loan_commitments',
+        'emi_plans',
+        'emi_installments',
+        'recurring_rules',
+        'bank_activity_profiles',
+        'bank_activity_events',
+      ];
+      const financialState = () =>
+        financialTables.map((table) => rows(`SELECT * FROM ${table} ORDER BY rowid`));
+      const unchanged = financialState();
+      const restoredFinancialState = unchanged.map((records, index) =>
+        financialTables[index] === 'sms_candidates'
+          ? records.map((record) => ({ ...record, payload: null }))
+          : records,
+      );
+      const sources = rows("SELECT * FROM app_preferences WHERE key='payment_sources'");
+      await utilities.setMobileArchived(profile.id, true);
+      await utilities.setMobileArchived(profile.id, false);
+      expect(utilities.rechargesFor(profile.id)).toHaveLength(2);
+      if (archived) await utilities.setMobileArchived(profile.id, true);
+      const beforeProfiles = utilities.mobileProfiles();
+      const beforeRecharges = utilities.mobileRecharges();
+      sql.exec(
+        "CREATE TRIGGER fail_mobile_delete BEFORE DELETE ON utility_profiles WHEN OLD.kind='MOBILE' BEGIN SELECT RAISE(ABORT,'mobile delete rollback'); END",
+      );
+      await expect(utilities.deleteMobileProfile(profile.id)).rejects.toThrow(
+        'mobile delete rollback',
+      );
+      expect(utilities.mobileProfiles()).toBe(beforeProfiles);
+      expect(utilities.mobileRecharges()).toBe(beforeRecharges);
+      expect(count('mobile_recharges')).toBe(3);
+      expect(count('utility_profiles')).toBe(3);
+      sql.exec('DROP TRIGGER fail_mobile_delete');
+      await expect(utilities.deleteMobileProfile(lpg.id)).rejects.toThrow(
+        'Mobile profile not found',
+      );
+
+      vi.stubGlobal('crypto', webcrypto);
+      vi.stubGlobal('Blob', NodeBlob);
+      try {
+        const backups = TestBed.inject(BackupService);
+        const before = await backups.create('synthetic-mobile-deletion-passphrase');
+        const refresh = vi
+          .spyOn(utilities, 'reload')
+          .mockRejectedValue(new Error('Post-commit refresh unavailable'));
+        const atomic = database.atomic.bind(database);
+        const publishedBeforeCommit: boolean[] = [];
+        const transaction = vi.spyOn(database, 'atomic').mockImplementation((work) =>
+          atomic(async (tx) => {
+            const result = await work(tx);
+            publishedBeforeCommit.push(
+              utilities.mobileProfiles().some((row) => row.id === profile.id),
+            );
+            return result;
+          }),
+        );
+        await utilities.deleteMobileProfile(profile.id);
+        expect(publishedBeforeCommit).toEqual([true]);
+        transaction.mockRestore();
+        expect(refresh).not.toHaveBeenCalled();
+        refresh.mockRestore();
+        expect(utilities.mobileProfiles().map((row) => row.id)).toEqual([other.id]);
+        expect(utilities.rechargesFor(profile.id)).toEqual([]);
+        expect(utilities.rechargesFor(other.id)).toHaveLength(1);
+        expect(count('lpg_events')).toBe(1);
+        expect(financialState()).toEqual(unchanged);
+        expect(rows("SELECT * FROM app_preferences WHERE key='payment_sources'")).toEqual(sources);
+        const after = await backups.create('synthetic-mobile-deletion-passphrase');
+        const restarted = TestBed.runInInjectionContext(() => new UtilitiesService());
+        await restarted.initialise();
+        expect(restarted.mobileProfiles().map((row) => row.id)).toEqual([other.id]);
+        await backups.restore(before.contents, 'synthetic-mobile-deletion-passphrase');
+        await restarted.initialise();
+        expect(restarted.rechargesFor(profile.id)).toHaveLength(2);
+        expect(restarted.rechargesFor(profile.id)).toEqual(
+          expect.arrayContaining([...savedRecharges]),
+        );
+        expect(restarted.mobileProfiles().find((row) => row.id === profile.id)?.archived).toBe(
+          archived,
+        );
+        expect(financialState()).toEqual(restoredFinancialState);
+        await backups.restore(after.contents, 'synthetic-mobile-deletion-passphrase');
+        await restarted.initialise();
+        expect(restarted.mobileProfiles().map((row) => row.id)).toEqual([other.id]);
+        expect(restarted.rechargesFor(other.id)).toHaveLength(1);
+        expect(restarted.lpgEvents()).toHaveLength(1);
+        expect(financialState()).toEqual(restoredFinancialState);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+
+  it('deletes only an individually selected recharge and retains its sibling and profile after restart', async () => {
+    await database.initialise();
+    const utilities = TestBed.inject(UtilitiesService);
+    await utilities.initialise();
+    const profile = await utilities.saveMobileProfile({
+      personName: 'Keep history',
+      operator: 'JIO',
+      subscriptionType: 'PREPAID',
+    });
+    const first = await utilities.saveRecharge({
+      profileId: profile.id,
+      planType: 'VOICE_ONLY',
+      startDate: '2026-09-01',
+      validityDays: 30,
+    });
+    const second = await utilities.saveRecharge({
+      profileId: profile.id,
+      planType: 'DATA_ONLY',
+      startDate: '2026-10-01',
+      validityDays: 30,
+      comment: 'Retain sibling',
+    });
+    await utilities.deleteRecharge(first.id);
+    const restarted = TestBed.runInInjectionContext(() => new UtilitiesService());
+    await restarted.initialise();
+    expect(restarted.rechargesFor(profile.id)).toEqual([second]);
+    expect(restarted.mobileProfiles().map((row) => row.id)).toEqual([profile.id]);
+    await utilities.deleteMobileProfile(profile.id);
+    const empty = await utilities.saveMobileProfile({
+      personName: 'No recharge history',
+      operator: 'VI',
+      subscriptionType: 'POSTPAID',
+    });
+    await utilities.deleteMobileProfile(empty.id);
+    expect(count('utility_profiles')).toBe(0);
+  });
+
   it('persists Utilities and Bank Activity through reload and encrypted backup while keeping finance isolated', async () => {
     const today = indiaTodayIso();
     await database.initialise();

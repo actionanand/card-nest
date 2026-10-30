@@ -96,7 +96,7 @@ import { AppIcon } from './app-icon';
     }
     .danger-confirm {
       border-color: var(--danger);
-      color: white;
+      color: var(--confirmation-danger-ink, white);
       background: var(--danger);
     }
     @media (max-width: 480px) {

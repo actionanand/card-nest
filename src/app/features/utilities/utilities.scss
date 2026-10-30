@@ -530,3 +530,47 @@ app-profile-modal .utility-form {
   min-width: 0;
   flex: 1;
 }
+
+.mobile-profile .profile-actions .btn,
+.archived-mobile-actions .btn {
+  min-height: 44px;
+  white-space: normal;
+}
+.delete-mobile {
+  color: var(--danger);
+}
+.archived-mobile-row {
+  flex-wrap: wrap;
+}
+.archived-mobile-row > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.archived-mobile-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.recharge-history {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.recharge-history .history-list li {
+  flex-wrap: wrap;
+}
+.recharge-history .history-list li > div:first-child {
+  flex: 1 1 12rem;
+}
+.recharge-history .icon-action {
+  width: 44px;
+  height: 44px;
+}
+.recharge-history button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.recharge-form {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}

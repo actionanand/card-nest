@@ -120,7 +120,12 @@
           <p class="eyebrow">Mobile</p>
           <h2>Recharge plans</h2>
         </div>
-        <button class="btn btn-primary" type="button" (click)="startAddMobile()">
+        <button
+          id="add-mobile-profile"
+          class="btn btn-primary"
+          type="button"
+          (click)="startAddMobile()"
+        >
           <app-icon name="plus" /> Add profile
         </button>
       </section>
@@ -240,8 +245,18 @@
             <button class="btn" type="button" (click)="startRecharge(profile)">
               <app-icon name="plus" /> Add recharge
             </button>
+            <button class="btn" type="button" (click)="openRechargeHistory(profile)">
+              <app-icon name="history" /> Recharge history
+            </button>
             <button class="btn" type="button" (click)="editMobile(profile)">Edit profile</button>
             <button class="btn" type="button" (click)="archiveMobile(profile)">Archive</button>
+            <button
+              class="btn delete-mobile"
+              type="button"
+              (click)="requestMobileDeletion(profile)"
+            >
+              <app-icon name="delete" /> Delete profile
+            </button>
           </div>
           @if (rechargeProfileId() === profile.id) {
             <app-profile-modal
@@ -253,6 +268,9 @@
                 [formGroup]="rechargeForm"
                 (submit)="saveRecharge($event)"
               >
+                <p class="form-note">
+                  <strong>{{ profile.personName }}</strong> · {{ profile.operator }}
+                </p>
                 <app-select-picker
                   label="Recharge plan"
                   formControlName="planType"
@@ -323,12 +341,12 @@
             >
           }
           <div class="history-heading">
-            <h4>Recharge history</h4>
-            <span>{{ mobilePlans(profile).length }} records</span>
+            <h4>Active recharges</h4>
+            <span>{{ activeMobilePlans(profile).length }} active</span>
           </div>
-          @if (mobilePlans(profile).length) {
-            <ol class="history-list">
-              @for (plan of mobilePlans(profile); track plan.id) {
+          @if (activeMobilePlans(profile).length) {
+            <ol class="history-list active-recharges">
+              @for (plan of activeMobilePlans(profile); track plan.id) {
                 <li>
                   <div>
                     <strong>{{ planTypeLabel(plan.planType) }}</strong
@@ -342,28 +360,32 @@
                       <small>{{ plan.comment }}</small>
                     }
                   </div>
-                  <div class="history-actions">
-                    <button
-                      class="icon-action"
-                      type="button"
-                      [attr.aria-label]="'Edit recharge starting ' + plan.startDate"
-                      (click)="editRecharge(plan)"
-                    >
-                      <app-icon name="edit" /></button
-                    ><button
-                      class="icon-action"
-                      type="button"
-                      [attr.aria-label]="'Delete recharge starting ' + plan.startDate"
-                      (click)="deleteRecharge(plan)"
-                    >
-                      <app-icon name="delete" />
-                    </button>
-                  </div>
                 </li>
               }
             </ol>
           } @else {
-            <p class="empty-state">No recharge history recorded.</p>
+            <p class="empty-state">No active recharge recorded.</p>
+          }
+          @if (scheduledMobilePlans(profile).length) {
+            <div class="history-heading"><h4>Scheduled recharges</h4></div>
+            <ol class="history-list scheduled-recharges">
+              @for (plan of scheduledMobilePlans(profile); track plan.id) {
+                <li>
+                  <div>
+                    <strong>{{ planTypeLabel(plan.planType) }}</strong>
+                    <small
+                      >{{ plan.startDate }} – {{ plan.endDate }} · {{ planPeriodText(plan) }}</small
+                    >
+                    @if (plan.amountMinor !== undefined) {
+                      <small>{{ money(plan.amountMinor) }}</small>
+                    }
+                    @if (plan.comment) {
+                      <small>{{ plan.comment }}</small>
+                    }
+                  </div>
+                </li>
+              }
+            </ol>
           }
         </article>
       } @empty {
@@ -373,15 +395,25 @@
         <details class="archived-list">
           <summary>Archived mobile profiles ({{ archivedMobileProfiles().length }})</summary>
           @for (profile of archivedMobileProfiles(); track profile.id) {
-            <div>
-              <span>{{ profile.personName }} · {{ profile.operator }}</span
-              ><button
-                class="btn"
-                type="button"
-                (click)="utilities.setMobileArchived(profile.id, false)"
-              >
-                Restore
-              </button>
+            <div class="archived-mobile-row">
+              <span>{{ profile.personName }} · {{ profile.operator }}</span>
+              <div class="archived-mobile-actions">
+                <button class="btn" type="button" (click)="openRechargeHistory(profile)">
+                  <app-icon name="history" /> Recharge history</button
+                ><button
+                  class="btn"
+                  type="button"
+                  (click)="utilities.setMobileArchived(profile.id, false)"
+                >
+                  Restore</button
+                ><button
+                  class="btn delete-mobile"
+                  type="button"
+                  (click)="requestMobileDeletion(profile)"
+                >
+                  <app-icon name="delete" /> Delete profile
+                </button>
+              </div>
             </div>
           }
         </details>
@@ -735,13 +767,74 @@
   </div>
 }
 
+@if (rechargeHistoryProfile(); as profile) {
+  @if (!rechargeProfileId() && !deletion()) {
+    <app-profile-modal title="Recharge history" [busy]="saving()" (closed)="closeRechargeHistory()">
+      <section class="recharge-history" aria-label="Saved recharges">
+        <p class="form-note">
+          <strong>{{ profile.personName }}</strong> · {{ profile.operator }} ·
+          {{ mobilePlans(profile).length }} records
+        </p>
+        <ol class="history-list">
+          @for (plan of mobilePlans(profile); track plan.id) {
+            <li>
+              <div>
+                <strong>{{ planTypeLabel(plan.planType) }}</strong>
+                <small>{{ plan.startDate }} – {{ plan.endDate }}</small>
+                <small>{{ planStatus(plan) }} · {{ planPeriodText(plan) }}</small>
+                @if (plan.amountMinor !== undefined) {
+                  <small>{{ money(plan.amountMinor) }}</small>
+                }
+                @if (plan.comment) {
+                  <small>{{ plan.comment }}</small>
+                }
+              </div>
+              <div class="history-actions">
+                <button
+                  class="icon-action"
+                  type="button"
+                  [id]="'recharge-history-edit-' + plan.id"
+                  [disabled]="saving() || profile.archived"
+                  [attr.aria-label]="'Edit recharge starting ' + plan.startDate"
+                  [title]="profile.archived ? 'Restore profile to edit recharges' : 'Edit recharge'"
+                  (click)="editRecharge(plan)"
+                >
+                  <app-icon name="edit" />
+                </button>
+                <button
+                  class="icon-action"
+                  type="button"
+                  [disabled]="saving()"
+                  [attr.aria-label]="'Delete recharge starting ' + plan.startDate"
+                  title="Delete recharge"
+                  (click)="deleteRecharge(plan)"
+                >
+                  <app-icon name="delete" />
+                </button>
+              </div>
+            </li>
+          } @empty {
+            <li class="empty-state">No recharge history recorded.</li>
+          }
+        </ol>
+        <div class="modal-actions">
+          <button class="btn" type="button" [disabled]="saving()" (click)="closeRechargeHistory()">
+            Close history
+          </button>
+        </div>
+      </section>
+    </app-profile-modal>
+  }
+}
+
 @if (deletion(); as choice) {
   <app-confirmation-dialog
+    [style.--confirmation-danger-ink]="choice.kind === 'MOBILE_PROFILE' ? 'var(--surface)' : null"
     [title]="choice.title"
     [message]="choice.message"
     [busy]="saving()"
     [error]="error()"
     (confirmed)="confirmDeletion()"
-    (cancelled)="deletion.set(null)"
+    (cancelled)="cancelDeletion()"
   />
 }

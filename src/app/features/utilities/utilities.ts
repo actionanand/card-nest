@@ -1,7 +1,7 @@
 import { ProfileModal } from '../../shared/profile-modal';
 import { ConfirmationDialog } from '../../shared/confirmation-dialog';
 import { IndianPhoneInput } from '../../shared/indian-phone-input';
-import { Component, computed, inject, signal } from '@angular/core';
+import { afterNextRender, Component, computed, inject, Injector, signal } from '@angular/core';
 import { NgOptimizedImage } from '@angular/common';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
@@ -22,7 +22,12 @@ import {
   MobileProfile,
   MobileRecharge,
 } from './utilities-model';
-import { addCalendarDays, calendarDaysBetween, utilityOverview } from './utilities-calculations';
+import {
+  addCalendarDays,
+  calendarDaysBetween,
+  utilityOverview,
+  validCalendarDate,
+} from './utilities-calculations';
 
 type UtilitySection = 'MOBILE' | 'GAS' | 'ELECTRICITY' | 'BROADBAND';
 
@@ -46,6 +51,9 @@ export class UtilitiesPage {
   private readonly whatsApp = inject(WhatsAppService);
   private readonly snackbar = inject(SnackbarService);
   private readonly dateClock = inject(IndiaTodayClock);
+  private readonly injector = inject(Injector);
+  private historyTrigger: HTMLElement | null = null;
+  private historyRecordId: string | null = null;
   readonly section = signal<UtilitySection>('MOBILE');
   readonly gasType = signal<GasServiceType>('LPG');
   readonly mobileFormOpen = signal(false);
@@ -54,6 +62,12 @@ export class UtilitiesPage {
   readonly editingLpgId = signal<string | null>(null);
   readonly rechargeProfileId = signal<string | null>(null);
   readonly editingRechargeId = signal<string | null>(null);
+  readonly rechargeHistoryProfileId = signal<string | null>(null);
+  readonly rechargeHistoryProfile = computed(() =>
+    this.utilities
+      .mobileProfiles()
+      .find((profile) => profile.id === this.rechargeHistoryProfileId()),
+  );
   readonly lpgEventProfileId = signal<string | null>(null);
   readonly editingLpgEventId = signal<string | null>(null);
   readonly validityMode = signal<'DAYS' | 'END_DATE'>('DAYS');
@@ -61,7 +75,7 @@ export class UtilitiesPage {
   readonly saving = signal(false);
   readonly deletion = signal<{
     id: string;
-    kind: 'RECHARGE' | 'LPG';
+    kind: 'RECHARGE' | 'LPG' | 'MOBILE_PROFILE';
     title: string;
     message: string;
   } | null>(null);
@@ -240,7 +254,39 @@ export class UtilitiesPage {
     this.snackbar.show('Mobile profile archived. Recharge history is kept.', 'INFO');
   }
 
+  openRechargeHistory(profile: MobileProfile): void {
+    if (this.saving()) return;
+    this.historyTrigger =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    this.error.set(null);
+    this.rechargeHistoryProfileId.set(profile.id);
+  }
+
+  closeRechargeHistory(): void {
+    if (this.saving()) return;
+    this.rechargeHistoryProfileId.set(null);
+    afterNextRender(
+      () => {
+        if (this.historyTrigger?.isConnected) this.historyTrigger.focus();
+      },
+      { injector: this.injector },
+    );
+  }
+
+  requestMobileDeletion(profile: MobileProfile): void {
+    if (this.saving()) return;
+    this.error.set(null);
+    const count = this.utilities.rechargesFor(profile.id).length;
+    this.deletion.set({
+      id: profile.id,
+      kind: 'MOBILE_PROFILE',
+      title: 'Permanently delete mobile profile?',
+      message: `Delete ${profile.personName} (${profile.operator}) and all ${count} saved recharge records? The complete recharge history will be permanently deleted. This cannot be undone. Other profiles and financial records are not affected.`,
+    });
+  }
+
   startRecharge(profile: MobileProfile): void {
+    if (this.saving()) return;
     this.error.set(null);
     this.editingRechargeId.set(null);
     this.rechargeProfileId.set(profile.id);
@@ -259,9 +305,12 @@ export class UtilitiesPage {
     if (this.saving()) return;
     this.rechargeProfileId.set(null);
     this.error.set(null);
+    this.restoreHistoryFocus();
   }
 
   editRecharge(recharge: MobileRecharge): void {
+    if (this.saving()) return;
+    this.historyRecordId = recharge.id;
     this.error.set(null);
     this.editingRechargeId.set(recharge.id);
     this.rechargeProfileId.set(recharge.profileId);
@@ -279,6 +328,11 @@ export class UtilitiesPage {
   async saveRecharge(event: Event): Promise<void> {
     event.preventDefault();
     if (this.saving()) return;
+    this.rechargeForm.markAllAsTouched();
+    if (this.rechargeForm.invalid) {
+      this.error.set('Check the recharge dates and comment.');
+      return;
+    }
     const value = this.rechargeForm.getRawValue();
     const amountMinor = value.amount.trim() ? parseMoneyToMinor(value.amount) : undefined;
     if (
@@ -302,6 +356,7 @@ export class UtilitiesPage {
         comment: value.comment,
       });
       this.rechargeProfileId.set(null);
+      this.restoreHistoryFocus();
     } catch (error: unknown) {
       this.error.set(error instanceof Error ? error.message : 'Recharge could not be saved.');
     } finally {
@@ -310,6 +365,8 @@ export class UtilitiesPage {
   }
 
   async deleteRecharge(recharge: MobileRecharge): Promise<void> {
+    if (this.saving()) return;
+    this.historyRecordId = recharge.id;
     this.error.set(null);
     this.deletion.set({
       id: recharge.id,
@@ -323,7 +380,7 @@ export class UtilitiesPage {
     const value = this.rechargeForm.getRawValue();
     if (this.validityMode() !== 'DAYS') return value.endDate;
     const days = Number(value.validityDays);
-    return Number.isSafeInteger(days) && days > 0
+    return validCalendarDate(value.startDate) && Number.isSafeInteger(days) && days > 0
       ? addCalendarDays(value.startDate, days - 1)
       : 'Enter a positive number of days';
   }
@@ -470,10 +527,21 @@ export class UtilitiesPage {
     this.error.set(null);
     try {
       if (choice.kind === 'RECHARGE') await this.utilities.deleteRecharge(choice.id);
-      else await this.utilities.deleteLpgEvent(choice.id);
+      else if (choice.kind === 'MOBILE_PROFILE') {
+        await this.utilities.deleteMobileProfile(choice.id);
+        if (this.rechargeHistoryProfileId() === choice.id) this.rechargeHistoryProfileId.set(null);
+        afterNextRender(() => document.getElementById('add-mobile-profile')?.focus(), {
+          injector: this.injector,
+        });
+      } else await this.utilities.deleteLpgEvent(choice.id);
       this.deletion.set(null);
+      this.restoreHistoryFocus();
       this.snackbar.show(
-        choice.kind === 'RECHARGE' ? 'Recharge removed from history.' : 'Cylinder event deleted.',
+        choice.kind === 'RECHARGE'
+          ? 'Recharge removed from history.'
+          : choice.kind === 'MOBILE_PROFILE'
+            ? 'Mobile profile and recharge history permanently deleted.'
+            : 'Cylinder event deleted.',
         'INFO',
       );
     } catch (error: unknown) {
@@ -481,6 +549,25 @@ export class UtilitiesPage {
     } finally {
       this.saving.set(false);
     }
+  }
+
+  cancelDeletion(): void {
+    if (this.saving()) return;
+    this.deletion.set(null);
+    this.restoreHistoryFocus();
+  }
+
+  private restoreHistoryFocus(): void {
+    if (!this.rechargeHistoryProfileId()) return;
+    afterNextRender(
+      () => {
+        const target =
+          document.getElementById('recharge-history-edit-' + this.historyRecordId) ??
+          document.querySelector<HTMLElement>('.recharge-history button');
+        target?.focus();
+      },
+      { injector: this.injector },
+    );
   }
 
   openWhatsApp(number?: string): void {
@@ -510,6 +597,26 @@ export class UtilitiesPage {
       .rechargesFor(profile.id)
       .slice()
       .sort((left, right) => right.startDate.localeCompare(left.startDate));
+  }
+
+  activeMobilePlans(profile: MobileProfile): readonly MobileRecharge[] {
+    return this.mobilePlans(profile).filter(
+      (plan) => plan.startDate <= this.today && plan.endDate >= this.today,
+    );
+  }
+
+  scheduledMobilePlans(profile: MobileProfile): readonly MobileRecharge[] {
+    return this.mobilePlans(profile)
+      .filter((plan) => plan.startDate > this.today)
+      .sort((left, right) => left.startDate.localeCompare(right.startDate));
+  }
+
+  planStatus(recharge: MobileRecharge): string {
+    return recharge.startDate > this.today
+      ? 'Scheduled'
+      : recharge.endDate < this.today
+        ? 'Expired'
+        : 'Active';
   }
 
   planPeriodText(recharge: MobileRecharge): string {

@@ -362,6 +362,20 @@ export class UtilitiesService {
     this.mobileRecharges.update((items) => items.filter((item) => item.id !== id));
   }
 
+  async deleteMobileProfile(profileId: string): Promise<void> {
+    await this.database.atomic(async (tx) => {
+      const [profile] = await tx.query<{ id: string }>(
+        "SELECT id FROM utility_profiles WHERE id=? AND kind='MOBILE'",
+        [profileId],
+      );
+      if (!profile) throw new Error('Mobile profile not found.');
+      await tx.run('DELETE FROM mobile_recharges WHERE profile_id=?', [profileId]);
+      await tx.run("DELETE FROM utility_profiles WHERE id=? AND kind='MOBILE'", [profileId]);
+    });
+    this.mobileRecharges.update((items) => items.filter((item) => item.profileId !== profileId));
+    this.mobileProfiles.update((items) => items.filter((item) => item.id !== profileId));
+  }
+
   async saveLpgProfile(
     input: Omit<LpgProfile, 'id' | 'kind' | 'archived' | 'createdAt' | 'updatedAt'> & {
       id?: string;
