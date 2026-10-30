@@ -364,7 +364,12 @@
               }
             </ol>
           } @else {
-            <p class="empty-state">No active recharge recorded.</p>
+            <p class="empty-state">
+              No active recharge recorded.
+              @if (mobilePlans(profile).length) {
+                Previous plans remain available through Recharge history.
+              }
+            </p>
           }
           @if (scheduledMobilePlans(profile).length) {
             <div class="history-heading"><h4>Scheduled recharges</h4></div>
@@ -439,7 +444,12 @@
             <p class="eyebrow">Cooking Gas</p>
             <h2>LPG connections</h2>
           </div>
-          <button class="btn btn-primary" type="button" (click)="startAddLpg()">
+          <button
+            id="add-lpg-profile"
+            class="btn btn-primary"
+            type="button"
+            (click)="startAddLpg()"
+          >
             <app-icon name="plus" /> Add LPG connection
           </button>
         </section>
@@ -542,7 +552,7 @@
         @for (profile of lpgProfiles(); track profile.id) {
           <article class="panel lpg-profile">
             <header class="profile-heading">
-              <div>
+              <div class="profile-copy">
                 <p class="eyebrow">
                   {{ profile.provider }} · {{ profile.commercial ? 'Commercial' : 'Domestic' }} ·
                   {{ cylinderSizeLabel(profile.cylinderSize) }} cylinder
@@ -551,11 +561,15 @@
                 <small>{{ profile.mobileNumber || 'No mobile number linked' }}</small>
               </div>
               <span class="status-badge" [class.attention]="lpgCheckDue(profile)">{{
-                utilities.lpgSummary(profile, today).currentCylinderEmpty
-                  ? 'Empty confirmed'
-                  : 'Usage tracked'
+                lpgStatus(profile)
               }}</span>
             </header>
+            @if (utilities.lpgSummary(profile, today).currentCylinderStarted; as started) {
+              <p class="form-note">Cylinder started {{ started }}</p>
+            }
+            @if (lpgHistoryWarning(profile); as warning) {
+              <p class="attention-note" role="status">{{ warning }}</p>
+            }
             <div class="lpg-stats">
               <div>
                 <span>Current usage</span
@@ -568,6 +582,9 @@
               </div>
               <div>
                 <span>Estimated refill check</span><strong>{{ lpgCheckLabel(profile) }}</strong>
+                @if (utilities.lpgSummary(profile, today).estimatedCheckDate; as checkDate) {
+                  <small>{{ checkDate }}</small>
+                }
               </div>
               <div>
                 <span>Refills this year</span
@@ -607,105 +624,98 @@
               </button>
             }
             <div class="profile-actions">
-              <button class="btn" type="button" (click)="startLpgEvent(profile, 'STARTED')">
+              <button
+                class="btn"
+                type="button"
+                [disabled]="saving() || !canRecordLpgEvent(profile, 'STARTED')"
+                (click)="startLpgEvent(profile, 'STARTED')"
+              >
                 Record cylinder started
               </button>
-              <button class="btn" type="button" (click)="startLpgEvent(profile, 'EMPTY')">
+              <button
+                class="btn"
+                type="button"
+                [disabled]="saving() || !canRecordLpgEvent(profile, 'EMPTY')"
+                (click)="startLpgEvent(profile, 'EMPTY')"
+              >
                 Record empty
               </button>
-              <button class="btn" type="button" (click)="startLpgEvent(profile, 'REFILL_RECEIVED')">
+              <button
+                class="btn"
+                type="button"
+                [disabled]="saving() || !canRecordLpgEvent(profile, 'REFILL_RECEIVED')"
+                (click)="startLpgEvent(profile, 'REFILL_RECEIVED')"
+              >
                 Record refill received
               </button>
               <button class="btn" type="button" (click)="editLpg(profile)">Edit connection</button>
               <button class="btn" type="button" (click)="archiveLpg(profile)">Archive</button>
+              <button class="btn" type="button" (click)="openLpgHistory(profile)">
+                <app-icon name="history" /> Cylinder history
+              </button>
+              <button class="btn delete-mobile" type="button" (click)="requestLpgDeletion(profile)">
+                <app-icon name="delete" /> Delete connection
+              </button>
             </div>
             @if (lpgEventProfileId() === profile.id) {
-              <form class="nested-form" [formGroup]="lpgEventForm" (submit)="saveLpgEvent($event)">
-                <h4>{{ editingLpgEventId() ? 'Edit cylinder event' : 'Record cylinder event' }}</h4>
-                <app-select-picker
-                  label="Event"
-                  formControlName="eventType"
-                  [options]="lpgEventOptions"
-                />
-                <div class="form-grid">
-                  <label>Date<input type="date" formControlName="eventDate" required /></label
-                  ><app-select-picker
-                    label="Cylinder size"
-                    formControlName="cylinderSize"
-                    [options]="cylinderOptions"
+              <app-profile-modal
+                [title]="editingLpgEventId() ? 'Edit cylinder event' : 'Record cylinder event'"
+                [busy]="saving()"
+                (closed)="closeLpgEvent()"
+              >
+                <form
+                  class="utility-form lpg-event-form"
+                  [formGroup]="lpgEventForm"
+                  (submit)="saveLpgEvent($event)"
+                >
+                  <p class="form-note">
+                    <strong>{{ profile.connectionName }}</strong> · {{ profile.provider }} ·
+                    {{ profile.commercial ? 'Commercial' : 'Domestic' }}
+                  </p>
+                  <app-select-picker
+                    label="Event"
+                    formControlName="eventType"
+                    [options]="lpgEventOptions()"
                   />
-                </div>
-                @if (lpgEventForm.controls.eventType.value === 'REFILL_RECEIVED') {
+                  <div class="form-grid">
+                    <label>Date<input type="date" formControlName="eventDate" required /></label
+                    ><app-select-picker
+                      label="Cylinder size"
+                      formControlName="cylinderSize"
+                      [options]="cylinderOptions"
+                    />
+                  </div>
+                  @if (lpgEventForm.controls.eventType.value === 'REFILL_RECEIVED') {
+                    <label
+                      >Amount paid (INR, optional)<input
+                        formControlName="amount"
+                        inputmode="decimal"
+                    /></label>
+                  }
                   <label
-                    >Amount paid (INR, optional)<input formControlName="amount" inputmode="decimal"
-                  /></label>
-                }
-                <label
-                  >Comment (optional)<textarea
-                    rows="2"
-                    maxlength="300"
-                    formControlName="comment"
-                  ></textarea>
-                </label>
-                @if (error(); as message) {
-                  <p class="form-error" role="alert">{{ message }}</p>
-                }
-                <div class="profile-actions">
-                  <button class="btn btn-primary" type="submit" [disabled]="saving()">
-                    Save event</button
-                  ><button class="btn" type="button" (click)="lpgEventProfileId.set(null)">
-                    Cancel
-                  </button>
-                </div>
-              </form>
-            }
-            <div class="history-heading">
-              <h4>Cylinder history</h4>
-              <span>Estimates stay estimates</span>
-            </div>
-            @if (lpgHistory(profile).length) {
-              <ol class="history-list">
-                @for (entry of lpgHistory(profile); track entry.id) {
-                  <li>
-                    <div>
-                      <strong>{{ lpgEventLabel(entry.eventType) }}</strong
-                      ><small
-                        >{{ entry.eventDate
-                        }}{{
-                          entry.cylinderSize ? ' · ' + cylinderSizeLabel(entry.cylinderSize) : ''
-                        }}</small
-                      >
-                      @if (entry.amountMinor !== undefined) {
-                        <small>{{ money(entry.amountMinor) }}</small>
-                      }
-                      @if (entry.comment) {
-                        <small>{{ entry.comment }}</small>
-                      }
-                    </div>
-                    <div class="history-actions">
-                      <button
-                        class="icon-action"
-                        type="button"
-                        [attr.aria-label]="'Edit cylinder event on ' + entry.eventDate"
-                        (click)="editLpgEvent(entry)"
-                      >
-                        <app-icon name="edit" /></button
-                      ><button
-                        class="icon-action"
-                        type="button"
-                        [attr.aria-label]="'Delete cylinder event on ' + entry.eventDate"
-                        (click)="deleteLpgEvent(entry)"
-                      >
-                        <app-icon name="delete" />
-                      </button>
-                    </div>
-                  </li>
-                }
-              </ol>
-            } @else {
-              <p class="empty-state">
-                Record a cylinder start, empty event or refill delivery to begin the timeline.
-              </p>
+                    >Comment (optional)<textarea
+                      rows="2"
+                      maxlength="300"
+                      formControlName="comment"
+                    ></textarea>
+                  </label>
+                  @if (error(); as message) {
+                    <p class="form-error" role="alert">{{ message }}</p>
+                  }
+                  <div class="modal-actions">
+                    <button class="btn btn-primary" type="submit" [disabled]="saving()">
+                      Save event</button
+                    ><button
+                      class="btn"
+                      type="button"
+                      [disabled]="saving()"
+                      (click)="closeLpgEvent()"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </form></app-profile-modal
+              >
             }
           </article>
         } @empty {
@@ -715,15 +725,25 @@
           <details class="archived-list">
             <summary>Archived LPG connections ({{ archivedLpgProfiles().length }})</summary>
             @for (profile of archivedLpgProfiles(); track profile.id) {
-              <div>
-                <span>{{ profile.connectionName }} · {{ profile.provider }}</span
-                ><button
-                  class="btn"
-                  type="button"
-                  (click)="utilities.setLpgArchived(profile.id, false)"
-                >
-                  Restore
-                </button>
+              <div class="archived-mobile-row">
+                <span>{{ profile.connectionName }} · {{ profile.provider }}</span>
+                <div class="archived-mobile-actions">
+                  <button class="btn" type="button" (click)="openLpgHistory(profile)">
+                    <app-icon name="history" /> Cylinder history</button
+                  ><button
+                    class="btn"
+                    type="button"
+                    (click)="utilities.setLpgArchived(profile.id, false)"
+                  >
+                    Restore</button
+                  ><button
+                    class="btn delete-mobile"
+                    type="button"
+                    (click)="requestLpgDeletion(profile)"
+                  >
+                    <app-icon name="delete" /> Delete connection
+                  </button>
+                </div>
               </div>
             }
           </details>
@@ -827,9 +847,78 @@
   }
 }
 
+@if (lpgHistoryProfile(); as profile) {
+  @if (!lpgEventProfileId() && !deletion()) {
+    <app-profile-modal title="Cylinder history" [busy]="saving()" (closed)="closeLpgHistory()">
+      <section class="lpg-history" aria-label="Saved cylinder events">
+        <p class="form-note">
+          <strong>{{ profile.connectionName }}</strong> · {{ profile.provider }} ·
+          {{ profile.commercial ? 'Commercial' : 'Domestic' }} ·
+          {{ cylinderSizeLabel(profile.cylinderSize) }} · {{ lpgHistory(profile).length }} events
+        </p>
+        <ol class="history-list">
+          @for (entry of lpgHistory(profile); track entry.id) {
+            <li>
+              <div>
+                <strong>{{ lpgEventLabel(entry.eventType) }}</strong>
+                <small
+                  >{{ entry.eventDate }} ·
+                  {{ cylinderSizeLabel(entry.cylinderSize ?? profile.cylinderSize) }}</small
+                >
+                @if (entry.amountMinor !== undefined) {
+                  <small>{{ money(entry.amountMinor) }}</small>
+                }
+                @if (entry.comment) {
+                  <small>{{ entry.comment }}</small>
+                }
+              </div>
+              <div class="history-actions">
+                <button
+                  [id]="'lpg-history-edit-' + entry.id"
+                  class="icon-action"
+                  type="button"
+                  [disabled]="saving() || profile.archived"
+                  [attr.aria-label]="'Edit cylinder event on ' + entry.eventDate"
+                  [title]="
+                    profile.archived ? 'Restore connection to edit events' : 'Edit cylinder event'
+                  "
+                  (click)="editLpgEvent(entry)"
+                >
+                  <app-icon name="edit" />
+                </button>
+                <button
+                  class="icon-action"
+                  type="button"
+                  [disabled]="saving()"
+                  [attr.aria-label]="'Delete cylinder event on ' + entry.eventDate"
+                  title="Delete cylinder event"
+                  (click)="deleteLpgEvent(entry)"
+                >
+                  <app-icon name="delete" />
+                </button>
+              </div>
+            </li>
+          } @empty {
+            <li class="empty-state">No cylinder events recorded.</li>
+          }
+        </ol>
+        <div class="modal-actions">
+          <button class="btn" type="button" (click)="closeLpgHistory()" [disabled]="saving()">
+            Close history
+          </button>
+        </div>
+      </section>
+    </app-profile-modal>
+  }
+}
+
 @if (deletion(); as choice) {
   <app-confirmation-dialog
-    [style.--confirmation-danger-ink]="choice.kind === 'MOBILE_PROFILE' ? 'var(--surface)' : null"
+    [style.--confirmation-danger-ink]="
+      choice.kind === 'MOBILE_PROFILE' || choice.kind === 'LPG_PROFILE' || choice.kind === 'LPG'
+        ? 'var(--surface)'
+        : null
+    "
     [title]="choice.title"
     [message]="choice.message"
     [busy]="saving()"

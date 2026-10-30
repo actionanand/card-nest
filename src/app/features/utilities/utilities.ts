@@ -4,6 +4,8 @@ import { IndianPhoneInput } from '../../shared/indian-phone-input';
 import { afterNextRender, Component, computed, inject, Injector, signal } from '@angular/core';
 import { NgOptimizedImage } from '@angular/common';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
+import { toSignal } from '@angular/core/rxjs-interop';
+import { lpgEventChoices, lpgLifecycle } from './lpg-lifecycle';
 import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
 import { AppIcon } from '../../shared/app-icon';
 import { parseMoneyToMinor, formatMoney } from '../../core/services/money';
@@ -54,6 +56,8 @@ export class UtilitiesPage {
   private readonly injector = inject(Injector);
   private historyTrigger: HTMLElement | null = null;
   private historyRecordId: string | null = null;
+  private lpgHistoryTrigger: HTMLElement | null = null;
+  private lpgHistoryRecordId: string | null = null;
   readonly section = signal<UtilitySection>('MOBILE');
   readonly gasType = signal<GasServiceType>('LPG');
   readonly mobileFormOpen = signal(false);
@@ -70,12 +74,19 @@ export class UtilitiesPage {
   );
   readonly lpgEventProfileId = signal<string | null>(null);
   readonly editingLpgEventId = signal<string | null>(null);
+  readonly lpgHistoryProfileId = signal<string | null>(null);
+  readonly lpgHistoryProfile = computed(() =>
+    this.utilities.lpgProfiles().find((profile) => profile.id === this.lpgHistoryProfileId()),
+  );
+  readonly lpgEventProfile = computed(() =>
+    this.utilities.lpgProfiles().find((profile) => profile.id === this.lpgEventProfileId()),
+  );
   readonly validityMode = signal<'DAYS' | 'END_DATE'>('DAYS');
   readonly error = signal<string | null>(null);
   readonly saving = signal(false);
   readonly deletion = signal<{
     id: string;
-    kind: 'RECHARGE' | 'LPG' | 'MOBILE_PROFILE';
+    kind: 'RECHARGE' | 'LPG' | 'MOBILE_PROFILE' | 'LPG_PROFILE';
     title: string;
     message: string;
   } | null>(null);
@@ -117,7 +128,18 @@ export class UtilitiesPage {
     ({ value, label }) => ({ value, label }),
   );
   readonly cylinderOptions = this.utilities.cylinderOptions;
-  readonly lpgEventOptions = this.utilities.lpgEventOptions;
+  readonly lpgEventOptions = computed<readonly AppSelectOption[]>(() => {
+    this.lpgEventChanges();
+    const allowed = lpgEventChoices(
+      this.utilities.eventsFor(this.lpgEventProfileId() ?? ''),
+      this.lpgEventForm.controls.eventDate.value,
+      this.editingLpgEventId() ?? undefined,
+    );
+    return this.utilities.lpgEventOptions.map((option) => ({
+      ...option,
+      disabled: !allowed.includes(option.value as LpgEventType),
+    }));
+  });
   readonly validityModeOptions: readonly AppSelectOption[] = [
     { value: 'DAYS', label: 'Validity in days' },
     { value: 'END_DATE', label: 'Last active date' },
@@ -178,6 +200,7 @@ export class UtilitiesPage {
     cylinderSize: new FormControl<LpgEvent['cylinderSize']>('NORMAL', { nonNullable: true }),
     comment: new FormControl('', { nonNullable: true, validators: Validators.maxLength(300) }),
   });
+  private readonly lpgEventChanges = toSignal(this.lpgEventForm.valueChanges);
 
   get today(): string {
     return this.dateClock.today();
@@ -256,6 +279,7 @@ export class UtilitiesPage {
 
   openRechargeHistory(profile: MobileProfile): void {
     if (this.saving()) return;
+    this.historyRecordId = null;
     this.historyTrigger =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
     this.error.set(null);
@@ -453,6 +477,7 @@ export class UtilitiesPage {
   }
 
   startLpgEvent(profile: LpgProfile, eventType: LpgEventType = 'STARTED'): void {
+    if (this.saving() || !this.canRecordLpgEvent(profile, eventType)) return;
     this.error.set(null);
     this.editingLpgEventId.set(null);
     this.lpgEventProfileId.set(profile.id);
@@ -466,6 +491,8 @@ export class UtilitiesPage {
   }
 
   editLpgEvent(event: LpgEvent): void {
+    if (this.saving()) return;
+    this.lpgHistoryRecordId = event.id;
     this.error.set(null);
     this.editingLpgEventId.set(event.id);
     this.lpgEventProfileId.set(event.profileId);
@@ -481,7 +508,24 @@ export class UtilitiesPage {
   async saveLpgEvent(event: Event): Promise<void> {
     event.preventDefault();
     if (this.saving()) return;
+    this.lpgEventForm.markAllAsTouched();
+    if (this.lpgEventForm.invalid) {
+      this.error.set('Check the event date and comment.');
+      return;
+    }
     const value = this.lpgEventForm.getRawValue();
+    if (
+      !lpgEventChoices(
+        this.utilities.eventsFor(this.lpgEventProfileId() ?? ''),
+        value.eventDate,
+        this.editingLpgEventId() ?? undefined,
+      ).includes(value.eventType)
+    ) {
+      this.error.set(
+        'This event conflicts with the cylinder history. Choose a valid event/date or correct the affected history first.',
+      );
+      return;
+    }
     const amountMinor = value.amount.trim() ? parseMoneyToMinor(value.amount) : undefined;
     if (
       value.amount.trim() &&
@@ -503,6 +547,7 @@ export class UtilitiesPage {
         comment: value.comment,
       });
       this.lpgEventProfileId.set(null);
+      this.restoreLpgHistoryFocus();
     } catch (error: unknown) {
       this.error.set(error instanceof Error ? error.message : 'Cylinder event could not be saved.');
     } finally {
@@ -511,6 +556,8 @@ export class UtilitiesPage {
   }
 
   async deleteLpgEvent(event: LpgEvent): Promise<void> {
+    if (this.saving()) return;
+    this.lpgHistoryRecordId = event.id;
     this.error.set(null);
     this.deletion.set({
       id: event.id,
@@ -518,6 +565,84 @@ export class UtilitiesPage {
       title: 'Delete cylinder event?',
       message: `Remove the cylinder event on ${event.eventDate} from Utilities history?`,
     });
+  }
+
+  canRecordLpgEvent(profile: LpgProfile, type: LpgEventType): boolean {
+    return (
+      !profile.archived &&
+      lpgEventChoices(this.utilities.eventsFor(profile.id), this.today).includes(type)
+    );
+  }
+
+  closeLpgEvent(): void {
+    if (this.saving()) return;
+    this.lpgEventProfileId.set(null);
+    this.error.set(null);
+    this.restoreLpgHistoryFocus();
+  }
+
+  openLpgHistory(profile: LpgProfile): void {
+    if (this.saving()) return;
+    this.error.set(null);
+    this.lpgHistoryRecordId = null;
+    this.lpgHistoryTrigger =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    this.lpgHistoryProfileId.set(profile.id);
+  }
+
+  closeLpgHistory(): void {
+    if (this.saving()) return;
+    this.lpgHistoryProfileId.set(null);
+    afterNextRender(
+      () => {
+        if (this.lpgHistoryTrigger?.isConnected) this.lpgHistoryTrigger.focus();
+      },
+      { injector: this.injector },
+    );
+  }
+
+  private restoreLpgHistoryFocus(): void {
+    if (!this.lpgHistoryProfileId()) return;
+    afterNextRender(
+      () => {
+        const preferred = document.getElementById('lpg-history-edit-' + this.lpgHistoryRecordId);
+        const target =
+          preferred && !preferred.matches(':disabled')
+            ? preferred
+            : document.querySelector<HTMLElement>('.lpg-history button:not(:disabled)');
+        target?.focus();
+      },
+      { injector: this.injector },
+    );
+  }
+
+  requestLpgDeletion(profile: LpgProfile): void {
+    if (this.saving()) return;
+    this.error.set(null);
+    this.deletion.set({
+      id: profile.id,
+      kind: 'LPG_PROFILE',
+      title: 'Permanently delete LPG connection?',
+      message: `Delete ${profile.connectionName} (${profile.provider}) and all ${this.utilities.eventsFor(profile.id).length} saved cylinder events? The complete connection history will be permanently deleted. This cannot be undone. Other utility profiles, SMS and financial records are not affected.`,
+    });
+  }
+
+  lpgStatus(profile: LpgProfile): string {
+    const state = lpgLifecycle(
+      this.utilities.eventsFor(profile.id).filter((event) => event.eventDate <= this.today),
+    ).state;
+    return {
+      UNSTARTED: 'No cylinder started',
+      IN_USE: 'Cylinder in use',
+      EMPTY: 'Empty confirmed',
+      RECEIVED: 'Refill received · not started',
+    }[state];
+  }
+
+  lpgHistoryWarning(profile: LpgProfile): string {
+    return lpgLifecycle(this.utilities.eventsFor(profile.id)).conflicts.length
+      ? 'Legacy history has sequence conflicts. Records are preserved; correct the affected events before adding conflicting changes.'
+      : '';
   }
 
   async confirmDeletion(): Promise<void> {
@@ -533,15 +658,24 @@ export class UtilitiesPage {
         afterNextRender(() => document.getElementById('add-mobile-profile')?.focus(), {
           injector: this.injector,
         });
+      } else if (choice.kind === 'LPG_PROFILE') {
+        await this.utilities.deleteLpgProfile(choice.id);
+        if (this.lpgHistoryProfileId() === choice.id) this.lpgHistoryProfileId.set(null);
+        afterNextRender(() => document.getElementById('add-lpg-profile')?.focus(), {
+          injector: this.injector,
+        });
       } else await this.utilities.deleteLpgEvent(choice.id);
       this.deletion.set(null);
       this.restoreHistoryFocus();
+      this.restoreLpgHistoryFocus();
       this.snackbar.show(
         choice.kind === 'RECHARGE'
           ? 'Recharge removed from history.'
           : choice.kind === 'MOBILE_PROFILE'
             ? 'Mobile profile and recharge history permanently deleted.'
-            : 'Cylinder event deleted.',
+            : choice.kind === 'LPG_PROFILE'
+              ? 'LPG connection and cylinder history permanently deleted.'
+              : 'Cylinder event deleted.',
         'INFO',
       );
     } catch (error: unknown) {
@@ -555,15 +689,18 @@ export class UtilitiesPage {
     if (this.saving()) return;
     this.deletion.set(null);
     this.restoreHistoryFocus();
+    this.restoreLpgHistoryFocus();
   }
 
   private restoreHistoryFocus(): void {
     if (!this.rechargeHistoryProfileId()) return;
     afterNextRender(
       () => {
+        const preferred = document.getElementById('recharge-history-edit-' + this.historyRecordId);
         const target =
-          document.getElementById('recharge-history-edit-' + this.historyRecordId) ??
-          document.querySelector<HTMLElement>('.recharge-history button');
+          preferred && !preferred.matches(':disabled')
+            ? preferred
+            : document.querySelector<HTMLElement>('.recharge-history button:not(:disabled)');
         target?.focus();
       },
       { injector: this.injector },

@@ -533,6 +533,312 @@ describe('Durable first-run data, additive read migration and private portable b
     expect(count('utility_profiles')).toBe(0);
   });
 
+  it('serializes LPG progression and rejects duplicate, backdated, edited and deleted-event conflicts', async () => {
+    await database.initialise();
+    const utilities = TestBed.inject(UtilitiesService);
+    await utilities.initialise();
+    const profile = await utilities.saveLpgProfile({
+      connectionName: 'Lifecycle connection',
+      provider: 'INDANE',
+      commercial: false,
+      cylinderSize: 'NORMAL',
+      estimatedUsageDays: 25,
+    });
+    const save = (eventType: 'STARTED' | 'EMPTY' | 'REFILL_RECEIVED', eventDate = '2026-10-02') =>
+      utilities.saveLpgEvent({ profileId: profile.id, eventType, eventDate });
+    await expect(save('EMPTY')).rejects.toThrow('preceding cylinder STARTED');
+    const concurrent = await Promise.allSettled([save('STARTED'), save('STARTED')]);
+    expect(concurrent.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(concurrent.filter((result) => result.status === 'rejected')).toHaveLength(1);
+    const started = utilities.eventsFor(profile.id)[0];
+    await expect(save('REFILL_RECEIVED')).rejects.toThrow('in use');
+    const empty = await save('EMPTY');
+    await expect(save('EMPTY')).rejects.toThrow('preceding cylinder STARTED');
+    const received = await save('REFILL_RECEIVED');
+    await expect(save('REFILL_RECEIVED')).rejects.toThrow('already recorded');
+    expect(utilities.eventsFor(profile.id)).toHaveLength(3);
+    await save('STARTED', '2026-10-03');
+    const snapshot = rows('SELECT * FROM lpg_events ORDER BY rowid');
+    await expect(save('STARTED', '2026-10-01')).rejects.toThrow('2026-10-02');
+    await expect(utilities.saveLpgEvent({ ...started, eventDate: '2026-10-04' })).rejects.toThrow();
+    await expect(utilities.deleteLpgEvent(started.id)).rejects.toThrow('EMPTY requires');
+    await expect(utilities.deleteLpgEvent(empty.id)).rejects.toThrow();
+    await expect(
+      utilities.saveLpgEvent({
+        profileId: profile.id,
+        eventType: 'UNKNOWN' as 'STARTED',
+        eventDate: '2026-10-04',
+      }),
+    ).rejects.toThrow('Choose a cylinder event');
+    await expect(
+      utilities.saveLpgEvent({
+        profileId: profile.id,
+        eventType: 'EMPTY',
+        cylinderSize: 'UNKNOWN' as 'NORMAL',
+        eventDate: '2026-10-04',
+      }),
+    ).rejects.toThrow('supported cylinder size');
+    expect(rows('SELECT * FROM lpg_events ORDER BY rowid')).toEqual(snapshot);
+    const edited = await utilities.saveLpgEvent({
+      ...received,
+      comment: 'Receipt correction',
+      amountMinor: 95000,
+    });
+    expect(edited.id).toBe(received.id);
+    expect(edited.createdAt).toBe(received.createdAt);
+    sql.exec(
+      "CREATE TRIGGER fail_lpg_event BEFORE INSERT ON lpg_events BEGIN SELECT RAISE(ABORT,'event write rollback'); END",
+    );
+    const signals = utilities.lpgEvents();
+    await expect(save('EMPTY', '2026-10-04')).rejects.toThrow('event write rollback');
+    expect(utilities.lpgEvents()).toBe(signals);
+    expect(count('lpg_events')).toBe(4);
+    sql.exec('DROP TRIGGER fail_lpg_event');
+    await utilities.reload();
+    expect(utilities.eventsFor(profile.id).map((event) => event.eventType)).toEqual([
+      'STARTED',
+      'EMPTY',
+      'REFILL_RECEIVED',
+      'STARTED',
+    ]);
+    await save('EMPTY', '2026-10-04');
+    await save('STARTED', '2026-10-05');
+    sql.exec(
+      "CREATE TRIGGER fail_lpg_event_delete BEFORE DELETE ON lpg_events BEGIN SELECT RAISE(ABORT,'event delete rollback'); END",
+    );
+    const beforeDelete = utilities.lpgEvents();
+    await expect(utilities.deleteLpgEvent(received.id)).rejects.toThrow('event delete rollback');
+    expect(utilities.lpgEvents()).toBe(beforeDelete);
+    expect(count('lpg_events')).toBe(6);
+    sql.exec('DROP TRIGGER fail_lpg_event_delete');
+    await utilities.deleteLpgEvent(received.id);
+    expect(utilities.eventsFor(profile.id)).toHaveLength(5);
+  });
+
+  it('retains row order for same-day LPG events with identical creation timestamps after restart', async () => {
+    await database.initialise();
+    const utilities = TestBed.inject(UtilitiesService);
+    await utilities.initialise();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-10T12:00:00Z'));
+    try {
+      const profile = await utilities.saveLpgProfile({
+        connectionName: 'Same-day connection',
+        provider: 'INDANE',
+        commercial: false,
+        cylinderSize: 'NORMAL',
+        estimatedUsageDays: 25,
+      });
+      for (const eventType of ['STARTED', 'EMPTY', 'REFILL_RECEIVED', 'STARTED'] as const)
+        await utilities.saveLpgEvent({ profileId: profile.id, eventType, eventDate: '2026-10-10' });
+      expect(new Set(utilities.eventsFor(profile.id).map((event) => event.createdAt)).size).toBe(1);
+      await utilities.saveLpgEvent({
+        ...utilities.eventsFor(profile.id)[1],
+        comment: 'Same-day correction',
+      });
+      const restarted = TestBed.runInInjectionContext(() => new UtilitiesService());
+      await restarted.initialise();
+      expect(restarted.eventsFor(profile.id).map((event) => event.eventType)).toEqual([
+        'STARTED',
+        'EMPTY',
+        'REFILL_RECEIVED',
+        'STARTED',
+      ]);
+      await restarted.saveLpgEvent({
+        profileId: profile.id,
+        eventType: 'EMPTY',
+        eventDate: '2026-10-10',
+      });
+      expect(restarted.eventsFor(profile.id)).toHaveLength(5);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('preserves legacy LPG conflicts and permits safe explicit corrections without rewriting later records', async () => {
+    await database.initialise();
+    const utilities = TestBed.inject(UtilitiesService);
+    await utilities.initialise();
+    const profile = await utilities.saveLpgProfile({
+      connectionName: 'Legacy connection',
+      provider: 'HPCL',
+      commercial: true,
+      cylinderSize: 'SMALL',
+      estimatedUsageDays: 25,
+    });
+    const legacy = {
+      id: 'legacy-empty',
+      profileId: profile.id,
+      eventType: 'EMPTY' as const,
+      eventDate: '2026-10-01',
+      createdAt: '2026-10-01T00:00:00Z',
+      updatedAt: 'before',
+    };
+    await database.run(
+      'INSERT INTO lpg_events(id,profile_id,event_type,event_date,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?)',
+      [
+        legacy.id,
+        profile.id,
+        legacy.eventType,
+        legacy.eventDate,
+        JSON.stringify(legacy),
+        legacy.createdAt,
+        legacy.updatedAt,
+      ],
+    );
+    await utilities.reload();
+    expect(utilities.eventsFor(profile.id)).toEqual([legacy]);
+    await utilities.saveLpgEvent({ ...legacy, comment: 'Explicit historical note' });
+    const started = await utilities.saveLpgEvent({
+      profileId: profile.id,
+      eventType: 'STARTED',
+      eventDate: '2026-10-02',
+    });
+    await expect(utilities.saveLpgEvent({ ...legacy, eventType: 'STARTED' })).rejects.toThrow(
+      '2026-10-02',
+    );
+    await utilities.deleteLpgEvent(legacy.id);
+    expect(utilities.eventsFor(profile.id)).toEqual([started]);
+  });
+
+  it.each([false, true])(
+    'atomically deletes only the selected LPG connection and round trips backups (archived=%s)',
+    async (archived) => {
+      await database.initialise();
+      const store = TestBed.inject(CardNestStore);
+      await store.initialisePreferences();
+      const utilities = TestBed.inject(UtilitiesService);
+      await utilities.initialise();
+      const connection = await utilities.saveLpgProfile({
+        connectionName: 'Delete LPG',
+        provider: 'INDANE',
+        commercial: true,
+        cylinderSize: 'NORMAL',
+        estimatedUsageDays: 25,
+      });
+      const other = await utilities.saveLpgProfile({
+        connectionName: 'Keep LPG',
+        provider: 'HPCL',
+        commercial: false,
+        cylinderSize: 'SMALL',
+        estimatedUsageDays: 25,
+      });
+      for (const profileId of [connection.id, other.id]) {
+        await utilities.saveLpgEvent({ profileId, eventType: 'STARTED', eventDate: '2026-10-01' });
+        await utilities.saveLpgEvent({ profileId, eventType: 'EMPTY', eventDate: '2026-10-20' });
+      }
+      const mobile = await utilities.saveMobileProfile({
+        personName: 'Keep mobile',
+        operator: 'JIO',
+        subscriptionType: 'PREPAID',
+      });
+      await utilities.saveRecharge({
+        profileId: mobile.id,
+        planType: 'VOICE_DATA',
+        startDate: '2026-10-01',
+        validityDays: 30,
+      });
+      await store.addBankAccount({
+        nickname: 'Keep bank',
+        institution: 'Synthetic Bank',
+        lastDigits: '007',
+      });
+      await store.saveManualTransaction({
+        id: 'keep-c2-purchase',
+        cardId: 'source-cash',
+        type: 'PURCHASE',
+        amountMinor: 12345,
+        currencyCode: 'INR',
+        transactionDate: indiaTodayIso(),
+        categoryId: 'other',
+        attachmentIds: [],
+        createdAt: '2026-10-01T12:00:00Z',
+        updatedAt: '2026-10-01T12:00:00Z',
+      });
+      await database.run(
+        "INSERT INTO sms_candidates(id,provider_id,event_at,kind,state,payload,updated_at) VALUES('keep-c2-sms','synthetic','2026-10-01','BANK_DEBIT','PENDING',NULL,'before')",
+      );
+      const tables = [
+        'credit_cards',
+        'card_transactions',
+        'sms_candidates',
+        'sms_reconciliation',
+        'source_transfers',
+        'source_balance_adjustments',
+        'transaction_split_groups',
+        'transaction_split_members',
+        'loan_commitments',
+        'emi_plans',
+        'emi_installments',
+        'recurring_rules',
+        'bank_activity_profiles',
+        'bank_activity_events',
+        'mobile_recharges',
+      ];
+      const untouched = () => tables.map((table) => rows(`SELECT * FROM ${table} ORDER BY rowid`));
+      const before = untouched();
+      const sources = rows("SELECT * FROM app_preferences WHERE key='payment_sources'");
+      await utilities.setLpgArchived(connection.id, true);
+      await utilities.setLpgArchived(connection.id, false);
+      if (archived) await utilities.setLpgArchived(connection.id, true);
+      const profiles = utilities.lpgProfiles();
+      const events = utilities.lpgEvents();
+      sql.exec(
+        "CREATE TRIGGER fail_lpg_delete BEFORE DELETE ON utility_profiles WHEN OLD.kind='LPG' BEGIN SELECT RAISE(ABORT,'connection delete rollback'); END",
+      );
+      await expect(utilities.deleteLpgProfile(connection.id)).rejects.toThrow(
+        'connection delete rollback',
+      );
+      expect(utilities.lpgProfiles()).toBe(profiles);
+      expect(utilities.lpgEvents()).toBe(events);
+      expect(count('lpg_events')).toBe(4);
+      sql.exec('DROP TRIGGER fail_lpg_delete');
+      await expect(utilities.deleteLpgProfile(mobile.id)).rejects.toThrow(
+        'LPG connection not found',
+      );
+      vi.stubGlobal('crypto', webcrypto);
+      vi.stubGlobal('Blob', NodeBlob);
+      try {
+        const backups = TestBed.inject(BackupService);
+        const prior = await backups.create('synthetic-lpg-deletion-passphrase');
+        const atomic = database.atomic.bind(database);
+        const published: boolean[] = [];
+        const transaction = vi.spyOn(database, 'atomic').mockImplementation((work) =>
+          atomic(async (tx) => {
+            const result = await work(tx);
+            published.push(utilities.lpgProfiles().some((row) => row.id === connection.id));
+            return result;
+          }),
+        );
+        await utilities.deleteLpgProfile(connection.id);
+        transaction.mockRestore();
+        expect(published).toEqual([true]);
+        expect(utilities.lpgProfiles().map((row) => row.id)).toEqual([other.id]);
+        expect(utilities.eventsFor(other.id)).toHaveLength(2);
+        expect(untouched()).toEqual(before);
+        expect(rows("SELECT * FROM app_preferences WHERE key='payment_sources'")).toEqual(sources);
+        const after = await backups.create('synthetic-lpg-deletion-passphrase');
+        const restarted = TestBed.runInInjectionContext(() => new UtilitiesService());
+        await restarted.initialise();
+        expect(restarted.eventsFor(connection.id)).toEqual([]);
+        await backups.restore(prior.contents, 'synthetic-lpg-deletion-passphrase');
+        await restarted.initialise();
+        expect(restarted.eventsFor(connection.id)).toHaveLength(2);
+        expect(restarted.lpgProfiles().find((row) => row.id === connection.id)?.archived).toBe(
+          archived,
+        );
+        await backups.restore(after.contents, 'synthetic-lpg-deletion-passphrase');
+        await restarted.initialise();
+        expect(restarted.lpgProfiles().map((row) => row.id)).toEqual([other.id]);
+        expect(restarted.eventsFor(other.id)).toHaveLength(2);
+        expect(restarted.rechargesFor(mobile.id)).toHaveLength(1);
+        expect(untouched()).toEqual(before);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+
   it('persists Utilities and Bank Activity through reload and encrypted backup while keeping finance isolated', async () => {
     const today = indiaTodayIso();
     await database.initialise();

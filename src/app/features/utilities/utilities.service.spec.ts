@@ -1,5 +1,5 @@
 import { TestBed } from '@angular/core/testing';
-import { SqliteDatabase } from '../../core/data/sqlite-database';
+import { DatabaseSession, SqliteDatabase } from '../../core/data/sqlite-database';
 import { normalizeIndianMobileNumber } from './utilities.service';
 import { UtilitiesService } from './utilities.service';
 import { addCalendarDays } from './utilities-calculations';
@@ -36,8 +36,29 @@ describe('Indian Utilities service', () => {
     ready: () => true,
     query: vi.fn(async () => []),
     run: vi.fn(async () => 1),
-    atomic: vi.fn(async (work: (tx: { run: () => Promise<number> }) => Promise<unknown>) =>
-      work({ run: async () => 1 }),
+    atomic: vi.fn(async (work: (tx: DatabaseSession) => Promise<unknown>) =>
+      work({
+        run: async () => 1,
+        query: async <T extends Record<string, unknown>>(
+          statement: string,
+          values: readonly unknown[] = [],
+        ) => {
+          const records = statement.includes('utility_profiles')
+            ? utilities
+                .lpgProfiles()
+                .filter((profile) => profile.id === values[0])
+                .map((profile) => ({ id: profile.id, archived: profile.archived ? 1 : 0 }))
+            : utilities
+                .lpgEvents()
+                .filter((event) =>
+                  statement.includes('WHERE id=')
+                    ? event.id === values[0]
+                    : event.profileId === values[0],
+                )
+                .map((event) => ({ payload: JSON.stringify(event) }));
+          return records as unknown as T[];
+        },
+      }),
     ),
   };
 

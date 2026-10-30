@@ -551,21 +551,27 @@ app-profile-modal .utility-form {
   flex-wrap: wrap;
   gap: 0.5rem;
 }
-.recharge-history {
+.recharge-history,
+.lpg-history {
   min-width: 0;
   overflow-wrap: anywhere;
 }
-.recharge-history .history-list li {
+.recharge-history .history-list li,
+.lpg-history .history-list li {
   flex-wrap: wrap;
 }
-.recharge-history .history-list li > div:first-child {
+.recharge-history .history-list li > div:first-child,
+.lpg-history .history-list li > div:first-child {
   flex: 1 1 12rem;
 }
-.recharge-history .icon-action {
+.recharge-history .icon-action,
+.lpg-history .icon-action {
   width: 44px;
   height: 44px;
 }
-.recharge-history button:disabled {
+.recharge-history button:disabled,
+.lpg-history button:disabled,
+.lpg-profile button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
@@ -573,4 +579,17 @@ app-profile-modal .utility-form {
   margin: 0;
   padding: 0;
   border: 0;
+}
+.lpg-profile .profile-heading {
+  flex-wrap: wrap;
+}
+.lpg-profile .profile-actions .btn {
+  min-height: 44px;
+  white-space: normal;
+}
+.lpg-profile .status-badge {
+  max-width: 100%;
+  box-sizing: border-box;
+  white-space: normal;
+  flex-shrink: 1;
 }

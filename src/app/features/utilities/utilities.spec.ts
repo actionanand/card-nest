@@ -5,7 +5,7 @@ import { UtilitiesService } from './utilities.service';
 import { WhatsAppService } from './whatsapp.service';
 import { SnackbarService } from '../../core/services/snackbar.service';
 import { addCalendarDays, mobileActivitySummary, lpgUsageSummary } from './utilities-calculations';
-import { LpgProfile, MobileProfile, MobileRecharge } from './utilities-model';
+import { LpgEvent, LpgProfile, MobileProfile, MobileRecharge } from './utilities-model';
 import { ProfileModal } from '../../shared/profile-modal';
 import { By } from '@angular/platform-browser';
 import { readFileSync } from 'node:fs';
@@ -13,12 +13,15 @@ import { readFileSync } from 'node:fs';
 describe('Indian Utilities page', () => {
   const state = signal({ showIndianUtilities: true, utilityReminders: false });
   const mobiles = signal<readonly { id: string }[]>([]);
-  const lpg = signal<readonly never[]>([]);
+  const lpg = signal<readonly LpgProfile[]>([]);
+  const lpgEvents = signal<readonly LpgEvent[]>([]);
   const recharges = signal<readonly MobileRecharge[]>([]);
   const mock = {
     deleteMobileProfile: vi.fn().mockResolvedValue(undefined),
     deleteRecharge: vi.fn().mockResolvedValue(undefined),
     deleteLpgEvent: vi.fn().mockResolvedValue(undefined),
+    deleteLpgProfile: vi.fn().mockResolvedValue(undefined),
+    saveLpgEvent: vi.fn().mockResolvedValue({ id: 'saved-event' }),
     saveRecharge: vi.fn().mockResolvedValue({ id: 'saved-recharge' }),
     saveMobileProfile: vi.fn().mockResolvedValue({ id: 'saved-mobile' }),
     saveLpgProfile: vi.fn().mockResolvedValue({ id: 'saved-lpg' }),
@@ -28,7 +31,7 @@ describe('Indian Utilities page', () => {
     mobileProfiles: mobiles,
     mobileRecharges: recharges,
     lpgProfiles: lpg,
-    lpgEvents: signal<readonly never[]>([]),
+    lpgEvents,
     operatorOptions: [
       { value: 'BSNL', label: 'BSNL' },
       { value: 'JIO', label: 'JIO' },
@@ -42,10 +45,14 @@ describe('Indian Utilities page', () => {
     mobilePlanOptions: [{ value: 'VOICE_DATA', label: 'Voice + Data' }],
     lpgProviderOptions: [{ value: 'HPCL', label: 'HPCL' }],
     cylinderOptions: [{ value: 'NORMAL', label: 'Normal' }],
-    lpgEventOptions: [{ value: 'STARTED', label: 'Cylinder installed / started using' }],
+    lpgEventOptions: [
+      { value: 'STARTED', label: 'Cylinder installed / started using' },
+      { value: 'EMPTY', label: 'Cylinder became empty' },
+      { value: 'REFILL_RECEIVED', label: 'Refill / replacement received' },
+    ],
     rechargesFor: (profileId: string) => recharges().filter((row) => row.profileId === profileId),
     suggestedRechargeStart: () => '2026-10-28',
-    eventsFor: () => [],
+    eventsFor: (profileId: string) => lpgEvents().filter((event) => event.profileId === profileId),
     mobileSummary: (profile: Pick<MobileProfile, 'id' | 'subscriptionType'>, today: string) =>
       mobileActivitySummary(
         [
@@ -98,6 +105,9 @@ describe('Indian Utilities page', () => {
     state.set({ showIndianUtilities: true, utilityReminders: false });
     mobiles.set([]);
     lpg.set([]);
+    lpgEvents.set([]);
+    mock.saveLpgEvent.mockReset().mockResolvedValue({ id: 'saved-event' });
+    mock.deleteLpgProfile.mockReset().mockResolvedValue(undefined);
     TestBed.configureTestingModule({
       imports: [UtilitiesPage],
       providers: [
@@ -517,6 +527,239 @@ describe('Indian Utilities page', () => {
       fixture.destroy();
     },
   );
+
+  it('uses LPG event popups, disables invalid choices, retains errors and guards repeated saves', async () => {
+    const profile: LpgProfile = {
+      id: 'lpg-dialog',
+      kind: 'LPG',
+      connectionName: 'Fiction kitchen',
+      provider: 'INDANE',
+      commercial: true,
+      cylinderSize: 'SMALL',
+      estimatedUsageDays: 25,
+      archived: false,
+      createdAt: 'before',
+      updatedAt: 'before',
+    };
+    lpg.set([profile]);
+    const fixture = TestBed.createComponent(UtilitiesPage);
+    const page = fixture.componentInstance;
+    page.setSection('GAS');
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const buttons = [
+      ...fixture.nativeElement.querySelectorAll('.lpg-profile button'),
+    ] as HTMLButtonElement[];
+    expect(buttons.find((button) => button.textContent?.includes('Record empty'))!.disabled).toBe(
+      true,
+    );
+    expect(fixture.nativeElement.textContent).toContain('Commercial');
+    expect(fixture.nativeElement.textContent).toContain('Small cylinder');
+    expect(page.lpgStatus(profile)).toBe('No cylinder started');
+    page.startLpgEvent(profile);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(fixture.nativeElement.querySelector('app-profile-modal dialog[open]')).not.toBeNull();
+    expect(fixture.nativeElement.querySelector('.lpg-event-form').textContent).toContain(
+      'Fiction kitchen',
+    );
+    expect(page.lpgEventOptions().find((option) => option.value === 'EMPTY')?.disabled).toBe(true);
+    page.lpgEventForm.controls.eventType.setValue('EMPTY');
+    await page.saveLpgEvent(new Event('submit'));
+    expect(mock.saveLpgEvent).not.toHaveBeenCalled();
+    page.lpgEventForm.patchValue({ eventType: 'STARTED', comment: 'Keep event draft' });
+    let reject!: (error: Error) => void;
+    mock.saveLpgEvent.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, fail) => {
+          reject = fail;
+        }),
+    );
+    const pending = page.saveLpgEvent(new Event('submit'));
+    await page.saveLpgEvent(new Event('submit'));
+    page.closeLpgEvent();
+    expect(page.lpgEventProfileId()).toBe(profile.id);
+    expect(mock.saveLpgEvent).toHaveBeenCalledTimes(1);
+    reject(new Error('Synthetic LPG save failure'));
+    await pending;
+    fixture.detectChanges();
+    expect(page.lpgEventForm.controls.comment.value).toBe('Keep event draft');
+    expect(fixture.nativeElement.querySelector('[role="alert"]').textContent).toContain(
+      'Synthetic LPG save failure',
+    );
+    await page.saveLpgEvent(new Event('submit'));
+    expect(page.lpgEventProfileId()).toBeNull();
+    lpgEvents.set([
+      {
+        id: 'started',
+        profileId: profile.id,
+        eventType: 'STARTED',
+        eventDate: page.today,
+        createdAt: page.today + 'T00:00:00Z',
+        updatedAt: 'before',
+      },
+    ]);
+    fixture.detectChanges();
+    expect(page.canRecordLpgEvent(profile, 'STARTED')).toBe(false);
+    expect(page.canRecordLpgEvent(profile, 'REFILL_RECEIVED')).toBe(false);
+    expect(page.canRecordLpgEvent(profile, 'EMPTY')).toBe(true);
+    fixture.destroy();
+  });
+
+  it.each([false, true])(
+    'keeps complete LPG history and confirmed connection deletion available (archived=%s)',
+    async (archived) => {
+      const profile: LpgProfile = {
+        id: 'lpg-history',
+        kind: 'LPG',
+        connectionName: 'History kitchen',
+        provider: 'HPCL',
+        commercial: false,
+        cylinderSize: 'NORMAL',
+        estimatedUsageDays: 25,
+        archived,
+        createdAt: 'before',
+        updatedAt: 'before',
+      };
+      lpg.set([profile]);
+      const events: LpgEvent[] = [
+        {
+          id: 'start',
+          profileId: profile.id,
+          eventType: 'STARTED',
+          eventDate: '2026-09-01',
+          createdAt: '2026-09-01T00:00:00Z',
+          updatedAt: 'before',
+          comment: 'Old start note',
+        },
+        {
+          id: 'empty',
+          profileId: profile.id,
+          eventType: 'EMPTY',
+          eventDate: '2026-09-20',
+          createdAt: '2026-09-20T00:00:00Z',
+          updatedAt: 'before',
+        },
+        {
+          id: 'receipt',
+          profileId: profile.id,
+          eventType: 'REFILL_RECEIVED',
+          eventDate: '2026-09-22',
+          createdAt: '2026-09-22T00:00:00Z',
+          updatedAt: 'before',
+          amountMinor: 95000,
+          cylinderSize: 'NORMAL',
+          comment: 'Receipt note',
+        },
+      ];
+      lpgEvents.set(events);
+      const fixture = TestBed.createComponent(UtilitiesPage);
+      const page = fixture.componentInstance;
+      page.setSection('GAS');
+      fixture.detectChanges();
+      await fixture.whenStable();
+      expect(fixture.nativeElement.querySelector('.lpg-profile .history-list')).toBeNull();
+      const trigger = [...fixture.nativeElement.querySelectorAll('button')].find(
+        (button: HTMLButtonElement) => button.textContent?.includes('Cylinder history'),
+      ) as HTMLButtonElement;
+      trigger.focus();
+      trigger.click();
+      fixture.detectChanges();
+      await fixture.whenStable();
+      expect(fixture.nativeElement.querySelectorAll('.lpg-history li')).toHaveLength(3);
+      expect(fixture.nativeElement.querySelector('.lpg-history').textContent).toContain(
+        'Old start note',
+      );
+      if (!archived) {
+        page.editLpgEvent(events[2]);
+        fixture.detectChanges();
+        await fixture.whenStable();
+        expect(page.editingLpgEventId()).toBe('receipt');
+        expect(page.lpgEventForm.getRawValue()).toMatchObject({
+          amount: '950',
+          eventDate: '2026-09-22',
+          comment: 'Receipt note',
+        });
+        page.closeLpgEvent();
+        fixture.detectChanges();
+        await fixture.whenStable();
+        expect(document.activeElement?.id).toBe('lpg-history-edit-receipt');
+      } else {
+        expect(
+          (fixture.nativeElement.querySelector('#lpg-history-edit-receipt') as HTMLButtonElement)
+            .disabled,
+        ).toBe(true);
+      }
+      await page.deleteLpgEvent(events[0]);
+      fixture.detectChanges();
+      expect(fixture.nativeElement.querySelector('app-profile-modal')).toBeNull();
+      page.cancelDeletion();
+      fixture.detectChanges();
+      await fixture.whenStable();
+      expect(document.activeElement?.matches(':disabled')).toBe(false);
+      page.closeLpgHistory();
+      fixture.detectChanges();
+      await fixture.whenStable();
+      expect(document.activeElement).toBe(trigger);
+      page.requestLpgDeletion(profile);
+      expect(page.deletion()?.message).toContain('History kitchen (HPCL)');
+      expect(page.deletion()?.message).toContain('all 3 saved cylinder events');
+      mock.deleteLpgProfile.mockRejectedValueOnce(new Error('Synthetic connection failure'));
+      await page.confirmDeletion();
+      expect(page.deletion()?.id).toBe(profile.id);
+      await page.confirmDeletion();
+      expect(mock.deleteLpgProfile).toHaveBeenLastCalledWith(profile.id);
+      expect(page.deletion()).toBeNull();
+      expect(lpgEvents()).toEqual(events);
+      fixture.destroy();
+    },
+  );
+
+  it('clears stale recharge focus when changing profiles and explains expired-only plans', async () => {
+    const first: MobileProfile = {
+      id: 'first-mobile',
+      kind: 'MOBILE',
+      personName: 'First',
+      operator: 'JIO',
+      subscriptionType: 'PREPAID',
+      archived: false,
+      createdAt: 'before',
+      updatedAt: 'before',
+    };
+    const second = { ...first, id: 'second-mobile', personName: 'Second', archived: true };
+    mobiles.set([first, second]);
+    recharges.set(
+      [first, second].map((profile) => ({
+        id: profile.id + '-plan',
+        profileId: profile.id,
+        planType: 'VOICE_DATA',
+        startDate: '2026-01-01',
+        endDate: '2026-01-30',
+        createdAt: 'before',
+        updatedAt: 'before',
+      })),
+    );
+    const fixture = TestBed.createComponent(UtilitiesPage);
+    const page = fixture.componentInstance;
+    fixture.detectChanges();
+    expect(fixture.nativeElement.textContent).toContain(
+      'Previous plans remain available through Recharge history',
+    );
+    page.openRechargeHistory(first);
+    page.editRecharge(recharges()[0]);
+    page.closeRecharge();
+    page.closeRechargeHistory();
+    page.openRechargeHistory(second);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    await page.deleteRecharge(recharges()[1]);
+    page.cancelDeletion();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(document.activeElement?.matches(':disabled')).toBe(false);
+    expect(document.activeElement?.closest('.recharge-history')).not.toBeNull();
+    fixture.destroy();
+  });
 
   it('uses the same popup for LPG creation and editing without changing cylinder-event controls', async () => {
     const fixture = TestBed.createComponent(UtilitiesPage);
