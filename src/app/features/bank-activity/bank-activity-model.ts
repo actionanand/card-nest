@@ -11,6 +11,8 @@ export interface BankActivityProfile {
   readonly nickname?: string;
   readonly accountSuffix?: string;
   readonly accountMask?: string;
+  readonly accountFingerprint?: string;
+  readonly ifscCode?: string;
   readonly owner: BankActivityOwner;
   readonly holderName?: string;
   readonly remarks?: string;

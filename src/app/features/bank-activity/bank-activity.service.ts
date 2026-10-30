@@ -15,6 +15,7 @@ import { RECONCILE_BANK_ACTIVITY_LATEST } from '../../core/data/bank-activity-la
 import { indiaTodayIso } from '../../core/services/india-date';
 import {
   displayBankAccountIdentifier,
+  fingerprintCompleteBankAccount,
   parseBankAccountIdentifier,
 } from '../../core/services/bank-account-identifier';
 import { BankAccountSyncService } from './bank-account-sync.service';
@@ -159,6 +160,8 @@ export class BankActivityService {
     nickname?: string;
     accountSuffix?: string;
     accountIdentifier?: string;
+    accountFingerprint?: string;
+    ifscCode?: string;
     owner: BankActivityProfile['owner'];
     holderName?: string;
     remarks?: string;
@@ -197,8 +200,14 @@ export class BankActivityService {
     const sourceSuffix = finalThree(source?.lastDigits);
     const rawIdentifier = input.accountIdentifier?.trim();
     const parsedIdentifier = rawIdentifier ? parseBankAccountIdentifier(rawIdentifier) : undefined;
+    const enteredFingerprint = rawIdentifier
+      ? await fingerprintCompleteBankAccount(rawIdentifier)
+      : undefined;
     if (rawIdentifier && !parsedIdentifier)
       throw new Error('Enter a masked identifier with at least three numeric account digits.');
+    const ifscCode = input.ifscCode?.trim().toUpperCase() || undefined;
+    if (ifscCode && !/^[A-Z]{4}0[A-Z0-9]{6}$/.test(ifscCode))
+      throw new Error('Enter a valid 11-character IFSC code.');
     const legacyUnchanged =
       !!previous &&
       input.accountSuffix === previous.accountSuffix &&
@@ -228,6 +237,10 @@ export class BankActivityService {
       : (parsedIdentifier?.mask ??
         previous?.accountMask ??
         (displayBankAccountIdentifier(undefined, suffix) || undefined));
+    const accountFingerprint =
+      source?.accountFingerprint ??
+      enteredFingerprint ??
+      (parsedIdentifier?.mask === previous?.accountMask ? previous?.accountFingerprint : undefined);
     const timestamp = new Date().toISOString();
     const profile: BankActivityProfile = {
       id: previous?.id ?? crypto.randomUUID(),
@@ -236,6 +249,8 @@ export class BankActivityService {
       nickname: input.nickname?.trim().slice(0, 80) || undefined,
       accountSuffix: suffix,
       accountMask,
+      accountFingerprint,
+      ifscCode: source?.ifscCode ?? ifscCode ?? previous?.ifscCode,
       manualOnly,
       owner: input.owner,
       holderName,
@@ -248,6 +263,15 @@ export class BankActivityService {
       const records = (
         await tx.query<{ payload: string }>('SELECT payload FROM bank_activity_profiles')
       ).map((row) => JSON.parse(row.payload) as BankActivityProfile);
+      const [sourceRows] = await tx.query<{ encrypted_value: string }>(
+        "SELECT encrypted_value FROM app_preferences WHERE key='payment_sources'",
+      );
+      let sources: PaymentSource[] = this.store.paymentSources().map((row) => ({ ...row }));
+      if (sourceRows) {
+        const parsed: unknown = JSON.parse(sourceRows.encrypted_value);
+        if (!Array.isArray(parsed)) throw new Error('Saved Money Sources are invalid.');
+        sources = parsed as PaymentSource[];
+      }
       if (
         profile.paymentSourceId &&
         records.some(
@@ -257,28 +281,31 @@ export class BankActivityService {
         throw new Error(
           'This CardNest bank account is already monitored, possibly archived. Restore its existing profile.',
         );
-      const collisions = records.filter(
+      const sameSuffix = (left: string | undefined, right: string | undefined) =>
+        !!left && !!right && finalThree(left) === finalThree(right);
+      const fingerprintsProveDistinct = (left?: string, right?: string) =>
+        !!left && !!right && left !== right;
+      const profileCollisions = records.filter(
         (row) =>
           row.id !== profile.id &&
           matchesBank(row.bankName, profile.bankName) &&
-          profileSuffix(row, this.store.paymentSources()) === suffix &&
-          !!suffix,
+          sameSuffix(profileSuffix(row, sources), suffix) &&
+          !fingerprintsProveDistinct(row.accountFingerprint, profile.accountFingerprint),
       );
-      if (collisions.length) {
-        const nickname = profile.nickname?.trim().toLowerCase(),
-          holder = profile.holderName?.trim().toLowerCase();
-        const distinct =
-          !!(nickname || holder) &&
-          collisions.every(
+      const sourceCollisions = source
+        ? []
+        : sources.filter(
             (row) =>
-              (nickname && nickname !== (row.nickname ?? '').trim().toLowerCase()) ||
-              (holder && holder !== (row.holderName ?? '').trim().toLowerCase()),
+              row.kind === 'DEBIT' &&
+              row.id !== 'source-debit' &&
+              matchesBank(row.institution, profile.bankName) &&
+              sameSuffix(row.lastDigits, suffix) &&
+              !fingerprintsProveDistinct(row.accountFingerprint, profile.accountFingerprint),
           );
-        if (!input.allowIdentityConflict || !distinct)
-          throw new Error(
-            'This bank and suffix already appear in monitoring, including archived profiles. For a genuinely distinct account, provide a distinguishing nickname or holder name and confirm the identity conflict.',
-          );
-      }
+      if (profileCollisions.length || sourceCollisions.length)
+        throw new Error(
+          'An account with this bank and final-three suffix already exists. Supply a complete, different account number to distinguish a second account.',
+        );
       await tx.run(
         `INSERT INTO bank_activity_profiles(id,payment_source_id,bank_name,archived,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET payment_source_id=excluded.payment_source_id,bank_name=excluded.bank_name,archived=excluded.archived,payload=excluded.payload,updated_at=excluded.updated_at`,
         [

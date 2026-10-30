@@ -507,6 +507,14 @@
       <label
         >Bank name<input formControlName="bankName" maxlength="80" autocomplete="off" required
       /></label>
+      <label
+        >IFSC code (optional)<input
+          formControlName="ifscCode"
+          maxlength="11"
+          autocomplete="off"
+          autocapitalize="characters"
+          placeholder="ABCD0123456"
+      /></label>
       @if (profileForm.controls.paymentSourceId.value) {
         <p class="form-note">
           The existing account is linked by stable source ID. Balance tracking and its saved

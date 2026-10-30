@@ -3,6 +3,16 @@ export interface ParsedBankAccountIdentifier {
   readonly mask: string;
 }
 
+/** Hashes only complete, unmasked numeric input; callers must discard the raw string immediately. */
+export async function fingerprintCompleteBankAccount(value: string): Promise<string | undefined> {
+  const compact = value.trim().replace(/[\s-]/g, '');
+  if (!/^\d{6,24}$/.test(compact)) return undefined;
+  const digest = new Uint8Array(
+    await crypto.subtle.digest('SHA-256', new TextEncoder().encode(compact)),
+  );
+  return [...digest].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
 const MASK_CHARACTERS = /[xX*•●×]/;
 const ALLOWED_CHARACTERS = /^[0-9xX*•●×\s-]+$/;
 

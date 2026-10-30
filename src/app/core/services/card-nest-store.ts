@@ -20,7 +20,11 @@ import {
 } from '../models/domain';
 import { DatabaseSession, SqliteDatabase } from '../data/sqlite-database';
 import { walletEffectApplies } from './wallet-anchor';
-import { displayBankAccountSuffix, parseBankAccountIdentifier } from './bank-account-identifier';
+import {
+  displayBankAccountSuffix,
+  fingerprintCompleteBankAccount,
+  parseBankAccountIdentifier,
+} from './bank-account-identifier';
 import {
   BANK_CASH_TRACKING_KEY,
   DEFAULT_BANK_CASH_TRACKING,
@@ -1868,6 +1872,7 @@ export class CardNestStore {
     institution: string;
     lastDigits?: string;
     accountIdentifier?: string;
+    ifscCode?: string;
   }): Promise<PaymentSource> {
     const nickname = input.nickname.trim().slice(0, 80);
     const institution = input.institution.trim().slice(0, 80);
@@ -1876,6 +1881,10 @@ export class CardNestStore {
     if (!nickname || !institution) throw new Error('Enter the account name and bank.');
     if (!identifier)
       throw new Error('Enter a masked account identifier with at least three digits.');
+    const ifscCode = input.ifscCode?.trim().toUpperCase() || undefined;
+    if (ifscCode && !/^[A-Z]{4}0[A-Z0-9]{6}$/.test(ifscCode))
+      throw new Error('Enter a valid 11-character IFSC code.');
+    const accountFingerprint = await fingerprintCompleteBankAccount(rawIdentifier);
     const lastDigits = identifier.suffix;
     const account: PaymentSource = {
       id: `bank-${crypto.randomUUID()}`,
@@ -1884,6 +1893,8 @@ export class CardNestStore {
       institution,
       lastDigits,
       accountMask: identifier.mask,
+      accountFingerprint,
+      ifscCode,
       noLimit: true,
       autoLoad: false,
       archived: false,
@@ -1906,10 +1917,22 @@ export class CardNestStore {
             item.kind === 'DEBIT' &&
             !item.archived &&
             item.lastDigits?.slice(-3) === lastDigits &&
-            sameBank(item.institution),
+            sameBank(item.institution) &&
+            !(
+              item.accountFingerprint &&
+              accountFingerprint &&
+              item.accountFingerprint !== accountFingerprint
+            ),
         )
       )
         throw new Error('This bank account is already enrolled.');
+      account.isPrimaryBank = !current.some(
+        (item) =>
+          item.kind === 'DEBIT' &&
+          !item.archived &&
+          item.id !== 'source-debit' &&
+          item.institution !== 'Primary bank',
+      );
       const next = [...current, account];
       await this.writeStoredSources(tx, next);
       return next;

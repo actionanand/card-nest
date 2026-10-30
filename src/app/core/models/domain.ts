@@ -256,6 +256,10 @@ export interface PaymentSource {
   lastDigits?: string;
   /** Masked display identifier only; complete account numbers are never persisted here. */
   accountMask?: string;
+  /** One-way fingerprint used only to distinguish same-bank accounts with matching suffixes. */
+  accountFingerprint?: string;
+  ifscCode?: string;
+  isPrimaryBank?: boolean;
   noLimit: boolean;
   balanceMinor?: Money;
   loadAmountMinor?: Money;

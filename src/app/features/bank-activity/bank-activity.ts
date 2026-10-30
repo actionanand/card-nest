@@ -237,6 +237,13 @@ export class BankActivityPage {
     paymentSourceId: new FormControl('', { nonNullable: true }),
     bankName: new FormControl('', { nonNullable: true, validators: Validators.maxLength(80) }),
     nickname: new FormControl('', { nonNullable: true, validators: Validators.maxLength(80) }),
+    ifscCode: new FormControl('', {
+      nonNullable: true,
+      validators: [
+        Validators.maxLength(11),
+        Validators.pattern(/^(?:|[A-Za-z]{4}0[A-Za-z0-9]{6})$/),
+      ],
+    }),
     accountIdentifier: new FormControl('', {
       nonNullable: true,
       validators: [
@@ -706,6 +713,7 @@ export class BankActivityPage {
       paymentSourceId: '',
       bankName: '',
       nickname: '',
+      ifscCode: '',
       accountIdentifier: '',
       owner: 'OWN',
       manualOnly: false,
@@ -724,6 +732,7 @@ export class BankActivityPage {
       paymentSourceId: profile.paymentSourceId ?? '',
       bankName: profile.bankName,
       nickname: profile.nickname ?? '',
+      ifscCode: profile.ifscCode ?? '',
       accountIdentifier:
         profile.accountMask ?? displayBankAccountIdentifier(undefined, profile.accountSuffix),
       manualOnly: profile.manualOnly ?? !profileSuffix(profile, this.store.paymentSources()),

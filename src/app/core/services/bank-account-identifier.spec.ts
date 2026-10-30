@@ -1,10 +1,21 @@
 import {
   displayBankAccountIdentifier,
   displayBankAccountSuffix,
+  fingerprintCompleteBankAccount,
   parseBankAccountIdentifier,
 } from './bank-account-identifier';
 
 describe('Bank account identifier masking', () => {
+  it('fingerprints complete identifiers consistently without changing suffix strings or accepting masked hints', async () => {
+    expect(await fingerprintCompleteBankAccount('123456')).toBe(
+      await fingerprintCompleteBankAccount('123 456'),
+    );
+    expect(await fingerprintCompleteBankAccount('000007')).not.toBe(
+      await fingerprintCompleteBankAccount('000017'),
+    );
+    expect(await fingerprintCompleteBankAccount('432xxxxx765')).toBeUndefined();
+    expect(await fingerprintCompleteBankAccount('007')).toBeUndefined();
+  });
   it.each([
     ['432xxxxx765', { suffix: '765', mask: '432•••••765' }],
     ['1xxxx7650', { suffix: '650', mask: '1•••••650' }],

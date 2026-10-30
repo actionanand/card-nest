@@ -36,9 +36,13 @@ export class BankAccountSyncService {
         !profile.archived &&
         !profile.manualOnly &&
         !!finalThree(profile.accountSuffix);
-      const compatible = (profile: BankActivityProfile, source: PaymentSource) =>
+      const fingerprintsProveDifferent = (left?: string, right?: string) =>
+        !!left && !!right && left !== right;
+      const sameAccountIdentity = (profile: BankActivityProfile, source: PaymentSource) =>
         matchesBank(profile.bankName, source.institution) &&
-        finalThree(profile.accountSuffix) === finalThree(source.lastDigits);
+        finalThree(profile.accountSuffix) === finalThree(source.lastDigits) &&
+        !fingerprintsProveDifferent(profile.accountFingerprint, source.accountFingerprint);
+      const compatible = sameAccountIdentity;
       const link = (profile: BankActivityProfile, source: PaymentSource) => {
         const next = { ...profile, paymentSourceId: source.id, updatedAt: timestamp };
         profiles[profiles.findIndex((row) => row.id === profile.id)] = next;
@@ -69,7 +73,8 @@ export class BankAccountSyncService {
         const peers = profiles.filter(
           (row) =>
             matchesBank(row.bankName, profile.bankName) &&
-            finalThree(row.accountSuffix) === finalThree(profile.accountSuffix),
+            finalThree(row.accountSuffix) === finalThree(profile.accountSuffix) &&
+            !fingerprintsProveDifferent(row.accountFingerprint, profile.accountFingerprint),
         );
         if (
           candidates.length > 1 ||
@@ -96,11 +101,27 @@ export class BankAccountSyncService {
           institution: bank,
           nickname: profile.nickname || bank,
           lastDigits: profile.accountSuffix,
+          accountMask: profile.accountMask,
+          accountFingerprint: profile.accountFingerprint,
+          ifscCode: profile.ifscCode,
+          isPrimaryBank: !sources.some(
+            (candidate) =>
+              candidate.kind === 'DEBIT' &&
+              candidate.archived !== true &&
+              candidate.id !== 'source-debit' &&
+              candidate.institution !== 'Primary bank',
+          ),
           archived: false,
           noLimit: true,
           autoLoad: false,
         };
         sources.push(source);
+        for (const placeholder of sources) {
+          if (placeholder.id === 'source-debit' && placeholder.kind === 'DEBIT') {
+            placeholder.archived = true;
+            placeholder.isPrimaryBank = false;
+          }
+        }
         sourcesChanged = true;
         link(profile, source);
       }
