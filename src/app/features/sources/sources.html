@@ -79,10 +79,7 @@
       role="tabpanel"
       aria-labelledby="accounts-tab"
     >
-      @for (
-        source of store.activePaymentSources().filter((item) => item.kind !== 'DEBIT');
-        track source.id
-      ) {
+      @for (source of nonBankSources(); track source.id) {
         <article class="panel source-card" [id]="source.id">
           <div class="source-heading">
             <span><app-payment-source-logo [kind]="source.kind" /></span>

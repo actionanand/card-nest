@@ -2061,7 +2061,7 @@ export class CardNestStore {
       const settings = await this.readTrackingSettings(tx);
       const sources = await this.readStoredSources(tx);
       const source = sources.find((item) => item.id === sourceId);
-      if (!source || (!isBankOrCash(source) && source.kind !== 'MEAL'))
+      if (!source || source.archived || (!isBankOrCash(source) && source.kind !== 'MEAL'))
         throw new Error('Choose an account with a supported balance.');
       if (isBankOrCash(source) && !sourceBalanceTrackingEnabled(source, settings))
         throw new Error('Turn on balance tracking for this source first.');
@@ -2101,10 +2101,10 @@ export class CardNestStore {
       const settings = await this.readTrackingSettings(tx);
       const sources = await this.readStoredSources(tx);
       const source = sources.find((item) => item.id === sourceId);
-      if (!source || (!isBankOrCash(source) && source.kind !== 'MEAL'))
+      if (!source || source.archived || (!isBankOrCash(source) && source.kind !== 'MEAL'))
         throw new Error('Choose an account with a supported balance.');
       if (
-        (isBankOrCash(source) && !sourceBalanceTrackingEnabled(source, settings)) ||
+        (isBankOrCash(source) && !bankCashTracked(source, settings)) ||
         (source.kind === 'MEAL' && !this.hasWalletBaseline(source))
       )
         throw new Error('Set the current balance before adding money.');

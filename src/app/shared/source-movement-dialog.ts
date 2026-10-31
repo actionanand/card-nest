@@ -318,7 +318,7 @@ export class SourceMovementDialog implements OnInit {
   }
 
   readonly timingNeeded = computed(() => {
-    if (this.mode() === 'BALANCE') return false;
+    if (this.mode() === 'BALANCE' || this.mode() === 'ADD_MONEY') return false;
     const settings = this.store.bankCashTracking();
     const ids =
       this.mode() === 'RECEIPT'

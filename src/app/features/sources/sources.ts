@@ -121,6 +121,9 @@ export class SourcesPage {
   readonly store = inject(CardNestStore);
   readonly movement = signal<MovementRequest | null>(null);
   readonly tracking = computed(() => this.store.bankCashTracking());
+  readonly nonBankSources = computed(() =>
+    this.store.activePaymentSources().filter((source) => source.kind !== 'DEBIT'),
+  );
   readonly bankBalanceSummary = computed(() => {
     if (!bankTrackingEnabled(this.tracking())) return { status: 'OFF' as BalanceSummaryStatus };
     const sources = this.store.bankAccounts();

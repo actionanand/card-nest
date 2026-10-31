@@ -3395,6 +3395,13 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     );
     const transactionsBefore = rows('SELECT * FROM card_transactions ORDER BY id');
     const balancesBefore = financialState();
+    const noPrimary = store
+      .paymentSources()
+      .map((source) => (source.kind === 'DEBIT' ? { ...source, isPrimaryBank: false } : source));
+    await database.run("UPDATE app_preferences SET encrypted_value=? WHERE key='payment_sources'", [
+      JSON.stringify(noPrimary),
+    ]);
+    store.paymentSources.set(noPrimary);
 
     await expect(store.updatePaymentSource({ ...second, isPrimaryBank: true })).rejects.toThrow(
       'Confirm a primary-bank switch',
