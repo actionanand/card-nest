@@ -595,7 +595,8 @@ describe('Indian Utilities page', () => {
         profileId: profile.id,
         eventType: 'STARTED',
         eventDate: page.today,
-        createdAt: page.today + 'T00:00:00Z',
+        // Recorded before now: `${today}T00:00:00Z` is in the future during 18:30–24:00 UTC.
+        createdAt: new Date(Date.now() - 60_000).toISOString(),
         updatedAt: 'before',
       },
     ]);

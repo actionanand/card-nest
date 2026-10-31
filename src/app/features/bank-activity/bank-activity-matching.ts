@@ -1,40 +1,16 @@
-import aliases from './data/bank-aliases.json';
 import type { BankActivityCandidate, BankActivityProfile } from './bank-activity-model';
 import type { PaymentSource } from '../../core/models/domain';
+import { matchesBank, recognizedBank } from '../../core/services/bank-account-identifier';
+export {
+  bankDisplayName,
+  matchesBank,
+  normalizedBank,
+  recognizedBank,
+} from '../../core/services/bank-account-identifier';
 
 type BankSourceIdentity = Pick<PaymentSource, 'id' | 'kind' | 'institution' | 'lastDigits'> &
   Partial<Pick<PaymentSource, 'archived'>>;
 
-function bankKey(value: string): string {
-  return value
-    .normalize('NFKC')
-    .toLowerCase()
-    .replace(/\b(limited|ltd|private|pvt|sms|alerts?)\b/g, '')
-    .replace(/[^a-z0-9]/g, '');
-}
-export function normalizedBank(value: string | undefined): string {
-  if (!value) return '';
-  const key = bankKey(value);
-  return aliases.find((row) => row.aliases.some((alias) => bankKey(alias) === key))?.id ?? key;
-}
-export function bankDisplayName(value: string | undefined): string | undefined {
-  if (!value) return undefined;
-  const clean = value.trim().slice(0, 80);
-  if (/\d{6,}|[\r\n]/.test(clean)) return undefined;
-  return aliases.find((row) => row.id === normalizedBank(clean))?.name ?? clean;
-}
-export function matchesBank(left: string | undefined, right: string | undefined): boolean {
-  const a = normalizedBank(left),
-    b = normalizedBank(right);
-  return a.length > 1 && a === b;
-}
-export function recognizedBank(value: string | undefined): boolean {
-  if (!value) return false;
-  const key = bankKey(value);
-  return aliases.some(
-    (row) => bankKey(row.id) === key || row.aliases.some((alias) => bankKey(alias) === key),
-  );
-}
 export function finalThree(value: string | undefined): string | undefined {
   return value && /^\d{3,5}$/.test(value) ? value.slice(-3) : undefined;
 }

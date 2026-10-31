@@ -507,14 +507,16 @@
       <label
         >Bank name<input formControlName="bankName" maxlength="80" autocomplete="off" required
       /></label>
-      <label
-        >IFSC code (optional)<input
-          formControlName="ifscCode"
-          maxlength="11"
-          autocomplete="off"
-          autocapitalize="characters"
-          placeholder="ABCD0123456"
-      /></label>
+      @if (!profileForm.controls.paymentSourceId.value) {
+        <label
+          >IFSC code (optional)<input
+            formControlName="ifscCode"
+            maxlength="11"
+            autocomplete="off"
+            autocapitalize="characters"
+            placeholder="ABCD0123456"
+        /></label>
+      }
       @if (profileForm.controls.paymentSourceId.value) {
         <p class="form-note">
           The existing account is linked by stable source ID. Balance tracking and its saved
@@ -559,11 +561,13 @@
         If changing someone else's account to OWN, I confirm it is mine and may appear in Money
         Sources.
       </label>
-      <label class="check-field"
-        ><input type="checkbox" formControlName="allowIdentityConflict" />This is a distinct account
-        if the bank and suffix also appear on another profile. I supplied a distinguishing nickname
-        or holder name.</label
-      >
+      @if (profileForm.controls.owner.value === 'OTHERS') {
+        <label class="check-field"
+          ><input type="checkbox" formControlName="allowIdentityConflict" />Keep this as a separate
+          someone-else's account even though another profile has the same bank and last three
+          digits. Matching messages will always ask you to choose the account.</label
+        >
+      }
       <label
         >Remarks (optional)<textarea formControlName="remarks" maxlength="300" rows="2"></textarea>
       </label>
@@ -592,6 +596,13 @@
     >
       <label>Account nickname<input formControlName="nickname" maxlength="80" required /></label>
       <label>Bank name<input formControlName="institution" maxlength="80" required /></label>
+      <label
+        >IFSC code (optional)<input
+          formControlName="ifscCode"
+          autocomplete="off"
+          autocapitalize="characters"
+          maxlength="11"
+      /></label>
       <label
         >Masked or full account identifier<input
           formControlName="accountIdentifier"

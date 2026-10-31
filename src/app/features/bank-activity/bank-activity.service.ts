@@ -15,7 +15,9 @@ import { RECONCILE_BANK_ACTIVITY_LATEST } from '../../core/data/bank-activity-la
 import { indiaTodayIso } from '../../core/services/india-date';
 import {
   displayBankAccountIdentifier,
-  fingerprintCompleteBankAccount,
+  fingerprintsMatch,
+  fingerprintsProveDistinct as accountFingerprintsProveDistinct,
+  legacyFingerprintCompleteBankAccount,
   parseBankAccountIdentifier,
 } from '../../core/services/bank-account-identifier';
 import { BankAccountSyncService } from './bank-account-sync.service';
@@ -177,12 +179,16 @@ export class BankActivityService {
       throw new Error(
         'Confirm that this is your account and may be synchronized with Money Sources.',
       );
-    const source = input.paymentSourceId
+    const sourceChoiceProvided = Object.prototype.hasOwnProperty.call(input, 'paymentSourceId');
+    const requestedSourceId = sourceChoiceProvided
+      ? input.paymentSourceId
+      : previous?.paymentSourceId;
+    const source = requestedSourceId
       ? this.store
           .paymentSources()
-          .find((item) => item.id === input.paymentSourceId && item.kind === 'DEBIT')
+          .find((item) => item.id === requestedSourceId && item.kind === 'DEBIT')
       : undefined;
-    if (input.paymentSourceId && !source)
+    if (requestedSourceId && !source && sourceChoiceProvided)
       throw new Error('Choose an existing CardNest bank account.');
     if (source && input.owner !== 'OWN')
       throw new Error(
@@ -201,12 +207,15 @@ export class BankActivityService {
     const rawIdentifier = input.accountIdentifier?.trim();
     const parsedIdentifier = rawIdentifier ? parseBankAccountIdentifier(rawIdentifier) : undefined;
     const enteredFingerprint = rawIdentifier
-      ? await fingerprintCompleteBankAccount(rawIdentifier)
+      ? await this.store.fingerprintBankAccount(rawIdentifier)
+      : undefined;
+    const legacyFingerprint = rawIdentifier
+      ? await legacyFingerprintCompleteBankAccount(rawIdentifier)
       : undefined;
     if (rawIdentifier && !parsedIdentifier)
       throw new Error('Enter a masked identifier with at least three numeric account digits.');
-    const ifscCode = input.ifscCode?.trim().toUpperCase() || undefined;
-    if (ifscCode && !/^[A-Z]{4}0[A-Z0-9]{6}$/.test(ifscCode))
+    const enteredIfscCode = input.ifscCode?.trim().toUpperCase() || undefined;
+    if (enteredIfscCode && !/^[A-Z]{4}0[A-Z0-9]{6}$/.test(enteredIfscCode))
       throw new Error('Enter a valid 11-character IFSC code.');
     const legacyUnchanged =
       !!previous &&
@@ -237,20 +246,26 @@ export class BankActivityService {
       : (parsedIdentifier?.mask ??
         previous?.accountMask ??
         (displayBankAccountIdentifier(undefined, suffix) || undefined));
-    const accountFingerprint =
-      source?.accountFingerprint ??
-      enteredFingerprint ??
-      (parsedIdentifier?.mask === previous?.accountMask ? previous?.accountFingerprint : undefined);
+    const identityMask = source?.accountMask ?? previous?.accountMask;
+    const accountFingerprint = source
+      ? source.accountFingerprint
+      : (enteredFingerprint ??
+        (parsedIdentifier?.mask === identityMask ? previous?.accountFingerprint : undefined));
+    const ifscCode = source
+      ? source.ifscCode
+      : input.ifscCode !== undefined
+        ? enteredIfscCode
+        : previous?.ifscCode;
     const timestamp = new Date().toISOString();
     const profile: BankActivityProfile = {
       id: previous?.id ?? crypto.randomUUID(),
-      paymentSourceId: source?.id,
+      paymentSourceId: input.owner === 'OWN' ? (source?.id ?? requestedSourceId) : undefined,
       bankName,
       nickname: input.nickname?.trim().slice(0, 80) || undefined,
       accountSuffix: suffix,
       accountMask,
       accountFingerprint,
-      ifscCode: source?.ifscCode ?? ifscCode ?? previous?.ifscCode,
+      ifscCode,
       manualOnly,
       owner: input.owner,
       holderName,
@@ -284,27 +299,44 @@ export class BankActivityService {
       const sameSuffix = (left: string | undefined, right: string | undefined) =>
         !!left && !!right && finalThree(left) === finalThree(right);
       const fingerprintsProveDistinct = (left?: string, right?: string) =>
-        !!left && !!right && left !== right;
-      const profileCollisions = records.filter(
-        (row) =>
-          row.id !== profile.id &&
-          matchesBank(row.bankName, profile.bankName) &&
-          sameSuffix(profileSuffix(row, sources), suffix) &&
-          !fingerprintsProveDistinct(row.accountFingerprint, profile.accountFingerprint),
-      );
-      const sourceCollisions = source
+        accountFingerprintsProveDistinct(left, right);
+      const profileCollisions = source
         ? []
-        : sources.filter(
+        : records.filter(
             (row) =>
-              row.kind === 'DEBIT' &&
-              row.id !== 'source-debit' &&
-              matchesBank(row.institution, profile.bankName) &&
-              sameSuffix(row.lastDigits, suffix) &&
-              !fingerprintsProveDistinct(row.accountFingerprint, profile.accountFingerprint),
+              row.id !== profile.id &&
+              matchesBank(row.bankName, profile.bankName) &&
+              sameSuffix(profileSuffix(row, sources), suffix) &&
+              !fingerprintsProveDistinct(row.accountFingerprint, profile.accountFingerprint) &&
+              !fingerprintsProveDistinct(row.accountFingerprint, legacyFingerprint),
           );
-      if (profileCollisions.length || sourceCollisions.length)
+      const exactProfileIdentity = profileCollisions.some(
+        (row) =>
+          fingerprintsMatch(row.accountFingerprint, profile.accountFingerprint) ||
+          fingerprintsMatch(row.accountFingerprint, legacyFingerprint),
+      );
+      const sourceCollisions =
+        source || input.owner === 'OTHERS'
+          ? []
+          : sources.filter(
+              (row) =>
+                row.kind === 'DEBIT' &&
+                row.id !== 'source-debit' &&
+                matchesBank(row.institution, profile.bankName) &&
+                sameSuffix(row.lastDigits, suffix) &&
+                (fingerprintsMatch(row.accountFingerprint, profile.accountFingerprint) ||
+                  fingerprintsMatch(row.accountFingerprint, legacyFingerprint)),
+            );
+      if (exactProfileIdentity || sourceCollisions.length)
         throw new Error(
-          'An account with this bank and final-three suffix already exists. Supply a complete, different account number to distinguish a second account.',
+          'This complete account identity already exists. Select its existing source or monitoring profile.',
+        );
+      if (
+        profileCollisions.length &&
+        !(input.owner === 'OTHERS' && input.allowIdentityConflict === true)
+      )
+        throw new Error(
+          'Bank identity conflict: this bank and suffix already appear on another profile. Supply a distinct complete account number or explicitly mark this OTHERS profile as ambiguous.',
         );
       await tx.run(
         `INSERT INTO bank_activity_profiles(id,payment_source_id,bank_name,archived,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET payment_source_id=excluded.payment_source_id,bank_name=excluded.bank_name,archived=excluded.archived,payload=excluded.payload,updated_at=excluded.updated_at`,
@@ -330,6 +362,7 @@ export class BankActivityService {
     institution: string;
     lastDigits?: string;
     accountIdentifier?: string;
+    ifscCode?: string;
   }): Promise<PaymentSource> {
     const nickname = input.nickname.trim().slice(0, 80);
     const institution = input.institution.trim().slice(0, 80);
@@ -338,6 +371,11 @@ export class BankActivityService {
     if (!nickname || !institution) throw new Error('Enter the account name and bank.');
     if (!identifier)
       throw new Error('Enter a masked identifier with at least three account digits.');
+    const enteredFingerprint = await this.store.fingerprintBankAccount(rawIdentifier);
+    const legacyFingerprint = await legacyFingerprintCompleteBankAccount(rawIdentifier);
+    const enteredIfscCode = input.ifscCode?.trim().toUpperCase() || undefined;
+    if (enteredIfscCode && !/^[A-Z]{4}0[A-Z0-9]{6}$/.test(enteredIfscCode))
+      throw new Error('Enter a valid 11-character IFSC code.');
     const lastDigits = identifier.suffix;
     const timestamp = new Date().toISOString();
     const result = await this.database.atomic(async (tx) => {
@@ -354,12 +392,21 @@ export class BankActivityService {
       if (sourceIndex < 0) throw new Error('Choose an existing OWN bank Money Source.');
       const source = sources[sourceIndex];
       if (source.archived) throw new Error('Restore this Money Source before editing it.');
+      // A new complete number replaces the fingerprint; an unchanged mask keeps it; any other
+      // identifier change clears it so an old fingerprint never describes a different account.
+      const accountFingerprint =
+        enteredFingerprint ??
+        (identifier.mask === source.accountMask && lastDigits === finalThree(source.lastDigits)
+          ? source.accountFingerprint
+          : undefined);
       const duplicate = sources.find(
         (other) =>
           other.id !== source.id &&
           other.kind === 'DEBIT' &&
           matchesBank(other.institution, institution) &&
-          finalThree(other.lastDigits) === lastDigits,
+          finalThree(other.lastDigits) === lastDigits &&
+          (fingerprintsMatch(other.accountFingerprint, accountFingerprint) ||
+            fingerprintsMatch(other.accountFingerprint, legacyFingerprint)),
       );
       if (duplicate)
         throw new Error(
@@ -367,13 +414,18 @@ export class BankActivityService {
             ? 'An archived Money Source already has this bank and suffix. Restore it explicitly instead.'
             : 'A Money Source with this bank and suffix already exists.',
         );
+      const ifscCode = input.ifscCode !== undefined ? enteredIfscCode : source.ifscCode;
       const updatedSource: PaymentSource = {
         ...source,
         nickname,
         institution,
         lastDigits,
         accountMask: identifier.mask,
+        accountFingerprint,
+        ifscCode,
       };
+      if (!accountFingerprint) delete updatedSource.accountFingerprint;
+      if (!ifscCode) delete updatedSource.ifscCode;
       sources[sourceIndex] = updatedSource;
       await tx.run("UPDATE app_preferences SET encrypted_value=? WHERE key='payment_sources'", [
         JSON.stringify(sources),
@@ -391,6 +443,8 @@ export class BankActivityService {
           bankName: institution,
           accountSuffix: lastDigits,
           accountMask: identifier.mask,
+          accountFingerprint,
+          ifscCode,
           updatedAt: timestamp,
         };
         return updated;

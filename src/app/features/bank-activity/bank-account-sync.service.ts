@@ -2,6 +2,7 @@ import { Service, inject, signal } from '@angular/core';
 import { SqliteDatabase } from '../../core/data/sqlite-database';
 import { PaymentSource } from '../../core/models/domain';
 import { parseBankCashTracking } from '../../core/services/source-balance';
+import { fingerprintsProveDistinct } from '../../core/services/bank-account-identifier';
 import { BankActivityProfile } from './bank-activity-model';
 import { bankDisplayName, finalThree, matchesBank } from './bank-activity-matching';
 
@@ -36,12 +37,14 @@ export class BankAccountSyncService {
         !profile.archived &&
         !profile.manualOnly &&
         !!finalThree(profile.accountSuffix);
-      const fingerprintsProveDifferent = (left?: string, right?: string) =>
-        !!left && !!right && left !== right;
       const sameAccountIdentity = (profile: BankActivityProfile, source: PaymentSource) =>
         matchesBank(profile.bankName, source.institution) &&
         finalThree(profile.accountSuffix) === finalThree(source.lastDigits) &&
-        !fingerprintsProveDifferent(profile.accountFingerprint, source.accountFingerprint);
+        !fingerprintsProveDistinct(profile.accountFingerprint, source.accountFingerprint);
+      const provesSameAccount = (profile: BankActivityProfile, source: PaymentSource) =>
+        !!profile.accountFingerprint &&
+        !!source.accountFingerprint &&
+        profile.accountFingerprint === source.accountFingerprint;
       const compatible = sameAccountIdentity;
       const link = (profile: BankActivityProfile, source: PaymentSource) => {
         const next = { ...profile, paymentSourceId: source.id, updatedAt: timestamp };
@@ -72,13 +75,14 @@ export class BankAccountSyncService {
         );
         const peers = profiles.filter(
           (row) =>
+            row.id !== profile.id &&
             matchesBank(row.bankName, profile.bankName) &&
             finalThree(row.accountSuffix) === finalThree(profile.accountSuffix) &&
-            !fingerprintsProveDifferent(row.accountFingerprint, profile.accountFingerprint),
+            !fingerprintsProveDistinct(row.accountFingerprint, profile.accountFingerprint),
         );
         if (
           candidates.length > 1 ||
-          peers.length > 1 ||
+          peers.length > 0 ||
           candidates.some(
             (source) =>
               source.archived || profiles.some((row) => row.paymentSourceId === source.id),
@@ -90,7 +94,11 @@ export class BankAccountSyncService {
           continue;
         }
         if (candidates.length === 1) {
-          link(profile, candidates[0]);
+          if (provesSameAccount(profile, candidates[0])) link(profile, candidates[0]);
+          else
+            conflicts.push(
+              `${profile.bankName} · •••${profile.accountSuffix}: a saved source shares this suffix, but the account identity is not proven. Edit the profile and select its stable Money Source explicitly.`,
+            );
           continue;
         }
         const bank = bankDisplayName(profile.bankName);
@@ -124,6 +132,27 @@ export class BankAccountSyncService {
         }
         sourcesChanged = true;
         link(profile, source);
+      }
+      const realBanks = sources.filter(
+        (source) =>
+          source.kind === 'DEBIT' &&
+          !source.archived &&
+          source.id !== 'source-debit' &&
+          source.institution !== 'Primary bank',
+      );
+      if (realBanks.length) {
+        const primaryId = realBanks.find((source) => source.isPrimaryBank)?.id ?? realBanks[0].id;
+        for (const source of sources) {
+          if (source.id === 'source-debit' && source.kind === 'DEBIT') {
+            if (!source.archived || source.isPrimaryBank) sourcesChanged = true;
+            source.archived = true;
+            source.isPrimaryBank = false;
+          } else if (source.kind === 'DEBIT' && source.institution !== 'Primary bank') {
+            const isPrimary = !source.archived && source.id === primaryId;
+            if (source.isPrimaryBank !== isPrimary) sourcesChanged = true;
+            source.isPrimaryBank = isPrimary;
+          }
+        }
       }
       if (trackingEnabled)
         for (const source of sources) {

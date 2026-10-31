@@ -3168,6 +3168,57 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     expect(count('source_balance_adjustments')).toBe(2);
   });
 
+  it('creates bank accounts without SMS or nicknames, retires the placeholder without moving its history, and keeps one primary', async () => {
+    const { store } = await boot();
+    const legacyHistory = purchase({ id: 'placeholder-history', cardId: 'source-debit' });
+    await store.saveManualTransaction(legacyHistory);
+    const before = rows('SELECT * FROM card_transactions ORDER BY rowid');
+    const first = await store.addBankAccount({
+      institution: 'ICICI',
+      accountIdentifier: '1234 5678 9123',
+      ifscCode: 'icic0001234',
+    });
+    expect(first).toMatchObject({
+      nickname: 'ICICI Bank •••123',
+      lastDigits: '123',
+      ifscCode: 'ICIC0001234',
+      isPrimaryBank: true,
+    });
+    expect(first.accountFingerprint).toMatch(/^hmac-sha256-v1:[0-9a-f]{64}$/);
+    await expect(
+      store.addBankAccount({ institution: 'ICICI Bank', accountIdentifier: '123456789123' }),
+    ).rejects.toThrow('already enrolled');
+    await expect(store.addBankAccount({ institution: 'ICICI', lastDigits: '123' })).rejects.toThrow(
+      'already enrolled',
+    );
+    await expect(
+      store.addBankAccount({ institution: 'Axis', accountIdentifier: '456', ifscCode: 'BAD' }),
+    ).rejects.toThrow('IFSC');
+    const sameSuffix = await store.addBankAccount({
+      institution: 'ICICI',
+      accountIdentifier: '987654321123',
+    });
+    const otherBank = await store.addBankAccount({ institution: 'HDFC', lastDigits: '123' });
+    const saved = JSON.parse(
+      String(
+        rows("SELECT encrypted_value FROM app_preferences WHERE key='payment_sources'")[0][
+          'encrypted_value'
+        ],
+      ),
+    ) as PaymentSource[];
+    expect(saved.find((row) => row.id === 'source-debit')).toMatchObject({
+      archived: true,
+      isPrimaryBank: false,
+    });
+    expect(saved.filter((row) => row.isPrimaryBank).map((row) => row.id)).toEqual([first.id]);
+    expect(saved.map((row) => row.id)).toEqual(
+      expect.arrayContaining([first.id, sameSuffix.id, otherBank.id]),
+    );
+    expect(JSON.stringify(saved)).not.toContain('123456789123');
+    expect(rows('SELECT * FROM card_transactions ORDER BY rowid')).toEqual(before);
+    expect(saved.every((row) => row.balanceMinor === undefined || row.kind !== 'DEBIT')).toBe(true);
+  });
+
   it('records SMS purchases, receipts and own-account transfers on the right account exactly once', async () => {
     const { store, review, balance } = await boot();
     const icici = await store.addBankAccount({
@@ -3900,6 +3951,8 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     fixture.destroy();
   });
   it('saves unlimited independent payment members, edits classification and unlinks without repeating source effects', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-28T06:30:00Z'));
     const { store, balance } = await boot();
     store.addCard(card);
     await settle();
@@ -4144,6 +4197,8 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     expect(calculateNetSpending(store.transactions())).toBe(22000);
   });
   it('groups only continuous SMS payments after final approval, joins the third payment, and rejects a stale interrupted sequence atomically', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-28T06:30:00Z'));
     const { store, review, balance } = await boot();
     store.addCard(card);
     await settle();

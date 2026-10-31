@@ -406,11 +406,13 @@ describe('Bank profile popup and confirmation-only discovery UI', () => {
     expect(page.moneySourceForm.getRawValue()).toEqual({
       nickname: 'Checking',
       institution: 'ICICI Bank',
+      ifscCode: '',
       accountIdentifier: '•••123',
     });
     page.moneySourceForm.patchValue({
       nickname: 'Updated checking',
       institution: 'HDFC Bank',
+      ifscCode: '',
       accountIdentifier: '00007',
     });
     await page.saveMoneySourceIdentity(new Event('submit'));
@@ -418,6 +420,7 @@ describe('Bank profile popup and confirmation-only discovery UI', () => {
       sourceId: 'checking',
       nickname: 'Updated checking',
       institution: 'HDFC Bank',
+      ifscCode: '',
       accountIdentifier: '00007',
     });
     expect(page.discoveryNotice()).toContain('baseline and audit history are unchanged');

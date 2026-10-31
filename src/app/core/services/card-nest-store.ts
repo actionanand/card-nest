@@ -21,8 +21,12 @@ import {
 import { DatabaseSession, SqliteDatabase } from '../data/sqlite-database';
 import { walletEffectApplies } from './wallet-anchor';
 import {
+  bankDisplayName,
   displayBankAccountSuffix,
   fingerprintCompleteBankAccount,
+  fingerprintsMatch,
+  legacyFingerprintCompleteBankAccount,
+  matchesBank,
   parseBankAccountIdentifier,
 } from './bank-account-identifier';
 import {
@@ -88,6 +92,7 @@ const today = now.toISOString().slice(0, 10);
 const monthStart = `${today.slice(0, 7)}-01`;
 const FLASH_SOURCE_STORAGE_KEY = 'cardnest_flash_transaction_source_id';
 const PAYMENT_SOURCES_PREFERENCE_KEY = 'payment_sources';
+const BANK_ACCOUNT_FINGERPRINT_KEY = 'bank_account_fingerprint_key';
 
 function readFlashSourcePreference(): string | null {
   try {
@@ -298,6 +303,34 @@ export class CardNestStore {
   readonly liquidFunds = computed(() =>
     liquidTotals(this.paymentSources(), this.bankCashTracking()),
   );
+
+  async fingerprintBankAccount(value: string): Promise<string | undefined> {
+    const compact = value.trim().replace(/[\s-]/g, '');
+    if (!/^\d{6,24}$/.test(compact)) return undefined;
+    if (!this.database.ready()) throw new Error('Database is not ready.');
+    const keyHex = await this.database.atomic(async (tx) => {
+      const [row] = await tx.query<{ encrypted_value: string }>(
+        'SELECT encrypted_value FROM app_preferences WHERE key=?',
+        [BANK_ACCOUNT_FINGERPRINT_KEY],
+      );
+      if (row) {
+        if (!/^[a-f0-9]{64}$/.test(row.encrypted_value))
+          throw new Error(
+            'Saved bank identity key is invalid; account fingerprints were not changed.',
+          );
+        return row.encrypted_value;
+      }
+      const key = crypto.getRandomValues(new Uint8Array(32));
+      const encoded = [...key].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+      await tx.run('INSERT INTO app_preferences(key,encrypted_value) VALUES(?,?)', [
+        BANK_ACCOUNT_FINGERPRINT_KEY,
+        encoded,
+      ]);
+      return encoded;
+    });
+    const key = new Uint8Array(keyHex.match(/.{2}/g)!.map((byte) => Number.parseInt(byte, 16)));
+    return fingerprintCompleteBankAccount(compact, key);
+  }
   readonly bankAccounts = computed(() =>
     this.paymentSources().filter((source) => source.kind === 'DEBIT' && !source.archived),
   );
@@ -1485,19 +1518,33 @@ export class CardNestStore {
         const identifier = parseBankAccountIdentifier(rawIdentifier);
         if (!identifier)
           throw new Error('Enter a masked identifier with at least three account digits.');
+        const accountFingerprint =
+          (await this.fingerprintBankAccount(rawIdentifier)) ??
+          (identifier.mask === previous.accountMask &&
+          identifier.suffix === previous.lastDigits?.slice(-3)
+            ? previous.accountFingerprint
+            : undefined);
         updated = {
           ...updated,
           lastDigits: identifier.suffix,
           accountMask: identifier.mask,
+          accountFingerprint,
         };
+        if (!accountFingerprint) delete updated.accountFingerprint;
       } else {
-        updated = { ...updated, accountMask: undefined };
+        updated = { ...updated, accountMask: undefined, accountFingerprint: undefined };
       }
     }
     if (!updated.nickname.trim() || updated.nickname.length > 80)
       throw new Error('Enter an account nickname of up to 80 characters.');
     if (updated.kind === 'DEBIT' && updated.lastDigits && !/^\d{3,5}$/.test(updated.lastDigits))
       throw new Error('Enter the last 3 to 5 account digits.');
+    if (
+      updated.kind === 'DEBIT' &&
+      updated.ifscCode &&
+      !/^[A-Z]{4}0[A-Z0-9]{6}$/.test(updated.ifscCode)
+    )
+      throw new Error('Enter a valid 11-character IFSC code.');
     const changed = Object.keys(updated).filter(
       (key) => updated[key as keyof PaymentSource] !== previous[key as keyof PaymentSource],
     );
@@ -1530,13 +1577,58 @@ export class CardNestStore {
         (!merged.institution?.trim() || merged.institution.length > 80)
       )
         throw new Error('Enter a bank name of up to 80 characters.');
+      const legacyFingerprint = bankIdentityChanged
+        ? await legacyFingerprintCompleteBankAccount(
+            updated.accountMask !== previous.accountMask && updated.accountMask
+              ? updated.accountMask
+              : (updated.lastDigits ?? ''),
+          )
+        : undefined;
+      if (
+        merged.kind === 'DEBIT' &&
+        changed.some((key) =>
+          ['institution', 'lastDigits', 'accountMask', 'accountFingerprint'].includes(key),
+        )
+      ) {
+        const duplicate = stored.find(
+          (other) =>
+            other.id !== merged.id &&
+            other.kind === 'DEBIT' &&
+            matchesBank(other.institution, merged.institution) &&
+            other.lastDigits?.slice(-3) === merged.lastDigits?.slice(-3) &&
+            (fingerprintsMatch(merged.accountFingerprint, other.accountFingerprint) ||
+              fingerprintsMatch(legacyFingerprint, other.accountFingerprint)),
+        );
+        if (duplicate) throw new Error('This complete bank account identity already exists.');
+      }
       if (changed.includes('balanceMinor')) {
         if (isBankOrCash(merged)) this.assertBalanceValue(merged, merged.balanceMinor ?? 0);
         merged.balanceCutoverAt = new Date().toISOString();
         merged.balanceSnapshotMinor = merged.balanceMinor;
         if (merged.kind === 'MEAL') merged.balanceCutoverReason = 'MANUAL';
       }
-      const next = stored.map((source) => (source.id === merged.id ? merged : source));
+      const withUpdate = stored.map((source) => (source.id === merged.id ? merged : source));
+      const realBanks = withUpdate.filter(
+        (source) =>
+          source.kind === 'DEBIT' &&
+          !source.archived &&
+          source.id !== 'source-debit' &&
+          source.institution !== 'Primary bank',
+      );
+      const requestedPrimary = realBanks.find(
+        (source) => source.id === merged.id && source.isPrimaryBank,
+      );
+      const previousPrimary = realBanks.find(
+        (source) => source.id !== merged.id && source.isPrimaryBank,
+      );
+      const primaryId = requestedPrimary?.id ?? previousPrimary?.id ?? realBanks[0]?.id;
+      const next = withUpdate.map((source) => {
+        if (source.id === 'source-debit' && source.kind === 'DEBIT' && realBanks.length)
+          return { ...source, archived: true, isPrimaryBank: false };
+        if (source.kind === 'DEBIT' && source.institution !== 'Primary bank')
+          return { ...source, isPrimaryBank: source.id === primaryId };
+        return source;
+      });
       await this.writeStoredSources(tx, next);
       return next;
     });
@@ -1868,24 +1960,27 @@ export class CardNestStore {
 
   /** Explicit enrollment only; reading an SMS never creates a source. */
   async addBankAccount(input: {
-    nickname: string;
+    nickname?: string;
     institution: string;
     lastDigits?: string;
     accountIdentifier?: string;
     ifscCode?: string;
   }): Promise<PaymentSource> {
-    const nickname = input.nickname.trim().slice(0, 80);
     const institution = input.institution.trim().slice(0, 80);
     const rawIdentifier = input.accountIdentifier ?? input.lastDigits ?? '';
     const identifier = parseBankAccountIdentifier(rawIdentifier);
-    if (!nickname || !institution) throw new Error('Enter the account name and bank.');
+    if (!institution) throw new Error('Enter the bank name.');
     if (!identifier)
       throw new Error('Enter a masked account identifier with at least three digits.');
     const ifscCode = input.ifscCode?.trim().toUpperCase() || undefined;
     if (ifscCode && !/^[A-Z]{4}0[A-Z0-9]{6}$/.test(ifscCode))
       throw new Error('Enter a valid 11-character IFSC code.');
-    const accountFingerprint = await fingerprintCompleteBankAccount(rawIdentifier);
+    const accountFingerprint = await this.fingerprintBankAccount(rawIdentifier);
+    const legacyFingerprint = await legacyFingerprintCompleteBankAccount(rawIdentifier);
     const lastDigits = identifier.suffix;
+    const bankName = bankDisplayName(institution) ?? institution;
+    const nickname =
+      input.nickname?.trim().slice(0, 80) || `${bankName} ${displayBankAccountSuffix(lastDigits)}`;
     const account: PaymentSource = {
       id: `bank-${crypto.randomUUID()}`,
       nickname,
@@ -1902,38 +1997,45 @@ export class CardNestStore {
     const sources = await this.database.atomic(async (tx) => {
       const stored = await this.readStoredSources(tx);
       const current = stored.length ? stored : this.paymentSources().map((item) => ({ ...item }));
-      const sameBank = (value?: string) =>
-        (value ?? '')
-          .toLowerCase()
-          .replace(/[^a-z0-9]/g, '')
-          .replace(/bank$/, '') ===
-        institution
-          .toLowerCase()
-          .replace(/[^a-z0-9]/g, '')
-          .replace(/bank$/, '');
       if (
         current.some(
           (item) =>
             item.kind === 'DEBIT' &&
             !item.archived &&
             item.lastDigits?.slice(-3) === lastDigits &&
-            sameBank(item.institution) &&
-            !(
-              item.accountFingerprint &&
-              accountFingerprint &&
-              item.accountFingerprint !== accountFingerprint
-            ),
+            matchesBank(item.institution, institution) &&
+            (!accountFingerprint ||
+              fingerprintsMatch(item.accountFingerprint, accountFingerprint) ||
+              fingerprintsMatch(item.accountFingerprint, legacyFingerprint)),
         )
       )
         throw new Error('This bank account is already enrolled.');
-      account.isPrimaryBank = !current.some(
-        (item) =>
-          item.kind === 'DEBIT' &&
-          !item.archived &&
-          item.id !== 'source-debit' &&
-          item.institution !== 'Primary bank',
+      const currentPrimary =
+        current.find(
+          (item) =>
+            item.kind === 'DEBIT' &&
+            !item.archived &&
+            item.id !== 'source-debit' &&
+            item.institution !== 'Primary bank' &&
+            item.isPrimaryBank,
+        ) ??
+        current.find(
+          (item) =>
+            item.kind === 'DEBIT' &&
+            !item.archived &&
+            item.id !== 'source-debit' &&
+            item.institution !== 'Primary bank',
+        );
+      const primaryId = currentPrimary?.id ?? account.id;
+      account.isPrimaryBank = primaryId === account.id;
+      const normalized = current.map((item) =>
+        item.id === 'source-debit' && item.kind === 'DEBIT'
+          ? { ...item, archived: true, isPrimaryBank: false }
+          : item.kind === 'DEBIT' && !item.archived && item.institution !== 'Primary bank'
+            ? { ...item, isPrimaryBank: item.id === primaryId }
+            : item,
       );
-      const next = [...current, account];
+      const next = [...normalized, account];
       await this.writeStoredSources(tx, next);
       return next;
     });

@@ -914,8 +914,10 @@ describe('Durable first-run data, additive read migration and private portable b
     const linkedBank = await store.addBankAccount({
       nickname: 'Fiction activity bank',
       institution: 'ICICI Bank',
-      lastDigits: '417',
+      accountIdentifier: '000000000417',
+      ifscCode: 'ICIC0000417',
     });
+    expect(linkedBank.accountFingerprint).toMatch(/^hmac-sha256-v1:[0-9a-f]{64}$/);
     const bankProfile = await bankActivity.saveProfile({
       paymentSourceId: linkedBank.id,
       bankName: '',
@@ -1122,6 +1124,28 @@ describe('Durable first-run data, additive read migration and private portable b
           .sort(),
       ).toEqual([bankProfile.id, ambiguousProfile.id].sort());
       expect(restoredBankActivity.eventsFor(bankProfile.id)).toHaveLength(2);
+      expect(restoredStore.paymentSources().find((row) => row.id === linkedBank.id)).toMatchObject({
+        lastDigits: '417',
+        accountFingerprint: linkedBank.accountFingerprint,
+        ifscCode: 'ICIC0000417',
+      });
+      expect(await restoredStore.fingerprintBankAccount('000000000417')).toBe(
+        linkedBank.accountFingerprint,
+      );
+      await expect(
+        restoredStore.addBankAccount({
+          institution: 'ICICI',
+          accountIdentifier: '000000000417',
+        }),
+      ).rejects.toThrow('already enrolled');
+      expect(
+        restoredBankActivity.profiles().find((row) => row.id === bankProfile.id),
+      ).toMatchObject({
+        paymentSourceId: linkedBank.id,
+        accountFingerprint: linkedBank.accountFingerprint,
+        ifscCode: 'ICIC0000417',
+      });
+      expect(await database.exportBackupJson()).not.toContain('000000000417');
       expect(
         restoredBankActivity.eventsFor(bankProfile.id).some((item) => item.origin === 'MANUAL'),
       ).toBe(true);

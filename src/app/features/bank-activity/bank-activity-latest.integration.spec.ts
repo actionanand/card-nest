@@ -8,6 +8,7 @@ import { DATABASE_MIGRATIONS } from '../../core/data/migrations';
 import { RECONCILE_BANK_ACTIVITY_LATEST } from '../../core/data/bank-activity-latest';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { PaymentSource } from '../../core/models/domain';
+import { fingerprintCompleteBankAccount } from '../../core/services/bank-account-identifier';
 import { BankActivityService } from './bank-activity.service';
 import { BankAccountSyncService } from './bank-account-sync.service';
 
@@ -18,6 +19,7 @@ describe('Latest activity and identity reconciliation with real SQLite', () => {
   let activity: BankActivityService;
   let sync: BankAccountSyncService;
   const sources = signal<readonly PaymentSource[]>([]);
+  const testFingerprintKey = new Uint8Array(32).fill(11);
   const finance = () =>
     [
       'card_transactions',
@@ -89,7 +91,14 @@ describe('Latest activity and identity reconciliation with real SQLite', () => {
     TestBed.configureTestingModule({
       providers: [
         { provide: SqliteDatabase, useValue: database },
-        { provide: CardNestStore, useValue: { paymentSources: sources } },
+        {
+          provide: CardNestStore,
+          useValue: {
+            paymentSources: sources,
+            fingerprintBankAccount: (value: string) =>
+              fingerprintCompleteBankAccount(value, testFingerprintKey),
+          },
+        },
       ],
     });
     activity = TestBed.inject(BankActivityService);
@@ -506,13 +515,14 @@ describe('Latest activity and identity reconciliation with real SQLite', () => {
     ]);
     sources.set([source]);
     enable();
-    const own = await activity.saveProfile({
+    const unresolvedOwn = await activity.saveProfile({
       bankName: 'ICICI',
       accountSuffix: '123',
       nickname: 'Different monitor nickname',
       owner: 'OWN',
     });
-    expect(own.paymentSourceId).toBe(source.id);
+    expect(unresolvedOwn.paymentSourceId).toBeUndefined();
+    expect(sync.conflicts().join(' ')).toContain('identity is not proven');
     expect(
       JSON.parse(
         (
@@ -521,7 +531,14 @@ describe('Latest activity and identity reconciliation with real SQLite', () => {
           )
         )[0].encrypted_value,
       ),
-    ).toEqual([source]);
+    ).toEqual([{ ...source, isPrimaryBank: true }]);
+    const own = await activity.saveProfile({
+      ...unresolvedOwn,
+      paymentSourceId: source.id,
+      bankName: 'ICICI',
+      owner: 'OWN',
+    });
+    expect(own.paymentSourceId).toBe(source.id);
     const second = { ...source, id: 'ambiguous-2', institution: 'HDFC', lastDigits: '00567' };
     const third = { ...second, id: 'ambiguous-3', nickname: 'Another account' };
     await run("UPDATE app_preferences SET encrypted_value=? WHERE key='payment_sources'", [
@@ -551,5 +568,239 @@ describe('Latest activity and identity reconciliation with real SQLite', () => {
     await sync.reconcile();
     expect(await query('SELECT * FROM bank_activity_profiles')).toEqual(snapshot);
     expect(activity.events()).toHaveLength(0);
+  });
+
+  describe('identity safety', () => {
+    const storedSources = async () =>
+      JSON.parse(
+        (
+          await query<{ encrypted_value: string }>(
+            "SELECT encrypted_value FROM app_preferences WHERE key='payment_sources'",
+          )
+        )[0]?.encrypted_value ?? '[]',
+      ) as PaymentSource[];
+    const legacy = (id: string, changes: Partial<PaymentSource> = {}): PaymentSource => ({
+      id,
+      kind: 'DEBIT',
+      institution: 'ICICI Bank',
+      nickname: id,
+      lastDigits: '00123',
+      balanceMinor: 50000,
+      archived: false,
+      noLimit: true,
+      autoLoad: false,
+      ...changes,
+    });
+    const seed = async (rows: PaymentSource[]) => {
+      await run(
+        "INSERT INTO app_preferences VALUES('payment_sources',?) ON CONFLICT(key) DO UPDATE SET encrypted_value=excluded.encrypted_value",
+        [JSON.stringify(rows)],
+      );
+      sources.set(rows);
+    };
+
+    it('separates same-bank, same-suffix accounts only by distinct complete numbers and rejects exact or alias duplicates', async () => {
+      const first = await activity.saveProfile({
+        bankName: 'ICICI',
+        accountIdentifier: '1234 5678 9123',
+        owner: 'OWN',
+      });
+      const second = await activity.saveProfile({
+        bankName: 'ICICI',
+        accountIdentifier: '987654321123',
+        owner: 'OWN',
+      });
+      expect(first.accountFingerprint).toMatch(/^hmac-sha256-v1:[0-9a-f]{64}$/);
+      expect(second.accountFingerprint).not.toBe(first.accountFingerprint);
+      await expect(
+        activity.saveProfile({
+          bankName: 'ICICI Bank',
+          accountIdentifier: '123456789123',
+          owner: 'OWN',
+        }),
+      ).rejects.toThrow('already exists');
+      const otherBank = await activity.saveProfile({
+        bankName: 'HDFC',
+        accountIdentifier: '123456789123',
+        owner: 'OWN',
+      });
+      expect(otherBank.accountSuffix).toBe('123');
+      const saved = await storedSources();
+      expect(saved).toHaveLength(3);
+      expect(new Set(saved.map((row) => row.id)).size).toBe(3);
+      const raw = JSON.stringify([
+        saved,
+        await query('SELECT payload FROM bank_activity_profiles'),
+      ]);
+      expect(raw).not.toContain('123456789123');
+      expect(raw).not.toContain('987654321123');
+      expect(saved.filter((row) => row.isPrimaryBank)).toHaveLength(1);
+    });
+
+    it('preserves leading zeros through masking, suffixes and fingerprints', async () => {
+      const profile = await activity.saveProfile({
+        bankName: 'SBI',
+        accountIdentifier: '000000000007',
+        owner: 'OWN',
+      });
+      expect(profile.accountSuffix).toBe('007');
+      expect((await storedSources())[0]).toMatchObject({
+        lastDigits: '007',
+        institution: 'State Bank of India',
+      });
+      await expect(
+        activity.saveProfile({
+          bankName: 'State Bank of India',
+          accountIdentifier: '000000000007',
+          owner: 'OWN',
+        }),
+      ).rejects.toThrow('already exists');
+      const distinct = await activity.saveProfile({
+        bankName: 'SBI',
+        accountIdentifier: '000000001007',
+        owner: 'OWN',
+      });
+      expect(distinct.accountSuffix).toBe('007');
+    });
+
+    it('keeps two legacy same-suffix sources unchanged until the user links one by stable ID', async () => {
+      const a = legacy('legacy-a');
+      const b = legacy('legacy-b', { nickname: 'Second' });
+      await seed([a, b]);
+      const before = finance();
+      const unresolved = await activity.saveProfile({
+        bankName: 'ICICI',
+        accountSuffix: '123',
+        owner: 'OWN',
+      });
+      expect(unresolved.paymentSourceId).toBeUndefined();
+      expect(sync.conflicts().join(' ')).toContain('needs identification');
+      expect(await storedSources()).toEqual([
+        { ...a, isPrimaryBank: true },
+        { ...b, isPrimaryBank: false },
+      ]);
+      const linked = await activity.saveProfile({
+        ...unresolved,
+        paymentSourceId: b.id,
+        owner: 'OWN',
+      });
+      expect(linked.paymentSourceId).toBe(b.id);
+      const relinked = await activity.saveProfile({ ...linked, nickname: 'Edited monitor' });
+      expect(relinked.paymentSourceId).toBe(b.id);
+      expect(await storedSources()).toEqual([
+        { ...a, isPrimaryBank: true },
+        { ...b, isPrimaryBank: false },
+      ]);
+      expect(finance()).toEqual(before);
+    });
+
+    it('synchronizes edited identifiers, never retains a stale fingerprint, and updates or clears IFSC atomically', async () => {
+      const fingerprinted = await activity.saveProfile({
+        bankName: 'ICICI',
+        accountIdentifier: '123456789123',
+        ifscCode: 'icic0001234',
+        owner: 'OWN',
+      });
+      const [source] = await storedSources();
+      expect(source).toMatchObject({
+        ifscCode: 'ICIC0001234',
+        accountFingerprint: fingerprinted.accountFingerprint,
+      });
+      const before = finance();
+      await expect(
+        activity.updateOwnMoneySourceIdentity({
+          sourceId: source.id,
+          nickname: 'Edited',
+          institution: 'ICICI',
+          accountIdentifier: 'xxxx456',
+          ifscCode: 'BAD',
+        }),
+      ).rejects.toThrow('IFSC');
+      expect(await storedSources()).toEqual([{ ...source, isPrimaryBank: true }]);
+      const masked = await activity.updateOwnMoneySourceIdentity({
+        sourceId: source.id,
+        nickname: 'Edited',
+        institution: 'ICICI',
+        accountIdentifier: 'xxxx456',
+        ifscCode: '',
+      });
+      expect(masked).toMatchObject({ id: source.id, lastDigits: '456', accountMask: '••••456' });
+      expect(masked.accountFingerprint).toBeUndefined();
+      expect(masked.ifscCode).toBeUndefined();
+      const full = await activity.updateOwnMoneySourceIdentity({
+        sourceId: source.id,
+        nickname: 'Edited',
+        institution: 'ICICI',
+        accountIdentifier: '555555555456',
+        ifscCode: 'ICIC0009999',
+      });
+      expect(full.accountFingerprint).toMatch(/^hmac-sha256-v1:[0-9a-f]{64}$/);
+      expect(full.accountFingerprint).not.toBe(fingerprinted.accountFingerprint);
+      const profile = activity.profiles().find((row) => row.paymentSourceId === source.id)!;
+      expect(profile).toMatchObject({
+        accountSuffix: '456',
+        accountFingerprint: full.accountFingerprint,
+        ifscCode: 'ICIC0009999',
+      });
+      expect(JSON.stringify(await storedSources())).not.toContain('555555555456');
+      expect(finance()).toEqual(before);
+    });
+
+    it('changes OWN to OTHERS and back only with an explicit choice, without moving balances', async () => {
+      const source = legacy('own-source');
+      await seed([source]);
+      const own = await activity.saveProfile({
+        bankName: 'ICICI',
+        paymentSourceId: source.id,
+        owner: 'OWN',
+      });
+      const before = finance();
+      await expect(
+        activity.saveProfile({ ...own, owner: 'OTHERS', holderName: 'Family' }),
+      ).rejects.toThrow('Only an account');
+      const family = await activity.saveProfile({
+        ...own,
+        paymentSourceId: undefined,
+        owner: 'OTHERS',
+        holderName: 'Family',
+      });
+      expect(family.paymentSourceId).toBeUndefined();
+      await expect(
+        activity.saveProfile({ ...family, owner: 'OWN', paymentSourceId: source.id }),
+      ).rejects.toThrow('Confirm');
+      const restored = await activity.saveProfile({
+        ...family,
+        owner: 'OWN',
+        paymentSourceId: source.id,
+        confirmOwnershipSync: true,
+      });
+      expect(restored).toMatchObject({ id: own.id, paymentSourceId: source.id });
+      expect(await storedSources()).toEqual([{ ...source, isPrimaryBank: true }]);
+      expect(finance()).toEqual(before);
+    });
+
+    it('rolls back a failed profile save and reconciles repeatedly without duplicate sources', async () => {
+      sql.exec(
+        "CREATE TRIGGER fail_profile BEFORE INSERT ON bank_activity_profiles BEGIN SELECT RAISE(ABORT,'profile failure'); END",
+      );
+      await expect(
+        activity.saveProfile({
+          bankName: 'ICICI',
+          accountIdentifier: '123456789123',
+          owner: 'OWN',
+        }),
+      ).rejects.toThrow('profile failure');
+      expect(await query('SELECT * FROM bank_activity_profiles')).toHaveLength(0);
+      expect(await storedSources()).toHaveLength(0);
+      sql.exec('DROP TRIGGER fail_profile');
+      await activity.saveProfile({
+        bankName: 'ICICI',
+        accountIdentifier: '123456789123',
+        owner: 'OWN',
+      });
+      for (let pass = 0; pass < 3; pass++) await sync.reconcile();
+      expect(await storedSources()).toHaveLength(1);
+      expect(await query('SELECT * FROM bank_activity_profiles')).toHaveLength(1);
+    });
   });
 });

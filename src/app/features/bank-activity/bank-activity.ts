@@ -268,6 +268,13 @@ export class BankActivityPage {
       nonNullable: true,
       validators: [Validators.required, Validators.maxLength(80)],
     }),
+    ifscCode: new FormControl('', {
+      nonNullable: true,
+      validators: [
+        Validators.maxLength(11),
+        Validators.pattern(/^(?:|[A-Za-z]{4}0[A-Za-z0-9]{6})$/),
+      ],
+    }),
     accountIdentifier: new FormControl('', {
       nonNullable: true,
       validators: [
@@ -349,6 +356,7 @@ export class BankActivityPage {
           this.profileForm.controls.accountIdentifier.setValue(
             source.accountMask ?? displayBankAccountIdentifier(undefined, source.lastDigits),
           );
+          this.profileForm.controls.ifscCode.setValue(source.ifscCode ?? '');
         }
       });
     for (const control of [
@@ -597,6 +605,7 @@ export class BankActivityPage {
       paymentSourceId: source.id,
       bankName: source.institution ?? '',
       nickname: source.nickname,
+      ifscCode: source.ifscCode ?? '',
       accountIdentifier:
         source.accountMask ?? displayBankAccountIdentifier(undefined, source.lastDigits),
       owner: 'OWN',
@@ -611,6 +620,7 @@ export class BankActivityPage {
     this.moneySourceForm.reset({
       nickname: source.nickname,
       institution: source.institution ?? '',
+      ifscCode: source.ifscCode ?? '',
       accountIdentifier:
         source.accountMask ?? displayBankAccountIdentifier(undefined, source.lastDigits),
     });
@@ -732,7 +742,11 @@ export class BankActivityPage {
       paymentSourceId: profile.paymentSourceId ?? '',
       bankName: profile.bankName,
       nickname: profile.nickname ?? '',
-      ifscCode: profile.ifscCode ?? '',
+      ifscCode:
+        profile.ifscCode ??
+        this.store.paymentSources().find((source) => source.id === profile.paymentSourceId)
+          ?.ifscCode ??
+        '',
       accountIdentifier:
         profile.accountMask ?? displayBankAccountIdentifier(undefined, profile.accountSuffix),
       manualOnly: profile.manualOnly ?? !profileSuffix(profile, this.store.paymentSources()),

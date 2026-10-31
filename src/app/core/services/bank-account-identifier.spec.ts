@@ -7,14 +7,18 @@ import {
 
 describe('Bank account identifier masking', () => {
   it('fingerprints complete identifiers consistently without changing suffix strings or accepting masked hints', async () => {
-    expect(await fingerprintCompleteBankAccount('123456')).toBe(
-      await fingerprintCompleteBankAccount('123 456'),
+    const key = new Uint8Array(32).fill(7);
+    expect(await fingerprintCompleteBankAccount('123456', key)).toBe(
+      await fingerprintCompleteBankAccount('123 456', key),
     );
-    expect(await fingerprintCompleteBankAccount('000007')).not.toBe(
-      await fingerprintCompleteBankAccount('000017'),
+    expect(await fingerprintCompleteBankAccount('000007', key)).not.toBe(
+      await fingerprintCompleteBankAccount('000017', key),
     );
-    expect(await fingerprintCompleteBankAccount('432xxxxx765')).toBeUndefined();
-    expect(await fingerprintCompleteBankAccount('007')).toBeUndefined();
+    expect(await fingerprintCompleteBankAccount('000007', new Uint8Array(32).fill(8))).not.toBe(
+      await fingerprintCompleteBankAccount('000007', key),
+    );
+    expect(await fingerprintCompleteBankAccount('432xxxxx765', key)).toBeUndefined();
+    expect(await fingerprintCompleteBankAccount('007', key)).toBeUndefined();
   });
   it.each([
     ['432xxxxx765', { suffix: '765', mask: '432•••••765' }],
