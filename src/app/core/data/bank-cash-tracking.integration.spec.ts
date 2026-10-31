@@ -3497,6 +3497,33 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     expect(rows('SELECT * FROM source_transfers ORDER BY id')).toEqual(transfersBefore);
   });
 
+  it('rejects additive adjustments for unknown and archived bank balances without writes', async () => {
+    const { store } = await boot();
+    const bank = await store.addBankAccount({ institution: 'ICICI Bank', lastDigits: '421' });
+    await store.enableBankTracking({});
+    const before = financialState();
+    const unknownSources = rows("SELECT * FROM app_preferences WHERE key='payment_sources'");
+    await expect(store.addSourceBalance(bank.id, 1000)).rejects.toThrow('Set the current balance');
+    expect(financialState()).toEqual(before);
+    expect(rows("SELECT * FROM app_preferences WHERE key='payment_sources'")).toEqual(
+      unknownSources,
+    );
+
+    await store.setSourceBalance(bank.id, 10000);
+    await store.updatePaymentSource({
+      ...store.paymentSources().find((source) => source.id === bank.id)!,
+      archived: true,
+    });
+    const archivedFinance = financialState();
+    const archivedSources = rows("SELECT * FROM app_preferences WHERE key='payment_sources'");
+    await expect(store.addSourceBalance(bank.id, 1000)).rejects.toThrow('supported balance');
+    await expect(store.setSourceBalance(bank.id, 20000)).rejects.toThrow('supported balance');
+    expect(financialState()).toEqual(archivedFinance);
+    expect(rows("SELECT * FROM app_preferences WHERE key='payment_sources'")).toEqual(
+      archivedSources,
+    );
+  });
+
   it('requires proof before reusing same-bank suffixes and directs archived identities to restoration', async () => {
     const { store } = await boot();
     const legacy = await store.addBankAccount({ institution: 'Canara Bank', lastDigits: '007' });
