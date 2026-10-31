@@ -25,6 +25,7 @@ import {
   displayBankAccountSuffix,
   fingerprintCompleteBankAccount,
   fingerprintsMatch,
+  fingerprintsProveDistinct,
   legacyFingerprintCompleteBankAccount,
   matchesBank,
   parseBankAccountIdentifier,
@@ -32,6 +33,8 @@ import {
 import {
   BANK_CASH_TRACKING_KEY,
   DEFAULT_BANK_CASH_TRACKING,
+  bankTrackingEnabled,
+  cashTrackingEnabled,
   applyBankCashTransaction,
   applyTransferEffects,
   applyWalletTransaction,
@@ -40,6 +43,7 @@ import {
   isBankOrCash,
   liquidTotals,
   parseBankCashTracking,
+  sourceBalanceTrackingEnabled,
   reverseBalanceEffect,
   reverseTransferEffects,
   TIMING_QUESTION,
@@ -116,6 +120,24 @@ function clearFlashSourcePreference(): void {
   } catch {
     // The in-memory signal is still reset below.
   }
+}
+
+function normalizePrimaryBankSources(sources: readonly PaymentSource[]): PaymentSource[] {
+  const banks = sources.filter(
+    (source) =>
+      source.kind === 'DEBIT' &&
+      !source.archived &&
+      source.id !== 'source-debit' &&
+      source.institution !== 'Primary bank',
+  );
+  if (!banks.length) return sources.map((source) => ({ ...source }));
+  const primaryId = banks.find((source) => source.isPrimaryBank)?.id ?? banks[0].id;
+  return sources.map((source) => {
+    if (source.kind !== 'DEBIT') return source;
+    if (source.id === 'source-debit') return { ...source, archived: true, isPrimaryBank: false };
+    if (source.institution === 'Primary bank') return source;
+    return { ...source, isPrimaryBank: !source.archived && source.id === primaryId };
+  });
 }
 
 const SAMPLE_CARDS: readonly CreditCard[] = [
@@ -337,7 +359,7 @@ export class CardNestStore {
   /** Bank accounts that may fund a card settlement: both toggles on and a confirmed balance. */
   readonly cardSettlementFundingAccounts = computed(() => {
     const settings = this.bankCashTracking();
-    return settings.enabled && settings.askCardSettlementFunding
+    return bankTrackingEnabled(settings) && settings.askCardSettlementFunding
       ? this.bankAccounts().filter((source) => bankCashTracked(source, settings))
       : [];
   });
@@ -494,6 +516,14 @@ export class CardNestStore {
       });
       this.paymentSources.set(sources);
     }
+    const normalizedSources = await this.database.atomic(async (tx) => {
+      const stored = await this.readStoredSources(tx);
+      const normalized = normalizePrimaryBankSources(stored);
+      if (JSON.stringify(stored) !== JSON.stringify(normalized))
+        await this.writeStoredSources(tx, normalized);
+      return normalized;
+    });
+    this.paymentSources.set(normalizedSources);
     await this.loadBankCashTracking(values.get(BANK_CASH_TRACKING_KEY));
     await Promise.all([this.loadCurrentIncome(), this.loadCards()]);
     await this.loadCategories();
@@ -1509,8 +1539,9 @@ export class CardNestStore {
     const bankIdentityChanged =
       updated.kind === 'DEBIT' &&
       (updated.lastDigits !== previous.lastDigits || updated.accountMask !== previous.accountMask);
+    let rawIdentifier: string | undefined;
     if (bankIdentityChanged) {
-      const rawIdentifier =
+      rawIdentifier =
         updated.accountMask !== previous.accountMask && updated.accountMask
           ? updated.accountMask
           : updated.lastDigits;
@@ -1530,7 +1561,6 @@ export class CardNestStore {
           accountMask: identifier.mask,
           accountFingerprint,
         };
-        if (!accountFingerprint) delete updated.accountFingerprint;
       } else {
         updated = { ...updated, accountMask: undefined, accountFingerprint: undefined };
       }
@@ -1561,11 +1591,36 @@ export class CardNestStore {
       )
     )
       throw new Error('Use Set Current Balance to change a Bank/Cash balance.');
+    if (
+      updated.kind === 'MEAL' &&
+      changed.some((key) =>
+        [
+          'balanceMinor',
+          'balanceSnapshotMinor',
+          'balanceCutoverAt',
+          'balanceCutoverReason',
+        ].includes(key),
+      )
+    )
+      throw new Error('Use Set Current Balance to audit a meal-wallet balance change.');
     const sources = await this.database.atomic(async (tx) => {
       const stored = await this.readStoredSources(tx);
       const current = stored.find((source) => source.id === updated.id);
       if (!current || current.kind !== updated.kind)
         throw new Error('This payment source is no longer available.');
+      if (
+        updated.kind === 'DEBIT' &&
+        updated.isPrimaryBank &&
+        !current.isPrimaryBank &&
+        stored.some(
+          (source) =>
+            source.id !== current.id &&
+            source.kind === 'DEBIT' &&
+            !source.archived &&
+            source.isPrimaryBank,
+        )
+      )
+        throw new Error('Confirm a primary-bank switch using the dedicated selection action.');
       const merged = Object.fromEntries([
         ...Object.entries(current),
         ...changed.map((key) => [key, updated[key as keyof PaymentSource]]),
@@ -1578,11 +1633,7 @@ export class CardNestStore {
       )
         throw new Error('Enter a bank name of up to 80 characters.');
       const legacyFingerprint = bankIdentityChanged
-        ? await legacyFingerprintCompleteBankAccount(
-            updated.accountMask !== previous.accountMask && updated.accountMask
-              ? updated.accountMask
-              : (updated.lastDigits ?? ''),
-          )
+        ? await legacyFingerprintCompleteBankAccount(rawIdentifier ?? '')
         : undefined;
       if (
         merged.kind === 'DEBIT' &&
@@ -1590,16 +1641,30 @@ export class CardNestStore {
           ['institution', 'lastDigits', 'accountMask', 'accountFingerprint'].includes(key),
         )
       ) {
-        const duplicate = stored.find(
+        const sameSuffix = stored.filter(
           (other) =>
             other.id !== merged.id &&
             other.kind === 'DEBIT' &&
             matchesBank(other.institution, merged.institution) &&
-            other.lastDigits?.slice(-3) === merged.lastDigits?.slice(-3) &&
-            (fingerprintsMatch(merged.accountFingerprint, other.accountFingerprint) ||
-              fingerprintsMatch(legacyFingerprint, other.accountFingerprint)),
+            other.lastDigits?.slice(-3) === merged.lastDigits?.slice(-3),
+        );
+        const duplicate = sameSuffix.find(
+          (other) =>
+            fingerprintsMatch(merged.accountFingerprint, other.accountFingerprint) ||
+            fingerprintsMatch(legacyFingerprint, other.accountFingerprint),
         );
         if (duplicate) throw new Error('This complete bank account identity already exists.');
+        const unresolved = sameSuffix.find(
+          (other) =>
+            !fingerprintsProveDistinct(merged.accountFingerprint, other.accountFingerprint) &&
+            !fingerprintsProveDistinct(legacyFingerprint, other.accountFingerprint),
+        );
+        if (unresolved)
+          throw new Error(
+            unresolved.archived
+              ? 'An archived bank account has this bank and suffix. Restore or identify it explicitly before changing this account.'
+              : 'This bank and suffix already exist without proof of a different account. Confirm the full account number before proceeding.',
+          );
       }
       if (changed.includes('balanceMinor')) {
         if (isBankOrCash(merged)) this.assertBalanceValue(merged, merged.balanceMinor ?? 0);
@@ -1629,6 +1694,33 @@ export class CardNestStore {
           return { ...source, isPrimaryBank: source.id === primaryId };
         return source;
       });
+      await this.writeStoredSources(tx, next);
+      return next;
+    });
+    this.paymentSources.set(sources);
+  }
+  async setPrimaryBankAccount(sourceId: string): Promise<void> {
+    if (!this.database.ready()) throw new Error('Database is not ready.');
+    const sources = await this.database.atomic(async (tx) => {
+      const stored = await this.readStoredSources(tx);
+      const target = stored.find(
+        (source) =>
+          source.id === sourceId &&
+          source.kind === 'DEBIT' &&
+          !source.archived &&
+          source.id !== 'source-debit' &&
+          source.institution !== 'Primary bank',
+      );
+      if (!target) throw new Error('Choose an active bank account to set as primary.');
+      const next = normalizePrimaryBankSources(
+        stored.map((source) =>
+          source.kind === 'DEBIT' &&
+          source.id !== 'source-debit' &&
+          source.institution !== 'Primary bank'
+            ? { ...source, isPrimaryBank: !source.archived && source.id === sourceId }
+            : source,
+        ),
+      );
       await this.writeStoredSources(tx, next);
       return next;
     });
@@ -1721,7 +1813,7 @@ export class CardNestStore {
       if (!storedCard || (JSON.parse(storedCard.payload) as CreditCard).currencyCode !== 'INR')
         throw new Error('Bank-funded payments are supported only for INR credit cards.');
       const settings = await this.readTrackingSettings(tx);
-      if (!settings.enabled || !settings.askCardSettlementFunding)
+      if (!bankTrackingEnabled(settings) || !settings.askCardSettlementFunding)
         throw new Error('Turn on bank deduction for card payments in Settings first.');
       const sources = await this.readStoredSources(tx);
       const funding = sources.find((source) => source.id === fundingSourceId);
@@ -1856,13 +1948,40 @@ export class CardNestStore {
   }
 
   async enableBankCashTracking(balances: Readonly<Record<string, number | null>>): Promise<void> {
+    await this.enableBalanceTracking('ALL', balances);
+  }
+
+  async enableBankTracking(balances: Readonly<Record<string, number | null>>): Promise<void> {
+    await this.enableBalanceTracking('BANK', balances);
+  }
+
+  async enableCashTracking(balanceMinor: number): Promise<void> {
+    const source = this.paymentSources().find((item) => item.kind === 'CASH' && !item.archived);
+    if (!source) throw new Error('Cash source is unavailable.');
+    await this.enableBalanceTracking('CASH', { [source.id]: balanceMinor });
+  }
+
+  private async enableBalanceTracking(
+    scope: 'ALL' | 'BANK' | 'CASH',
+    balances: Readonly<Record<string, number | null>>,
+  ): Promise<void> {
     const now = new Date().toISOString();
     const result = await this.database.atomic(async (tx) => {
       const stored = await this.readStoredSources(tx);
       const sources = stored.length ? stored : this.paymentSources().map((item) => ({ ...item }));
       const previous = await this.readTrackingSettings(tx);
       const adjustments: SourceBalanceAdjustment[] = [];
-      for (const source of sources.filter(isBankOrCash)) {
+      const selected = sources.filter((source) =>
+        scope === 'ALL'
+          ? isBankOrCash(source)
+          : scope === 'BANK'
+            ? source.kind === 'DEBIT' &&
+              !source.archived &&
+              source.id !== 'source-debit' &&
+              source.institution !== 'Primary bank'
+            : source.kind === 'CASH' && !source.archived,
+      );
+      for (const source of selected) {
         const value = balances[source.id];
         // Unconfirmed balances stay unknown; the previous value is kept for reference only.
         if (value === null || value === undefined) {
@@ -1885,10 +2004,14 @@ export class CardNestStore {
         source.balanceSnapshotMinor = value;
         source.balanceCutoverAt = now;
       }
+      const bankEnabled = scope === 'CASH' ? bankTrackingEnabled(previous) : true;
+      const cashEnabled = scope === 'BANK' ? cashTrackingEnabled(previous) : true;
       const settings: BankCashTrackingSettings = {
-        enabled: true,
+        enabled: bankEnabled || cashEnabled,
+        bankEnabled,
+        cashEnabled,
         askCardSettlementFunding: previous.askCardSettlementFunding,
-        activatedAt: now,
+        activatedAt: previous.activatedAt ?? now,
       };
       await this.writeTrackingSettings(tx, settings);
       await this.writeStoredSources(tx, sources);
@@ -1901,12 +2024,28 @@ export class CardNestStore {
 
   /** Keeps balances, baselines and history; re-enabling requires a fresh balance confirmation. */
   async disableBankCashTracking(): Promise<void> {
+    await this.disableBalanceTracking('ALL');
+  }
+
+  async disableBankTracking(): Promise<void> {
+    await this.disableBalanceTracking('BANK');
+  }
+
+  async disableCashTracking(): Promise<void> {
+    await this.disableBalanceTracking('CASH');
+  }
+
+  private async disableBalanceTracking(scope: 'ALL' | 'BANK' | 'CASH'): Promise<void> {
     const settings = await this.database.atomic(async (tx) => {
       const previous = await this.readTrackingSettings(tx);
+      const bankEnabled = scope === 'CASH' ? bankTrackingEnabled(previous) : false;
+      const cashEnabled = scope === 'BANK' ? cashTrackingEnabled(previous) : false;
       const next: BankCashTrackingSettings = {
         ...previous,
-        enabled: false,
-        disabledAt: new Date().toISOString(),
+        enabled: bankEnabled || cashEnabled,
+        bankEnabled,
+        cashEnabled,
+        disabledAt: bankEnabled || cashEnabled ? undefined : new Date().toISOString(),
       };
       await this.writeTrackingSettings(tx, next);
       return next;
@@ -1917,8 +2056,8 @@ export class CardNestStore {
   async setCardSettlementFunding(enabled: boolean): Promise<void> {
     const settings = await this.database.atomic(async (tx) => {
       const previous = await this.readTrackingSettings(tx);
-      if (enabled && !previous.enabled)
-        throw new Error('Turn on Bank & Cash tracking before enabling bank deductions.');
+      if (enabled && !bankTrackingEnabled(previous))
+        throw new Error('Turn on Bank/UPI balance tracking before enabling bank deductions.');
       const next = { ...previous, askCardSettlementFunding: enabled };
       await this.writeTrackingSettings(tx, next);
       return next;
@@ -1931,12 +2070,14 @@ export class CardNestStore {
     const now = new Date().toISOString();
     const result = await this.database.atomic(async (tx) => {
       const settings = await this.readTrackingSettings(tx);
-      if (!settings.enabled) throw new Error('Turn on Bank & Cash tracking first.');
       const sources = await this.readStoredSources(tx);
       const source = sources.find((item) => item.id === sourceId);
-      if (!source || !isBankOrCash(source)) throw new Error('Choose a bank account or cash.');
+      if (!source || (!isBankOrCash(source) && source.kind !== 'MEAL'))
+        throw new Error('Choose an account with a supported balance.');
+      if (isBankOrCash(source) && !sourceBalanceTrackingEnabled(source, settings))
+        throw new Error('Turn on balance tracking for this source first.');
       this.assertBalanceValue(source, newMinor);
-      const tracked = bankCashTracked(source, settings);
+      const tracked = bankCashTracked(source, settings) || this.hasWalletBaseline(source);
       const adjustment: SourceBalanceAdjustment = {
         id: crypto.randomUUID(),
         sourceId,
@@ -1951,6 +2092,51 @@ export class CardNestStore {
       source.balanceMinor = newMinor;
       source.balanceSnapshotMinor = newMinor;
       source.balanceCutoverAt = now;
+      if (source.kind === 'MEAL') {
+        source.noLimit = false;
+        source.balanceCutoverReason = 'MANUAL';
+      }
+      await this.writeStoredSources(tx, sources);
+      return { sources, adjustment };
+    });
+    this.paymentSources.set(result.sources);
+    this.balanceAdjustments.update((items) => [result.adjustment, ...items]);
+  }
+
+  /** Adds funds as an audited balance adjustment, without creating an income transaction. */
+  async addSourceBalance(sourceId: string, amountMinor: number, note?: string): Promise<void> {
+    if (!Number.isSafeInteger(amountMinor) || amountMinor <= 0)
+      throw new Error('Enter a positive amount to add.');
+    const now = new Date().toISOString();
+    const result = await this.database.atomic(async (tx) => {
+      const settings = await this.readTrackingSettings(tx);
+      const sources = await this.readStoredSources(tx);
+      const source = sources.find((item) => item.id === sourceId);
+      if (!source || (!isBankOrCash(source) && source.kind !== 'MEAL'))
+        throw new Error('Choose an account with a supported balance.');
+      if (
+        (isBankOrCash(source) && !sourceBalanceTrackingEnabled(source, settings)) ||
+        (source.kind === 'MEAL' && !this.hasWalletBaseline(source))
+      )
+        throw new Error('Set the current balance before adding money.');
+      const current = source.balanceMinor ?? 0;
+      const newMinor = current + amountMinor;
+      this.assertBalanceValue(source, newMinor);
+      const adjustment: SourceBalanceAdjustment = {
+        id: crypto.randomUUID(),
+        sourceId,
+        reason: 'ADD',
+        previousMinor: current,
+        newMinor,
+        correctionMinor: amountMinor,
+        note: note?.trim().slice(0, 200) || undefined,
+        createdAt: now,
+      };
+      await this.insertBalanceAdjustment(tx, adjustment);
+      source.balanceMinor = newMinor;
+      source.balanceSnapshotMinor = newMinor;
+      source.balanceCutoverAt = now;
+      if (source.kind === 'MEAL') source.balanceCutoverReason = 'MANUAL';
       await this.writeStoredSources(tx, sources);
       return { sources, adjustment };
     });
@@ -1997,19 +2183,34 @@ export class CardNestStore {
     const sources = await this.database.atomic(async (tx) => {
       const stored = await this.readStoredSources(tx);
       const current = stored.length ? stored : this.paymentSources().map((item) => ({ ...item }));
-      if (
-        current.some(
-          (item) =>
-            item.kind === 'DEBIT' &&
-            !item.archived &&
-            item.lastDigits?.slice(-3) === lastDigits &&
-            matchesBank(item.institution, institution) &&
-            (!accountFingerprint ||
-              fingerprintsMatch(item.accountFingerprint, accountFingerprint) ||
-              fingerprintsMatch(item.accountFingerprint, legacyFingerprint)),
-        )
-      )
-        throw new Error('This bank account is already enrolled.');
+      const sameSuffix = current.filter(
+        (item) =>
+          item.kind === 'DEBIT' &&
+          item.lastDigits?.slice(-3) === lastDigits &&
+          matchesBank(item.institution, institution),
+      );
+      const duplicate = sameSuffix.find(
+        (item) =>
+          fingerprintsMatch(item.accountFingerprint, accountFingerprint) ||
+          fingerprintsMatch(item.accountFingerprint, legacyFingerprint),
+      );
+      if (duplicate)
+        throw new Error(
+          duplicate.archived
+            ? 'An archived bank account with this identity already exists. Restore it explicitly instead.'
+            : 'This bank account is already enrolled.',
+        );
+      const unresolved = sameSuffix.find(
+        (item) =>
+          !fingerprintsProveDistinct(item.accountFingerprint, accountFingerprint) &&
+          !fingerprintsProveDistinct(item.accountFingerprint, legacyFingerprint),
+      );
+      if (unresolved)
+        throw new Error(
+          unresolved.archived
+            ? 'An archived bank account has this bank and suffix. Restore or identify it explicitly before creating another account.'
+            : 'This bank account is already enrolled or its identity cannot be distinguished from the existing account. Confirm the full account number before proceeding.',
+        );
       const currentPrimary =
         current.find(
           (item) =>
@@ -2137,15 +2338,42 @@ export class CardNestStore {
   }
 
   private assertBalanceValue(source: PaymentSource, value: number): void {
-    if (!Number.isSafeInteger(value) || (source.kind === 'CASH' && value < 0))
+    if (!Number.isSafeInteger(value) || (source.kind !== 'DEBIT' && value < 0))
       throw new Error(
-        source.kind === 'CASH' ? 'Cash balance cannot be negative.' : 'Enter a valid balance.',
+        source.kind === 'CASH'
+          ? 'Cash balance cannot be negative.'
+          : source.kind === 'MEAL'
+            ? 'Wallet balance cannot be negative.'
+            : 'Enter a valid balance.',
       );
+  }
+
+  private hasWalletBaseline(source: PaymentSource): boolean {
+    return (
+      source.kind === 'MEAL' &&
+      !source.noLimit &&
+      Number.isSafeInteger(source.balanceMinor) &&
+      !!source.balanceCutoverAt &&
+      Number.isFinite(Date.parse(source.balanceCutoverAt))
+    );
   }
 
   private async loadBankCashTracking(raw: string | undefined): Promise<void> {
     if (raw !== undefined) {
-      this.bankCashTracking.set(parseBankCashTracking(raw));
+      const settings = parseBankCashTracking(raw);
+      this.bankCashTracking.set(settings);
+      try {
+        const saved: unknown = JSON.parse(raw);
+        if (
+          saved &&
+          typeof saved === 'object' &&
+          (!Object.prototype.hasOwnProperty.call(saved, 'bankEnabled') ||
+            !Object.prototype.hasOwnProperty.call(saved, 'cashEnabled'))
+        )
+          await this.database.atomic((tx) => this.writeTrackingSettings(tx, settings));
+      } catch {
+        this.bankCashTracking.set({ ...DEFAULT_BANK_CASH_TRACKING });
+      }
       await this.loadBalanceAdjustments();
       return;
     }
@@ -2165,7 +2393,13 @@ export class CardNestStore {
       );
       const now = new Date().toISOString();
       const settings: BankCashTrackingSettings = legacy.length
-        ? { enabled: true, askCardSettlementFunding: false, activatedAt: now }
+        ? {
+            enabled: true,
+            bankEnabled: true,
+            cashEnabled: true,
+            askCardSettlementFunding: false,
+            activatedAt: now,
+          }
         : { ...DEFAULT_BANK_CASH_TRACKING };
       for (const source of legacy) {
         await this.insertBalanceAdjustment(tx, {
@@ -2338,6 +2572,62 @@ export class CardNestStore {
   }
   async updateCategory(category: Category): Promise<void> {
     await this.saveCategory(category, true);
+  }
+  async resetDefaultCategories(): Promise<void> {
+    if (!this.database.ready()) throw new Error('Category storage is unavailable.');
+    await this.database.atomic(async (tx) => {
+      const rows = await tx.query<{
+        id: string;
+        name: string;
+      }>('SELECT id,name FROM categories');
+      const states = await tx.query<CategoryCatalogEntry>('SELECT * FROM category_catalog_state');
+      const planned = CATEGORY_REGISTRY.categories.map((definition) => {
+        const state = states.find((row) => row.canonical_id === definition.id);
+        const names = [definition.name, ...definition.aliases].map(normalizedCategoryName);
+        const mapped = state?.category_id
+          ? rows.find((row) => row.id === state.category_id)
+          : undefined;
+        const stableId = rows.find((row) => row.id === definition.id);
+        const selected =
+          mapped ??
+          (stableId && names.includes(normalizedCategoryName(stableId.name))
+            ? stableId
+            : undefined);
+        return { definition, names, selected, id: selected?.id ?? definition.id };
+      });
+      const plannedIds = new Set<string>();
+      for (const item of planned) {
+        if (plannedIds.has(item.id))
+          throw new Error(
+            'Category catalog mappings conflict. Resolve the category mapping before resetting.',
+          );
+        plannedIds.add(item.id);
+        const nameConflict = rows.find(
+          (row) => row.id !== item.id && item.names.includes(normalizedCategoryName(row.name)),
+        );
+        if (nameConflict)
+          throw new Error(
+            `Cannot restore ${item.definition.name}: a custom category uses its name or alias. Rename the custom category and retry.`,
+          );
+        if (!item.selected && rows.some((row) => row.id === item.id))
+          throw new Error(
+            `Cannot restore ${item.definition.name}: its stable category ID is occupied by a custom category.`,
+          );
+      }
+      for (const item of planned) {
+        const definition = item.definition;
+        await tx.run(
+          'INSERT INTO categories(id,name,icon,colour,applies_to,archived) VALUES(?,?,?,?,?,0) ON CONFLICT(id) DO UPDATE SET name=excluded.name,icon=excluded.icon,colour=excluded.colour,applies_to=excluded.applies_to,archived=0',
+          [item.id, definition.name, definition.icon, definition.colour, definition.appliesTo],
+        );
+        await tx.run(
+          'INSERT INTO category_catalog_state(canonical_id,category_id,deleted) VALUES(?,?,0) ON CONFLICT(canonical_id) DO UPDATE SET category_id=excluded.category_id,deleted=0',
+          [definition.id, item.id],
+        );
+      }
+    });
+    await this.loadCategories();
+    await this.loadCategoryLimits();
   }
   private async saveCategory(category: Category, editing: boolean): Promise<void> {
     if (!this.database.ready()) throw new Error('Category storage is unavailable.');

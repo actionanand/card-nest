@@ -1048,8 +1048,9 @@
                 [value]="bankEditor.controls.purpose.value"
                 (valueChange)="setBankPurpose($event)"
               />
+              <p class="form-note"><strong>Pay from:</strong> Bank/UPI</p>
               <app-select-picker
-                label="Bank account in this message (required)"
+                label="Bank account"
                 formControlName="source"
                 [options]="bankSourceOptions()"
                 [searchable]="true"
@@ -1288,7 +1289,7 @@
                   </p>
                   @if (
                     bankItem()?.purposeHint === 'CARD_REPAYMENT' &&
-                    (!store.bankCashTracking().enabled ||
+                    (!bankBalanceTrackingEnabled() ||
                       !store.bankCashTracking().askCardSettlementFunding)
                   ) {
                     <p>

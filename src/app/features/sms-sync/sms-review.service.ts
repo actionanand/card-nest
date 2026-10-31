@@ -30,6 +30,7 @@ import {
   BANK_CASH_TRACKING_KEY,
   applyBankCashTransaction,
   applyTransferEffects,
+  bankTrackingEnabled,
   bankCashTracked,
   isBankOrCash,
   needsBaselineConfirmation,
@@ -1745,7 +1746,7 @@ export class SmsReviewService {
           [BANK_CASH_TRACKING_KEY],
         );
         const settings = parseBankCashTracking(trackingRow?.encrypted_value);
-        if (!settings.enabled || !settings.askCardSettlementFunding)
+        if (!bankTrackingEnabled(settings) || !settings.askCardSettlementFunding)
           throw new Error('Turn on bank deduction for card payments in Settings first.');
         const bank = sources.find((entry) => entry.id === edits.fundingSourceId);
         if (!bank || bank.kind !== 'DEBIT' || !bankCashTracked(bank, settings))

@@ -37,6 +37,8 @@ import { BankAccountSyncService } from '../../features/bank-activity/bank-accoun
 import { CardsPage } from '../../features/cards/cards';
 import { RemindersPage } from '../../features/reminders/reminders';
 import { SnackbarService } from '../services/snackbar.service';
+import { legacyFingerprintCompleteBankAccount } from '../services/bank-account-identifier';
+import { CATEGORY_REGISTRY } from './category-definitions';
 
 const { DatabaseSync } = process.getBuiltinModule('node:sqlite') as typeof import('node:sqlite');
 
@@ -878,6 +880,78 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+  it('resets default categories in place while preserving custom categories, budgets, and transactions', async () => {
+    const { store } = await boot();
+    const dining = store.categories().find((category) => category.id === 'dining')!;
+    await store.updateCategory({
+      ...dining,
+      name: 'My Dining',
+      icon: 'film',
+      colour: '#123456',
+      appliesTo: 'EXPENSE',
+      archived: true,
+    });
+    await store.setCategoryLimit('dining', 50000, true);
+    await store.addCategory({
+      id: 'custom-category-reset',
+      name: 'My Custom Category',
+      icon: 'tag',
+      colour: '#456789',
+      appliesTo: 'BOTH',
+      archived: false,
+    });
+    const transaction = purchase({
+      id: 'category-reset-history',
+      categoryId: 'dining',
+      amountMinor: 2300,
+    });
+    await store.saveManualTransaction(transaction);
+    await store.deleteCategory('education');
+
+    await store.resetDefaultCategories();
+    await store.resetDefaultCategories();
+
+    const resetDining = store.categories().find((category) => category.id === 'dining')!;
+    expect(resetDining).toMatchObject({
+      name: 'Dining',
+      icon: 'restaurant',
+      colour: '#de7d68',
+      appliesTo: 'BOTH',
+      archived: false,
+      monthlyLimitMinor: 50000,
+      showLimit: true,
+    });
+    expect(store.categories().find((category) => category.id === 'education')).toMatchObject({
+      name: 'Education',
+      archived: false,
+    });
+    expect(store.categories().find((category) => category.id === 'custom-category-reset')).toEqual(
+      expect.objectContaining({ name: 'My Custom Category', colour: '#456789' }),
+    );
+    expect(
+      store
+        .categories()
+        .filter((category) =>
+          CATEGORY_REGISTRY.categories.some((definition) => definition.id === category.id),
+        ),
+    ).toHaveLength(24);
+    expect(rows('SELECT * FROM card_transactions WHERE id=?', [transaction.id])).toEqual([
+      expect.objectContaining({ category_id: 'dining' }),
+    ]);
+
+    await store.deleteCategory('wealth-assets');
+    await database.run(
+      'INSERT INTO categories(id,name,icon,colour,applies_to,archived) VALUES(?,?,?,?,?,0)',
+      ['custom-wealth-collision', 'Wealth & Assets', 'tag', '#654321', 'BOTH'],
+    );
+    const beforeCollision = rows('SELECT * FROM categories ORDER BY id');
+    await expect(store.resetDefaultCategories()).rejects.toThrow('custom category uses its name');
+    expect(rows('SELECT * FROM categories ORDER BY id')).toEqual(beforeCollision);
+    expect(rows("SELECT id FROM categories WHERE id='wealth-assets'")).toHaveLength(0);
+    expect(rows("SELECT id FROM categories WHERE id='custom-wealth-collision'")).toEqual([
+      { id: 'custom-wealth-collision' },
+    ]);
   });
   it('suggests only for new manual entries, preserves explicit overrides and saved categories, and inherits new split categories', async () => {
     const { store } = await boot();
@@ -1730,10 +1804,10 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
   });
   it('rolls back duplicate writes, retries the same identity and preserves unapproved evidence copying', async () => {
     const { store, stored } = await boot();
-    await store.updatePaymentSource({
-      ...store.paymentSources().find((source) => source.kind === 'MEAL')!,
-      balanceMinor: 10000,
-    });
+    await store.setSourceBalance(
+      store.paymentSources().find((source) => source.kind === 'MEAL')!.id,
+      10000,
+    );
     const original = purchase({
       id: 'duplicate-original',
       cardId: 'source-meal',
@@ -2746,7 +2820,8 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
           archived: false,
         });
       const wallet = store.paymentSources().find((source) => source.kind === kind)!;
-      await store.updatePaymentSource({ ...wallet, balanceMinor: 25000 });
+      if (kind === 'MEAL') await store.setSourceBalance(wallet.id, 25000);
+      else await store.updatePaymentSource({ ...wallet, balanceMinor: 25000 });
       expect(stored(wallet.id)).toBe(25000);
     }
     const beforeFailure = store.paymentSources();
@@ -3065,6 +3140,45 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     ).toBe(149000);
   });
 
+  it('migrates saved combined tracking preferences to independent flags on restart', async () => {
+    const { store } = await boot();
+    await database.run(
+      "INSERT INTO app_preferences(key,encrypted_value) VALUES('bank_cash_tracking',?) ON CONFLICT(key) DO UPDATE SET encrypted_value=excluded.encrypted_value",
+      [JSON.stringify({ enabled: true, askCardSettlementFunding: true, activatedAt: 'before' })],
+    );
+
+    const restarted = TestBed.runInInjectionContext(() => new CardNestStore());
+    await restarted.initialisePreferences();
+    expect(restarted.bankCashTracking()).toMatchObject({
+      enabled: true,
+      bankEnabled: true,
+      cashEnabled: true,
+      askCardSettlementFunding: true,
+    });
+    const saved = JSON.parse(
+      String(
+        rows("SELECT encrypted_value FROM app_preferences WHERE key='bank_cash_tracking'")[0][
+          'encrypted_value'
+        ],
+      ),
+    ) as { bankEnabled?: boolean; cashEnabled?: boolean };
+    expect(saved).toMatchObject({ bankEnabled: true, cashEnabled: true });
+
+    await restarted.disableBankTracking();
+    expect(restarted.bankCashTracking()).toMatchObject({
+      enabled: true,
+      bankEnabled: false,
+      cashEnabled: true,
+    });
+    await restarted.disableCashTracking();
+    expect(restarted.bankCashTracking()).toMatchObject({
+      enabled: false,
+      bankEnabled: false,
+      cashEnabled: false,
+    });
+    expect(store.bankCashTracking().enabled).toBe(false);
+  });
+
   it('conserves Bank + Cash through withdrawals, deposits, edits, deletes, failures, restart and backup', async () => {
     const { store, balance, stored } = await boot();
     const bank = await store.addBankAccount({
@@ -3217,6 +3331,256 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     expect(JSON.stringify(saved)).not.toContain('123456789123');
     expect(rows('SELECT * FROM card_transactions ORDER BY rowid')).toEqual(before);
     expect(saved.every((row) => row.balanceMinor === undefined || row.kind !== 'DEBIT')).toBe(true);
+  });
+  it('derives latest Bank Activity from committed bank transactions after edits and deletes', async () => {
+    const { store } = await boot();
+    const bank = await store.addBankAccount({
+      nickname: 'Activity bank',
+      institution: 'ICICI Bank',
+      lastDigits: '419',
+    });
+    const activity = TestBed.inject(BankActivityService);
+    const profile = await activity.saveProfile({
+      bankName: bank.institution!,
+      paymentSourceId: bank.id,
+      owner: 'OWN',
+    });
+    const older = purchase({
+      id: 'bank-activity-older',
+      cardId: bank.id,
+      transactionDate: '2026-10-20',
+    });
+    const latest = purchase({
+      id: 'bank-activity-latest',
+      cardId: bank.id,
+      transactionDate: '2026-10-25',
+    });
+    await store.saveManualTransaction(latest);
+    await store.saveManualTransaction(older);
+    expect(activity.summaryFor(profile.id, '2026-10-31').lastActivityDate).toBe('2026-10-25');
+
+    await store.saveManualTransaction({ ...latest, transactionDate: '2026-10-18' });
+    expect(activity.summaryFor(profile.id, '2026-10-31').lastActivityDate).toBe('2026-10-20');
+    await store.deleteRecordedTransaction(older.id);
+    expect(activity.summaryFor(profile.id, '2026-10-31').lastActivityDate).toBe('2026-10-18');
+
+    const credit = purchase({
+      id: 'bank-activity-credit',
+      cardId: bank.id,
+      type: 'CREDIT',
+      transactionDate: '2026-10-27',
+    });
+    await store.saveManualTransaction(credit);
+    expect(activity.transactionsFor(profile.id).map((transaction) => transaction.id)).toContain(
+      credit.id,
+    );
+    expect(activity.transactionDirection(credit)).toBe('CREDIT');
+    expect(activity.summaryFor(profile.id, '2026-10-31').lastActivityDate).toBe('2026-10-27');
+    expect(rows('SELECT * FROM bank_activity_events')).toHaveLength(0);
+  });
+
+  it('confirms primary switches, replaces an archived primary and normalizes restored flags', async () => {
+    const { store } = await boot();
+    const first = await store.addBankAccount({
+      institution: 'ICICI Bank',
+      accountIdentifier: '123456789123',
+    });
+    const second = await store.addBankAccount({
+      institution: 'HDFC Bank',
+      accountIdentifier: '987654321123',
+    });
+    await store.enableBankCashTracking({ [first.id]: 10000, [second.id]: 20000 });
+    await store.saveManualTransaction(
+      purchase({ id: 'primary-switch-history', cardId: first.id, amountMinor: 1200 }),
+    );
+    const transactionsBefore = rows('SELECT * FROM card_transactions ORDER BY id');
+    const balancesBefore = financialState();
+
+    await expect(store.updatePaymentSource({ ...second, isPrimaryBank: true })).rejects.toThrow(
+      'Confirm a primary-bank switch',
+    );
+    await store.setPrimaryBankAccount(second.id);
+    expect(
+      store
+        .paymentSources()
+        .filter((source) => source.isPrimaryBank)
+        .map((s) => s.id),
+    ).toEqual([second.id]);
+    expect(financialState()).toEqual(balancesBefore);
+
+    await store.updatePaymentSource({
+      ...store.paymentSources().find((source) => source.id === second.id)!,
+      archived: true,
+    });
+    expect(
+      store
+        .paymentSources()
+        .filter((source) => source.isPrimaryBank)
+        .map((s) => s.id),
+    ).toEqual([first.id]);
+    expect(rows('SELECT * FROM card_transactions ORDER BY id')).toEqual(transactionsBefore);
+
+    const persisted = JSON.parse(
+      String(
+        rows("SELECT encrypted_value FROM app_preferences WHERE key='payment_sources'")[0][
+          'encrypted_value'
+        ],
+      ),
+    ) as PaymentSource[];
+    const corrupted = persisted.map((source) =>
+      source.id === second.id ? { ...source, archived: false, isPrimaryBank: true } : source,
+    );
+    await database.run("UPDATE app_preferences SET encrypted_value=? WHERE key='payment_sources'", [
+      JSON.stringify(corrupted),
+    ]);
+    const restored = TestBed.runInInjectionContext(() => new CardNestStore());
+    await restored.initialisePreferences();
+    expect(
+      restored
+        .paymentSources()
+        .filter((source) => source.isPrimaryBank)
+        .map((s) => s.id),
+    ).toEqual([first.id]);
+    expect(rows('SELECT * FROM card_transactions ORDER BY id')).toEqual(transactionsBefore);
+  });
+
+  it('audits additive and replacement balances without creating income or spending', async () => {
+    const { store } = await boot();
+    const bank = await store.addBankAccount({ institution: 'ICICI Bank', lastDigits: '419' });
+    await store.enableBankTracking({ [bank.id]: 50000 });
+    await store.enableCashTracking(25000);
+    const meal = store.paymentSources().find((source) => source.kind === 'MEAL')!;
+    await store.setSourceBalance(meal.id, 30000, 'Initial wallet balance');
+    const transactionsBefore = rows('SELECT * FROM card_transactions ORDER BY id');
+    const transfersBefore = rows('SELECT * FROM source_transfers ORDER BY id');
+
+    await store.addSourceBalance(bank.id, 5000, 'Bank deposit adjustment');
+    await store.addSourceBalance('source-cash', 2000, 'Cash added');
+    await store.addSourceBalance(meal.id, 4000, 'Wallet top-up adjustment');
+    await store.setSourceBalance('source-cash', 31000, 'Cash count correction');
+    await store.setSourceBalance(meal.id, 32000, 'Wallet count correction');
+
+    expect(store.paymentSources()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: bank.id, balanceMinor: 55000 }),
+        expect.objectContaining({ id: 'source-cash', balanceMinor: 31000 }),
+        expect.objectContaining({
+          id: meal.id,
+          balanceMinor: 32000,
+          noLimit: false,
+          balanceCutoverReason: 'MANUAL',
+        }),
+      ]),
+    );
+    expect(store.balanceAdjustments().filter((item) => item.sourceId === bank.id)).toEqual([
+      expect.objectContaining({ reason: 'ADD', previousMinor: 50000, newMinor: 55000 }),
+      expect.objectContaining({ reason: 'OPENING', newMinor: 50000 }),
+    ]);
+    expect(store.balanceAdjustments().filter((item) => item.sourceId === 'source-cash')).toEqual([
+      expect.objectContaining({ reason: 'CORRECTION', newMinor: 31000 }),
+      expect.objectContaining({ reason: 'ADD', previousMinor: 25000, newMinor: 27000 }),
+      expect.objectContaining({ reason: 'REBASE', newMinor: 25000 }),
+    ]);
+    expect(store.balanceAdjustments().filter((item) => item.sourceId === meal.id)).toEqual([
+      expect.objectContaining({ reason: 'CORRECTION', newMinor: 32000 }),
+      expect.objectContaining({ reason: 'ADD', previousMinor: 30000, newMinor: 34000 }),
+      expect.objectContaining({ reason: 'OPENING', newMinor: 30000 }),
+    ]);
+    expect(rows('SELECT * FROM card_transactions ORDER BY id')).toEqual(transactionsBefore);
+    expect(rows('SELECT * FROM source_transfers ORDER BY id')).toEqual(transfersBefore);
+  });
+
+  it('requires proof before reusing same-bank suffixes and directs archived identities to restoration', async () => {
+    const { store } = await boot();
+    const legacy = await store.addBankAccount({ institution: 'Canara Bank', lastDigits: '007' });
+    await expect(
+      store.addBankAccount({ institution: 'Canara Bank', accountIdentifier: '123456789007' }),
+    ).rejects.toThrow('identity cannot be distinguished');
+
+    const legacyFingerprint = await legacyFingerprintCompleteBankAccount('123456789007');
+    const sources = store
+      .paymentSources()
+      .map((source) =>
+        source.id === legacy.id ? { ...source, accountFingerprint: legacyFingerprint } : source,
+      );
+    await database.run("UPDATE app_preferences SET encrypted_value=? WHERE key='payment_sources'", [
+      JSON.stringify(sources),
+    ]);
+    store.paymentSources.set(sources);
+    await expect(
+      store.addBankAccount({ institution: 'Canara Bank', accountIdentifier: '123456789007' }),
+    ).rejects.toThrow('already enrolled');
+
+    const archived = await store.addBankAccount({
+      institution: 'HDFC',
+      accountIdentifier: '11111111007',
+    });
+    await store.updatePaymentSource({ ...archived, archived: true });
+    await expect(
+      store.addBankAccount({ institution: 'HDFC', accountIdentifier: '11111111007' }),
+    ).rejects.toThrow('Restore it explicitly');
+    const distinct = await store.addBankAccount({
+      institution: 'HDFC',
+      accountIdentifier: '22222222007',
+    });
+    expect(distinct.lastDigits).toBe('007');
+    expect(store.paymentSources().find((source) => source.id === archived.id)?.archived).toBe(true);
+  });
+
+  it('clears a complete account fingerprint when the generic editor replaces it with a mask', async () => {
+    const { store, stored } = await boot();
+    const account = await store.addBankAccount({
+      institution: 'ICICI',
+      accountIdentifier: '123456789123',
+    });
+    await store.enableBankCashTracking({ [account.id]: 45600 });
+    const before = financialState();
+    const current = store.paymentSources().find((source) => source.id === account.id)!;
+
+    await store.updatePaymentSource({
+      ...current,
+      accountMask: '••••••123',
+    });
+
+    const updated = store.paymentSources().find((source) => source.id === account.id)!;
+    expect(updated).toMatchObject({
+      id: account.id,
+      lastDigits: '123',
+      accountMask: '••••••123',
+      accountFingerprint: undefined,
+      balanceMinor: 45600,
+      balanceSnapshotMinor: current.balanceSnapshotMinor,
+      balanceCutoverAt: current.balanceCutoverAt,
+    });
+    expect(stored(account.id)).toBe(45600);
+    expect(financialState()).toEqual(before);
+  });
+
+  it('distinguishes complete identities in the generic editor without changing source IDs', async () => {
+    const { store } = await boot();
+    const first = await store.addBankAccount({
+      institution: 'ICICI Bank',
+      accountIdentifier: '11111111007',
+    });
+    const second = await store.addBankAccount({
+      institution: 'ICICI Bank',
+      accountIdentifier: '22222222007',
+    });
+    const originalSecond = store.paymentSources().find((source) => source.id === second.id)!;
+
+    await expect(
+      store.updatePaymentSource({ ...originalSecond, accountMask: '11111111007' }),
+    ).rejects.toThrow('identity already exists');
+    expect(store.paymentSources().find((source) => source.id === second.id)).toEqual(
+      originalSecond,
+    );
+
+    await store.updatePaymentSource({ ...originalSecond, accountMask: '33333333007' });
+    expect(store.paymentSources().find((source) => source.id === second.id)).toMatchObject({
+      id: second.id,
+      lastDigits: '007',
+      accountFingerprint: expect.not.stringMatching(first.accountFingerprint!),
+    });
   });
 
   it('records SMS purchases, receipts and own-account transfers on the right account exactly once', async () => {
@@ -3925,10 +4289,15 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
       '.pay-from-option',
     ) as NodeListOf<HTMLButtonElement>;
     expect(options).toHaveLength(1);
-    expect(options[0].textContent).toContain('HDFC Bank');
-    expect(options[0].textContent).toContain('Reserve');
-    expect(options[0].textContent).toContain('•••007');
+    expect(options[0].textContent).toContain('Bank/UPI');
+    expect(options[0].textContent).toContain('1 account');
     options[0].click();
+    expect(page.payFromBankMode()).toBe(true);
+    expect(page.form.controls.cardId.value).toBe(checking.id);
+    expect(
+      page.bankAccountOptions().find((option) => option.value === reserve.id)?.label,
+    ).toContain('HDFC Bank · Reserve');
+    page.selectBankAccount(reserve.id);
     expect(page.form.controls.cardId.value).toBe(reserve.id);
     page.form.patchValue({
       type: 'PURCHASE',
@@ -3942,6 +4311,9 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
       .transactions()
       .find((transaction) => transaction.merchant === 'Synthetic bank purchase');
     expect(saved).toMatchObject({ cardId: reserve.id, amountMinor: 1000 });
+    page.edit(saved!);
+    expect(page.payFromBankMode()).toBe(true);
+    expect(page.form.controls.cardId.value).toBe(reserve.id);
     expect(
       store.paymentSources().find((source) => source.id === reserve.id)?.balanceMinor,
     ).toBeUndefined();

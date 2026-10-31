@@ -33,6 +33,21 @@ describe('Offline category matching with strict winner fallback', () => {
     ['Unspecified merchant', 'other'],
     ['Indulgences', 'other'],
   ])('maps safe merchant evidence %s to %s', (merchant, id) => expect(suggest(merchant)).toBe(id));
+  it('uses conservative new merchant rules without overriding an explicit category', () => {
+    expect(suggest('Frnd Transfer')).toBe('indulgences');
+    expect(suggest('Sports Betting Exchange')).toBe('indulgences');
+    expect(suggest('Casino Games Online')).toBe('indulgences');
+    expect(suggest('Bettington')).toBe('other');
+    expect(suggest('Mutual Fund Platform')).toBe('wealth-assets');
+    expect(suggest('Beauty Salon')).toBe('lifestyle-personal-care');
+    expect(suggest('Temple Donation')).toBe('giving-spiritual');
+    expect(
+      suggestCategory(
+        { purpose: 'PURCHASE', merchant: 'Frnd Transfer', explicitId: 'dining' },
+        DEFAULT_CATEGORIES,
+      ),
+    ).toBe('dining');
+  });
   it.each(['missing', 'archived', 'incompatible'])(
     'uses Other for a %s winning target without falling through to Swiggy Dining',
     (mode) => {
@@ -155,7 +170,7 @@ describe('Offline category matching with strict winner fallback', () => {
     ).toBe('other');
   });
   it('validates both registries, duplicate IDs, target IDs and refuses executable regex fields', () => {
-    expect(CATEGORY_REGISTRY.categories).toHaveLength(21);
+    expect(CATEGORY_REGISTRY.categories).toHaveLength(24);
     expect(validateMatchingRules({ version: 1, rules: CATEGORY_RULES })).toEqual(CATEGORY_RULES);
     for (const value of [
       { version: 1, rules: [CATEGORY_RULES[0], CATEGORY_RULES[0]] },

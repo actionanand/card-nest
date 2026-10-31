@@ -75,6 +75,54 @@ describe('SMS review privacy and explicit approval UI', () => {
     expect(row.textContent).toContain('Swipe right to review and add');
     fixture.destroy();
   });
+  it('defaults unmatched Bank/UPI review to the primary account without approving it', async () => {
+    const primary: PaymentSource = {
+      id: 'primary-bank',
+      nickname: 'Everyday',
+      institution: 'ICICI Bank',
+      kind: 'DEBIT',
+      lastDigits: '123',
+      isPrimaryBank: true,
+      noLimit: true,
+      autoLoad: false,
+      archived: false,
+    };
+    const other: PaymentSource = {
+      ...primary,
+      id: 'other-bank',
+      nickname: 'Reserve',
+      institution: 'HDFC Bank',
+      lastDigits: '456',
+      isPrimaryBank: false,
+    };
+    paymentSources.set([primary, other]);
+    const candidate = demoCandidate();
+    candidate.kind = 'BANK_DEBIT';
+    candidate.item = {
+      ...candidate.item!,
+      kind: 'BANK_DEBIT',
+      issuer: undefined,
+      accountDigits: undefined,
+      direction: 'DEBIT',
+      purposeHint: 'PURCHASE',
+    };
+    candidates.set([candidate]);
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    const page = fixture.componentInstance;
+    page.open(candidate);
+    fixture.detectChanges();
+
+    expect(page.bankEditor.controls.source.value).toBe(primary.id);
+    expect(fixture.nativeElement.textContent).toContain('Pay from: Bank/UPI');
+    expect(sync.approveBank).not.toHaveBeenCalled();
+    expect(page.bankSourceOptions().map((option) => option.value)).toEqual([
+      '',
+      primary.id,
+      other.id,
+    ]);
+    fixture.destroy();
+  });
   it('restores a bank repayment draft using its saved purpose before checking category compatibility', async () => {
     const fixture = TestBed.createComponent(SmsSyncPage);
     const page = fixture.componentInstance;

@@ -5,11 +5,13 @@ import {
   applyBankCashTransaction,
   applyTransferEffects,
   applyWalletTransaction,
+  bankTrackingEnabled,
   assetEffect,
   bankCashTracked,
   baselinePosition,
   CORRECTION_QUESTION,
   liquidTotals,
+  cashTrackingEnabled,
   needsBaselineConfirmation,
   parseBankCashTracking,
   reverseBalanceEffect,
@@ -20,8 +22,18 @@ import {
 
 /** Fictional amounts in paise; no real account data. */
 describe('Bank/Cash asset accounting', () => {
-  const on = { enabled: true, askCardSettlementFunding: false };
-  const off = { enabled: false, askCardSettlementFunding: false };
+  const on = {
+    enabled: true,
+    bankEnabled: true,
+    cashEnabled: true,
+    askCardSettlementFunding: false,
+  };
+  const off = {
+    enabled: false,
+    bankEnabled: false,
+    cashEnabled: false,
+    askCardSettlementFunding: false,
+  };
   const baseline = new Date(Date.now() - 60_000).toISOString();
   const today = indiaTodayIso();
   const sources = (): PaymentSource[] => [
@@ -798,8 +810,35 @@ describe('Bank/Cash asset accounting', () => {
     expect(parseBankCashTracking('{"enabled":true,"askCardSettlementFunding":true}')).toMatchObject(
       {
         enabled: true,
+        bankEnabled: true,
+        cashEnabled: true,
         askCardSettlementFunding: true,
       },
     );
+  });
+
+  it('tracks bank and cash independently while migrating the former combined preference', () => {
+    const list = sources();
+    const bankOnly = {
+      enabled: true,
+      bankEnabled: true,
+      cashEnabled: false,
+      askCardSettlementFunding: false,
+    };
+    const cashOnly = {
+      enabled: true,
+      bankEnabled: false,
+      cashEnabled: true,
+      askCardSettlementFunding: false,
+    };
+    expect(bankTrackingEnabled(bankOnly)).toBe(true);
+    expect(cashTrackingEnabled(bankOnly)).toBe(false);
+    expect(bankCashTracked(list[0], bankOnly)).toBe(true);
+    expect(bankCashTracked(list[1], bankOnly)).toBe(false);
+    expect(bankCashTracked(list[0], cashOnly)).toBe(false);
+    expect(bankCashTracked(list[1], cashOnly)).toBe(true);
+    expect(
+      parseBankCashTracking('{"enabled":true,"askCardSettlementFunding":false}'),
+    ).toMatchObject({ enabled: true, bankEnabled: true, cashEnabled: true });
   });
 });

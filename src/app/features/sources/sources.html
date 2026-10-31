@@ -48,10 +48,6 @@
     </app-profile-modal>
   }
 
-  <a class="btn manage-bank-accounts" routerLink="/bank-activity">
-    <app-icon name="landmark" /> Manage bank accounts
-  </a>
-
   <div class="source-tabs" role="tablist" aria-label="Money source views">
     <button
       id="accounts-tab"
@@ -83,55 +79,10 @@
       role="tabpanel"
       aria-labelledby="accounts-tab"
     >
-      <section class="bank-balance-summary" aria-labelledby="bank-balance-title">
-        <header>
-          <div>
-            <h2 id="bank-balance-title">Bank balances</h2>
-            <p>
-              @switch (bankBalanceSummary().status) {
-                @case ('OFF') {
-                  Balance tracking off
-                }
-                @case ('NONE') {
-                  No active bank accounts
-                }
-                @case ('INCOMPLETE') {
-                  Incomplete · one or more bank balances are not set
-                }
-                @case ('KNOWN') {
-                  Total · {{ money(bankBalanceSummary().totalMinor ?? 0) }}
-                }
-              }
-            </p>
-          </div>
-          <a class="btn" routerLink="/bank-activity">Manage bank accounts</a>
-        </header>
-        @if (store.bankAccounts().length) {
-          <details>
-            <summary>Account breakdown (read only)</summary>
-            @for (source of store.bankAccounts(); track source.id) {
-              <div class="bank-balance-row">
-                <span>
-                  <strong>{{ source.institution || 'Bank/UPI' }}</strong>
-                  · {{ source.nickname
-                  }}{{ source.lastDigits ? ' · ' + accountIdentifier(source) : '' }}
-                </span>
-                <span>
-                  {{ bankAccountBalanceLabel(source) }}
-                  <a
-                    class="bank-balance-edit"
-                    routerLink="/bank-activity"
-                    [queryParams]="{ source: source.id }"
-                  >
-                    Edit in Discovered Accounts
-                  </a>
-                </span>
-              </div>
-            }
-          </details>
-        }
-      </section>
-      @for (source of store.activePaymentSources(); track source.id) {
+      @for (
+        source of store.activePaymentSources().filter((item) => item.kind !== 'DEBIT');
+        track source.id
+      ) {
         <article class="panel source-card" [id]="source.id">
           <div class="source-heading">
             <span><app-payment-source-logo [kind]="source.kind" /></span>
@@ -171,16 +122,24 @@
                 <span class="untracked-balance">Balance not tracked</span>
               }
             }
-            @if (tracking().enabled) {
+            @if (trackingEnabledFor(source)) {
               <div class="source-actions movement-actions">
                 @if (source.kind === 'CASH') {
                   <button
                     class="btn"
                     type="button"
                     [disabled]="!tracked(source)"
+                    (click)="openMovement({ mode: 'ADD_MONEY', sourceId: source.id })"
+                  >
+                    <app-icon name="incoming" /> Add money
+                  </button>
+                  <button
+                    class="btn"
+                    type="button"
+                    [disabled]="!tracked(source)"
                     (click)="openMovement({ mode: 'RECEIPT', sourceId: source.id })"
                   >
-                    <app-icon name="incoming" /> Add cash
+                    <app-icon name="incoming" /> Record cash receipt
                   </button>
                   <button
                     class="btn"
@@ -213,6 +172,14 @@
                     <app-icon name="banknote_arrow_up" /> Deposit into bank
                   </button>
                 } @else {
+                  <button
+                    class="btn"
+                    type="button"
+                    [disabled]="!tracked(source)"
+                    (click)="openMovement({ mode: 'ADD_MONEY', sourceId: source.id })"
+                  >
+                    <app-icon name="incoming" /> Add money
+                  </button>
                   <button
                     class="btn"
                     type="button"
@@ -313,12 +280,23 @@
                 (change)="updateLastDigits(source, $event)"
               /><small>Used only to distinguish this Pluxee card.</small></label
             >
-            <label
-              >Current Pluxee balance<input
-                inputmode="decimal"
-                [value]="(source.balanceMinor ?? 0) / 100"
-                (change)="updateAmount(source, $event, 'balanceMinor')"
-            /></label>
+            <div class="source-actions movement-actions">
+              <button
+                class="btn"
+                type="button"
+                [disabled]="source.noLimit"
+                (click)="openMovement({ mode: 'ADD_MONEY', sourceId: source.id })"
+              >
+                <app-icon name="incoming" /> Add money
+              </button>
+              <button
+                class="btn"
+                type="button"
+                (click)="openMovement({ mode: 'BALANCE', sourceId: source.id })"
+              >
+                <app-icon name="edit" /> Set current balance
+              </button>
+            </div>
             <p>
               Top-ups use actual amounts and dates. Add a Credit transaction manually or approve an
               SMS top-up. Historical simulated loads are included in the preserved balance snapshot.
@@ -337,6 +315,45 @@
             </a>
           </div>
         </article>
+      }
+      @if (store.bankAccounts().length) {
+        <details class="bank-accounts-section">
+          <summary>
+            <span>Bank accounts</span>
+            @if (bankBalanceSummary().status === 'KNOWN') {
+              <strong>Total · {{ money(bankBalanceSummary().totalMinor ?? 0) }}</strong>
+            } @else if (
+              bankBalanceSummary().status === 'INCOMPLETE' &&
+              bankBalanceSummary().totalMinor !== undefined
+            ) {
+              <strong>Known subtotal · {{ money(bankBalanceSummary().totalMinor ?? 0) }}</strong>
+            } @else if (bankBalanceSummary().status === 'OFF') {
+              <small>Balance tracking off</small>
+            }
+            <app-icon name="chevron_right" />
+          </summary>
+          <div class="bank-account-list">
+            @for (source of store.bankAccounts(); track source.id) {
+              <div class="bank-account-row">
+                <span>
+                  <strong>{{ source.institution || 'Bank/UPI' }}</strong>
+                  · {{ source.nickname
+                  }}{{ source.lastDigits ? ' · ' + accountIdentifier(source) : '' }}
+                </span>
+                <span>{{ bankAccountBalanceLabel(source) }}</span>
+              </div>
+            }
+            @if (
+              bankBalanceSummary().status === 'INCOMPLETE' &&
+              bankBalanceSummary().totalMinor === undefined
+            ) {
+              <p class="form-note">No active bank balance is currently known.</p>
+            }
+            <a class="btn" routerLink="/bank-activity">
+              <app-icon name="landmark" /> Manage bank accounts
+            </a>
+          </div>
+        </details>
       }
     </section>
   } @else {
@@ -387,7 +404,7 @@
         </article>
         @if (tracking().enabled) {
           <article class="panel">
-            <small>Bank + Cash</small>
+            <small>{{ liquidBalanceTitle() }}</small>
             <strong>{{ liquidBalanceLabel() }}</strong>
           </article>
         }

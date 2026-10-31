@@ -478,12 +478,19 @@
                     >Commercial connection</span
                   ></label
                 >
-                <label
-                  >Linked mobile number (optional)<input
-                    formControlName="mobileNumber"
-                    inputmode="tel"
-                    placeholder="+91 mobile number"
-                /></label>
+                <label class="phone-field-label"
+                  >Linked mobile number (optional)
+                  <span class="phone-field">
+                    <span class="country-prefix" aria-hidden="true">+91</span>
+                    <input
+                      appIndianPhone
+                      formControlName="mobileNumber"
+                      inputmode="numeric"
+                      maxlength="10"
+                      placeholder="10-digit mobile number"
+                    />
+                  </span>
+                </label>
                 <label
                   >Connection ID (optional)<input formControlName="connectionId" maxlength="80"
                 /></label>
@@ -499,13 +506,15 @@
                   >Distributor contact number (optional)<input
                     formControlName="distributorContact"
                     inputmode="tel"
-                    maxlength="20"
+                    maxlength="40"
+                    placeholder="+1 800 555 0199"
                 /></label>
                 <label
                   >Distributor WhatsApp number (optional)<input
                     formControlName="distributorWhatsApp"
                     inputmode="tel"
-                    maxlength="20"
+                    maxlength="40"
+                    placeholder="+44 20 7946 0958"
                 /></label>
                 <label
                   >Estimated usage days<input

@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "rules": [
     {
       "id": "swiggy-instamart",
@@ -127,6 +127,82 @@
       "priority": 60,
       "merchantWords": ["restaurant", "cafe", "eatery"],
       "merchantPhrases": ["coffee stall"],
+      "enabled": true
+    },
+    {
+      "id": "friend-transfers",
+      "categoryId": "indulgences",
+      "priority": 55,
+      "merchantWords": ["frnd"],
+      "enabled": true
+    },
+    {
+      "id": "conservative-betting-merchants",
+      "categoryId": "indulgences",
+      "priority": 75,
+      "merchantWords": ["betting", "bookmaker", "bookmakers"],
+      "merchantPhrases": [
+        "sports betting",
+        "online betting",
+        "betting exchange",
+        "online casino",
+        "casino games",
+        "lottery ticket",
+        "poker room"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "wealth-assets",
+      "categoryId": "wealth-assets",
+      "priority": 70,
+      "merchantPhrases": [
+        "mutual fund",
+        "stock broker",
+        "investment platform",
+        "demat account",
+        "property purchase"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "lifestyle-personal-care",
+      "categoryId": "lifestyle-personal-care",
+      "priority": 60,
+      "merchantPhrases": [
+        "beauty salon",
+        "personal care",
+        "fitness centre",
+        "fitness center",
+        "gym membership"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "giving-spiritual",
+      "categoryId": "giving-spiritual",
+      "priority": 70,
+      "merchantPhrases": [
+        "charity donation",
+        "charitable trust",
+        "temple donation",
+        "church donation",
+        "religious donation"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "travel-lodging",
+      "categoryId": "travel",
+      "priority": 65,
+      "merchantPhrases": ["hotel booking", "flight booking", "railway ticket"],
+      "enabled": true
+    },
+    {
+      "id": "household-services",
+      "categoryId": "household",
+      "priority": 60,
+      "merchantPhrases": ["home cleaning", "plumbing service", "electrical repair"],
       "enabled": true
     }
   ]

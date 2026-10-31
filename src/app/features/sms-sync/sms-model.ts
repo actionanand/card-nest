@@ -12,6 +12,7 @@ import {
 } from '../../core/models/domain';
 import { purchaseCompatible } from './sms-purchase-matching';
 import { matchesTransactionType } from '../../core/services/money';
+import { bankTrackingEnabled } from '../../core/services/source-balance';
 
 export type SmsKind =
   | 'PURCHASE'
@@ -318,18 +319,30 @@ export function bankPurposes(
   if (!isBankEvidence(item)) return [];
   const direction = bankDirection(item);
   if (!direction) return [];
-  if (direction === 'CREDIT') return settings.enabled ? ['INCOME', 'TRANSFER'] : ['INCOME'];
+  if (direction === 'CREDIT')
+    return bankTrackingEnabled(settings) ? ['INCOME', 'TRANSFER'] : ['INCOME'];
   const repayment =
     item.kind === 'PAYMENT_INITIATED' ||
     item.kind === 'LOAN_DEBIT' ||
     item.purposeHint === 'CARD_REPAYMENT' ||
     item.purposeHint === 'LOAN_REPAYMENT';
   const purposes: BankPurpose[] = repayment ? [] : ['PURCHASE'];
-  if (settings.enabled && item.kind !== 'LOAN_DEBIT' && item.kind !== 'PAYMENT_INITIATED')
+  if (
+    bankTrackingEnabled(settings) &&
+    item.kind !== 'LOAN_DEBIT' &&
+    item.kind !== 'PAYMENT_INITIATED'
+  )
     purposes.push('TRANSFER');
-  if (settings.enabled && settings.askCardSettlementFunding && item.kind !== 'LOAN_DEBIT')
+  if (
+    bankTrackingEnabled(settings) &&
+    settings.askCardSettlementFunding &&
+    item.kind !== 'LOAN_DEBIT'
+  )
     purposes.push('CARD_SETTLEMENT');
-  if (settings.enabled && (item.kind === 'LOAN_DEBIT' || item.purposeHint === 'LOAN_REPAYMENT'))
+  if (
+    bankTrackingEnabled(settings) &&
+    (item.kind === 'LOAN_DEBIT' || item.purposeHint === 'LOAN_REPAYMENT')
+  )
     purposes.push('LOAN_REPAYMENT');
   return purposes;
 }
@@ -441,7 +454,7 @@ export function suggestedBankSources(
 ): readonly string[] {
   const matches = matchingBankAccountCandidates(item, sources);
   if (matches.length) return matches.length === 1 && !matches[0].archived ? [matches[0].id] : [];
-  if (settings.enabled) return [];
+  if (bankTrackingEnabled(settings)) return [];
   const generic = sources.filter(
     (source) => source.kind === 'DEBIT' && !source.archived && !source.lastDigits,
   );

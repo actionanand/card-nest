@@ -10,17 +10,17 @@ import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker
 import { AppIcon } from '../../shared/app-icon';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { IndiaTodayClock } from '../../core/services/india-date';
-import { formatMoney } from '../../core/services/money';
+import { formatMoney, parseMoneyToMinor } from '../../core/services/money';
 import {
   displayBankAccountIdentifier,
   displayBankAccountSuffix,
 } from '../../core/services/bank-account-identifier';
-import { bankCashTracked } from '../../core/services/source-balance';
+import { bankCashTracked, bankTrackingEnabled } from '../../core/services/source-balance';
 import { BankActivityEvent, BankActivityProfile } from './bank-activity-model';
 import { BankActivityService } from './bank-activity.service';
 import { BankAccountSyncService } from './bank-account-sync.service';
 import { SourceMovementDialog } from '../../shared/source-movement-dialog';
-import { PaymentSource } from '../../core/models/domain';
+import { CardTransaction, PaymentSource } from '../../core/models/domain';
 import { ActivatedRoute, Router } from '@angular/router';
 
 interface BankAccountCard {
@@ -69,8 +69,13 @@ export class BankActivityPage {
   readonly tabs = ['Discovered Accounts', 'Find Banks', 'Bank Activities'] as const;
   readonly activeTab = signal(0);
   readonly deletion = signal<BankActivityEvent | null>(null);
+  readonly primaryBankConfirmation = signal<PaymentSource | null>(null);
   readonly accountSync = inject(BankAccountSyncService);
   readonly balanceMovement = signal<{ sourceId: string } | null>(null);
+  readonly bankTrackingSetupOpen = signal(false);
+  readonly bankTrackingSaving = signal(false);
+  readonly bankTrackingError = signal<string | null>(null);
+  readonly bankTrackingBalances = signal<Readonly<Record<string, string>>>({});
   readonly discoveryNotice = signal('');
   readonly mismatchAcknowledged = signal<Readonly<Record<string, boolean>>>({});
   readonly confirmation = signal<{
@@ -116,9 +121,10 @@ export class BankActivityPage {
   });
   readonly reviewCandidates = computed(() => this.activity.candidates());
   readonly evidenceQuery = signal('');
-  readonly evidenceFilter = signal('ALL');
+  readonly evidenceFilter = signal('UNRESOLVED');
   readonly evidenceFilterOptions: readonly AppSelectOption[] = [
     { value: 'ALL', label: 'All evidence' },
+    { value: 'UNRESOLVED', label: 'Pending identification' },
     { value: 'UNIDENTIFIED', label: 'Unidentified' },
     { value: 'SUGGESTED', label: 'Suggested match' },
     { value: 'NEEDS_REVIEW', label: 'Needs review' },
@@ -128,7 +134,13 @@ export class BankActivityPage {
     const query = this.evidenceQuery().trim().toLowerCase();
     const status = this.evidenceFilter();
     return this.reviewCandidates()
-      .filter((candidate) => status === 'ALL' || this.evidenceStatus(candidate) === status)
+      .filter((candidate) =>
+        status === 'ALL'
+          ? true
+          : status === 'UNRESOLVED'
+            ? this.evidenceStatus(candidate) !== 'ASSOCIATED'
+            : this.evidenceStatus(candidate) === status,
+      )
       .filter(
         (candidate) =>
           !query ||
@@ -154,6 +166,11 @@ export class BankActivityPage {
   readonly reviewSelection = signal<Readonly<Record<string, string>>>({});
   readonly bankSources = computed(() =>
     this.store.paymentSources().filter((source) => source.kind === 'DEBIT' && !source.archived),
+  );
+  readonly bankTrackingSources = computed(() =>
+    this.bankSources().filter(
+      (source) => source.id !== 'source-debit' && source.institution !== 'Primary bank',
+    ),
   );
   readonly activeProfiles = computed(() =>
     this.activity.profiles().filter((profile) => !profile.archived),
@@ -295,6 +312,8 @@ export class BankActivityPage {
 
   private readonly profileChanges = toSignal(this.profileForm.valueChanges);
   constructor() {
+    if (this.route.snapshot.queryParamMap.get('initializeBankTracking') === '1')
+      this.openBankTrackingSetup();
     if (this.requestedDiscoveryFingerprint) {
       this.activeTab.set(1);
       queueMicrotask(() => void this.findAccounts(this.requestedDiscoveryFingerprint));
@@ -580,9 +599,27 @@ export class BankActivityPage {
   }
 
   accountBalanceLabel(source?: PaymentSource): string {
-    if (!source || !this.store.bankCashTracking().enabled) return 'Not tracked';
+    if (!source || !bankTrackingEnabled(this.store.bankCashTracking())) return 'Not tracked';
     if (!bankCashTracked(source, this.store.bankCashTracking())) return 'Balance not set';
     return formatMoney(source.balanceMinor, 'INR');
+  }
+
+  linkedBankAccount(profile: BankActivityProfile): string {
+    const source = this.store.paymentSources().find((item) => item.id === profile.paymentSourceId);
+    if (!source) return 'Standalone monitoring';
+    return `${source.institution || 'Bank/UPI'} · ${source.nickname}${source.lastDigits ? ` · ${displayBankAccountSuffix(source.lastDigits)}` : ''}`;
+  }
+
+  bankTransactions(profile: BankActivityProfile): readonly CardTransaction[] {
+    return this.activity.transactionsFor(profile.id).slice(0, 5);
+  }
+
+  transactionDirection(transaction: CardTransaction): string {
+    return this.activity.transactionDirection(transaction) ?? 'Activity';
+  }
+
+  transactionAmount(transaction: CardTransaction): string {
+    return formatMoney(transaction.amountMinor, transaction.currencyCode);
   }
 
   canSetBalance(card: BankAccountCard): boolean {
@@ -590,13 +627,55 @@ export class BankActivityPage {
       card.owner === 'OWN' &&
       !!card.source &&
       !card.source.archived &&
-      this.store.bankCashTracking().enabled
+      bankTrackingEnabled(this.store.bankCashTracking())
     );
   }
 
   openBalance(card: BankAccountCard): void {
     if (this.canSetBalance(card) && card.source)
       this.balanceMovement.set({ sourceId: card.source.id });
+  }
+
+  openBankTrackingSetup(): void {
+    this.bankTrackingBalances.set(
+      Object.fromEntries(this.bankTrackingSources().map((source) => [source.id, '0'])),
+    );
+    this.bankTrackingError.set(null);
+    this.bankTrackingSetupOpen.set(true);
+  }
+
+  updateBankTrackingBalance(sourceId: string, event: Event): void {
+    this.bankTrackingBalances.update((balances) => ({
+      ...balances,
+      [sourceId]: (event.target as HTMLInputElement).value,
+    }));
+  }
+
+  async confirmBankTrackingSetup(event: Event): Promise<void> {
+    event.preventDefault();
+    if (this.bankTrackingSaving()) return;
+    const balances: Record<string, number> = {};
+    for (const source of this.bankTrackingSources()) {
+      const value = parseMoneyToMinor((this.bankTrackingBalances()[source.id] ?? '').trim());
+      if (value === null) {
+        this.bankTrackingError.set(`Enter a valid current balance for ${source.nickname}.`);
+        return;
+      }
+      balances[source.id] = value;
+    }
+    this.bankTrackingSaving.set(true);
+    this.bankTrackingError.set(null);
+    try {
+      await this.store.enableBankTracking(balances);
+      this.bankTrackingSetupOpen.set(false);
+      this.discoveryNotice.set('Bank/UPI balance tracking is on. Older entries were not replayed.');
+    } catch (error: unknown) {
+      this.bankTrackingError.set(
+        error instanceof Error ? error.message : 'Bank balance tracking could not be enabled.',
+      );
+    } finally {
+      this.bankTrackingSaving.set(false);
+    }
   }
 
   startProfileForSource(source: PaymentSource): void {
@@ -667,6 +746,27 @@ export class BankActivityPage {
       this.error.set(
         error instanceof Error ? error.message : 'Money Source could not be archived.',
       );
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  requestPrimaryBankSwitch(source: PaymentSource): void {
+    if (!source.archived && source.kind === 'DEBIT' && !source.isPrimaryBank)
+      this.primaryBankConfirmation.set(source);
+  }
+
+  async confirmPrimaryBankSwitch(): Promise<void> {
+    const source = this.primaryBankConfirmation();
+    if (!source || this.saving()) return;
+    this.primaryBankConfirmation.set(null);
+    this.saving.set(true);
+    this.error.set(null);
+    try {
+      await this.store.setPrimaryBankAccount(source.id);
+      this.discoveryNotice.set(`${source.nickname} is now the primary bank account.`);
+    } catch (error: unknown) {
+      this.error.set(error instanceof Error ? error.message : 'Primary bank could not be changed.');
     } finally {
       this.saving.set(false);
     }
@@ -964,8 +1064,12 @@ export class BankActivityPage {
     return this.activity.eventsFor(profile.id);
   }
   latestDate(profile: BankActivityProfile, direction: 'DEBIT' | 'CREDIT'): string {
-    return (
-      this.events(profile).find((row) => row.direction === direction)?.activityDate ?? 'Unknown'
-    );
+    const eventDate = this.events(profile).find((row) => row.direction === direction)?.activityDate;
+    const transactionDate = this.activity
+      .transactionsFor(profile.id)
+      .find(
+        (transaction) => this.activity.transactionDirection(transaction) === direction,
+      )?.transactionDate;
+    return [eventDate, transactionDate].filter(Boolean).sort().at(-1) ?? 'Unknown';
   }
 }

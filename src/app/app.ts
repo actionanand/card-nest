@@ -26,6 +26,7 @@ import { UtilitiesService } from './features/utilities/utilities.service';
 import { BankActivityService } from './features/bank-activity/bank-activity.service';
 import { focusedElement, isTextEntry } from './shared/text-entry-focus';
 import { CommittedSaveRefreshError } from './core/services/committed-save-refresh-error';
+import { bankTrackingEnabled } from './core/services/source-balance';
 
 interface NativeLaunchBridge {
   hideSplash(): void;
@@ -105,7 +106,7 @@ export class App {
   constructor() {
     effect(() => {
       this.store.paymentSources();
-      const enabled = this.store.bankCashTracking().enabled;
+      const enabled = bankTrackingEnabled(this.store.bankCashTracking());
       if (this.database.ready() && enabled) {
         void this.bankActivity
           .reload()

@@ -97,16 +97,20 @@ describe('Explicit FASTag wallet creation and feedback', () => {
   });
   it('routes bank enrollment and identity editing to Discovered Accounts', () => {
     const fixture = setup();
-    const manage = fixture.nativeElement.querySelector(
-      '.manage-bank-accounts',
-    ) as HTMLAnchorElement | null;
+    const section = fixture.nativeElement.querySelector(
+      '.bank-accounts-section',
+    ) as HTMLDetailsElement;
+    section.open = true;
+    fixture.detectChanges();
+    const manage = section.querySelector('a') as HTMLAnchorElement | null;
     expect(manage?.textContent).toContain('Manage bank accounts');
     expect(manage?.getAttribute('href')).toContain('/bank-activity');
+    expect(fixture.nativeElement.textContent).not.toContain('Account breakdown (read only)');
     expect(fixture.nativeElement.textContent).not.toContain('Enrol a bank account');
     expect(fixture.nativeElement.querySelector('form[formgroup="bankForm"]')).toBeNull();
     fixture.destroy();
   });
-  it('shows only complete bank totals and a read-only account breakdown', () => {
+  it('shows a known bank subtotal without treating untracked accounts as zero', () => {
     const fixture = setup();
     const store = TestBed.inject(CardNestStore);
     store.paymentSources.set([
@@ -137,20 +141,15 @@ describe('Explicit FASTag wallet creation and feedback', () => {
     fixture.detectChanges();
     expect(fixture.componentInstance.bankBalanceSummary().status).toBe('INCOMPLETE');
     expect(fixture.componentInstance.remainingLabel()).toContain('Incomplete');
-    expect(fixture.nativeElement.querySelector('.bank-balance-summary').textContent).toContain(
-      'Incomplete',
-    );
-    expect(
-      fixture.nativeElement.querySelector('.bank-balance-summary > header').textContent,
-    ).not.toContain('₹1,000.00');
     const details = fixture.nativeElement.querySelector(
-      '.bank-balance-summary details',
+      '.bank-accounts-section',
     ) as HTMLDetailsElement;
     details.open = true;
     fixture.detectChanges();
-    expect(fixture.nativeElement.querySelector('.bank-balance-summary details input')).toBeNull();
+    expect(details.textContent).toContain('Known subtotal · ₹1,000.00');
     expect(details.textContent).toContain('₹1,000.00');
     expect(details.textContent).toContain('Balance not set');
+    expect(fixture.nativeElement.textContent).not.toContain('Account breakdown (read only)');
 
     store.paymentSources.update((sources) =>
       sources.map((source) =>
@@ -165,9 +164,7 @@ describe('Explicit FASTag wallet creation and feedback', () => {
       totalMinor: 350000,
     });
     expect(fixture.componentInstance.remainingLabel()).toContain('₹3,500.00');
-    expect(fixture.nativeElement.querySelector('.bank-balance-summary').textContent).toContain(
-      '₹3,500.00',
-    );
+    expect(details.textContent).toContain('Total · ₹3,500.00');
     fixture.destroy();
   });
   it('orders wallet activity by event time and shows recorded time without using scan time', () => {

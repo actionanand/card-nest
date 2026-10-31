@@ -2,6 +2,8 @@ import {
   displayBankAccountIdentifier,
   displayBankAccountSuffix,
   fingerprintCompleteBankAccount,
+  matchesBank,
+  normalizedBank,
   parseBankAccountIdentifier,
 } from './bank-account-identifier';
 
@@ -49,5 +51,35 @@ describe('Bank account identifier masking', () => {
     expect(displayBankAccountIdentifier(undefined, '00007')).toBe('•••007');
     expect(displayBankAccountSuffix('45123')).toBe('•••123');
     expect(displayBankAccountSuffix('00007')).toBe('•••007');
+  });
+
+  it('recognizes expanded bank aliases without merging similarly named institutions', () => {
+    for (const [alias, id] of [
+      ['Canara Bank', 'canara'],
+      ['Indian Bank', 'indian-bank'],
+      ['Indian Overseas Bank', 'indian-overseas'],
+      ['Citibank', 'citi'],
+      ['JPMorgan Chase', 'jpmorgan-chase'],
+      ['Deutsche Bank', 'deutsche'],
+      ['IDBI Bank', 'idbi'],
+      ['SBI', 'sbi'],
+      ['Union Bank of India', 'union-bank'],
+      ['DBS Bank', 'dbs'],
+      ['Karur Vysya Bank', 'karur-vysya'],
+      ['Tamilnad Mercantile Bank', 'tamilnad-mercantile'],
+      ['India Post Payments Bank', 'ippb'],
+      ['Airtel Payments Bank', 'airtel-payments'],
+      ['City Union Bank', 'city-union'],
+      ['Bank of India', 'bank-of-india'],
+      ['Central Bank of India', 'central-bank-india'],
+      ['UCO Bank', 'uco'],
+      ['Bank of Maharashtra', 'bank-of-maharashtra'],
+      ['South Indian Bank', 'south-indian'],
+      ['Bandhan Bank', 'bandhan'],
+      ['Karnataka Bank', 'karnataka'],
+    ] as const)
+      expect(normalizedBank(alias)).toBe(id);
+    expect(matchesBank('Indian Bank', 'Indian Overseas Bank')).toBe(false);
+    expect(matchesBank('Citibank', 'City Union Bank')).toBe(false);
   });
 });

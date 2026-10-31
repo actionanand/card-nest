@@ -15,8 +15,33 @@ export const BANK_CASH_TRACKING_KEY = 'bank_cash_tracking';
 
 export const DEFAULT_BANK_CASH_TRACKING: BankCashTrackingSettings = {
   enabled: false,
+  bankEnabled: false,
+  cashEnabled: false,
   askCardSettlementFunding: false,
 };
+
+export function bankTrackingEnabled(settings: BankCashTrackingSettings): boolean {
+  return settings.bankEnabled ?? settings.enabled;
+}
+
+export function cashTrackingEnabled(settings: BankCashTrackingSettings): boolean {
+  return settings.cashEnabled ?? settings.enabled;
+}
+
+export function anyBalanceTrackingEnabled(settings: BankCashTrackingSettings): boolean {
+  return settings.enabled || bankTrackingEnabled(settings) || cashTrackingEnabled(settings);
+}
+
+export function sourceBalanceTrackingEnabled(
+  source: Pick<PaymentSource, 'kind'>,
+  settings: BankCashTrackingSettings,
+): boolean {
+  return source.kind === 'DEBIT'
+    ? bankTrackingEnabled(settings)
+    : source.kind === 'CASH'
+      ? cashTrackingEnabled(settings)
+      : false;
+}
 
 export function isBankOrCash(source: Pick<PaymentSource, 'kind'> | null | undefined): boolean {
   return source?.kind === 'CASH' || source?.kind === 'DEBIT';
@@ -40,8 +65,15 @@ export function parseBankCashTracking(raw: string | null | undefined): BankCashT
     const value: unknown = JSON.parse(raw);
     if (!value || typeof value !== 'object') return { ...DEFAULT_BANK_CASH_TRACKING };
     const record = value as Record<string, unknown>;
+    const legacyEnabled = record['enabled'] === true;
+    const bankEnabled =
+      typeof record['bankEnabled'] === 'boolean' ? record['bankEnabled'] : legacyEnabled;
+    const cashEnabled =
+      typeof record['cashEnabled'] === 'boolean' ? record['cashEnabled'] : legacyEnabled;
     return {
-      enabled: record['enabled'] === true,
+      enabled: bankEnabled || cashEnabled,
+      bankEnabled,
+      cashEnabled,
       // Retained while tracking is off; only effective when tracking is on.
       askCardSettlementFunding: record['askCardSettlementFunding'] === true,
       activatedAt: typeof record['activatedAt'] === 'string' ? record['activatedAt'] : undefined,
@@ -52,7 +84,7 @@ export function parseBankCashTracking(raw: string | null | undefined): BankCashT
   }
 }
 
-/** A Bank/Cash balance is tracked only with the global setting on and a confirmed baseline. */
+/** A Bank/Cash balance is tracked only with its setting on and a confirmed baseline. */
 export function bankCashTracked(
   source: PaymentSource | null | undefined,
   settings: BankCashTrackingSettings,
@@ -60,7 +92,7 @@ export function bankCashTracked(
   return (
     !!source &&
     isBankOrCash(source) &&
-    settings.enabled &&
+    sourceBalanceTrackingEnabled(source, settings) &&
     typeof source.balanceMinor === 'number' &&
     Number.isSafeInteger(source.balanceMinor) &&
     !!source.balanceCutoverAt &&
@@ -299,7 +331,7 @@ export function applyTransferEffects(
     throw new Error('Choose different From and To accounts.');
   if (!Number.isSafeInteger(next.amountMinor) || next.amountMinor <= 0)
     throw new Error('Enter a valid transfer amount.');
-  if (!settings.enabled) {
+  if (!anyBalanceTrackingEnabled(settings)) {
     if (strict) throw new Error('Turn on Bank & Cash tracking before recording transfers.');
     return { ...next, effects: [] };
   }

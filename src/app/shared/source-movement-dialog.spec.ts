@@ -45,8 +45,10 @@ describe('Movement timing selection', () => {
     updatedAt: `${today}T12:00:00+05:30`,
   };
   const saveTransfer = vi.fn().mockResolvedValue(saved);
+  const addSourceBalance = vi.fn().mockResolvedValue(undefined);
   beforeEach(() => {
     saveTransfer.mockReset().mockResolvedValue(saved);
+    addSourceBalance.mockReset().mockResolvedValue(undefined);
     TestBed.configureTestingModule({
       providers: [
         {
@@ -58,6 +60,7 @@ describe('Movement timing selection', () => {
             categories: signal([]),
             sourceDetail: (id: string) => id,
             saveTransfer,
+            addSourceBalance,
           },
         },
       ],
@@ -113,6 +116,24 @@ describe('Movement timing selection', () => {
     fixture.detectChanges();
     expect(page.timingReviewed()).toBe(false);
     expect(page.timing()).toBe('INCLUDED_IN_BASELINE');
+    fixture.destroy();
+  });
+
+  it('previews additive balance changes and saves an adjustment instead of a receipt', async () => {
+    const fixture = TestBed.createComponent(SourceMovementDialog);
+    fixture.componentRef.setInput('mode', 'ADD_MONEY');
+    fixture.componentRef.setInput('sourceId', 'cash');
+    fixture.detectChanges();
+    const page = fixture.componentInstance;
+    page.amount.set('10');
+    fixture.detectChanges();
+    expect(page.balancePreview()).toContain('20');
+    expect(page.balancePreview()).toContain('30');
+    expect(page.balancePreview()).toContain('not income or spending');
+
+    await page.submit(new Event('submit'));
+    expect(addSourceBalance).toHaveBeenCalledWith('cash', 1000, '');
+    expect(saveTransfer).not.toHaveBeenCalled();
     fixture.destroy();
   });
 });

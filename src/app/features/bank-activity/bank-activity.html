@@ -14,7 +14,7 @@
     }
     @if (activeTab() === 0) {
       <button class="btn btn-primary" type="button" (click)="startProfile()">
-        <app-icon name="plus" /> Add bank manually
+        <app-icon name="plus" /> Add bank account
       </button>
     }
   </header>
@@ -111,7 +111,7 @@
       @for (candidate of visibleReviewCandidates(); track candidate.fingerprint) {
         <article class="review-candidate">
           <header>
-            <div>
+            <div class="evidence-copy">
               <strong
                 >{{ candidate.bankName || 'Bank not identified'
                 }}{{
@@ -121,14 +121,13 @@
                 }}</strong
               ><small
                 >{{ candidate.activityDate }} ·
-                {{ candidate.direction === 'CREDIT' ? 'Credit' : 'Debit' }} ·
-                {{ candidate.purposeHint }}</small
+                {{ candidate.direction === 'CREDIT' ? 'Credit' : 'Debit' }} · Reference
+                {{ maskedReference(candidate.reference) || 'unavailable' }}</small
               >
-              @if (candidate.reference) {
-                <small>Ref {{ maskedReference(candidate.reference) }}</small>
-              }
             </div>
-            <span class="status-badge attention">{{ evidenceStatusLabel(candidate) }}</span>
+            <span class="status-badge attention evidence-status">{{
+              evidenceStatusLabel(candidate)
+            }}</span>
           </header>
           <p class="form-note">{{ reviewWarning(candidate) }}</p>
           @if (hasTrustedIdentityAssociation(candidate)) {
@@ -221,18 +220,23 @@
               <h2>{{ account.bankName }}{{ account.suffix ? ' · •••' + account.suffix : '' }}</h2>
               <small>{{ account.nickname }}</small>
             </div>
-            <span
-              class="status-badge"
-              [class.active]="!!account.profile && !account.profile.archived"
-            >
-              {{
-                account.profile
-                  ? account.profile.archived
-                    ? 'Monitoring archived'
-                    : statusLabel(account.profile)
-                  : 'Not monitored'
-              }}
-            </span>
+            <div class="profile-badges">
+              @if (account.source?.isPrimaryBank) {
+                <span class="status-badge primary-bank-badge">Primary</span>
+              }
+              <span
+                class="status-badge"
+                [class.active]="!!account.profile && !account.profile.archived"
+              >
+                {{
+                  account.profile
+                    ? account.profile.archived
+                      ? 'Monitoring archived'
+                      : statusLabel(account.profile)
+                    : 'Not monitored'
+                }}
+              </span>
+            </div>
           </header>
           <p class="form-note">
             Money Source:
@@ -248,8 +252,17 @@
             · Balance:
             {{ accountBalanceLabel(account.source) }}
           </p>
+          @if (account.profile && !account.profile.archived) {
+            <p class="account-latest-activity">
+              Latest debit: {{ latestDate(account.profile, 'DEBIT') }} · Latest credit:
+              {{ latestDate(account.profile, 'CREDIT') }}
+            </p>
+          }
           <div class="profile-actions">
             @if (account.profile && !account.profile.archived) {
+              <button class="btn" type="button" (click)="startEvent(account.profile)">
+                <app-icon name="plus" /> Record activity
+              </button>
               <button class="btn" type="button" (click)="editProfile(account.profile)">
                 Edit monitoring
               </button>
@@ -266,6 +279,16 @@
               </button>
             }
             @if (account.source) {
+              @if (!account.source.isPrimaryBank) {
+                <button
+                  class="btn"
+                  type="button"
+                  [disabled]="saving()"
+                  (click)="requestPrimaryBankSwitch(account.source)"
+                >
+                  Set as primary
+                </button>
+              }
               <button class="btn" type="button" (click)="editMoneySource(account.source)">
                 Edit bank details
               </button>
@@ -390,19 +413,10 @@
             <h2 [id]="'bank-profile-' + profile.id" tabindex="-1">{{ profileLabel(profile) }}</h2>
             <small>{{ profile.remarks || 'Activity only · no balances stored here' }}</small>
           </div>
-          <span class="status-badge" [class]="statusClass(profile)">{{
-            statusLabel(profile)
-          }}</span>
         </header>
-        <p class="elapsed">{{ activityText(profile) }}</p>
-        <div class="profile-actions">
-          <button class="btn btn-primary" type="button" (click)="startEvent(profile)">
-            <app-icon name="plus" /> Record activity</button
-          ><button class="btn" type="button" (click)="editProfile(profile)">Edit</button
-          ><button class="btn" type="button" (click)="archive(profile)">Archive</button>
-        </div>
+        <p class="linked-account">Linked bank account: {{ linkedBankAccount(profile) }}</p>
         <div class="latest-activity">
-          <h3>Latest debit and credit</h3>
+          <h3>Latest recorded debit and credit</h3>
           <p class="form-note">
             Latest debit: {{ latestDate(profile, 'DEBIT') }} · Latest credit:
             {{ latestDate(profile, 'CREDIT') }}
@@ -449,6 +463,28 @@
             <p class="empty-state">No qualifying activity has been recorded. Status is Unknown.</p>
           }
         </div>
+        <section class="bank-transaction-history" aria-label="Recent bank transactions">
+          <h3>Recent bank transactions</h3>
+          @for (transaction of bankTransactions(profile); track transaction.id) {
+            <div class="bank-transaction-row">
+              <div>
+                <strong
+                  >{{ transaction.transactionDate }} · {{ transactionDirection(transaction) }} ·
+                  {{ transaction.merchant || transaction.type }}</strong
+                >
+                <small>
+                  {{ transaction.origin === 'SMS' ? 'SMS approved' : 'Manually saved' }}
+                  @if (transaction.reference) {
+                    · Ref {{ maskedReference(transaction.reference) }}
+                  }
+                </small>
+              </div>
+              <strong>{{ transactionAmount(transaction) }}</strong>
+            </div>
+          } @empty {
+            <p class="form-note">No qualifying bank transactions are linked to this account.</p>
+          }
+        </section>
       </article>
     } @empty {
       <section class="panel empty-state">
@@ -469,6 +505,48 @@
     [sourceId]="movement.sourceId"
     (closed)="balanceMovement.set(null)"
   />
+}
+
+@if (bankTrackingSetupOpen()) {
+  <app-profile-modal
+    title="Initialize bank balances"
+    [busy]="bankTrackingSaving()"
+    (closed)="bankTrackingSetupOpen.set(false)"
+  >
+    <form class="activity-form" (submit)="confirmBankTrackingSetup($event)">
+      <p class="form-note">
+        Confirm each account's current balance. This becomes its starting point; older entries are
+        not replayed.
+      </p>
+      @for (source of bankTrackingSources(); track source.id) {
+        <label
+          >{{ source.nickname }} · {{ source.institution }} — current balance (INR)<input
+            inputmode="decimal"
+            [value]="bankTrackingBalances()[source.id] ?? '0'"
+            (input)="updateBankTrackingBalance(source.id, $event)"
+            required
+        /></label>
+      } @empty {
+        <p class="form-note">No eligible saved bank accounts need a starting balance.</p>
+      }
+      @if (bankTrackingError(); as message) {
+        <p class="form-error" role="alert">{{ message }}</p>
+      }
+      <div class="modal-actions">
+        <button
+          class="btn"
+          type="button"
+          [disabled]="bankTrackingSaving()"
+          (click)="bankTrackingSetupOpen.set(false)"
+        >
+          Cancel
+        </button>
+        <button class="btn btn-primary" type="submit" [disabled]="bankTrackingSaving()">
+          Confirm balances
+        </button>
+      </div>
+    </form>
+  </app-profile-modal>
 }
 
 @if (confirmation(); as choice) {
@@ -492,9 +570,24 @@
   />
 }
 
+@if (primaryBankConfirmation(); as source) {
+  <app-confirmation-dialog
+    title="Switch primary bank account?"
+    [message]="
+      'Use ' +
+      source.nickname +
+      ' as the default for future Bank/UPI transactions? Existing transactions and balances will not change.'
+    "
+    confirmLabel="Set as primary"
+    [busy]="saving()"
+    (confirmed)="confirmPrimaryBankSwitch()"
+    (cancelled)="primaryBankConfirmation.set(null)"
+  />
+}
+
 @if (profileFormOpen()) {
   <app-profile-modal
-    [title]="editingProfileId() ? 'Edit monitored bank account' : 'Add monitored bank account'"
+    [title]="editingProfileId() ? 'Edit monitored account' : 'Add bank account'"
     [busy]="saving()"
     (closed)="closeProfile()"
     ><form class="activity-form" [formGroup]="profileForm" (submit)="saveProfile($event)">

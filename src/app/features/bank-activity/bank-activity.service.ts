@@ -10,7 +10,7 @@ import {
 import { Service, inject, signal } from '@angular/core';
 import { Capacitor } from '@capacitor/core';
 import { DatabaseSession, SqliteDatabase } from '../../core/data/sqlite-database';
-import { PaymentSource } from '../../core/models/domain';
+import { CardTransaction, PaymentSource } from '../../core/models/domain';
 import { RECONCILE_BANK_ACTIVITY_LATEST } from '../../core/data/bank-activity-latest';
 import { indiaTodayIso } from '../../core/services/india-date';
 import {
@@ -151,8 +151,58 @@ export class BankActivityService {
       .sort((left, right) => right.activityDate.localeCompare(left.activityDate));
   }
 
+  transactionsFor(profileId: string): readonly CardTransaction[] {
+    const profile = this.profiles().find((item) => item.id === profileId && item.owner === 'OWN');
+    if (!profile?.paymentSourceId) return [];
+    const unique = new Map(
+      (this.store.transactions?.() ?? [])
+        .filter(
+          (transaction) =>
+            transaction.cardId === profile.paymentSourceId &&
+            validDate(transaction.transactionDate) &&
+            this.transactionDirection(transaction) !== undefined,
+        )
+        .map((transaction) => [transaction.id, transaction] as const),
+    );
+    return [...unique.values()].sort(
+      (left, right) =>
+        right.transactionDate.localeCompare(left.transactionDate) ||
+        (right.transactionTime ?? '').localeCompare(left.transactionTime ?? '') ||
+        right.id.localeCompare(left.id),
+    );
+  }
+
   summaryFor(profileId: string, today: string): BankActivitySummary {
-    return bankActivitySummary(this.eventsFor(profileId), today);
+    const ledgerEvents = this.transactionsFor(profileId).map((transaction) => ({
+      id: `transaction:${transaction.id}`,
+      profileId,
+      activityDate: transaction.transactionDate,
+      direction: this.transactionDirection(transaction)!,
+      origin: 'MANUAL' as const,
+      verification: 'USER_CONFIRMED' as const,
+      reference: transaction.reference,
+      createdAt: transaction.createdAt,
+      updatedAt: transaction.updatedAt,
+    }));
+    return bankActivitySummary([...this.eventsFor(profileId), ...ledgerEvents], today);
+  }
+
+  transactionDirection(transaction: CardTransaction): BankActivityDirection | undefined {
+    if (
+      transaction.type === 'PAYMENT' ||
+      transaction.type === 'FEE' ||
+      transaction.type === 'INTEREST'
+    )
+      return undefined;
+    if (transaction.type === 'PURCHASE') return 'DEBIT';
+    if (['CREDIT', 'REFUND', 'CASHBACK'].includes(transaction.type)) return 'CREDIT';
+    if (
+      transaction.type === 'ADJUSTMENT' &&
+      transaction.adjustmentPurpose === 'SPLIT_PAYMENT' &&
+      transaction.adjustmentDirection !== 'DECREASE'
+    )
+      return 'DEBIT';
+    return undefined;
   }
 
   async saveProfile(input: {
@@ -399,20 +449,34 @@ export class BankActivityService {
         (identifier.mask === source.accountMask && lastDigits === finalThree(source.lastDigits)
           ? source.accountFingerprint
           : undefined);
-      const duplicate = sources.find(
+      const sameSuffix = sources.filter(
         (other) =>
           other.id !== source.id &&
           other.kind === 'DEBIT' &&
           matchesBank(other.institution, institution) &&
-          finalThree(other.lastDigits) === lastDigits &&
-          (fingerprintsMatch(other.accountFingerprint, accountFingerprint) ||
-            fingerprintsMatch(other.accountFingerprint, legacyFingerprint)),
+          finalThree(other.lastDigits) === lastDigits,
+      );
+      const duplicate = sameSuffix.find(
+        (other) =>
+          fingerprintsMatch(other.accountFingerprint, accountFingerprint) ||
+          fingerprintsMatch(other.accountFingerprint, legacyFingerprint),
       );
       if (duplicate)
         throw new Error(
           duplicate.archived
             ? 'An archived Money Source already has this bank and suffix. Restore it explicitly instead.'
             : 'A Money Source with this bank and suffix already exists.',
+        );
+      const unresolved = sameSuffix.find(
+        (other) =>
+          !accountFingerprintsProveDistinct(other.accountFingerprint, accountFingerprint) &&
+          !accountFingerprintsProveDistinct(other.accountFingerprint, legacyFingerprint),
+      );
+      if (unresolved)
+        throw new Error(
+          unresolved.archived
+            ? 'An archived Money Source has this bank and suffix. Restore or identify it explicitly before changing this account.'
+            : 'This bank and suffix already exist without proof of a different account. Confirm the full account number before proceeding.',
         );
       const ifscCode = input.ifscCode !== undefined ? enteredIfscCode : source.ifscCode;
       const updatedSource: PaymentSource = {

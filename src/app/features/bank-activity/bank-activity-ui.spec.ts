@@ -10,7 +10,7 @@ import {
   BankActivityProfile,
   bankActivitySummary,
 } from './bank-activity-model';
-import { PaymentSource } from '../../core/models/domain';
+import { CardTransaction, PaymentSource } from '../../core/models/domain';
 import { Capacitor } from '@capacitor/core';
 import axe from 'axe-core';
 
@@ -82,8 +82,12 @@ describe('Bank profile popup and confirmation-only discovery UI', () => {
   const sources = signal<readonly PaymentSource[]>([]);
   const requestedSourceId = signal('');
   const requestedDiscoveryFingerprint = signal('');
+  const initializeBankTracking = signal('');
   const routerNavigate = vi.fn().mockResolvedValue(true);
+  const setPrimaryBankAccount = vi.fn().mockResolvedValue(undefined);
+  const enableBankTracking = vi.fn().mockResolvedValue(undefined);
   const bankCashTracking = signal({ enabled: false, askCardSettlementFunding: false });
+  const bankTransactions = signal<readonly CardTransaction[]>([]);
   const profiles = signal<readonly BankActivityProfile[]>([]);
   const candidates = signal<readonly BankActivityCandidate[]>([]);
   const activity = {
@@ -133,14 +137,21 @@ describe('Bank profile popup and confirmation-only discovery UI', () => {
     },
     summaryFor: () => bankActivitySummary([], '2026-10-27'),
     eventsFor: () => [],
+    transactionsFor: () => bankTransactions(),
+    transactionDirection: (transaction: CardTransaction) =>
+      transaction.type === 'PURCHASE' ? 'DEBIT' : 'CREDIT',
   };
   beforeEach(() => {
     sources.set([]);
     requestedSourceId.set('');
     requestedDiscoveryFingerprint.set('');
+    initializeBankTracking.set('');
     profiles.set([]);
     candidates.set([]);
+    bankTransactions.set([]);
     vi.clearAllMocks();
+    setPrimaryBankAccount.mockReset().mockResolvedValue(undefined);
+    enableBankTracking.mockReset().mockResolvedValue(undefined);
     activity.saveProfile.mockReset().mockResolvedValue(profile);
     activity.updateOwnMoneySourceIdentity.mockReset().mockResolvedValue({
       id: 'checking',
@@ -182,7 +193,9 @@ describe('Bank profile popup and confirmation-only discovery UI', () => {
                     ? requestedSourceId()
                     : key === 'discoverCandidate'
                       ? requestedDiscoveryFingerprint()
-                      : null,
+                      : key === 'initializeBankTracking'
+                        ? initializeBankTracking()
+                        : null,
               },
             },
           },
@@ -195,6 +208,8 @@ describe('Bank profile popup and confirmation-only discovery UI', () => {
             paymentSources: sources,
             bankCashTracking,
             updatePaymentSource: vi.fn().mockResolvedValue(undefined),
+            setPrimaryBankAccount,
+            enableBankTracking,
           },
         },
       ],
@@ -237,6 +252,112 @@ describe('Bank profile popup and confirmation-only discovery UI', () => {
     expect(activity.discoverSavedEvidence).not.toHaveBeenCalled();
     fixture.destroy();
   });
+  it('keeps identified evidence out of pending identification while preserving its activity review', async () => {
+    const identified = {
+      ...candidate,
+      reference: 'BANK-REF-1234',
+      resolvedAt: 'identity-confirmed',
+      resolvedProfileId: profile.id,
+    };
+    profiles.set([profile]);
+    candidates.set([identified]);
+    const fixture = TestBed.createComponent(BankActivityPage);
+    fixture.detectChanges();
+    const page = fixture.componentInstance;
+    page.activeTab.set(1);
+    fixture.detectChanges();
+    expect(page.visibleReviewCandidates()).toHaveLength(0);
+    expect(candidates()).toHaveLength(1);
+
+    page.evidenceFilter.set('ASSOCIATED');
+    fixture.detectChanges();
+    expect(page.visibleReviewCandidates()).toEqual([identified]);
+    expect(fixture.nativeElement.textContent).toContain('Account identified · activity pending');
+    expect(fixture.nativeElement.textContent).toContain('Review & confirm activity');
+    expect(fixture.nativeElement.textContent).not.toContain('Confirm account identity');
+    expect(fixture.nativeElement.textContent).toContain('Reference ••••1234');
+    fixture.destroy();
+  });
+  it('requires explicit confirmation before setting another bank as primary', async () => {
+    const first: PaymentSource = {
+      id: 'primary-first',
+      kind: 'DEBIT',
+      institution: 'ICICI Bank',
+      nickname: 'Everyday',
+      lastDigits: '123',
+      isPrimaryBank: true,
+      noLimit: true,
+      autoLoad: false,
+      archived: false,
+    };
+    const second: PaymentSource = {
+      ...first,
+      id: 'primary-second',
+      institution: 'HDFC Bank',
+      nickname: 'Savings',
+      isPrimaryBank: false,
+    };
+    sources.set([first, second]);
+    profiles.set([]);
+    const fixture = TestBed.createComponent(BankActivityPage);
+    fixture.detectChanges();
+    const page = fixture.componentInstance;
+    page.requestPrimaryBankSwitch(second);
+    fixture.detectChanges();
+    expect(page.primaryBankConfirmation()).toBe(second);
+    expect(setPrimaryBankAccount).not.toHaveBeenCalled();
+
+    await page.confirmPrimaryBankSwitch();
+    expect(setPrimaryBankAccount).toHaveBeenCalledWith(second.id);
+    expect(page.primaryBankConfirmation()).toBeNull();
+    fixture.destroy();
+  });
+  it('initializes all saved bank balances from the activation route and confirms them together', async () => {
+    sources.set([
+      {
+        id: 'init-bank-a',
+        kind: 'DEBIT',
+        institution: 'ICICI Bank',
+        nickname: 'Everyday',
+        lastDigits: '123',
+        noLimit: true,
+        autoLoad: false,
+        archived: false,
+      },
+      {
+        id: 'init-bank-b',
+        kind: 'DEBIT',
+        institution: 'HDFC Bank',
+        nickname: 'Savings',
+        lastDigits: '456',
+        noLimit: true,
+        autoLoad: false,
+        archived: false,
+      },
+    ]);
+    initializeBankTracking.set('1');
+    const fixture = TestBed.createComponent(BankActivityPage);
+    fixture.detectChanges();
+    const page = fixture.componentInstance;
+    expect(page.bankTrackingSetupOpen()).toBe(true);
+    expect(page.bankTrackingBalances()).toEqual({ 'init-bank-a': '0', 'init-bank-b': '0' });
+    page.bankTrackingBalances.set({ 'init-bank-a': '125.50', 'init-bank-b': '900' });
+    let release!: () => void;
+    enableBankTracking.mockImplementationOnce(
+      () => new Promise<void>((resolve) => (release = resolve)),
+    );
+    const first = page.confirmBankTrackingSetup(new Event('submit'));
+    await page.confirmBankTrackingSetup(new Event('submit'));
+    expect(enableBankTracking).toHaveBeenCalledWith({
+      'init-bank-a': 12550,
+      'init-bank-b': 90000,
+    });
+    expect(enableBankTracking).toHaveBeenCalledTimes(1);
+    release();
+    await first;
+    expect(page.bankTrackingSetupOpen()).toBe(false);
+    fixture.destroy();
+  });
   it('shows saved Money Sources and standalone OTHERS profiles on Discovered Accounts without tracked balances', async () => {
     sources.set([
       {
@@ -277,6 +398,47 @@ describe('Bank profile popup and confirmation-only discovery UI', () => {
     expect(fixture.nativeElement.textContent).toContain('Archived Money Sources');
     expect(fixture.nativeElement.textContent).toContain('Archived reserve');
     expect(fixture.nativeElement.querySelectorAll('.source-balance')).toHaveLength(0);
+    fixture.destroy();
+  });
+  it('shows linked bank transactions with the latest debit date, amount and masked reference', async () => {
+    const bank: PaymentSource = {
+      id: 'bank-ledger-ui',
+      kind: 'DEBIT',
+      institution: 'ICICI Bank',
+      nickname: 'Everyday',
+      lastDigits: '123',
+      noLimit: true,
+      autoLoad: false,
+      archived: false,
+    };
+    const linked = { ...profile, paymentSourceId: bank.id };
+    const transaction: CardTransaction = {
+      id: 'bank-ui-purchase',
+      cardId: bank.id,
+      type: 'PURCHASE',
+      amountMinor: 12500,
+      currencyCode: 'INR',
+      transactionDate: '2026-10-25',
+      reference: 'BANKREF1234',
+      merchant: 'Synthetic market',
+      categoryId: 'other',
+      attachmentIds: [],
+      createdAt: '2026-10-25T10:00:00Z',
+      updatedAt: '2026-10-25T10:00:00Z',
+    };
+    sources.set([bank]);
+    profiles.set([linked]);
+    bankTransactions.set([transaction]);
+    const fixture = TestBed.createComponent(BankActivityPage);
+    fixture.detectChanges();
+
+    expect(fixture.nativeElement.textContent).toContain(
+      'Linked bank account: ICICI Bank · Everyday · •••123',
+    );
+    expect(fixture.nativeElement.textContent).toContain('Latest debit: 2026-10-25');
+    expect(fixture.nativeElement.textContent).toContain('Synthetic market');
+    expect(fixture.nativeElement.textContent).toContain('••••1234');
+    expect(fixture.nativeElement.textContent).toContain('125.00');
     fixture.destroy();
   });
   it('opens the requested Money Source on Discovered Accounts and focuses its card', async () => {
@@ -474,7 +636,7 @@ describe('Bank profile popup and confirmation-only discovery UI', () => {
     fixture.detectChanges();
     await fixture.whenStable();
     expect(fixture.nativeElement.querySelector('app-profile-modal dialog[open]')).not.toBeNull();
-    expect(fixture.nativeElement.textContent).toContain('Add monitored bank account');
+    expect(fixture.nativeElement.textContent).toContain('Add bank account');
     page.profileForm.patchValue({ bankName: 'ICICI', accountIdentifier: '12' });
     await page.saveProfile(new Event('submit'));
     expect(activity.saveProfile).not.toHaveBeenCalled();
@@ -496,7 +658,7 @@ describe('Bank profile popup and confirmation-only discovery UI', () => {
     fixture.detectChanges();
     await fixture.whenStable();
     expect(page.profileForm.controls.accountIdentifier.value).toBe('•••123');
-    expect(fixture.nativeElement.textContent).toContain('Edit monitored bank account');
+    expect(fixture.nativeElement.textContent).toContain('Edit monitored account');
     page.closeProfile();
     page.startProfile();
     expect(page.profileForm.controls.bankName.value).toBe('');
@@ -635,7 +797,6 @@ describe('Bank profile popup and confirmation-only discovery UI', () => {
       'fiction',
       'unidentified',
       'needs-review',
-      'associated',
     ]);
     for (const [filter, expected] of [
       ['SUGGESTED', 'fiction'],
@@ -736,6 +897,9 @@ describe('Bank profile popup and confirmation-only discovery UI', () => {
     );
     expect(activity.approveCandidate).not.toHaveBeenCalled();
     expect(activity.events()).toHaveLength(0);
+    expect(page.visibleReviewCandidates()).toHaveLength(0);
+    page.evidenceFilter.set('ASSOCIATED');
+    fixture.detectChanges();
     expect(fixture.nativeElement.textContent).toContain('Account identified · activity pending');
     const activityButton = [
       ...fixture.nativeElement.querySelectorAll('.review-candidate button'),

@@ -16,7 +16,11 @@ import { WhatsAppPackage, WhatsAppService } from './whatsapp.service';
 import { CYLINDER_OPTIONS } from './data/cylinder-options';
 import { GAS_SERVICE_TYPES, GasServiceType } from './data/lpg-providers';
 import { MOBILE_PLAN_TYPES } from './data/mobile-plan-types';
-import { normalizeIndianMobileNumber, UtilitiesService } from './utilities.service';
+import {
+  normalizeIndianMobileNumber,
+  normalizeInternationalPhoneNumber,
+  UtilitiesService,
+} from './utilities.service';
 import {
   LpgEvent,
   LpgEventType,
@@ -171,7 +175,10 @@ export class UtilitiesPage {
     }),
     provider: new FormControl<LpgProfile['provider']>('INDANE', { nonNullable: true }),
     commercial: new FormControl(false, { nonNullable: true }),
-    mobileNumber: new FormControl('', { nonNullable: true, validators: Validators.maxLength(20) }),
+    mobileNumber: new FormControl('', {
+      nonNullable: true,
+      validators: [Validators.maxLength(10), Validators.pattern(/^(?:|[6-9]\d{9})$/)],
+    }),
     connectionId: new FormControl('', { nonNullable: true, validators: Validators.maxLength(80) }),
     distributorId: new FormControl('', { nonNullable: true, validators: Validators.maxLength(80) }),
     distributorName: new FormControl('', {
@@ -180,11 +187,11 @@ export class UtilitiesPage {
     }),
     distributorContact: new FormControl('', {
       nonNullable: true,
-      validators: Validators.maxLength(20),
+      validators: [Validators.maxLength(40), Validators.pattern(/^(?:|\+?[0-9][0-9\s()-]*)$/)],
     }),
     distributorWhatsApp: new FormControl('', {
       nonNullable: true,
-      validators: Validators.maxLength(20),
+      validators: [Validators.maxLength(40), Validators.pattern(/^(?:|\+?[0-9][0-9\s()-]*)$/)],
     }),
     cylinderSize: new FormControl<LpgProfile['cylinderSize']>('NORMAL', { nonNullable: true }),
     estimatedUsageDays: new FormControl('25', {
@@ -215,11 +222,7 @@ export class UtilitiesPage {
 
   hasWhatsAppNumber(value?: string): boolean {
     if (!value) return false;
-    try {
-      return !!normalizeIndianMobileNumber(value);
-    } catch {
-      return false;
-    }
+    return !!normalizeInternationalPhoneNumber(value);
   }
 
   startAddMobile(): void {
@@ -436,7 +439,7 @@ export class UtilitiesPage {
       connectionName: profile.connectionName,
       provider: profile.provider,
       commercial: profile.commercial,
-      mobileNumber: profile.mobileNumber ?? '',
+      mobileNumber: profile.mobileNumber?.replace(/^\+91-?/, '') ?? '',
       connectionId: profile.connectionId ?? '',
       distributorId: profile.distributorId ?? '',
       distributorName: profile.distributorName ?? '',

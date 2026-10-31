@@ -116,6 +116,15 @@
                 <app-icon name="chevron_down" />
               </button>
             </div>
+            @if (payFromBankMode() && bankAccountOptions().length) {
+              <app-select-picker
+                class="full"
+                label="Bank account"
+                [options]="bankAccountOptions()"
+                [value]="form.controls.cardId.value"
+                (valueChange)="selectBankAccount($event)"
+              />
+            }
 
             @if (payFromOpen()) {
               <div
@@ -168,8 +177,29 @@
                       </button>
                     }
                   }
+                  @if (searchedPayFromBanks().length) {
+                    <p class="pay-from-group">Bank/UPI</p>
+                    <button
+                      type="button"
+                      class="pay-from-option"
+                      role="option"
+                      [class.selected]="payFromBankMode()"
+                      [attr.aria-selected]="payFromBankMode()"
+                      (click)="selectPayFrom('BANK_SOURCE')"
+                    >
+                      <span class="pay-from-option__name">Bank/UPI</span>
+                      <span class="pay-from-option__detail"
+                        >{{ searchedPayFromBanks().length }} account{{
+                          searchedPayFromBanks().length === 1 ? '' : 's'
+                        }}</span
+                      >
+                      @if (payFromBankMode()) {
+                        <app-icon name="success" class="pay-from-option__check" />
+                      }
+                    </button>
+                  }
                   @if (searchedPayFromSources().length) {
-                    <p class="pay-from-group">Cash, bank &amp; meal card</p>
+                    <p class="pay-from-group">Cash &amp; meal wallets</p>
                     @for (source of searchedPayFromSources(); track source.id) {
                       <button
                         type="button"

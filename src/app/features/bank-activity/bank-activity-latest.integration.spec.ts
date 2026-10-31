@@ -7,7 +7,7 @@ import { DatabaseSession, SqliteDatabase } from '../../core/data/sqlite-database
 import { DATABASE_MIGRATIONS } from '../../core/data/migrations';
 import { RECONCILE_BANK_ACTIVITY_LATEST } from '../../core/data/bank-activity-latest';
 import { CardNestStore } from '../../core/services/card-nest-store';
-import { PaymentSource } from '../../core/models/domain';
+import { CardTransaction, PaymentSource } from '../../core/models/domain';
 import { fingerprintCompleteBankAccount } from '../../core/services/bank-account-identifier';
 import { BankActivityService } from './bank-activity.service';
 import { BankAccountSyncService } from './bank-account-sync.service';
@@ -19,6 +19,7 @@ describe('Latest activity and identity reconciliation with real SQLite', () => {
   let activity: BankActivityService;
   let sync: BankAccountSyncService;
   const sources = signal<readonly PaymentSource[]>([]);
+  const transactions = signal<readonly CardTransaction[]>([]);
   const testFingerprintKey = new Uint8Array(32).fill(11);
   const finance = () =>
     [
@@ -65,6 +66,7 @@ describe('Latest activity and identity reconciliation with real SQLite', () => {
     for (const migration of DATABASE_MIGRATIONS)
       for (const statement of migration.statements) sql.exec(statement);
     sources.set([]);
+    transactions.set([]);
     let tail: Promise<unknown> = Promise.resolve();
     const database = {
       ready: () => true,
@@ -95,6 +97,7 @@ describe('Latest activity and identity reconciliation with real SQLite', () => {
           provide: CardNestStore,
           useValue: {
             paymentSources: sources,
+            transactions,
             fingerprintBankAccount: (value: string) =>
               fingerprintCompleteBankAccount(value, testFingerprintKey),
           },
@@ -239,6 +242,67 @@ describe('Latest activity and identity reconciliation with real SQLite', () => {
     expect(activity.events()).toHaveLength(1);
     expect(activity.candidates()).toHaveLength(0);
     expect(finance()).toEqual(before);
+  });
+
+  it('derives latest activity from committed bank transactions and recomputes after edits/deletes', async () => {
+    const source: PaymentSource = {
+      id: 'ledger-bank',
+      kind: 'DEBIT',
+      institution: 'ICICI Bank',
+      nickname: 'Ledger bank',
+      lastDigits: '123',
+      archived: false,
+      noLimit: true,
+      autoLoad: false,
+    };
+    await run("INSERT INTO app_preferences VALUES('payment_sources',?)", [
+      JSON.stringify([source]),
+    ]);
+    sources.set([source]);
+    const profile = await activity.saveProfile({
+      bankName: 'ICICI Bank',
+      paymentSourceId: source.id,
+      owner: 'OWN',
+    });
+    const transaction = (changes: Partial<CardTransaction>): CardTransaction => ({
+      id: 'bank-ledger-purchase',
+      cardId: source.id,
+      type: 'PURCHASE',
+      amountMinor: 12500,
+      currencyCode: 'INR',
+      transactionDate: '2026-10-20',
+      categoryId: 'other',
+      attachmentIds: [],
+      createdAt: '2026-10-20T08:00:00Z',
+      updatedAt: '2026-10-20T08:00:00Z',
+      ...changes,
+    });
+    const first = transaction({});
+    const newer = transaction({
+      id: 'bank-ledger-credit',
+      type: 'CREDIT',
+      transactionDate: '2026-10-25',
+    });
+    transactions.set([first, newer, newer]);
+    expect(activity.transactionsFor(profile.id)).toEqual([newer, first]);
+    expect(activity.summaryFor(profile.id, '2026-10-27').lastActivityDate).toBe('2026-10-25');
+
+    transactions.set([first, transaction({ ...newer, transactionDate: '2026-10-18' })]);
+    expect(activity.summaryFor(profile.id, '2026-10-27').lastActivityDate).toBe('2026-10-20');
+    transactions.set([first]);
+    expect(activity.summaryFor(profile.id, '2026-10-27').lastActivityDate).toBe('2026-10-20');
+    transactions.set([
+      transaction({ type: 'PAYMENT', transactionDate: '2026-10-26' }),
+      transaction({
+        id: 'balance-correction',
+        type: 'ADJUSTMENT',
+        adjustmentPurpose: 'BALANCE_RECONCILIATION',
+        transactionDate: '2026-10-27',
+      }),
+    ]);
+    expect(activity.transactionsFor(profile.id)).toEqual([]);
+    expect(activity.summaryFor(profile.id, '2026-10-27').lastActivityDate).toBeUndefined();
+    expect(await query('SELECT * FROM bank_activity_events')).toHaveLength(0);
   });
 
   it('allows an explicit date correction and rolls back both replacement and dismissal on failure', async () => {
@@ -744,6 +808,25 @@ describe('Latest activity and identity reconciliation with real SQLite', () => {
       });
       expect(JSON.stringify(await storedSources())).not.toContain('555555555456');
       expect(finance()).toEqual(before);
+    });
+
+    it('does not edit a legacy identity when a same-bank suffix cannot be disambiguated', async () => {
+      const first = legacy('legacy-edit-a');
+      const second = legacy('legacy-edit-b', { nickname: 'Second legacy account' });
+      await seed([first, second]);
+      const before = await storedSources();
+      const beforeFinance = finance();
+
+      await expect(
+        activity.updateOwnMoneySourceIdentity({
+          sourceId: first.id,
+          nickname: first.nickname,
+          institution: 'ICICI Bank',
+          accountIdentifier: '123456789123',
+        }),
+      ).rejects.toThrow('without proof of a different account');
+      expect(await storedSources()).toEqual(before);
+      expect(finance()).toEqual(beforeFinance);
     });
 
     it('changes OWN to OTHERS and back only with an explicit choice, without moving balances', async () => {

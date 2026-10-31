@@ -79,6 +79,16 @@
       </article>
     }
   </section>
+  <div class="category-reset-actions">
+    <button
+      class="btn"
+      type="button"
+      [disabled]="saving()"
+      (click)="resetConfirmationOpen.set(true)"
+    >
+      <app-icon name="refresh" /> Reset default categories
+    </button>
+  </div>
 </div>
 
 @if (showForm()) {
@@ -171,5 +181,16 @@
     confirmLabel="Delete category"
     (confirmed)="confirmDelete()"
     (cancelled)="deleteCandidate.set(null)"
+  />
+}
+
+@if (resetConfirmationOpen()) {
+  <app-confirmation-dialog
+    title="Reset default categories?"
+    message="Restore missing built-in categories and their default definitions. Custom categories, saved transactions, budgets, and existing category references will be preserved. Name conflicts with custom categories must be resolved first."
+    confirmLabel="Reset defaults"
+    [busy]="saving()"
+    (confirmed)="confirmResetDefaults()"
+    (cancelled)="resetConfirmationOpen.set(false)"
   />
 }

@@ -22,6 +22,7 @@ export class CategoriesPage {
   readonly showForm = signal(false);
   readonly editingId = signal<string | null>(null);
   readonly deleteCandidate = signal<Category | null>(null);
+  readonly resetConfirmationOpen = signal(false);
   readonly iconOptions = [
     'category',
     'shopping_basket',
@@ -212,6 +213,22 @@ export class CategoriesPage {
         error instanceof Error
           ? error.message
           : 'Category could not be deleted. No changes were saved.',
+      );
+    } finally {
+      this.saving.set(false);
+    }
+  }
+  async confirmResetDefaults(): Promise<void> {
+    if (this.saving() || !this.resetConfirmationOpen()) return;
+    this.resetConfirmationOpen.set(false);
+    this.saving.set(true);
+    this.error.set('');
+    try {
+      await this.store.resetDefaultCategories();
+      this.snackbar.show('Default categories restored. Transactions and budgets were unchanged.');
+    } catch (error: unknown) {
+      this.error.set(
+        error instanceof Error ? error.message : 'Default categories could not be restored.',
       );
     } finally {
       this.saving.set(false);

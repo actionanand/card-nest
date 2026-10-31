@@ -1,10 +1,24 @@
 <div
   class="page settings"
   [attr.aria-hidden]="
-    showPinForm() || showBackupDialog() || protectedAction() || pendingBackup() ? 'true' : null
+    showPinForm() ||
+    showBackupDialog() ||
+    protectedAction() ||
+    pendingBackup() ||
+    bankTrackingConfirmationOpen() ||
+    cashTrackingSetupOpen()
+      ? 'true'
+      : null
   "
   [attr.inert]="
-    showPinForm() || showBackupDialog() || protectedAction() || pendingBackup() ? '' : null
+    showPinForm() ||
+    showBackupDialog() ||
+    protectedAction() ||
+    pendingBackup() ||
+    bankTrackingConfirmationOpen() ||
+    cashTrackingSetupOpen()
+      ? ''
+      : null
   "
 >
   <header class="page-header">
@@ -385,46 +399,28 @@
         </div>
         <label class="setting-row toggle"
           ><span
-            ><strong>Track Bank/UPI & Cash balances</strong
+            ><strong>Track Bank/UPI balances</strong
             ><small
-              >Keep track of your bank-account and physical-cash balances as you record purchases,
-              receipts and transfers.</small
+              >Confirm each saved bank account's current balance before tracking future
+              changes.</small
             ></span
           ><input
             type="checkbox"
-            [checked]="store.bankCashTracking().enabled"
+            [checked]="store.bankCashTracking().bankEnabled ?? store.bankCashTracking().enabled"
             [disabled]="!database.ready() || trackingSaving()"
-            (change)="toggleBankCashTracking($event)"
+            (change)="toggleBankTracking($event)"
         /></label>
-        @if (trackingSetupOpen()) {
-          <form class="tracking-setup" (submit)="confirmTrackingSetup($event)">
-            <p>
-              Enter each current balance. Older purchases are not replayed; this becomes the
-              starting point. Leave a balance empty if you do not know it yet.
-            </p>
-            @for (source of trackableSources(); track source.id) {
-              <label
-                >{{ sourceDetail(source.id) }} — current balance (INR)<input
-                  inputmode="decimal"
-                  [value]="trackingBalances()[source.id] ?? ''"
-                  placeholder="Unknown"
-                  (input)="updateTrackingBalance(source.id, $event)"
-              /></label>
-            }
-            @if (trackingError(); as error) {
-              <p class="setting-status" role="alert">{{ error }}</p>
-            }
-            <div class="pin-buttons">
-              <button class="btn" type="button" (click)="trackingSetupOpen.set(false)">
-                Cancel
-              </button>
-              <button class="btn btn-primary" type="submit" [disabled]="trackingSaving()">
-                Confirm balances and turn on
-              </button>
-            </div>
-          </form>
-        }
-        @if (store.bankCashTracking().enabled) {
+        <label class="setting-row toggle"
+          ><span
+            ><strong>Track Cash balance</strong
+            ><small>Set today's available physical cash as the starting balance.</small></span
+          ><input
+            type="checkbox"
+            [checked]="store.bankCashTracking().cashEnabled ?? store.bankCashTracking().enabled"
+            [disabled]="!database.ready() || trackingSaving()"
+            (change)="toggleCashTracking($event)"
+        /></label>
+        @if (store.bankCashTracking().bankEnabled ?? store.bankCashTracking().enabled) {
           <ul class="tracked-balances" aria-label="Tracked balances">
             @for (source of trackableSources(); track source.id) {
               <li>
@@ -433,9 +429,20 @@
               </li>
             }
           </ul>
-        } @else if (store.bankCashTracking().activatedAt) {
+        }
+        @if (store.bankCashTracking().cashEnabled ?? store.bankCashTracking().enabled) {
+          <ul class="tracked-balances" aria-label="Cash balance">
+            <li>
+              <span>Physical cash</span><strong>{{ trackedBalance('source-cash') }}</strong>
+            </li>
+          </ul>
+        }
+        @if (
+          !(store.bankCashTracking().bankEnabled ?? store.bankCashTracking().enabled) &&
+          store.bankCashTracking().activatedAt
+        ) {
           <p class="setting-status">
-            Tracking is off. Saved balances are kept; turning it on again asks you to confirm
+            Bank tracking is off. Saved balances are kept; turning it on again asks you to confirm
             current balances so entries recorded meanwhile are not replayed.
           </p>
         }
@@ -449,9 +456,13 @@
           ><input
             type="checkbox"
             [checked]="
-              store.bankCashTracking().enabled && store.bankCashTracking().askCardSettlementFunding
+              (store.bankCashTracking().bankEnabled ?? store.bankCashTracking().enabled) &&
+              store.bankCashTracking().askCardSettlementFunding
             "
-            [disabled]="!database.ready() || !store.bankCashTracking().enabled"
+            [disabled]="
+              !database.ready() ||
+              !(store.bankCashTracking().bankEnabled ?? store.bankCashTracking().enabled)
+            "
             (change)="toggleCardSettlementFunding($event)"
         /></label>
       </section>
@@ -612,6 +623,50 @@
     </div>
   </div>
 </div>
+
+@if (bankTrackingConfirmationOpen()) {
+  <app-confirmation-dialog
+    title="Enable Bank/UPI balance tracking?"
+    message="CardNest will use confirmed balances as baselines. Older transactions will not be replayed. Continue to Bank Activity to initialize each saved bank account."
+    confirmLabel="Continue"
+    (confirmed)="continueBankTracking()"
+    (cancelled)="bankTrackingConfirmationOpen.set(false)"
+  />
+}
+
+@if (cashTrackingSetupOpen()) {
+  <app-profile-modal
+    title="Initialize cash balance"
+    [busy]="trackingSaving()"
+    (closed)="cashTrackingSetupOpen.set(false)"
+  >
+    <form class="tracking-setup" (submit)="confirmCashTracking($event)">
+      <p>Enter the physical cash currently available. This becomes the starting balance.</p>
+      <label
+        >Current cash balance (INR)<input
+          inputmode="decimal"
+          [value]="cashBalanceValue()"
+          (input)="cashBalanceValue.set($any($event.target).value)"
+      /></label>
+      @if (trackingError(); as error) {
+        <p class="setting-status" role="alert">{{ error }}</p>
+      }
+      <div class="pin-buttons">
+        <button
+          class="btn"
+          type="button"
+          [disabled]="trackingSaving()"
+          (click)="cashTrackingSetupOpen.set(false)"
+        >
+          Cancel
+        </button>
+        <button class="btn btn-primary" type="submit" [disabled]="trackingSaving()">
+          Confirm cash balance
+        </button>
+      </div>
+    </form>
+  </app-profile-modal>
+}
 
 @if (showBackupDialog()) {
   <div class="pin-backdrop">

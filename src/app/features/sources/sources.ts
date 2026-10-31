@@ -17,7 +17,14 @@ import { AppDatePipe } from '../../core/services/date-format.service';
 import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { recordedTransactionTime } from '../../core/services/transaction-time';
-import { bankCashTracked, isBankOrCash, transferLabel } from '../../core/services/source-balance';
+import {
+  bankCashTracked,
+  bankTrackingEnabled,
+  cashTrackingEnabled,
+  isBankOrCash,
+  sourceBalanceTrackingEnabled,
+  transferLabel,
+} from '../../core/services/source-balance';
 import { SourceMovementDialog, SourceMovementMode } from '../../shared/source-movement-dialog';
 
 interface MovementRequest {
@@ -115,21 +122,26 @@ export class SourcesPage {
   readonly movement = signal<MovementRequest | null>(null);
   readonly tracking = computed(() => this.store.bankCashTracking());
   readonly bankBalanceSummary = computed(() => {
-    if (!this.tracking().enabled) return { status: 'OFF' as BalanceSummaryStatus };
+    if (!bankTrackingEnabled(this.tracking())) return { status: 'OFF' as BalanceSummaryStatus };
     const sources = this.store.bankAccounts();
     if (!sources.length) return { status: 'NONE' as BalanceSummaryStatus };
-    if (!sources.every((source) => this.tracked(source)))
-      return { status: 'INCOMPLETE' as BalanceSummaryStatus };
-    const totalMinor = sources.reduce((sum, source) => sum + (source.balanceMinor ?? 0), 0);
-    return Number.isSafeInteger(totalMinor)
+    const known = sources.filter((source) => this.tracked(source));
+    const totalMinor = known.reduce((sum, source) => sum + (source.balanceMinor ?? 0), 0);
+    if (!Number.isSafeInteger(totalMinor)) return { status: 'INCOMPLETE' as BalanceSummaryStatus };
+    if (!known.length) return { status: 'INCOMPLETE' as BalanceSummaryStatus };
+    return known.length === sources.length
       ? { status: 'KNOWN' as BalanceSummaryStatus, totalMinor }
-      : { status: 'INCOMPLETE' as BalanceSummaryStatus };
+      : { status: 'INCOMPLETE' as BalanceSummaryStatus, totalMinor };
   });
   readonly liquidBalanceSummary = computed(() => {
-    if (!this.tracking().enabled) return { status: 'OFF' as BalanceSummaryStatus };
+    const tracking = this.tracking();
+    if (!bankTrackingEnabled(tracking) && !cashTrackingEnabled(tracking))
+      return { status: 'OFF' as BalanceSummaryStatus };
     const sources = this.store
       .paymentSources()
-      .filter((source) => isBankOrCash(source) && !source.archived);
+      .filter(
+        (source) => isBankOrCash(source) && !source.archived && this.trackingEnabledFor(source),
+      );
     if (!sources.length) return { status: 'NONE' as BalanceSummaryStatus };
     if (!sources.every((source) => this.tracked(source)))
       return { status: 'INCOMPLETE' as BalanceSummaryStatus };
@@ -144,12 +156,15 @@ export class SourcesPage {
   tracked(source: PaymentSource): boolean {
     return bankCashTracked(source, this.tracking());
   }
+  trackingEnabledFor(source: PaymentSource): boolean {
+    return sourceBalanceTrackingEnabled(source, this.tracking());
+  }
   balanceState(source: PaymentSource): 'TRACKED' | 'NOT_SET' | 'OFF' {
-    if (!this.tracking().enabled) return 'OFF';
+    if (!this.trackingEnabledFor(source)) return 'OFF';
     return this.tracked(source) ? 'TRACKED' : 'NOT_SET';
   }
   bankAccountBalanceLabel(source: PaymentSource): string {
-    if (!this.tracking().enabled) return 'Not tracked';
+    if (!bankTrackingEnabled(this.tracking())) return 'Not tracked';
     return this.tracked(source) ? this.money(source.balanceMinor) : 'Balance not set';
   }
   liquidBalanceLabel(): string {
@@ -158,6 +173,11 @@ export class SourcesPage {
     if (summary.status === 'NONE') return 'No active Bank/Cash accounts';
     if (summary.status === 'INCOMPLETE') return 'Incomplete · one or more balances not set';
     return this.money(summary.totalMinor ?? 0);
+  }
+  liquidBalanceTitle(): string {
+    const bank = bankTrackingEnabled(this.tracking());
+    const cash = cashTrackingEnabled(this.tracking());
+    return bank && cash ? 'Bank + Cash' : bank ? 'Bank' : 'Cash';
   }
   openMovement(request: MovementRequest): void {
     this.movement.set(request);
@@ -288,18 +308,14 @@ export class SourcesPage {
     const funds = (source: PaymentSource) =>
       isBankOrCash(source) ? this.tracked(source) : !source.noLimit;
     if (selected)
-      return isBankOrCash(selected) && !this.tracking().enabled
+      return isBankOrCash(selected) && !this.trackingEnabledFor(selected)
         ? null
         : funds(selected)
           ? (selected.balanceMinor ?? 0)
           : null;
     const activeSources = this.store.activePaymentSources();
     const activeBankCash = activeSources.filter(isBankOrCash);
-    if (
-      this.tracking().enabled &&
-      activeBankCash.length > 0 &&
-      !activeBankCash.every((source) => this.tracked(source))
-    )
+    if (activeBankCash.some((source) => this.trackingEnabledFor(source) && !this.tracked(source)))
       return null;
     const tracked = activeSources.filter(funds);
     return tracked.length
@@ -309,12 +325,15 @@ export class SourcesPage {
   remainingLabel(): string {
     const selected = this.selectedSource();
     if (selected && isBankOrCash(selected)) {
-      if (!this.tracking().enabled) return 'Balance tracking off';
+      if (!this.trackingEnabledFor(selected)) return 'Balance tracking off';
       if (!this.tracked(selected)) return 'Balance not set';
     }
-    if (!selected && this.tracking().enabled) {
+    if (
+      !selected &&
+      (bankTrackingEnabled(this.tracking()) || cashTrackingEnabled(this.tracking()))
+    ) {
       const banks = this.store.activePaymentSources().filter(isBankOrCash);
-      if (banks.some((source) => !this.tracked(source)))
+      if (banks.some((source) => this.trackingEnabledFor(source) && !this.tracked(source)))
         return 'Incomplete · one or more balances not set';
     }
     const remaining = this.remainingMinor();

@@ -69,7 +69,7 @@ describe('Versioned category catalog with real SQLite foreign keys', () => {
     };
   });
   afterEach(() => sql.close());
-  it('creates exactly 21 canonical categories on a pristine installation and is idempotent', async () => {
+  it('creates exactly 24 canonical categories on a pristine installation and is idempotent', async () => {
     sql.exec("INSERT INTO app_preferences VALUES('initial_data_state','PENDING')");
     await atomic(() => reconcileCategoryCatalog(tx));
     expect(rows('SELECT id,name FROM categories ORDER BY id')).toEqual(
@@ -81,7 +81,7 @@ describe('Versioned category catalog with real SQLite foreign keys', () => {
     await atomic(() => reconcileCategoryCatalog(tx));
     expect(rows('SELECT * FROM categories ORDER BY id')).toEqual(before);
   });
-  it.each(CATEGORY_REGISTRY.categories.filter((row) => row.introduced === 2))(
+  it.each(CATEGORY_REGISTRY.categories.filter((row) => row.introduced > 1))(
     'reuses an existing custom $name with its original identity and metadata',
     async (def) => {
       category('uuid', `  ${def.name.toLocaleUpperCase()}   `);

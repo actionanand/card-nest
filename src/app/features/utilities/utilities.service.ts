@@ -59,6 +59,23 @@ export function normalizeIndianMobileNumber(value: string): string | undefined {
   return `+91-${tenDigits}`;
 }
 
+export function normalizeInternationalPhoneNumber(value: string): string | undefined {
+  const trimmed = value.trim();
+  if (!trimmed || !/^\+?[0-9][0-9\s()-]*$/.test(trimmed)) return undefined;
+  const digits = trimmed.replace(/\D/g, '');
+  if (digits.length < 7 || digits.length > 15) return undefined;
+  if (!trimmed.startsWith('+') && /^[6-9]\d{9}$/.test(digits)) return `91${digits}`;
+  return digits;
+}
+
+function preserveInternationalPhoneDisplay(value: string): string | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  if (!normalizeInternationalPhoneNumber(trimmed))
+    throw new Error('Enter a valid contact number with 7 to 15 digits.');
+  return trimmed;
+}
+
 export const UTILITY_REMINDER_OFFSETS = [7, 3, 1, 0] as const;
 
 function reminderTargetsFor(
@@ -400,8 +417,8 @@ export class UtilitiesService {
       ...input,
       connectionName,
       mobileNumber: normalizeIndianMobileNumber(input.mobileNumber ?? ''),
-      distributorContact: normalizeIndianMobileNumber(input.distributorContact ?? ''),
-      distributorWhatsApp: normalizeIndianMobileNumber(input.distributorWhatsApp ?? ''),
+      distributorContact: preserveInternationalPhoneDisplay(input.distributorContact ?? ''),
+      distributorWhatsApp: preserveInternationalPhoneDisplay(input.distributorWhatsApp ?? ''),
       id: previous?.id ?? crypto.randomUUID(),
       kind: 'LPG',
       archived: previous?.archived ?? false,

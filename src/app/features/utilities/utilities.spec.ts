@@ -794,6 +794,36 @@ describe('Indian Utilities page', () => {
     fixture.destroy();
   });
 
+  it('uses a fixed +91 ten-digit linked mobile while keeping distributor contacts international', async () => {
+    const fixture = TestBed.createComponent(UtilitiesPage);
+    const page = fixture.componentInstance;
+    page.setSection('GAS');
+    page.startAddLpg();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const mobile = fixture.nativeElement.querySelector(
+      'input[formControlName="mobileNumber"]',
+    ) as HTMLInputElement;
+    expect(mobile.maxLength).toBe(10);
+    expect(mobile.parentElement?.textContent).toContain('+91');
+    const paste = new Event('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, 'clipboardData', {
+      value: { getData: () => '+91 98765 43210' },
+    });
+    mobile.dispatchEvent(paste);
+    expect(page.lpgForm.controls.mobileNumber.value).toBe('9876543210');
+
+    page.lpgForm.patchValue({
+      distributorContact: '+1 (800) 555-0199',
+      distributorWhatsApp: '1800-123-4567',
+    });
+    expect(page.lpgForm.controls.distributorContact.valid).toBe(true);
+    expect(page.lpgForm.controls.distributorWhatsApp.valid).toBe(true);
+    expect(page.hasWhatsAppNumber('+44 20 7946 0958')).toBe(true);
+    expect(page.hasWhatsAppNumber('Call 1800-123-4567')).toBe(false);
+    fixture.destroy();
+  });
+
   it('shows the disabled direct-route state without clearing profile signals', async () => {
     const retainedMobile = [{ id: 'kept-mobile' }];
     mobiles.set(retainedMobile);

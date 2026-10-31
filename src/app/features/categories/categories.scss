@@ -48,6 +48,11 @@
 .category-list {
   overflow: hidden;
 }
+.category-reset-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding-block: 0.75rem;
+}
 .category-list article {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;

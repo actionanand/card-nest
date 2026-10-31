@@ -145,6 +145,33 @@
   padding: 1rem;
   margin: 0;
 }
+.phone-field-label {
+  display: grid;
+  gap: 0.35rem;
+}
+.phone-field {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  min-width: 0;
+  min-height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 0.55rem;
+  background: var(--canvas);
+}
+.country-prefix {
+  padding-inline: 0.7rem;
+  color: var(--muted);
+  border-right: 1px solid var(--line);
+}
+.phone-field input {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 42px;
+  border: 0;
+  background: transparent;
+}
 .utility-form {
   display: grid;
   gap: 0.8rem;

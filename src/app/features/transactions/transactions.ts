@@ -265,6 +265,7 @@ export class TransactionsPage {
   readonly deleteCandidate = signal<CardTransaction | null>(null);
   readonly payFromOpen = signal(false);
   readonly payFromSearch = signal('');
+  readonly payFromBankMode = signal(false);
   readonly sourceFilterOpen = signal(false);
   readonly filtersOpen = signal(false);
   readonly actionMenuId = signal<string | null>(null);
@@ -421,10 +422,35 @@ export class TransactionsPage {
   readonly searchedPayFromSources = computed(() => {
     const terms = this.payFromSearch().trim().toLowerCase().split(/\s+/).filter(Boolean);
     return this.store.activePaymentSources().filter((source) => {
+      if (source.kind === 'DEBIT') return false;
       const searchable =
         `${source.institution ?? ''} ${source.nickname} ${source.lastDigits ?? ''} ${source.kind}`.toLowerCase();
       return terms.every((term) => searchable.includes(term));
     });
+  });
+  readonly searchedPayFromBanks = computed(() => {
+    const terms = this.payFromSearch().trim().toLowerCase().split(/\s+/).filter(Boolean);
+    return this.store.activePaymentSources().filter((source) => {
+      if (source.kind !== 'DEBIT') return false;
+      const searchable =
+        `${source.institution ?? ''} ${source.nickname} ${source.lastDigits ?? ''}`.toLowerCase();
+      return terms.every((term) => searchable.includes(term));
+    });
+  });
+  readonly bankAccountOptions = computed<readonly AppSelectOption[]>(() => {
+    const selectedId = this.form.controls.cardId.value;
+    const sources = this.store
+      .paymentSources()
+      .filter(
+        (source) =>
+          source.kind === 'DEBIT' &&
+          (!source.archived || (this.editingId() && source.id === selectedId)),
+      );
+    return sources.map((source) => ({
+      value: source.id,
+      label: `${source.institution || 'Bank/UPI'} · ${source.nickname}`,
+      detail: `${source.lastDigits ? `•••${source.lastDigits.slice(-3)}` : 'Bank account'}${source.archived ? ' · Archived' : ''}`,
+    }));
   });
   readonly form = new FormGroup({
     cardId: new FormControl(this.defaultSourceId(), {
@@ -1135,10 +1161,30 @@ export class TransactionsPage {
     }
   }
   selectPayFrom(id: string): void {
+    if (id === 'BANK_SOURCE') {
+      const currentId = this.form.controls.cardId.value;
+      const sources = this.store.activePaymentSources().filter((source) => source.kind === 'DEBIT');
+      if (!sources.length) return;
+      const current = sources.find((source) => source.id === currentId);
+      const primary = sources.find((source) => source.isPrimaryBank);
+      const selected = current ?? primary ?? sources[0];
+      this.form.controls.cardId.setValue(selected.id);
+      this.form.controls.cardId.markAsDirty();
+      this.payFromBankMode.set(true);
+      this.payFromOpen.set(false);
+      this.payFromSearch.set('');
+      return;
+    }
+    this.payFromBankMode.set(false);
     this.form.controls.cardId.setValue(id);
     this.form.controls.cardId.markAsDirty();
     this.payFromOpen.set(false);
     this.payFromSearch.set('');
+  }
+  selectBankAccount(id: string): void {
+    if (!this.bankAccountOptions().some((option) => option.value === id)) return;
+    this.form.controls.cardId.setValue(id);
+    this.form.controls.cardId.markAsDirty();
   }
   openPayFrom(): void {
     this.payFromSearch.set('');
@@ -1148,6 +1194,7 @@ export class TransactionsPage {
     this.payFromSearch.set((event.target as HTMLInputElement).value);
   }
   selectedSourceLabel(): string {
+    if (this.payFromBankMode()) return 'Bank/UPI';
     const id = this.form.controls.cardId.value;
     const card = this.store.activeCards().find((c) => c.id === id);
     if (card) return `${card.nickname} · ${card.lastDigits}`;
@@ -1200,6 +1247,11 @@ export class TransactionsPage {
           transaction,
         ) ?? '',
     });
+    this.payFromBankMode.set(
+      this.store
+        .paymentSources()
+        .some((source) => source.id === transaction.cardId && source.kind === 'DEBIT'),
+    );
     this.receiptPreviews.set(transaction.attachmentIds);
     this.receiptDraftDirty.set(false);
     this.showForm.set(true);
@@ -2094,6 +2146,11 @@ export class TransactionsPage {
       taxAmount: '',
       repeat: 'NONE',
     });
+    this.payFromBankMode.set(
+      this.store
+        .paymentSources()
+        .some((source) => source.id === sourceId && source.kind === 'DEBIT'),
+    );
   }
 
   private hasUnsavedDraft(): boolean {

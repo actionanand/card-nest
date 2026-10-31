@@ -40,6 +40,7 @@ import { SmsSplitSuggestion } from './sms-split-suggestion';
 import { purchaseAnchor, purchaseTiming } from './sms-purchase-matching';
 import { PurchaseReviewMatch, SmsPurchaseComparison } from './sms-purchase-comparison';
 import {
+  bankTrackingEnabled,
   bankCashTracked,
   isBankOrCash,
   needsBaselineConfirmation,
@@ -1161,10 +1162,13 @@ export class SmsSyncPage {
       .find((item) => item.id === this.bankEditor.controls.source.value);
     return (
       !!source &&
-      this.store.bankCashTracking().enabled &&
+      bankTrackingEnabled(this.store.bankCashTracking()) &&
       !bankCashTracked(source, this.store.bankCashTracking())
     );
   }
+  readonly bankBalanceTrackingEnabled = computed(() =>
+    bankTrackingEnabled(this.store.bankCashTracking()),
+  );
   private balanceDetail(sourceId: string): string {
     const source = this.store.paymentSources().find((item) => item.id === sourceId);
     return source && bankCashTracked(source, this.store.bankCashTracking())
@@ -1802,10 +1806,11 @@ export class SmsSyncPage {
       const item = candidate.item;
       const settings = this.store.bankCashTracking();
       const sources = suggestedBankSources(item, this.store.paymentSources(), settings);
+      const primaryBankId = this.store.bankAccounts().find((source) => source.isPrimaryBank)?.id;
       const purpose = defaultBankPurpose(item, settings);
       this.bankEditor.reset({
         purpose,
-        source: sources.length === 1 ? sources[0] : '',
+        source: sources.length === 1 ? sources[0] : (primaryBankId ?? ''),
         amount: String(item.amountMinor / 100),
         description: item.merchant ? merchantTitle(item, candidate.kind) : '',
         transactionDate: item.eventDate,

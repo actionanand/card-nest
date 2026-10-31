@@ -52,6 +52,15 @@ describe('Indian WhatsApp launcher', () => {
     expect(bridge.openWhatsAppFallback).not.toHaveBeenCalled();
   });
 
+  it('normalizes valid international and toll-free destinations only when launching', () => {
+    installed = ['com.whatsapp'];
+    expect(service.open('+1 (800) 555-0199').result).toBe('OPENED');
+    expect(bridge.openWhatsAppIn).toHaveBeenLastCalledWith('18005550199', '', 'com.whatsapp');
+    expect(service.open('1800-123-4567').result).toBe('OPENED');
+    expect(bridge.openWhatsAppIn).toHaveBeenLastCalledWith('18001234567', '', 'com.whatsapp');
+    expect(service.open('Call 1800-123-4567').result).toBe('INVALID');
+  });
+
   it('opens a validated wa.me URL in the Web build without package detection', () => {
     vi.mocked(Capacitor.getPlatform).mockReturnValue('web');
     vi.mocked(Capacitor.isNativePlatform).mockReturnValue(false);

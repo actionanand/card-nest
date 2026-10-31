@@ -150,6 +150,43 @@ describe('Explicit backup destination choice', () => {
     expect(fixture.componentInstance.backupPassphrase()).toBe('synthetic-unsaved');
     fixture.nativeElement.remove();
   });
+  it('keeps Bank and Cash tracking disabled when either activation popup is cancelled', () => {
+    const fixture = TestBed.createComponent(SettingsPage);
+    const page = fixture.componentInstance;
+    const bankCheckbox = { checked: true } as HTMLInputElement;
+    page.toggleBankTracking({ target: bankCheckbox } as unknown as Event);
+    expect(page.bankTrackingConfirmationOpen()).toBe(true);
+    expect(bankCheckbox.checked).toBe(false);
+    page.bankTrackingConfirmationOpen.set(false);
+    expect(page.store.bankCashTracking().bankEnabled).not.toBe(true);
+
+    const cashCheckbox = { checked: true } as HTMLInputElement;
+    page.toggleCashTracking({ target: cashCheckbox } as unknown as Event);
+    expect(page.cashTrackingSetupOpen()).toBe(true);
+    expect(page.cashBalanceValue()).toBe('0');
+    expect(cashCheckbox.checked).toBe(false);
+    page.cashTrackingSetupOpen.set(false);
+    expect(page.store.bankCashTracking().cashEnabled).not.toBe(true);
+    fixture.destroy();
+  });
+  it('submits a Cash baseline once when confirmation is triggered repeatedly', async () => {
+    const fixture = TestBed.createComponent(SettingsPage);
+    const page = fixture.componentInstance;
+    const enableCashTracking = vi
+      .spyOn(page.store, 'enableCashTracking')
+      .mockImplementation(() => new Promise((resolve) => (release = resolve)));
+    let release!: () => void;
+    page.cashTrackingSetupOpen.set(true);
+    page.cashBalanceValue.set('12.34');
+    const first = page.confirmCashTracking(new Event('submit'));
+    await page.confirmCashTracking(new Event('submit'));
+    expect(enableCashTracking).toHaveBeenCalledTimes(1);
+    expect(enableCashTracking).toHaveBeenCalledWith(1234);
+    release();
+    await first;
+    expect(page.cashTrackingSetupOpen()).toBe(false);
+    fixture.destroy();
+  });
   it.each(['light', 'dark'])(
     'passes available AXE WCAG checks for Settings in %s mode',
     async (theme) => {

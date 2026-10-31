@@ -231,7 +231,7 @@ export interface SourceTransfer {
 export interface SourceBalanceAdjustment {
   id: string;
   sourceId: string;
-  reason: 'OPENING' | 'CORRECTION' | 'REBASE' | 'MIGRATION' | 'SMS_RECONCILIATION';
+  reason: 'OPENING' | 'ADD' | 'CORRECTION' | 'REBASE' | 'MIGRATION' | 'SMS_RECONCILIATION';
   previousMinor?: Money;
   newMinor: Money;
   correctionMinor: Money;
@@ -241,6 +241,8 @@ export interface SourceBalanceAdjustment {
 
 export interface BankCashTrackingSettings {
   enabled: boolean;
+  bankEnabled?: boolean;
+  cashEnabled?: boolean;
   askCardSettlementFunding: boolean;
   activatedAt?: string;
   disabledAt?: string;

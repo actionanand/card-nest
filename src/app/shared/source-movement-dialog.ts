@@ -13,9 +13,9 @@ import { SnackbarService } from '../core/services/snackbar.service';
 import { AppIcon } from './app-icon';
 import { AppSelectOption, AppSelectPicker } from './app-select-picker';
 
-export type SourceMovementMode = 'RECEIPT' | 'TRANSFER' | 'BALANCE';
+export type SourceMovementMode = 'RECEIPT' | 'TRANSFER' | 'BALANCE' | 'ADD_MONEY';
 
-/** Manual Bank/Cash movements: receipts, own-account transfers and audited balance setting. */
+/** Manual source movements and audited balance adjustments. */
 @Component({
   selector: 'app-source-movement-dialog',
   imports: [AppIcon, AppSelectPicker],
@@ -67,19 +67,24 @@ export type SourceMovementMode = 'RECEIPT' | 'TRANSFER' | 'BALANCE';
             }
           }
           <label
-            >{{ mode() === 'BALANCE' ? 'Actual current balance (INR)' : 'Amount (INR)'
+            >{{
+              mode() === 'BALANCE'
+                ? 'Actual current balance (INR)'
+                : mode() === 'ADD_MONEY'
+                  ? 'Amount to add (INR)'
+                  : 'Amount (INR)'
             }}<input
               inputmode="decimal"
               [value]="amount()"
               (input)="amount.set(value($event))"
               required
           /></label>
-          @if (mode() !== 'BALANCE') {
+          @if (mode() === 'RECEIPT' || mode() === 'TRANSFER') {
             <label
               >Date<input type="date" [value]="date()" (input)="date.set(value($event))" required
             /></label>
           }
-          @if (mode() !== 'BALANCE') {
+          @if (mode() === 'RECEIPT' || mode() === 'TRANSFER') {
             <label
               >Time (optional)<input type="time" [value]="time()" (input)="time.set(value($event))"
             /></label>
@@ -126,13 +131,19 @@ export type SourceMovementMode = 'RECEIPT' | 'TRANSFER' | 'BALANCE';
             />
           }
           <label
-            >{{ mode() === 'BALANCE' ? 'Note (optional)' : 'Description (optional)'
+            >{{
+              mode() === 'BALANCE' || mode() === 'ADD_MONEY'
+                ? 'Note (optional)'
+                : 'Description (optional)'
             }}<input
               maxlength="100"
               [value]="description()"
               (input)="description.set(value($event))"
           /></label>
           @if (mode() === 'BALANCE' && balancePreview(); as preview) {
+            <p class="movement-note">{{ preview }}</p>
+          }
+          @if (mode() === 'ADD_MONEY' && balancePreview(); as preview) {
             <p class="movement-note">{{ preview }}</p>
           }
           @if (mode() === 'TRANSFER' && !loan()) {
@@ -353,7 +364,12 @@ export class SourceMovementDialog implements OnInit {
   );
   readonly title = computed(() => {
     if (this.mode() === 'BALANCE')
-      return this.source()?.kind === 'CASH' ? 'Set current cash balance' : 'Set current balance';
+      return this.source()?.kind === 'CASH'
+        ? 'Set current cash balance'
+        : this.source()?.kind === 'MEAL'
+          ? 'Set current wallet balance'
+          : 'Set current balance';
+    if (this.mode() === 'ADD_MONEY') return `Add money to ${this.source()?.nickname ?? 'account'}`;
     if (this.mode() === 'RECEIPT')
       return this.source()?.kind === 'CASH' ? 'Add cash' : 'Record incoming money';
     if (this.editing()) return this.loan() ? 'Edit loan repayment' : 'Edit transfer';
@@ -364,14 +380,24 @@ export class SourceMovementDialog implements OnInit {
     return 'Transfer between my accounts';
   });
   readonly submitLabel = computed(() =>
-    this.mode() === 'BALANCE' ? 'Save balance' : this.editing() ? 'Save changes' : 'Confirm',
+    this.mode() === 'BALANCE'
+      ? 'Save balance'
+      : this.mode() === 'ADD_MONEY'
+        ? 'Add money'
+        : this.editing()
+          ? 'Save changes'
+          : 'Confirm',
   );
   readonly balancePreview = computed(() => {
     const source = this.source();
     const value = parseMoneyToMinor(this.amount());
     if (!source || value === null) return '';
-    if (!bankCashTracked(source, this.store.bankCashTracking()))
-      return 'This sets the starting balance. Older entries are not replayed.';
+    const initialized =
+      bankCashTracked(source, this.store.bankCashTracking()) ||
+      (source.kind === 'MEAL' && !source.noLimit && !!source.balanceCutoverAt);
+    if (this.mode() === 'ADD_MONEY')
+      return `Current ${formatMoney(source.balanceMinor ?? 0, 'INR')} + ${formatMoney(value, 'INR')} = ${formatMoney((source.balanceMinor ?? 0) + value, 'INR')}. This is an audited balance change, not income or spending.`;
+    if (!initialized) return 'This sets the starting balance. Older entries are not replayed.';
     const correction = value - (source.balanceMinor ?? 0);
     return `Calculated ${formatMoney(source.balanceMinor ?? 0, 'INR')}. A ${correction < 0 ? '−' : '+'}${formatMoney(Math.abs(correction), 'INR')} correction is saved for audit; it is not income or spending.`;
   });
@@ -447,6 +473,9 @@ export class SourceMovementDialog implements OnInit {
       if (this.mode() === 'BALANCE') {
         await this.store.setSourceBalance(this.sourceId(), amount, this.description());
         this.snackbar.show('Balance saved. The correction is recorded for audit.');
+      } else if (this.mode() === 'ADD_MONEY') {
+        await this.store.addSourceBalance(this.sourceId(), amount, this.description());
+        this.snackbar.show('Money added. The balance adjustment is recorded for audit.');
       } else if (this.mode() === 'RECEIPT') {
         const source = this.source();
         if (!source || !isBankOrCash(source)) throw new Error('Choose a bank account or cash.');

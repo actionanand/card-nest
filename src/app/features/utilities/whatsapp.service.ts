@@ -1,7 +1,7 @@
 import { DOCUMENT } from '@angular/common';
 import { Service, inject } from '@angular/core';
 import { Capacitor } from '@capacitor/core';
-import { normalizeIndianMobileNumber } from './utilities.service';
+import { normalizeInternationalPhoneNumber } from './utilities.service';
 
 export type WhatsAppPackage = 'com.whatsapp' | 'com.whatsapp.w4b';
 export type WhatsAppOpenResult = 'OPENED' | 'CHOOSER' | 'BROWSER_FALLBACK' | 'INVALID' | 'BLOCKED';
@@ -30,14 +30,9 @@ export class WhatsAppService {
     readonly packages: readonly WhatsAppPackage[];
   } {
     if (!number) return { result: 'INVALID', packages: [] };
-    let normalized: string;
-    try {
-      normalized = normalizeIndianMobileNumber(number) ?? '';
-    } catch {
-      return { result: 'INVALID', packages: [] };
-    }
+    const normalized = normalizeInternationalPhoneNumber(number);
     if (!normalized) return { result: 'INVALID', packages: [] };
-    const digits = normalized.replace(/\D/g, '');
+    const digits = normalized;
     if (Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android') {
       const bridge = (this.document.defaultView as WhatsAppWindow | null)?.CardNestNative;
       if (!bridge) return { result: 'BLOCKED', packages: [] };
@@ -53,18 +48,18 @@ export class WhatsAppService {
   }
 
   choose(number: string, message: string, packageName: WhatsAppPackage): boolean {
-    const normalized = normalizeIndianMobileNumber(number);
+    const normalized = normalizeInternationalPhoneNumber(number);
     if (!normalized || !KNOWN_PACKAGES.includes(packageName)) return false;
     const bridge = (this.document.defaultView as WhatsAppWindow | null)?.CardNestNative;
     if (!bridge || Capacitor.getPlatform() !== 'android') return false;
-    bridge.openWhatsAppIn(normalized.replace(/\D/g, ''), message.trim().slice(0, 500), packageName);
+    bridge.openWhatsAppIn(normalized, message.trim().slice(0, 500), packageName);
     return true;
   }
 
   openFallback(number: string, message = ''): boolean {
-    const normalized = normalizeIndianMobileNumber(number);
+    const normalized = normalizeInternationalPhoneNumber(number);
     if (!normalized) return false;
-    const digits = normalized.replace(/\D/g, '');
+    const digits = normalized;
     if (Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android') {
       const bridge = (this.document.defaultView as WhatsAppWindow | null)?.CardNestNative;
       if (!bridge) return false;

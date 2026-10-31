@@ -22,5 +22,66 @@
     "id": "indusind",
     "name": "IndusInd Bank",
     "aliases": ["IndusInd", "IndusInd Bank", "IndusInd Bank Limited"]
-  }
+  },
+  { "id": "canara", "name": "Canara Bank", "aliases": ["Canara", "Canara Bank"] },
+  { "id": "indian-bank", "name": "Indian Bank", "aliases": ["Indian Bank"] },
+  {
+    "id": "indian-overseas",
+    "name": "Indian Overseas Bank",
+    "aliases": ["Indian Overseas Bank", "IOB"]
+  },
+  { "id": "citi", "name": "Citibank", "aliases": ["Citi", "Citibank", "Citi Bank"] },
+  {
+    "id": "jpmorgan-chase",
+    "name": "JPMorgan Chase",
+    "aliases": ["JPMorgan", "JPMorgan Chase", "JP Morgan Chase"]
+  },
+  { "id": "deutsche", "name": "Deutsche Bank", "aliases": ["Deutsche", "Deutsche Bank"] },
+  { "id": "idbi", "name": "IDBI Bank", "aliases": ["IDBI", "IDBI Bank"] },
+  {
+    "id": "union-bank",
+    "name": "Union Bank of India",
+    "aliases": ["Union Bank", "Union Bank of India"]
+  },
+  { "id": "dbs", "name": "DBS Bank", "aliases": ["DBS", "DBS Bank", "DBS India"] },
+  {
+    "id": "karur-vysya",
+    "name": "Karur Vysya Bank",
+    "aliases": ["Karur Vysya", "Karur Vysya Bank", "KVB"]
+  },
+  {
+    "id": "tamilnad-mercantile",
+    "name": "Tamilnad Mercantile Bank",
+    "aliases": ["Tamilnad Mercantile", "Tamilnad Mercantile Bank", "TMB"]
+  },
+  {
+    "id": "ippb",
+    "name": "India Post Payments Bank",
+    "aliases": ["India Post Payments Bank", "IPPB"]
+  },
+  {
+    "id": "airtel-payments",
+    "name": "Airtel Payments Bank",
+    "aliases": ["Airtel Payments Bank", "Airtel Bank"]
+  },
+  { "id": "city-union", "name": "City Union Bank", "aliases": ["City Union Bank", "CUB"] },
+  { "id": "bank-of-india", "name": "Bank of India", "aliases": ["Bank of India", "BOI"] },
+  {
+    "id": "central-bank-india",
+    "name": "Central Bank of India",
+    "aliases": ["Central Bank of India", "Central Bank"]
+  },
+  { "id": "uco", "name": "UCO Bank", "aliases": ["UCO", "UCO Bank"] },
+  {
+    "id": "bank-of-maharashtra",
+    "name": "Bank of Maharashtra",
+    "aliases": ["Bank of Maharashtra", "BOM"]
+  },
+  {
+    "id": "south-indian",
+    "name": "South Indian Bank",
+    "aliases": ["South Indian Bank", "SIB"]
+  },
+  { "id": "bandhan", "name": "Bandhan Bank", "aliases": ["Bandhan", "Bandhan Bank"] },
+  { "id": "karnataka", "name": "Karnataka Bank", "aliases": ["Karnataka Bank"] }
 ]

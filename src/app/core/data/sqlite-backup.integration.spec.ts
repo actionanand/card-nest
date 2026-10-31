@@ -5,6 +5,7 @@ import { CapacitorSQLite } from '@capacitor-community/sqlite';
 import { SqliteDatabase } from './sqlite-database';
 import { DATABASE_MIGRATIONS } from './migrations';
 import { CardNestStore } from '../services/card-nest-store';
+import { CardTransaction } from '../models/domain';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
@@ -30,6 +31,7 @@ import {
 } from '../../features/utilities/utilities.service';
 import { BankActivityService } from '../../features/bank-activity/bank-activity.service';
 import { addCalendarDays } from '../../features/utilities/utilities-calculations';
+import { CATEGORY_REGISTRY } from './category-definitions';
 
 const { DatabaseSync } = process.getBuiltinModule('node:sqlite') as typeof import('node:sqlite');
 
@@ -93,6 +95,117 @@ describe('Durable first-run data, additive read migration and private portable b
       await store.initialisePreferences();
       expect(store.showTransactionTime()).toBe(false);
       expect(store.smsSwipeActionsEnabled()).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+  it('restores audited additive and replacement balances without financial transaction effects', async () => {
+    await database.initialise();
+    const store = TestBed.inject(CardNestStore);
+    await store.initialisePreferences();
+    const bank = await store.addBankAccount({ institution: 'ICICI Bank', lastDigits: '419' });
+    await store.enableBankTracking({ [bank.id]: 50000 });
+    await store.enableCashTracking(25000);
+    const meal = store.paymentSources().find((source) => source.kind === 'MEAL')!;
+    await store.setSourceBalance(meal.id, 30000, 'Initial wallet balance');
+    await store.addSourceBalance(bank.id, 5000, 'Bank add');
+    await store.addSourceBalance('source-cash', 2000, 'Cash add');
+    await store.addSourceBalance(meal.id, 4000, 'Meal add');
+    await store.setSourceBalance('source-cash', 31000, 'Cash correction');
+
+    const transactions = rows('SELECT * FROM card_transactions ORDER BY id');
+    const adjustments = rows('SELECT * FROM source_balance_adjustments ORDER BY id');
+    const balances = store.paymentSources().map(({ id, balanceMinor }) => [id, balanceMinor]);
+    vi.stubGlobal('crypto', webcrypto);
+    vi.stubGlobal('Blob', NodeBlob);
+    try {
+      const backups = TestBed.inject(BackupService);
+      const backup = await backups.create('synthetic-balance-passphrase');
+      await store.addSourceBalance(bank.id, 9000, 'Temporary post-backup add');
+      await store.setSourceBalance('source-cash', 1, 'Temporary post-backup set');
+      await backups.restore(backup.contents, 'synthetic-balance-passphrase');
+      await store.initialisePreferences();
+      expect(rows('SELECT * FROM source_balance_adjustments ORDER BY id')).toEqual(adjustments);
+      expect(rows('SELECT * FROM card_transactions ORDER BY id')).toEqual(transactions);
+      expect(store.paymentSources().map(({ id, balanceMinor }) => [id, balanceMinor])).toEqual(
+        balances,
+      );
+      expect(store.balanceAdjustments().some((item) => item.note?.includes('Temporary'))).toBe(
+        false,
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+  it('restores reset category definitions and preserves custom IDs, budgets and transaction references in backup', async () => {
+    await database.initialise();
+    const store = TestBed.inject(CardNestStore);
+    await store.initialisePreferences();
+    const dining = store.categories().find((category) => category.id === 'dining')!;
+    await store.updateCategory({
+      ...dining,
+      name: 'My Dining',
+      icon: 'film',
+      colour: '#123456',
+      archived: true,
+    });
+    await store.setCategoryLimit('dining', 12500, true);
+    await store.addCategory({
+      id: 'backup-custom-category',
+      name: 'Backup Custom',
+      icon: 'tag',
+      colour: '#456789',
+      appliesTo: 'BOTH',
+      archived: false,
+    });
+    const transaction: CardTransaction = {
+      id: 'backup-category-reset-transaction',
+      cardId: 'source-cash',
+      type: 'PURCHASE',
+      amountMinor: 2300,
+      currencyCode: 'INR',
+      transactionDate: indiaTodayIso(),
+      categoryId: 'dining',
+      attachmentIds: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    await store.saveManualTransaction(transaction);
+    await store.deleteCategory('education');
+    await store.resetDefaultCategories();
+    await store.resetDefaultCategories();
+    const expectedTransactions = rows('SELECT * FROM card_transactions ORDER BY id');
+    const expectedLimits = rows('SELECT * FROM category_limits ORDER BY category_id');
+
+    vi.stubGlobal('crypto', webcrypto);
+    vi.stubGlobal('Blob', NodeBlob);
+    try {
+      const backups = TestBed.inject(BackupService);
+      const backup = await backups.create('synthetic-category-reset-passphrase');
+      await store.deleteCategory('wealth-assets');
+      await store.setCategoryLimit('dining', 100, false);
+      await backups.restore(backup.contents, 'synthetic-category-reset-passphrase');
+      const restored = TestBed.runInInjectionContext(() => new CardNestStore());
+      await restored.initialisePreferences();
+
+      expect(
+        restored
+          .categories()
+          .filter((category) =>
+            CATEGORY_REGISTRY.categories.some((definition) => definition.id === category.id),
+          ),
+      ).toHaveLength(24);
+      expect(restored.categories().find((category) => category.id === 'dining')).toMatchObject({
+        name: 'Dining',
+        archived: false,
+        monthlyLimitMinor: 12500,
+        showLimit: true,
+      });
+      expect(
+        restored.categories().find((category) => category.id === 'backup-custom-category'),
+      ).toMatchObject({ name: 'Backup Custom', colour: '#456789' });
+      expect(rows('SELECT * FROM card_transactions ORDER BY id')).toEqual(expectedTransactions);
+      expect(rows('SELECT * FROM category_limits ORDER BY category_id')).toEqual(expectedLimits);
     } finally {
       vi.unstubAllGlobals();
     }

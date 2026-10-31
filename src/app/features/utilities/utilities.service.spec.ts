@@ -209,7 +209,7 @@ describe('Indian Utilities service', () => {
       estimatedUsageDays: 25,
       distributorContact: '+91-98765-43210',
     });
-    expect(lpg.distributorContact).toBe('+91-9876543210');
+    expect(lpg.distributorContact).toBe('+91-98765-43210');
     const lpgWithoutContact = await utilities.saveLpgProfile({
       connectionName: 'No contact home',
       provider: 'INDANE',
@@ -218,6 +218,26 @@ describe('Indian Utilities service', () => {
       estimatedUsageDays: 25,
     });
     expect(lpgWithoutContact.distributorContact).toBeUndefined();
+    const internationalContact = await utilities.saveLpgProfile({
+      connectionName: 'International contact',
+      provider: 'INDANE',
+      commercial: false,
+      cylinderSize: 'NORMAL',
+      estimatedUsageDays: 25,
+      distributorContact: '+1 (800) 555-0199',
+      distributorWhatsApp: '+44 20 7946 0958',
+    });
+    expect(internationalContact.distributorContact).toBe('+1 (800) 555-0199');
+    expect(internationalContact.distributorWhatsApp).toBe('+44 20 7946 0958');
+    const tollFree = await utilities.saveLpgProfile({
+      connectionName: 'Toll free contact',
+      provider: 'INDANE',
+      commercial: false,
+      cylinderSize: 'NORMAL',
+      estimatedUsageDays: 25,
+      distributorContact: '1800-123-4567',
+    });
+    expect(tollFree.distributorContact).toBe('1800-123-4567');
     await expect(
       utilities.saveLpgProfile({
         connectionName: 'Another home',
@@ -228,5 +248,15 @@ describe('Indian Utilities service', () => {
         distributorWhatsApp: 'Call 9876543210',
       }),
     ).rejects.toThrow();
+    await expect(
+      utilities.saveLpgProfile({
+        connectionName: 'Invalid international contact',
+        provider: 'INDANE',
+        commercial: false,
+        cylinderSize: 'NORMAL',
+        estimatedUsageDays: 25,
+        distributorContact: 'Call 1800-123-4567',
+      }),
+    ).rejects.toThrow('valid contact number');
   });
 });

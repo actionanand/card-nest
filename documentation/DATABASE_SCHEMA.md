@@ -108,6 +108,8 @@ The current schema has no `payment_sources` table. `PaymentSource` objects (incl
 
 Meal sources can additionally carry `balanceCutoverAt`, `balanceSnapshotMinor`, `balanceCutoverReason` (`MANUAL` or `SMS_RECONCILIATION`) and an initial `balanceReconciliation` object plus a `latestBalanceReconciliation` object for the current verified anchor. Both record candidate/transaction IDs, event type/amount/time, saved/predicted/reported balances, correction and recording time. The initial object is an idempotency marker and baseline audit, not a merchant transaction, and is never overwritten. Later explicit corrections update only the latest anchor and also retain their audit in `sms_reconciliation`. Existing snapshots without a reason retain unknown provenance.
 
+Bank account identifiers use versioned HMAC fingerprints; complete account numbers are not persisted. The HMAC key is stored in `app_preferences` alongside the fingerprints in the same local SQLite database. This is a known security limitation: SQLite is not natively encrypted and the key is not held in an Android Keystore. Encrypted portable backups retain the key and fingerprints for compatibility; this stage does not change that backup format or key strategy.
+
 These are optional JSON fields, so no schema-version bump or destructive migration is required. Existing balances/transactions/categories are not rebuilt. Portable encrypted backups preserve the source JSON and reconciliation decisions while omitting extracted candidate payloads. Restoring a repair marker prevents automatic repair replay; a tombstone cannot reconstruct discarded SMS evidence. See [Pluxee baseline reconciliation](./SMS_SYNC.md#one-time-pluxee-baseline-reconciliation).
 
 When a transaction uses a non-credit-card source:

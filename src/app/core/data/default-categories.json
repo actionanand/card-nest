@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "categories": [
     {
       "id": "payment",
@@ -200,7 +200,7 @@
       "appliesTo": "BOTH",
       "protected": false,
       "introduced": 2,
-      "description": "Subjective discretionary treats; manual selection only."
+      "description": "Discretionary treats and entertainment. Merchant suggestions are prompts; review before confirming."
     },
     {
       "id": "education",
@@ -212,6 +212,39 @@
       "protected": false,
       "introduced": 2,
       "description": "Tuition, courses and books. EMI repayments retain their existing accounting."
+    },
+    {
+      "id": "wealth-assets",
+      "name": "Wealth & Assets",
+      "aliases": [],
+      "icon": "briefcase_business",
+      "colour": "#4e87c7",
+      "appliesTo": "BOTH",
+      "protected": false,
+      "introduced": 3,
+      "description": "Investments, savings, property, and other asset-related activity."
+    },
+    {
+      "id": "lifestyle-personal-care",
+      "name": "Lifestyle & Personal Care",
+      "aliases": [],
+      "icon": "health_and_safety",
+      "colour": "#d56a7b",
+      "appliesTo": "BOTH",
+      "protected": false,
+      "introduced": 3,
+      "description": "Personal care, fitness, grooming, and lifestyle services."
+    },
+    {
+      "id": "giving-spiritual",
+      "name": "Giving & Spiritual",
+      "aliases": [],
+      "icon": "religion",
+      "colour": "#c8a43b",
+      "appliesTo": "BOTH",
+      "protected": false,
+      "introduced": 3,
+      "description": "Charitable giving, donations, and spiritual observances."
     }
   ]
 }
