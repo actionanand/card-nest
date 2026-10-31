@@ -1608,18 +1608,7 @@ export class CardNestStore {
       const current = stored.find((source) => source.id === updated.id);
       if (!current || current.kind !== updated.kind)
         throw new Error('This payment source is no longer available.');
-      if (
-        updated.kind === 'DEBIT' &&
-        updated.isPrimaryBank &&
-        !current.isPrimaryBank &&
-        stored.some(
-          (source) =>
-            source.id !== current.id &&
-            source.kind === 'DEBIT' &&
-            !source.archived &&
-            source.isPrimaryBank,
-        )
-      )
+      if (updated.kind === 'DEBIT' && updated.isPrimaryBank && !current.isPrimaryBank)
         throw new Error('Confirm a primary-bank switch using the dedicated selection action.');
       const merged = Object.fromEntries([
         ...Object.entries(current),
