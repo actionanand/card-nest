@@ -1,4 +1,4 @@
-import { Component, ElementRef, computed, inject, signal, viewChild } from '@angular/core';
+import { Component, computed, inject, signal } from '@angular/core';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 import {
   CardTransaction,
@@ -7,9 +7,17 @@ import {
   TransactionType,
 } from '../../core/models/domain';
 import { CardNestStore } from '../../core/services/card-nest-store';
-import { formatMoney, parseMoneyToMinor } from '../../core/services/money';
+import { DeviceCalendarClock } from '../../core/services/device-date';
+import { displayBankAccountSuffix } from '../../core/services/bank-account-identifier';
+import {
+  formatMoney,
+  parseMoneyToMinor,
+  spendingContribution,
+  transactionEffect,
+} from '../../core/services/money';
 import { SnackbarService } from '../../core/services/snackbar.service';
 import { AppIcon } from '../../shared/app-icon';
+import { ProfileModal } from '../../shared/profile-modal';
 import { PaymentSourceLogo } from '../../shared/payment-source-logo';
 import { AppDatePipe } from '../../core/services/date-format.service';
 import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
@@ -17,8 +25,11 @@ import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angula
 import { recordedTransactionTime } from '../../core/services/transaction-time';
 import {
   bankCashTracked,
+  bankTrackingEnabled,
+  cashTrackingEnabled,
+  hasWalletBaseline,
   isBankOrCash,
-  isEnrolledBankAccount,
+  sourceBalanceTrackingEnabled,
   transferLabel,
 } from '../../core/services/source-balance';
 import { SourceMovementDialog, SourceMovementMode } from '../../shared/source-movement-dialog';
@@ -32,6 +43,7 @@ interface MovementRequest {
 }
 
 type SourceTab = 'ACCOUNTS' | 'ACTIVITY';
+type BalanceSummaryStatus = 'OFF' | 'NONE' | 'INCOMPLETE' | 'KNOWN';
 
 interface SourceCycleGroup {
   readonly key: string;
@@ -44,6 +56,7 @@ interface SourceCycleGroup {
   selector: 'app-sources-page',
   imports: [
     RouterLink,
+    ProfileModal,
     AppIcon,
     PaymentSourceLogo,
     AppDatePipe,
@@ -55,11 +68,16 @@ interface SourceCycleGroup {
   styleUrl: './sources.scss',
 })
 export class SourcesPage {
+  private readonly calendarClock = inject(DeviceCalendarClock);
   readonly walletOpen = signal(false);
   readonly walletSaving = signal(false);
-  readonly walletSummary = viewChild<ElementRef<HTMLElement>>('walletSummary');
-  walletToggled(event: Event): void {
-    this.walletOpen.set((event.target as HTMLDetailsElement).open);
+  openWallet(): void {
+    if (this.walletSaving()) return;
+    this.walletError.set('');
+    this.walletOpen.set(true);
+  }
+  closeWallet(): void {
+    if (!this.walletSaving()) this.walletOpen.set(false);
   }
   readonly walletError = signal('');
   readonly walletForm = new FormGroup({
@@ -100,7 +118,6 @@ export class SourcesPage {
       });
       this.walletForm.reset();
       this.walletOpen.set(false);
-      queueMicrotask(() => this.walletSummary()?.nativeElement.focus());
       this.snackbar.show('FASTag wallet created.');
     } catch (error: unknown) {
       this.walletError.set(error instanceof Error ? error.message : 'Wallet could not be saved.');
@@ -111,59 +128,67 @@ export class SourcesPage {
   }
   readonly store = inject(CardNestStore);
   readonly movement = signal<MovementRequest | null>(null);
-  readonly bankOpen = signal(false);
-  readonly bankSaving = signal(false);
-  readonly bankError = signal('');
-  readonly bankForm = new FormGroup({
-    nickname: new FormControl('', {
-      nonNullable: true,
-      validators: [Validators.required, Validators.maxLength(80)],
-    }),
-    institution: new FormControl('', {
-      nonNullable: true,
-      validators: [Validators.required, Validators.maxLength(80)],
-    }),
-    lastDigits: new FormControl('', {
-      nonNullable: true,
-      validators: [Validators.required, Validators.pattern(/^\d{3,5}$/)],
-    }),
-  });
-  bankToggled(event: Event): void {
-    this.bankOpen.set((event.target as HTMLDetailsElement).open);
-  }
-  async addBankAccount(event: Event): Promise<void> {
-    event.preventDefault();
-    if (!this.bankForm.valid || this.bankSaving()) {
-      this.bankForm.markAllAsTouched();
-      return;
-    }
-    this.bankError.set('');
-    this.bankSaving.set(true);
-    try {
-      const account = await this.store.addBankAccount(this.bankForm.getRawValue());
-      this.bankForm.reset();
-      this.bankOpen.set(false);
-      this.snackbar.show(`${this.store.sourceDetail(account.id)} enrolled.`);
-    } catch (error: unknown) {
-      this.bankError.set(error instanceof Error ? error.message : 'Account could not be saved.');
-      this.snackbar.show(this.bankError(), 'WARNING');
-    } finally {
-      this.bankSaving.set(false);
-    }
-  }
   readonly tracking = computed(() => this.store.bankCashTracking());
+  readonly nonBankSources = computed(() =>
+    this.store.activePaymentSources().filter((source) => source.kind !== 'DEBIT'),
+  );
+  readonly bankBalanceSummary = computed(() => {
+    if (!bankTrackingEnabled(this.tracking())) return { status: 'OFF' as BalanceSummaryStatus };
+    const sources = this.store.bankAccounts();
+    if (!sources.length) return { status: 'NONE' as BalanceSummaryStatus };
+    const known = sources.filter((source) => this.tracked(source));
+    const totalMinor = known.reduce((sum, source) => sum + (source.balanceMinor ?? 0), 0);
+    if (!Number.isSafeInteger(totalMinor)) return { status: 'INCOMPLETE' as BalanceSummaryStatus };
+    if (!known.length) return { status: 'INCOMPLETE' as BalanceSummaryStatus };
+    return known.length === sources.length
+      ? { status: 'KNOWN' as BalanceSummaryStatus, totalMinor }
+      : { status: 'INCOMPLETE' as BalanceSummaryStatus, totalMinor };
+  });
+  readonly liquidBalanceSummary = computed(() => {
+    const tracking = this.tracking();
+    if (!bankTrackingEnabled(tracking) && !cashTrackingEnabled(tracking))
+      return { status: 'OFF' as BalanceSummaryStatus };
+    const sources = this.store
+      .paymentSources()
+      .filter(
+        (source) => isBankOrCash(source) && !source.archived && this.trackingEnabledFor(source),
+      );
+    if (!sources.length) return { status: 'NONE' as BalanceSummaryStatus };
+    if (!sources.every((source) => this.tracked(source)))
+      return { status: 'INCOMPLETE' as BalanceSummaryStatus };
+    const totalMinor = sources.reduce((sum, source) => sum + (source.balanceMinor ?? 0), 0);
+    return Number.isSafeInteger(totalMinor)
+      ? { status: 'KNOWN' as BalanceSummaryStatus, totalMinor }
+      : { status: 'INCOMPLETE' as BalanceSummaryStatus };
+  });
   isBankOrCash(source: PaymentSource): boolean {
     return isBankOrCash(source);
-  }
-  isEnrolled(source: PaymentSource): boolean {
-    return isEnrolledBankAccount(source);
   }
   tracked(source: PaymentSource): boolean {
     return bankCashTracked(source, this.tracking());
   }
+  trackingEnabledFor(source: PaymentSource): boolean {
+    return sourceBalanceTrackingEnabled(source, this.tracking());
+  }
   balanceState(source: PaymentSource): 'TRACKED' | 'NOT_SET' | 'OFF' {
-    if (!this.tracking().enabled) return 'OFF';
+    if (!this.trackingEnabledFor(source)) return 'OFF';
     return this.tracked(source) ? 'TRACKED' : 'NOT_SET';
+  }
+  bankAccountBalanceLabel(source: PaymentSource): string {
+    if (!bankTrackingEnabled(this.tracking())) return 'Not tracked';
+    return this.tracked(source) ? this.money(source.balanceMinor) : 'Balance not set';
+  }
+  liquidBalanceLabel(): string {
+    const summary = this.liquidBalanceSummary();
+    if (summary.status === 'OFF') return 'Balance tracking off';
+    if (summary.status === 'NONE') return 'No active Bank/Cash accounts';
+    if (summary.status === 'INCOMPLETE') return 'Incomplete · one or more balances not set';
+    return this.money(summary.totalMinor ?? 0);
+  }
+  liquidBalanceTitle(): string {
+    const bank = bankTrackingEnabled(this.tracking());
+    const cash = cashTrackingEnabled(this.tracking());
+    return bank && cash ? 'Bank + Cash' : bank ? 'Bank' : 'Cash';
   }
   openMovement(request: MovementRequest): void {
     this.movement.set(request);
@@ -173,27 +198,6 @@ export class SourcesPage {
       this.store.bankAccounts().find((source) => source.id !== excludeId && this.tracked(source))
         ?.id ?? ''
     );
-  }
-  updateBankField(
-    source: PaymentSource,
-    field: 'nickname' | 'institution' | 'lastDigits',
-    event: Event,
-  ): void {
-    const input = event.target as HTMLInputElement;
-    const value = input.value.trim();
-    if (field === 'lastDigits' && !/^\d{3,5}$/.test(value)) {
-      input.setCustomValidity('Enter the last 3 to 5 digits.');
-      input.reportValidity();
-      return;
-    }
-    input.setCustomValidity('');
-    if (!value && field !== 'institution') return;
-    this.store.updatePaymentSource({ ...source, [field]: value.slice(0, 80) || undefined });
-    this.snackbar.show(`${source.nickname} updated.`);
-  }
-  archiveAccount(source: PaymentSource): void {
-    this.store.updatePaymentSource({ ...source, archived: true });
-    this.snackbar.show(`${source.nickname} archived. Its history is kept.`);
   }
   readonly visibleTransfers = computed(() =>
     this.store
@@ -243,7 +247,12 @@ export class SourcesPage {
     ...this.store.activePaymentSources().map((source) => ({
       value: source.id,
       label: source.nickname,
-      detail: [source.lastDigits, source.institution].filter(Boolean).join(' · '),
+      detail: [
+        source.kind === 'DEBIT' ? displayBankAccountSuffix(source.lastDigits) : source.lastDigits,
+        source.institution,
+      ]
+        .filter(Boolean)
+        .join(' · '),
     })),
   ]);
   readonly selectedSource = computed(() =>
@@ -266,7 +275,9 @@ export class SourcesPage {
           right.createdAt.localeCompare(left.createdAt),
       ),
   );
-  readonly currentCycle = computed(() => this.cycleFor(new Date().toISOString().slice(0, 10)));
+  readonly currentCycle = computed(() => {
+    return this.cycleFor(this.calendarClock.calendar().dateIso);
+  });
   readonly currentCycleTransactions = computed(() => {
     const period = this.currentCycle();
     return this.visibleTransactions().filter(
@@ -309,12 +320,38 @@ export class SourcesPage {
     const selected = this.selectedSource();
     const funds = (source: PaymentSource) =>
       isBankOrCash(source) ? this.tracked(source) : !source.noLimit;
-    if (selected) return funds(selected) ? (selected.balanceMinor ?? 0) : null;
-    const tracked = this.store.paymentSources().filter(funds);
+    if (selected)
+      return isBankOrCash(selected) && !this.trackingEnabledFor(selected)
+        ? null
+        : funds(selected)
+          ? (selected.balanceMinor ?? 0)
+          : null;
+    const activeSources = this.store.activePaymentSources();
+    const activeBankCash = activeSources.filter(isBankOrCash);
+    if (activeBankCash.some((source) => this.trackingEnabledFor(source) && !this.tracked(source)))
+      return null;
+    const tracked = activeSources.filter(funds);
     return tracked.length
       ? tracked.reduce((sum, source) => sum + (source.balanceMinor ?? 0), 0)
       : null;
   });
+  remainingLabel(): string {
+    const selected = this.selectedSource();
+    if (selected && isBankOrCash(selected)) {
+      if (!this.trackingEnabledFor(selected)) return 'Balance tracking off';
+      if (!this.tracked(selected)) return 'Balance not set';
+    }
+    if (
+      !selected &&
+      (bankTrackingEnabled(this.tracking()) || cashTrackingEnabled(this.tracking()))
+    ) {
+      const banks = this.store.activePaymentSources().filter(isBankOrCash);
+      if (banks.some((source) => this.trackingEnabledFor(source) && !this.tracked(source)))
+        return 'Incomplete · one or more balances not set';
+    }
+    const remaining = this.remainingMinor();
+    return remaining === null ? 'Not tracked' : this.money(remaining);
+  }
 
   money(value: number | undefined): string {
     return formatMoney(value ?? 0, 'INR');
@@ -323,8 +360,12 @@ export class SourcesPage {
   sourceName(sourceId: string): string {
     const source = this.store.paymentSources().find((item) => item.id === sourceId);
     return source
-      ? `${source.nickname}${source.lastDigits ? ` ${source.lastDigits}` : ''}`
+      ? `${source.nickname}${source.lastDigits ? ` ${source.kind === 'DEBIT' ? displayBankAccountSuffix(source.lastDigits) : source.lastDigits}` : ''}`
       : 'Source';
+  }
+
+  accountIdentifier(source: PaymentSource): string {
+    return displayBankAccountSuffix(source.lastDigits);
   }
 
   categoryName(categoryId: string): string {
@@ -353,23 +394,21 @@ export class SourcesPage {
     this.selectedSourceId.set(value);
   }
 
-  updateAmount(
+  async updateAmount(
     source: PaymentSource,
     event: Event,
     field: 'balanceMinor' | 'loadAmountMinor',
-  ): void {
+  ): Promise<void> {
     const value = parseMoneyToMinor((event.target as HTMLInputElement).value);
     if (value === null) return;
-    this.store.updatePaymentSource({ ...source, [field]: value });
-    this.snackbar.show(`${source.nickname} updated.`);
+    await this.persistSource({ ...source, [field]: value }, `${source.nickname} updated.`);
   }
 
-  updateLoadDay(source: PaymentSource, value: string): void {
-    this.store.updatePaymentSource({
-      ...source,
-      loadDay: Number(value),
-    });
-    this.snackbar.show(`${source.nickname} load date updated.`);
+  async updateLoadDay(source: PaymentSource, value: string): Promise<void> {
+    await this.persistSource(
+      { ...source, loadDay: Number(value) },
+      `${source.nickname} load date updated.`,
+    );
   }
 
   sanitizeLastDigits(event: Event): void {
@@ -380,23 +419,34 @@ export class SourcesPage {
     );
   }
 
-  updateLastDigits(source: PaymentSource, event: Event): void {
+  async updateLastDigits(source: PaymentSource, event: Event): Promise<void> {
     const input = event.target as HTMLInputElement;
     this.sanitizeLastDigits(event);
     if (!input.checkValidity()) {
       input.reportValidity();
       return;
     }
-    this.store.updatePaymentSource({
-      ...source,
-      lastDigits: input.value || undefined,
-    });
-    this.snackbar.show(`${source.nickname} last four digits updated.`);
+    await this.persistSource(
+      { ...source, lastDigits: input.value || undefined },
+      `${source.nickname} last four digits updated.`,
+    );
   }
 
-  toggle(source: PaymentSource, field: 'noLimit' | 'autoLoad'): void {
-    this.store.updatePaymentSource({ ...source, [field]: !source[field] });
-    this.snackbar.show(`${source.nickname} updated.`);
+  async toggle(source: PaymentSource, field: 'noLimit' | 'autoLoad'): Promise<void> {
+    await this.persistSource({ ...source, [field]: !source[field] }, `${source.nickname} updated.`);
+  }
+  private async persistSource(source: PaymentSource, message: string): Promise<boolean> {
+    try {
+      await this.store.updatePaymentSource(source);
+      this.snackbar.show(message);
+      return true;
+    } catch (error: unknown) {
+      this.snackbar.show(
+        error instanceof Error ? error.message : 'The account could not be saved. Please retry.',
+        'WARNING',
+      );
+      return false;
+    }
   }
 
   transactionLabel(transaction: CardTransaction): string {
@@ -405,23 +455,49 @@ export class SourcesPage {
   }
 
   monthlyUsed(source: PaymentSource): number {
+    return this.pluxeeCycleTransactions(source).reduce(
+      (sum, transaction) => sum + spendingContribution(transaction),
+      0,
+    );
+  }
+
+  monthlyRemaining(source: PaymentSource): number {
+    return this.pluxeeCycleTransactions(source).reduce(
+      (sum, transaction) => sum - transactionEffect(transaction),
+      0,
+    );
+  }
+
+  topupsThisCycle(source: PaymentSource): number {
+    return this.pluxeeCycleTransactions(source)
+      .filter((transaction) => transaction.type === 'CREDIT')
+      .reduce((sum, transaction) => sum - transactionEffect(transaction), 0);
+  }
+
+  pluxeeAvailableBalance(source: PaymentSource): string {
+    if (source.noLimit) return 'Not tracked';
+    return source.balanceMinor === undefined ? 'Balance not set' : this.money(source.balanceMinor);
+  }
+
+  canAddMoney(source: PaymentSource): boolean {
+    return hasWalletBaseline(source);
+  }
+
+  private pluxeeCycleTransactions(source: PaymentSource): readonly CardTransaction[] {
+    if (source.kind !== 'MEAL') return [];
+    const period = this.currentCycle();
     return this.store
       .transactions()
       .filter(
         (transaction) =>
           transaction.cardId === source.id &&
-          transaction.transactionDate >= this.currentCycle().startIso &&
-          transaction.transactionDate <= this.currentCycle().endIso &&
-          !this.isCredit(transaction.type),
-      )
-      .reduce((sum, transaction) => sum + transaction.amountMinor, 0);
-  }
-
-  monthlyRemaining(source: PaymentSource): number {
-    const loads = this.currentCycleTransactions()
-      .filter((t) => t.cardId === source.id && this.isCredit(t.type))
-      .reduce((sum, t) => sum + t.amountMinor, 0);
-    return loads - this.monthlyUsed(source);
+          transaction.transactionDate >= period.startIso &&
+          transaction.transactionDate <= period.endIso &&
+          !(
+            transaction.type === 'ADJUSTMENT' &&
+            transaction.adjustmentPurpose === 'BALANCE_RECONCILIATION'
+          ),
+      );
   }
 
   private cycleFor(dateIso: string): { startIso: string; endIso: string; label: string } {

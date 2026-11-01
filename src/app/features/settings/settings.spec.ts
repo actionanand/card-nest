@@ -3,6 +3,7 @@ import { signal } from '@angular/core';
 import { of } from 'rxjs';
 import axe from 'axe-core';
 import { ActivatedRoute, provideRouter } from '@angular/router';
+import { Capacitor } from '@capacitor/core';
 import { SettingsPage } from './settings';
 import { SqliteDatabase } from '../../core/data/sqlite-database';
 import { BackupService } from '../../core/services/backup.service';
@@ -10,6 +11,9 @@ import { SnackbarService } from '../../core/services/snackbar.service';
 import { ApplicationPinService } from '../../core/services/application-pin.service';
 import { AppLockService } from '../../core/services/app-lock.service';
 import { UtilitiesService } from '../utilities/utilities.service';
+import { App } from '../../app';
+import { NotificationService } from '../../core/services/notification.service';
+import { UiPreferencesService } from '../../core/services/ui-preferences.service';
 
 describe('Explicit backup destination choice', () => {
   const backup = { fileName: 'synthetic.cnbak', contents: 'synthetic-encrypted-file' };
@@ -45,6 +49,11 @@ describe('Explicit backup destination choice', () => {
       ],
     });
   });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    localStorage.clear();
+  });
   const create = async () => {
     const fixture = TestBed.createComponent(SettingsPage);
     fixture.componentInstance.openCreateBackup();
@@ -53,6 +62,68 @@ describe('Explicit backup destination choice', () => {
     await fixture.componentInstance.submitBackup(new Event('submit'));
     return fixture;
   };
+  it('keeps the selected FAB visible when actual Settings theme radios retain focus', async () => {
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn(() => ({ matches: false })),
+    );
+    vi.spyOn(Capacitor, 'isNativePlatform').mockReturnValue(true);
+    vi.spyOn(Capacitor, 'getPlatform').mockReturnValue('android');
+    TestBed.overrideProvider(NotificationService, {
+      useValue: {
+        enabled: signal(false),
+        reminderDaysBefore: signal(1),
+        lastError: signal(null),
+        setUtilityReminders: vi.fn(),
+        reschedule: vi.fn().mockResolvedValue(undefined),
+        shouldRequestNotificationPermission: vi.fn().mockResolvedValue(false),
+        refreshPermission: vi.fn(),
+      },
+    });
+    const settings = TestBed.createComponent(SettingsPage);
+    const app = TestBed.createComponent(App);
+    document.body.append(settings.nativeElement, app.nativeElement);
+    const preferences = TestBed.inject(UiPreferencesService);
+    preferences.setFloatingShortcutEnabled(true);
+    (TestBed.inject(SqliteDatabase).ready as ReturnType<typeof signal<boolean>>).set(true);
+    TestBed.inject(AppLockService).foreground.set(true);
+    settings.detectChanges();
+    app.detectChanges();
+    await app.whenStable();
+    try {
+      for (const mode of ['QUICK_TRANSACTION', 'SMS_SYNC'] as const) {
+        preferences.setFloatingShortcutMode(mode);
+        for (const theme of ['LIGHT', 'DARK', 'SYSTEM']) {
+          const radio = settings.nativeElement.querySelector(
+            `input[name="theme"][value="${theme}"]`,
+          ) as HTMLInputElement;
+          radio.focus();
+          radio.click();
+          await settings.whenStable();
+          app.detectChanges();
+          expect(settings.componentInstance.theme()).toBe(theme);
+          expect(app.componentInstance.floatingShortcutVisible()).toBe(true);
+          expect(app.nativeElement.querySelectorAll('.floating-shortcut-fab')).toHaveLength(1);
+        }
+      }
+      const text = settings.nativeElement.querySelector(
+        'input:not([type]), input[type="text"]',
+      ) as HTMLInputElement;
+      text.focus();
+      await app.whenStable();
+      app.detectChanges();
+      expect(app.componentInstance.floatingShortcutVisible()).toBe(false);
+      text.blur();
+      await app.whenStable();
+      app.detectChanges();
+      expect(app.componentInstance.floatingShortcutVisible()).toBe(true);
+    } finally {
+      settings.destroy();
+      app.destroy();
+      settings.nativeElement.remove();
+      app.nativeElement.remove();
+    }
+  });
   it('scrolls and focuses every Settings section without navigation or losing form state', () => {
     const fixture = TestBed.createComponent(SettingsPage);
     fixture.detectChanges();
@@ -78,6 +149,43 @@ describe('Explicit backup destination choice', () => {
     expect(location.href).toBe(before);
     expect(fixture.componentInstance.backupPassphrase()).toBe('synthetic-unsaved');
     fixture.nativeElement.remove();
+  });
+  it('keeps Bank and Cash tracking disabled when either activation popup is cancelled', () => {
+    const fixture = TestBed.createComponent(SettingsPage);
+    const page = fixture.componentInstance;
+    const bankCheckbox = { checked: true } as HTMLInputElement;
+    page.toggleBankTracking({ target: bankCheckbox } as unknown as Event);
+    expect(page.bankTrackingConfirmationOpen()).toBe(true);
+    expect(bankCheckbox.checked).toBe(false);
+    page.bankTrackingConfirmationOpen.set(false);
+    expect(page.store.bankCashTracking().bankEnabled).not.toBe(true);
+
+    const cashCheckbox = { checked: true } as HTMLInputElement;
+    page.toggleCashTracking({ target: cashCheckbox } as unknown as Event);
+    expect(page.cashTrackingSetupOpen()).toBe(true);
+    expect(page.cashBalanceValue()).toBe('0');
+    expect(cashCheckbox.checked).toBe(false);
+    page.cashTrackingSetupOpen.set(false);
+    expect(page.store.bankCashTracking().cashEnabled).not.toBe(true);
+    fixture.destroy();
+  });
+  it('submits a Cash baseline once when confirmation is triggered repeatedly', async () => {
+    const fixture = TestBed.createComponent(SettingsPage);
+    const page = fixture.componentInstance;
+    const enableCashTracking = vi
+      .spyOn(page.store, 'enableCashTracking')
+      .mockImplementation(() => new Promise((resolve) => (release = resolve)));
+    let release!: () => void;
+    page.cashTrackingSetupOpen.set(true);
+    page.cashBalanceValue.set('12.34');
+    const first = page.confirmCashTracking(new Event('submit'));
+    await page.confirmCashTracking(new Event('submit'));
+    expect(enableCashTracking).toHaveBeenCalledTimes(1);
+    expect(enableCashTracking).toHaveBeenCalledWith(1234);
+    release();
+    await first;
+    expect(page.cashTrackingSetupOpen()).toBe(false);
+    fixture.destroy();
   });
   it.each(['light', 'dark'])(
     'passes available AXE WCAG checks for Settings in %s mode',
@@ -223,5 +331,52 @@ describe('Explicit backup destination choice', () => {
       vi.clearAllTimers();
       vi.useRealTimers();
     }
+  });
+  it('shows one Android-only floating shortcut control with exclusive Quick Transaction and SMS Sync modes', async () => {
+    localStorage.clear();
+    vi.spyOn(Capacitor, 'isNativePlatform').mockReturnValue(true);
+    vi.spyOn(Capacitor, 'getPlatform').mockReturnValue('android');
+    const fixture = TestBed.createComponent(SettingsPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const preferences = fixture.componentInstance.uiPreferences;
+    expect(fixture.nativeElement.textContent).toContain('Enable floating shortcut');
+    expect(preferences.floatingShortcut()).toEqual({ enabled: true, mode: 'QUICK_TRANSACTION' });
+    expect(
+      fixture.nativeElement.querySelectorAll('.floating-shortcut-settings app-select-picker'),
+    ).toHaveLength(1);
+    expect(fixture.nativeElement.textContent).toContain('Quick Transaction default source');
+
+    expect(preferences.setFloatingShortcutMode('SMS_SYNC')).toBe(true);
+    fixture.detectChanges();
+    expect(fixture.nativeElement.textContent).toContain('SMS Sync');
+    expect(fixture.nativeElement.textContent).not.toContain('Quick Transaction default source');
+    expect(preferences.floatingShortcutEnabled()).toBe(true);
+    expect(
+      fixture.nativeElement.querySelectorAll('.floating-shortcut-settings app-select-picker'),
+    ).toHaveLength(1);
+
+    expect(preferences.setFloatingShortcutEnabled(false)).toBe(true);
+    fixture.detectChanges();
+    expect(
+      fixture.nativeElement.querySelector('.floating-shortcut-settings app-select-picker'),
+    ).toBeNull();
+    expect(preferences.floatingShortcutMode()).toBe('SMS_SYNC');
+    fixture.destroy();
+  });
+  it.each([
+    ['Android Chrome', false, 'web'],
+    ['desktop web', false, 'web'],
+    ['iOS native', true, 'ios'],
+  ])('hides shortcut settings on %s', async (_label, native, platform) => {
+    localStorage.clear();
+    vi.spyOn(Capacitor, 'isNativePlatform').mockReturnValue(native);
+    vi.spyOn(Capacitor, 'getPlatform').mockReturnValue(platform);
+    const fixture = TestBed.createComponent(SettingsPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(fixture.nativeElement.querySelector('.floating-shortcut-settings')).toBeNull();
+    expect(fixture.componentInstance.uiPreferences.setFloatingShortcutEnabled(true)).toBe(false);
+    fixture.destroy();
   });
 });

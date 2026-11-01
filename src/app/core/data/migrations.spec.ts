@@ -3,6 +3,85 @@ import { DATABASE_MIGRATIONS } from './migrations';
 const { DatabaseSync } = process.getBuiltinModule('node:sqlite') as typeof import('node:sqlite');
 
 describe('SMS upgrade of an existing version-6 database', () => {
+  it('classifies historical adjustments only from positive audit provenance and preserves financial columns', () => {
+    const sql = new DatabaseSync(':memory:');
+    try {
+      sql.exec('PRAGMA foreign_keys=ON');
+      for (const migration of DATABASE_MIGRATIONS.filter((item) => item.version < 12))
+        for (const statement of migration.statements) sql.exec(statement);
+      sql.exec(
+        "INSERT INTO categories(id,name,icon,applies_to) VALUES('other','Other','test','BOTH');INSERT INTO app_preferences VALUES('payment_sources','UNCHANGED')",
+      );
+      const insert = sql.prepare(
+        'INSERT INTO card_transactions(id,category_id,type,amount_minor,currency_code,transaction_date,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)',
+      );
+      for (const [id, type, direction] of [
+        ['purchase', 'PURCHASE', undefined],
+        ['manual', 'ADJUSTMENT', 'DECREASE'],
+        ['sms-adjustment-real', 'ADJUSTMENT', 'INCREASE'],
+        ['sms-adjustment-ambiguous', 'ADJUSTMENT', 'INCREASE'],
+      ] as const) {
+        insert.run(
+          id,
+          'other',
+          type,
+          2000,
+          'INR',
+          '2026-10-26',
+          JSON.stringify({
+            id,
+            type,
+            cardId: 'meal',
+            amountMinor: 2000,
+            reference: 'PRESERVED',
+            adjustmentDirection: direction,
+            merchant: 'Approved wallet balance reconciliation',
+          }),
+          'before',
+          'before',
+        );
+      }
+      sql.exec(
+        "INSERT INTO sms_candidates(id,provider_id,event_at,kind,state,transaction_id,updated_at,decision) VALUES('real','provider','2026-10-26','PLUXEE_PURCHASE','IMPORTED','purchase','before','ADJUST_BALANCE');INSERT INTO sms_reconciliation VALUES('audit','real','purchase','ADJUST_BALANCE',2000,'before');INSERT INTO transaction_links VALUES('sms-adjustment-real','purchase','ADJUSTMENT','before');INSERT INTO transaction_split_groups VALUES('legacy-division',4000,'before');INSERT INTO transaction_split_members VALUES('legacy-division','manual');INSERT INTO transaction_split_members VALUES('legacy-division','purchase')",
+      );
+      const snapshot = sql
+        .prepare(
+          'SELECT id,amount_minor,category_id,currency_code,created_at,updated_at FROM card_transactions ORDER BY id',
+        )
+        .all();
+      for (const statement of DATABASE_MIGRATIONS.find((item) => item.version === 12)!.statements)
+        sql.exec(statement);
+      const payload = (id: string) =>
+        JSON.parse(
+          String(
+            sql.prepare('SELECT payload FROM card_transactions WHERE id=?').get(id)?.['payload'],
+          ),
+        ) as Record<string, unknown>;
+      expect(payload('manual')).toMatchObject({
+        adjustmentPurpose: 'LEGACY_MANUAL',
+        adjustmentDirection: 'DECREASE',
+        reference: 'PRESERVED',
+      });
+      expect(payload('sms-adjustment-real')['adjustmentPurpose']).toBe('BALANCE_RECONCILIATION');
+      expect(payload('sms-adjustment-ambiguous')['adjustmentPurpose']).toBe('LEGACY_MANUAL');
+      expect(
+        sql
+          .prepare(
+            'SELECT id,amount_minor,category_id,currency_code,created_at,updated_at FROM card_transactions ORDER BY id',
+          )
+          .all(),
+      ).toEqual(snapshot);
+      expect(sql.prepare('SELECT kind FROM transaction_split_groups').get()?.['kind']).toBe(
+        'DIVISION',
+      );
+      expect(
+        sql.prepare('SELECT encrypted_value FROM app_preferences').get()?.['encrypted_value'],
+      ).toBe('UNCHANGED');
+      expect(sql.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+    } finally {
+      sql.close();
+    }
+  });
   it('adds Utilities and Bank Activity tables additively on top of schema v9', () => {
     const sql = new DatabaseSync(':memory:');
     try {

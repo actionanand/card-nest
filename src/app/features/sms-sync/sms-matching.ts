@@ -1,5 +1,6 @@
 import { CardTransaction, CreditCard, PaymentSource } from '../../core/models/domain';
 import { indiaTodayIso } from '../../core/services/india-date';
+import { matchesTransactionType } from '../../core/services/money';
 import { purchaseCompatible, purchaseTiming } from './sms-purchase-matching';
 import {
   eligibleSources,
@@ -101,7 +102,7 @@ export function matchExisting(
             .filter(
               (entry) =>
                 possibleSources.includes(entry.cardId) &&
-                entry.type === type &&
+                matchesTransactionType(entry, type) &&
                 entry.currencyCode === item.currency &&
                 entry.amountMinor === item.amountMinor &&
                 (item.kind === 'PURCHASE'
@@ -161,7 +162,7 @@ export function matchExisting(
     (entry) =>
       entry.cardId === sourceId &&
       entry.currencyCode === item.currency &&
-      entry.type === type &&
+      matchesTransactionType(entry, type) &&
       entry.amountMinor === item.amountMinor &&
       Math.abs(Date.parse(entry.transactionDate) - Date.parse(item.eventDate)) <= 86400000 * 3,
   );

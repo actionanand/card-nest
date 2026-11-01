@@ -164,6 +164,11 @@
     @if (notice()) {
       <p class="feedback" role="status">{{ notice() }}</p>
     }
+    @if (retryRestoredFilterRefresh() || retryFilterRefresh()) {
+      <button class="btn" type="button" [disabled]="loading()" (click)="retryReviewInboxRefresh()">
+        Retry inbox refresh
+      </button>
+    }
     <section
       class="panel review-panel"
       aria-labelledby="sms-inbox-title"
@@ -208,17 +213,6 @@
           All history
         </button>
       </div>
-      <label class="check"
-        ><input
-          type="checkbox"
-          [checked]="hideAlreadyAdded()"
-          (change)="hideAlreadyAdded.set(checked($event)); applyFilters()"
-        /><span>Hide already added</span></label
-      >
-      <p class="muted">
-        Hides imported and matched items in active or all-history results. Already added remains
-        available.
-      </p>
       @if (!sync.reconciling() && !sync.verificationFailed()) {
         <p class="muted">
           Needs review {{ sync.pendingTotal() }} · Already added {{ sync.matchedTotal() }} ·
@@ -277,83 +271,129 @@
         ><button
           class="btn"
           type="button"
-          [attr.aria-expanded]="advanced()"
+          [attr.aria-expanded]="filterDialogOpen()"
           aria-controls="sms-filters"
-          (click)="advanced.set(!advanced())"
+          (click)="openFilterDialog()"
         >
           Filters
         </button>
       </div>
-      <div class="sort-order-control">
-        <app-select-picker
-          label="Sort order"
-          [options]="sortOrderOptions"
-          [value]="sortOrder()"
-          (valueChange)="changeSortOrder($event)"
-        />
-      </div>
-      <div id="sms-filters" [hidden]="!advanced()">
-        <div class="filters">
-          <label
-            >Card / wallet suffix or vehicle<input
-              maxlength="1000"
-              [value]="sourceFilter()"
-              (input)="sourceFilter.set(value($event))"
-          /></label>
-          <div class="type-filter">
-            <span>Type</span>
-            <div class="type-mode" role="group" aria-label="Transaction type selection mode">
+      @if (filterDialogOpen()) {
+        <app-profile-modal
+          title="SMS filters"
+          [busy]="filterSaving()"
+          (closed)="closeFilterDialog()"
+        >
+          <div id="sms-filters">
+            <div class="filters">
+              <label
+                >Card / wallet suffix or vehicle<input
+                  maxlength="1000"
+                  [value]="filterDraft()?.source ?? ''"
+                  (input)="updateFilterDraft('source', value($event))"
+              /></label>
+              <div class="type-filter">
+                <span>Type</span>
+                <div class="type-mode" role="group" aria-label="Transaction type selection mode">
+                  <button
+                    type="button"
+                    [attr.aria-pressed]="filterDraft()?.mode === 'SINGLE'"
+                    (click)="changeFilterDraftMode('SINGLE')"
+                  >
+                    Single
+                  </button>
+                  <button
+                    type="button"
+                    [attr.aria-pressed]="filterDraft()?.mode === 'MULTIPLE'"
+                    (click)="changeFilterDraftMode('MULTIPLE')"
+                  >
+                    Multiple
+                  </button>
+                </div>
+                @if (filterDraft()?.mode === 'SINGLE') {
+                  <app-select-picker
+                    label="Single type"
+                    [options]="kindOptions()"
+                    [value]="filterDraft()?.kind ?? 'ALL'"
+                    (valueChange)="updateFilterDraft('kind', $event)"
+                    [searchable]="true"
+                  />
+                } @else {
+                  <app-sms-type-picker
+                    [value]="filterDraft()?.kinds ?? []"
+                    (changed)="
+                      updateFilterDraft('kinds', $event);
+                      updateFilterDraft('multipleInitialized', true)
+                    "
+                  />
+                }
+              </div>
+              <app-select-picker
+                label="Review status"
+                [options]="stateOptions"
+                [value]="filterDraft()?.state ?? 'PENDING'"
+                (valueChange)="updateFilterDraft('state', $event)"
+              />
+              <label
+                >From date<input
+                  type="date"
+                  [value]="filterDraft()?.from ?? ''"
+                  (change)="updateFilterDraft('from', value($event))" /></label
+              ><label
+                >Through date<input
+                  type="date"
+                  [value]="filterDraft()?.to ?? ''"
+                  (change)="updateFilterDraft('to', value($event))"
+              /></label>
+            </div>
+            <p class="muted">
+              Dates filter the original event date. Source searches extracted suffix / vehicle
+              evidence; cards sharing a suffix may both appear.
+            </p>
+            <label class="check"
+              ><input
+                type="checkbox"
+                [checked]="filterDraft()?.hideAlreadyAdded ?? true"
+                (change)="updateFilterDraft('hideAlreadyAdded', checked($event))"
+              /><span>Hide already added</span></label
+            >
+            <p class="muted">
+              Hides imported and matched items in active or all-history results. Already added
+              remains available.
+            </p>
+            <app-select-picker
+              label="Sort order"
+              [options]="sortOrderOptions"
+              [value]="filterDraft()?.sortOrder ?? 'RECEIVED_DESC'"
+              (valueChange)="updateDraftSortOrder($event)"
+            />
+            @if (filterDateError()) {
+              <p role="alert" class="filter-date-error">{{ filterDateError() }}</p>
+            }
+            @if (filterPersistenceError()) {
+              <p role="alert" class="filter-date-error">{{ filterPersistenceError() }}</p>
+            }
+            <div class="filter-dialog-actions">
               <button
+                class="btn"
                 type="button"
-                [attr.aria-pressed]="typeMode() === 'SINGLE'"
-                (click)="changeTypeMode('SINGLE')"
+                [disabled]="filterSaving()"
+                (click)="closeFilterDialog()"
               >
-                Single
+                Cancel
               </button>
               <button
+                class="btn btn-primary"
                 type="button"
-                [attr.aria-pressed]="typeMode() === 'MULTIPLE'"
-                (click)="changeTypeMode('MULTIPLE')"
+                [disabled]="filterSaving()"
+                (click)="applyFilterDraft()"
               >
-                Multiple
+                {{ filterSaving() ? 'Saving…' : 'Apply filters' }}
               </button>
             </div>
-            @if (typeMode() === 'SINGLE') {
-              <app-select-picker
-                label="Single type"
-                [options]="kindOptions()"
-                [value]="kind()"
-                (valueChange)="kind.set($event)"
-                [searchable]="true"
-              />
-            } @else {
-              <app-sms-type-picker
-                [value]="multipleKinds()"
-                (changed)="multipleKinds.set($event)"
-              />
-            }
           </div>
-          <app-select-picker
-            label="Review status"
-            [options]="stateOptions"
-            [value]="state()"
-            (valueChange)="state.set($event)"
-          />
-          <label
-            >From date<input
-              type="date"
-              [value]="from()"
-              (change)="from.set(value($event))" /></label
-          ><label
-            >Through date<input type="date" [value]="to()" (change)="to.set(value($event))"
-          /></label>
-        </div>
-        <p class="muted">
-          Dates filter the original event date. Source searches extracted suffix / vehicle evidence;
-          cards sharing a suffix may both appear.
-        </p>
-        <button class="btn" type="button" (click)="applyFilters()">Apply filters</button>
-      </div>
+        </app-profile-modal>
+      }
       <div class="chips" aria-label="Review filters">
         <div class="chips type-chips" role="group" aria-label="Transaction types">
           @for (chip of typeChips(); track chip.key) {
@@ -390,7 +430,43 @@
             </button>
           }
         }
-        <button class="btn clear" type="button" (click)="clearFilters()">Clear filters</button>
+        <button
+          class="btn clear"
+          type="button"
+          (click)="clearFilters()"
+          [disabled]="restoringFilters()"
+        >
+          Clear filters
+        </button>
+      </div>
+      <div class="review-preference-actions" [class.single-action]="!android">
+        <button
+          id="restore-default-review-filters"
+          class="btn"
+          type="button"
+          aria-label="Restore default review filters"
+          (click)="requestRestoreFilters()"
+          [disabled]="restoringFilters()"
+        >
+          Restore defaults
+        </button>
+        @if (android) {
+          @if (swipeEnabled()) {
+            <p class="muted swipe-enabled-state" role="status">
+              Swipe right to review and add · swipe left to dismiss
+            </p>
+          } @else {
+            <button
+              class="btn"
+              type="button"
+              aria-label="Enable SMS Review swipe actions"
+              (click)="enableSwipeActions()"
+              [disabled]="loading()"
+            >
+              Enable swipe
+            </button>
+          }
+        }
       </div>
       @if (!(sync.reconciling() || (loading() && !sync.candidates().length))) {
         <p class="muted" [attr.role]="loading() ? null : 'status'">
@@ -402,18 +478,6 @@
                 : sync.total() + ' results for these filters'
           }}
         </p>
-      }
-      @if (swipeEnabled()) {
-        <p class="muted">Swipe right to review and add · swipe left to dismiss</p>
-      } @else {
-        <button
-          class="btn swipe-enable"
-          type="button"
-          (click)="enableSwipeActions()"
-          [disabled]="loading()"
-        >
-          Enable swipe actions
-        </button>
       }
       @if (sync.reconciling() || (loading() && !sync.candidates().length)) {
         <div class="review-loading-status" role="status" aria-live="polite">
@@ -741,7 +805,23 @@
           }
           @if (importable() && (candidate.state === 'PENDING' || candidate.state === 'DEFERRED')) {
             <form [formGroup]="editor" (submit)="approve($event)">
-              @if (!sources().length) {
+              @if (archivedHistoricalSources().length) {
+                <aside class="review-notice source-notice" aria-label="Archived source identified">
+                  <app-icon name="cards" />
+                  <div>
+                    <strong>Archived source identified</strong>
+                    <p>
+                      Restore the card in Cards before creating a new entry. Existing historical
+                      transactions can still be matched.
+                    </p>
+                    @for (source of archivedHistoricalSources(); track source.id) {
+                      <button class="btn" type="button" (click)="reviewArchivedRecords(source.id)">
+                        Review existing records for {{ source.nickname }}
+                      </button>
+                    }
+                  </div>
+                </aside>
+              } @else if (!sources().length) {
                 <aside class="review-notice source-notice" aria-label="Source needed">
                   <app-icon name="cards" />
                   <div>
@@ -779,7 +859,8 @@
               /></label>
               <app-select-picker
                 label="Category"
-                formControlName="category"
+                [value]="editor.controls.category.value"
+                (valueChange)="chooseReviewCategory($event, false)"
                 [options]="categoryOptions()"
                 [searchable]="true"
               />
@@ -830,6 +911,7 @@
                   label="Paid from bank account (optional)"
                   formControlName="funding"
                   [options]="fundingOptions()"
+                  [searchable]="true"
                 />
                 <small
                   >Only an account you choose is deducted, once. The card payment is never counted
@@ -859,6 +941,15 @@
                     >
                   </fieldset>
                 }
+              }
+              @if (splitProposal(); as proposal) {
+                <app-sms-split-suggestion
+                  [proposal]="proposal"
+                  [item]="candidate.item!"
+                  [sourceId]="splitSource()"
+                  [selectedTarget]="splitSelection()"
+                  (chosen)="chooseSmsSplit($event)"
+                />
               }
               @if (purchaseReviewActive()) {
                 @if (purchaseMatches().length) {
@@ -994,6 +1085,7 @@
                 <app-icon name="landmark" />
                 <div>
                   <strong>{{ bankIdentity() }}</strong>
+                  <p>{{ sourceLabel(candidate) }}</p>
                   <p>
                     Nothing is recorded until you choose a purpose and approve. A recipient's
                     "credited" wording never makes this incoming money, and names never prove
@@ -1007,8 +1099,9 @@
                 [value]="bankEditor.controls.purpose.value"
                 (valueChange)="setBankPurpose($event)"
               />
+              <p class="form-note"><strong>Pay from:</strong> Bank/UPI</p>
               <app-select-picker
-                label="Bank account in this message (required)"
+                label="Bank account"
                 formControlName="source"
                 [options]="bankSourceOptions()"
                 [searchable]="true"
@@ -1016,22 +1109,18 @@
               @if (needsEnrollment()) {
                 <div class="bank-enrol">
                   <p>
-                    No enrolled account matches A/c ••{{ bankItem()?.accountDigits }}. Enrol it only
-                    if this account is yours.
+                    No enrolled account matches A/c
+                    {{
+                      accountIdentifierLabel(bankItem()?.accountMask, bankItem()?.accountDigits)
+                    }}. Review its identity in Find Banks before adding it.
                   </p>
-                  <label
-                    >Bank name<input
-                      [formControl]="enrollBankName"
-                      maxlength="80"
-                      placeholder="For example, ICICI Bank"
-                  /></label>
                   <button
                     type="button"
                     class="btn"
-                    [disabled]="!enrollBankName.valid || saving()"
+                    [disabled]="saving()"
                     (click)="enrollFromMessage()"
                   >
-                    Enrol A/c ••{{ bankItem()?.accountDigits }} as my account
+                    <app-icon name="landmark" /> Open Find Banks
                   </button>
                 </div>
               }
@@ -1086,7 +1175,8 @@
               @if (bankPurpose() === 'PURCHASE' || bankPurpose() === 'INCOME') {
                 <app-select-picker
                   label="Category"
-                  formControlName="category"
+                  [value]="bankEditor.controls.category.value"
+                  (valueChange)="chooseReviewCategory($event, true)"
                   [options]="categoryOptions()"
                   [searchable]="true"
                 />
@@ -1123,6 +1213,15 @@
                   Recorded as a repayment from this account, not a purchase. Loan schedules and EMI
                   installments are not changed.
                 </p>
+              }
+              @if (splitProposal(); as proposal) {
+                <app-sms-split-suggestion
+                  [proposal]="proposal"
+                  [item]="candidate.item!"
+                  [sourceId]="splitSource()"
+                  [selectedTarget]="splitSelection()"
+                  (chosen)="chooseSmsSplit($event)"
+                />
               }
               @if (purchaseReviewActive(true)) {
                 @if (purchaseMatches(true).length) {
@@ -1199,24 +1298,26 @@
                 <span>Link to an existing card payment, EMI or loan</span
                 ><app-icon name="chevron_down" />
               </summary>
-              <app-select-picker
-                label="Existing payment, installment or loan"
-                [formControl]="evidenceTarget"
-                [options]="evidenceOptions()"
-                [searchable]="true"
-              />
-              <button
-                type="button"
-                class="btn"
-                (click)="confirmEvidence()"
-                [disabled]="!evidenceTarget.value"
-              >
-                Confirm Payment / EMI match
-              </button>
-              <p class="muted">
-                Confirms evidence only; it does not change any balance. A bank debit is not issuer
-                confirmation.
-              </p>
+              <div class="evidence-match-controls">
+                <app-select-picker
+                  label="Existing payment, installment or loan"
+                  [formControl]="evidenceTarget"
+                  [options]="evidenceOptions()"
+                  [searchable]="true"
+                />
+                <button
+                  type="button"
+                  class="btn"
+                  (click)="confirmEvidence()"
+                  [disabled]="!evidenceTarget.value"
+                >
+                  Confirm Payment / EMI match
+                </button>
+                <p class="muted">
+                  Confirms evidence only; it does not change any balance. A bank debit is not issuer
+                  confirmation.
+                </p>
+              </div>
             </details>
           } @else {
             @if (importable()) {
@@ -1241,7 +1342,7 @@
                   </p>
                   @if (
                     bankItem()?.purposeHint === 'CARD_REPAYMENT' &&
-                    (!store.bankCashTracking().enabled ||
+                    (!bankBalanceTrackingEnabled() ||
                       !store.bankCashTracking().askCardSettlementFunding)
                   ) {
                     <p>
@@ -1261,24 +1362,26 @@
                   'LOAN_DEBIT',
                 ].includes(candidate.kind)
               ) {
-                <app-select-picker
-                  label="Existing payment, installment or loan"
-                  [formControl]="evidenceTarget"
-                  [options]="evidenceOptions()"
-                  [searchable]="true"
-                />
-                <button
-                  type="button"
-                  class="btn"
-                  (click)="confirmEvidence()"
-                  [disabled]="!evidenceTarget.value"
-                >
-                  Confirm Payment / EMI match
-                </button>
-                <p class="muted">
-                  Confirm only after checking the source, lender, amount and date. A bank debit is
-                  not issuer confirmation.
-                </p>
+                <div class="evidence-match-controls">
+                  <app-select-picker
+                    label="Existing payment, installment or loan"
+                    [formControl]="evidenceTarget"
+                    [options]="evidenceOptions()"
+                    [searchable]="true"
+                  />
+                  <button
+                    type="button"
+                    class="btn"
+                    (click)="confirmEvidence()"
+                    [disabled]="!evidenceTarget.value"
+                  >
+                    Confirm Payment / EMI match
+                  </button>
+                  <p class="muted">
+                    Confirm only after checking the source, lender, amount and date. A bank debit is
+                    not issuer confirmation.
+                  </p>
+                </div>
               }
             }
           }
@@ -1322,7 +1425,12 @@
               <dt>Source evidence</dt>
               <dd>
                 {{ item.issuer || 'Unknown issuer' }} ·
-                {{ item.cardDigits || item.accountDigits || 'No suffix' }} ·
+                {{
+                  item.cardDigits ||
+                    accountIdentifierLabel(item.accountMask, item.accountDigits) ||
+                    'No suffix'
+                }}
+                ·
                 {{ item.vehicleNumber || '' }}
               </dd>
               <dt>Extracted description</dt>
@@ -1338,7 +1446,14 @@
                         : 'Not identified'
                   }}
                   @if (item.counterpartyAccountDigits) {
-                    · Other account ••{{ item.counterpartyAccountDigits }} (ownership not assumed)
+                    · Other account
+                    {{
+                      accountIdentifierLabel(
+                        item.counterpartyAccountMask,
+                        item.counterpartyAccountDigits
+                      )
+                    }}
+                    (ownership not assumed)
                   }
                 </dd>
               }
@@ -1429,3 +1544,13 @@
     }
   }
 </div>
+
+@if (restoreFiltersConfirmation()) {
+  <app-confirmation-dialog
+    title="Restore default filters?"
+    message="This will restore the original SMS Review filters, sorting, and visibility settings. Your SMS messages, review decisions, and saved transactions will not be changed."
+    confirmLabel="Restore defaults"
+    (confirmed)="confirmRestoreFilters()"
+    (cancelled)="cancelRestoreFilters()"
+  />
+}

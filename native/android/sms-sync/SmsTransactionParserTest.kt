@@ -74,6 +74,15 @@ class SmsTransactionParserTest {
     assertEquals("123456783333", a.reference)
   }
 
+  @Test fun yesBankAndIndusIndIssuersAreRecognized() {
+    val yes = parse("Yes Bank Acct XX987 debited for Rs 100 on 20-Sep-26")
+    assertEquals("Yes Bank", yes.issuer)
+    assertEquals("987", yes.accountDigits)
+    val indus = parse("IndusInd Bank Account XX007 credited with Rs 100 on 20-Sep-26")
+    assertEquals("IndusInd Bank", indus.issuer)
+    assertEquals("007", indus.accountDigits)
+  }
+
   @Test fun rupayCreditCardMerchantPaymentIsCardPurchase() {
     val a = parse("PNB Credit Card 3333 debited with Rs.471.82 [CODE:WZ9999] at DEMO TELECOM on 18-10-2026 00:09 through UPI: 234567890123 Avl limit Rs. 42886.")
     assertEquals(SmsTransactionParser.Kind.PURCHASE, a.kind)
@@ -133,6 +142,22 @@ class SmsTransactionParserTest {
     assertEquals(SmsTransactionParser.Kind.LOAN_DEBIT, a.kind)
     assertEquals(3773325L, a.amountMinor)
     assertTrue(a.requiresReview)
+  }
+
+  @Test fun maskedAndCompleteBankIdentifiersKeepOnlyMaskedHintAndFinalThreeDigits() {
+    val examples = listOf(
+      "A/c 432xxxxx765 debited INR 100 on 20-Sep-26" to ("765" to "432•••••765"),
+      "A/c 1xxxx7650 debited INR 100 on 20-Sep-26" to ("650" to "1•••••650"),
+      "A/c xxxx980 debited INR 100 on 20-Sep-26" to ("980" to "••••980"),
+      "A/c xxx007 debited INR 100 on 20-Sep-26" to ("007" to "•••007"),
+      "A/c 432123456700 debited INR 100 on 20-Sep-26" to ("700" to "432••••••700"),
+    )
+    for ((message, expected) in examples) {
+      val result = parse(message)
+      assertEquals(expected.first, result.accountDigits)
+      assertEquals(expected.second, result.accountMask)
+      assertFalse(result.accountMask!!.contains(Regex("[0-9]{6,}")))
+    }
   }
 
   @Test fun ignoresOtpAndNonFinancialInactivityAlerts() {

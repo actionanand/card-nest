@@ -1,5 +1,5 @@
 import { TestBed } from '@angular/core/testing';
-import { SqliteDatabase } from '../../core/data/sqlite-database';
+import { DatabaseSession, SqliteDatabase } from '../../core/data/sqlite-database';
 import { normalizeIndianMobileNumber } from './utilities.service';
 import { UtilitiesService } from './utilities.service';
 import { addCalendarDays } from './utilities-calculations';
@@ -36,8 +36,29 @@ describe('Indian Utilities service', () => {
     ready: () => true,
     query: vi.fn(async () => []),
     run: vi.fn(async () => 1),
-    atomic: vi.fn(async (work: (tx: { run: () => Promise<number> }) => Promise<unknown>) =>
-      work({ run: async () => 1 }),
+    atomic: vi.fn(async (work: (tx: DatabaseSession) => Promise<unknown>) =>
+      work({
+        run: async () => 1,
+        query: async <T extends Record<string, unknown>>(
+          statement: string,
+          values: readonly unknown[] = [],
+        ) => {
+          const records = statement.includes('utility_profiles')
+            ? utilities
+                .lpgProfiles()
+                .filter((profile) => profile.id === values[0])
+                .map((profile) => ({ id: profile.id, archived: profile.archived ? 1 : 0 }))
+            : utilities
+                .lpgEvents()
+                .filter((event) =>
+                  statement.includes('WHERE id=')
+                    ? event.id === values[0]
+                    : event.profileId === values[0],
+                )
+                .map((event) => ({ payload: JSON.stringify(event) }));
+          return records as unknown as T[];
+        },
+      }),
     ),
   };
 
@@ -188,7 +209,7 @@ describe('Indian Utilities service', () => {
       estimatedUsageDays: 25,
       distributorContact: '+91-98765-43210',
     });
-    expect(lpg.distributorContact).toBe('+91-9876543210');
+    expect(lpg.distributorContact).toBe('+91-98765-43210');
     const lpgWithoutContact = await utilities.saveLpgProfile({
       connectionName: 'No contact home',
       provider: 'INDANE',
@@ -197,6 +218,34 @@ describe('Indian Utilities service', () => {
       estimatedUsageDays: 25,
     });
     expect(lpgWithoutContact.distributorContact).toBeUndefined();
+    const internationalContact = await utilities.saveLpgProfile({
+      connectionName: 'International contact',
+      provider: 'INDANE',
+      commercial: false,
+      cylinderSize: 'NORMAL',
+      estimatedUsageDays: 25,
+      distributorContact: '+1 (800) 555-0199',
+      distributorWhatsApp: '+44 20 7946 0958',
+    });
+    expect(internationalContact.distributorContact).toBe('+1 (800) 555-0199');
+    expect(internationalContact.distributorWhatsApp).toBe('+44 20 7946 0958');
+    const tollFree = await utilities.saveLpgProfile({
+      connectionName: 'Toll free contact',
+      provider: 'INDANE',
+      commercial: false,
+      cylinderSize: 'NORMAL',
+      estimatedUsageDays: 25,
+      distributorContact: '1800-123-4567',
+    });
+    expect(tollFree.distributorContact).toBe('1800-123-4567');
+    const longContact = '1800-1234-5678-9012-3456';
+    const longProfile = await utilities.saveLpgProfile({
+      ...tollFree,
+      distributorContact: longContact,
+      distributorWhatsApp: longContact,
+    });
+    expect(longProfile.distributorContact).toBe(longContact);
+    expect(longProfile.distributorWhatsApp).toBe(longContact);
     await expect(
       utilities.saveLpgProfile({
         connectionName: 'Another home',
@@ -207,5 +256,15 @@ describe('Indian Utilities service', () => {
         distributorWhatsApp: 'Call 9876543210',
       }),
     ).rejects.toThrow();
+    await expect(
+      utilities.saveLpgProfile({
+        connectionName: 'Invalid international contact',
+        provider: 'INDANE',
+        commercial: false,
+        cylinderSize: 'NORMAL',
+        estimatedUsageDays: 25,
+        distributorContact: 'Call 1800-123-4567',
+      }),
+    ).rejects.toThrow('valid contact number');
   });
 });

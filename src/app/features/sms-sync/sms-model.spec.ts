@@ -2,6 +2,7 @@ import { CreditCard, PaymentSource } from '../../core/models/domain';
 import {
   SmsEvidence,
   eligibleSources,
+  creatableSources,
   merchantTitle,
   recurringRelationship,
   ledgerType,
@@ -117,6 +118,12 @@ describe('Reliable SMS source matching', () => {
     expect(
       eligibleSources(item(), [card({ archived: true, archivedAt: '2026-10-01' })], []),
     ).toEqual([]);
+  });
+  it('retains archived historical identification without making the card creatable', () => {
+    const archived = card({ archived: true, archivedAt: '2026-10-19T00:00:00Z' });
+    expect(eligibleSources(item(), [archived], [])).toEqual([archived.id]);
+    expect(creatableSources(item(), [archived], [])).toEqual([]);
+    expect(creatableSources(item(), [{ ...archived, archived: false }], [])).toEqual([archived.id]);
   });
   it('groups scheduled and confirmed evidence only within the same source and explicit cycle', () => {
     const scheduled = item({

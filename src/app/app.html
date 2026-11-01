@@ -179,15 +179,33 @@
     >
   </nav>
 
-  @if (uiPreferences.showFlashTransaction()) {
-    <button
-      class="flash-transaction-fab"
-      type="button"
-      (click)="openFlashTransaction()"
-      aria-label="Add flash transaction"
-    >
-      <app-icon name="flash_transaction" />
-    </button>
+  @if (floatingShortcutVisible()) {
+    @if (uiPreferences.floatingShortcutMode() === 'QUICK_TRANSACTION') {
+      <button
+        class="floating-shortcut-fab flash-transaction-fab"
+        type="button"
+        (click)="openFlashTransaction()"
+        aria-label="Add flash transaction"
+      >
+        <app-icon name="flash_transaction" />
+      </button>
+    } @else {
+      <button
+        class="floating-shortcut-fab sms-sync-fab"
+        type="button"
+        aria-label="Open SMS Sync"
+        aria-description="Navigate to SMS Sync; scanning is not started"
+        [disabled]="smsShortcutNavigationPending()"
+        [attr.aria-busy]="smsShortcutNavigationPending() ? 'true' : null"
+        [class.is-navigating]="smsShortcutNavigationPending()"
+        (click)="openSmsSyncFromShortcut()"
+      >
+        <span class="sms-sync-fab-icon" aria-hidden="true">
+          <span class="sms-sync-fab-message"><app-icon name="message" /></span>
+          <span class="sms-sync-fab-badge"><app-icon name="sync" /></span>
+        </span>
+      </button>
+    }
   }
 
   @if (flashTransactionOpen()) {
@@ -211,6 +229,7 @@
           <button
             type="button"
             (click)="closeFlashTransaction()"
+            [disabled]="savingFlashTransaction()"
             aria-label="Close flash transaction"
           >
             <app-icon name="close" />
@@ -219,15 +238,17 @@
         <form (submit)="saveFlashTransaction($event)">
           <app-payment-source-picker
             [value]="flashSourceId()"
+            [disabled]="savingFlashTransaction()"
             (valueChange)="updateFlashSource($event)"
           />
           <label
-            >Amount<input
+            >Amount ({{ flashCurrency() }})<input
               inputmode="decimal"
               autocomplete="off"
               pattern="[0-9]*[.]?[0-9]{0,2}"
               placeholder="0.00"
               [value]="flashAmount()"
+              [disabled]="savingFlashTransaction()"
               (input)="sanitizeFlashAmount($event)"
           /></label>
           <label
@@ -237,12 +258,15 @@
               autocomplete="off"
               placeholder="Where did you spend?"
               [value]="flashMerchant()"
+              [disabled]="savingFlashTransaction()"
               (input)="flashMerchant.set($any($event.target).value)"
           /></label>
           @if (flashError(); as error) {
             <p class="flash-error" role="alert">{{ error }}</p>
           }
-          <button class="btn btn-primary" type="submit">Save purchase</button>
+          <button class="btn btn-primary" type="submit" [disabled]="savingFlashTransaction()">
+            {{ savingFlashTransaction() ? 'Saving…' : 'Save purchase' }}
+          </button>
         </form>
       </section>
     </div>

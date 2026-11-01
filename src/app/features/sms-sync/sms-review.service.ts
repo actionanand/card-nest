@@ -1,9 +1,13 @@
+import { resolveCategory } from '../../core/services/category-matcher';
+import type { CategoryCatalogEntry } from '../../core/data/category-catalog';
 import { Service, computed, inject, signal } from '@angular/core';
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import { SqliteDatabase, DatabaseSession } from '../../core/data/sqlite-database';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { AppLockService } from '../../core/services/app-lock.service';
 import { indiaTodayIso } from '../../core/services/india-date';
+import { parseBankAccountIdentifier } from '../../core/services/bank-account-identifier';
+import { matchesTransactionType, isPurchasePayment } from '../../core/services/money';
 import {
   BalanceTiming,
   CardTransaction,
@@ -26,6 +30,7 @@ import {
   BANK_CASH_TRACKING_KEY,
   applyBankCashTransaction,
   applyTransferEffects,
+  bankTrackingEnabled,
   bankCashTracked,
   isBankOrCash,
   needsBaselineConfirmation,
@@ -40,6 +45,8 @@ import {
   BankActivityService,
 } from '../bank-activity/bank-activity.service';
 import { matchExisting, walletComparison } from './sms-matching';
+import { attachPaymentGroup, readPaymentGroups } from '../../core/services/payment-groups';
+import { continuousSmsSplit, SmsSequenceAlert, SmsSplitProposal } from './sms-split-continuity';
 import {
   defaultReviewFilters,
   reviewFilters,
@@ -62,7 +69,6 @@ import {
   suspectEvidence,
   isPluxeeSource,
   normalizedIssuer,
-  defaultPluxeeCategory,
   BankPurpose,
   accountSuffixMatches,
   bankDirection,
@@ -70,11 +76,11 @@ import {
   bankExistingSuggestions,
   bankPurposes,
   bankSourceConflict,
-  defaultBankCategory,
   isBankEvidence,
 } from './sms-model';
 
 export interface BankApproval {
+  splitTargetId?: string;
   purpose: BankPurpose;
   /** The bank account named in the message. */
   sourceId: string;
@@ -82,6 +88,7 @@ export interface BankApproval {
   description: string;
   transactionDate: string;
   categoryId?: string;
+  categoryOverridden?: boolean;
   /** Existing ledger entry (purchase/receipt) or card payment to link instead of creating one. */
   existingId?: string;
   /** Other owned account for a transfer. Counterparty names never establish ownership. */
@@ -159,6 +166,19 @@ export interface SmsDismissal {
   };
 }
 
+export class SmsReviewFilterRefreshError extends Error {
+  readonly preferencesSaved = true;
+
+  constructor(cause: unknown) {
+    super(
+      cause instanceof Error
+        ? cause.message
+        : 'Filter preferences were saved, but the SMS Review inbox could not refresh.',
+    );
+    this.name = 'SmsReviewFilterRefreshError';
+  }
+}
+
 @Service()
 export class SmsReviewService {
   private readonly database = inject(SqliteDatabase);
@@ -214,6 +234,7 @@ export class SmsReviewService {
     await this.enable(days);
   }
   private filters = defaultReviewFilters();
+  private filterWrites: Promise<void> = Promise.resolve();
   async loadReviewFilters(): Promise<SmsReviewFilters> {
     this.assertUnlocked();
     const [row] = await this.database.query<{ encrypted_value: string }>(
@@ -243,14 +264,23 @@ export class SmsReviewService {
       ...filters,
       sortOrder: filters.sortOrder ?? this.filters.sortOrder,
     });
-    await this.database.run(
-      'INSERT INTO app_preferences(key,encrypted_value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET encrypted_value=excluded.encrypted_value',
-      [SMS_REVIEW_FILTERS_KEY, JSON.stringify(applied)],
-    );
-    this.filters = applied;
-    this.reviewPage.set(0);
-    await this.refresh();
+    const write = this.filterWrites.then(async () => {
+      await this.database.run(
+        'INSERT INTO app_preferences(key,encrypted_value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET encrypted_value=excluded.encrypted_value',
+        [SMS_REVIEW_FILTERS_KEY, JSON.stringify(applied)],
+      );
+      this.filters = applied;
+      this.reviewPage.set(0);
+      try {
+        await this.refresh();
+      } catch (error: unknown) {
+        throw new SmsReviewFilterRefreshError(error);
+      }
+    });
+    this.filterWrites = write.catch(() => undefined);
+    await write;
   }
+
   async turnPage(direction: number): Promise<void> {
     this.reviewPage.update((page) => Math.max(0, page + direction));
     await this.refresh();
@@ -755,7 +785,7 @@ export class SmsReviewService {
       const source = sources.find((source) => source.id === existing?.cardId);
       if (!source || !existing) throw new Error('Recorded wallet entry unavailable.');
       if (
-        existing.type !== ledgerType(item) ||
+        !matchesTransactionType(existing, ledgerType(item)) ||
         existing.amountMinor !== item.amountMinor ||
         existing.transactionDate !== item.eventDate ||
         (existing.transactionTime && existing.transactionTime !== item.eventTime)
@@ -990,30 +1020,51 @@ export class SmsReviewService {
         `SELECT value FROM sms_sync_state WHERE key='retention_cutoff'`,
       );
       for (const incoming of items) {
+        const accountRaw = incoming.accountMask ?? incoming.accountDigits;
+        const account = accountRaw ? parseBankAccountIdentifier(accountRaw) : undefined;
+        const counterpartyRaw =
+          incoming.counterpartyAccountMask ?? incoming.counterpartyAccountDigits;
+        const counterparty = counterpartyRaw
+          ? parseBankAccountIdentifier(counterpartyRaw)
+          : undefined;
+        const sanitized = {
+          ...incoming,
+          accountDigits: account?.suffix,
+          accountMask: account?.mask,
+          counterpartyAccountDigits: counterparty?.suffix,
+          counterpartyAccountMask: counterparty?.mask,
+        };
         // Parser fixes may change a receipt-fallback fingerprint. Retain the old identity/decision.
         const [old] =
-          incoming.legacyId && incoming.legacyId !== incoming.id
+          sanitized.legacyId && sanitized.legacyId !== sanitized.id
             ? await tx.query<{ id: string }>('SELECT id FROM sms_candidates WHERE id=?', [
-                incoming.legacyId,
+                sanitized.legacyId,
               ])
             : [];
-        const item = old ? { ...incoming, id: old.id } : incoming;
-        activityCandidates.push({
-          fingerprint: item.id,
-          activityDate: item.eventDate,
-          kind: item.kind,
-          direction: bankDirection(item),
-          purposeHint: item.purposeHint,
-          accountDigits: item.accountDigits,
-          counterpartyAccountDigits: item.counterpartyAccountDigits,
-          issuer: item.issuer,
-          reference: item.reference,
-          dateFallback: item.dateFallback,
-          merchant: item.merchant,
-        });
+        const item = old ? { ...sanitized, id: old.id } : sanitized;
+        if (!retention || item.eventDate >= retention.value)
+          activityCandidates.push({
+            fingerprint: item.id,
+            parserVersion: item.parserVersion,
+            activityDate: item.eventDate,
+            kind: item.kind,
+            direction: bankDirection(item),
+            purposeHint: item.purposeHint,
+            accountDigits: item.accountDigits,
+            accountMask: item.accountMask,
+            counterpartyAccountDigits: item.counterpartyAccountDigits,
+            counterpartyAccountMask: item.counterpartyAccountMask,
+            issuer: item.issuer,
+            reference: item.reference,
+            amountMinor: item.amountMinor,
+            currencyCode: item.currency,
+            activityTime: item.eventTimeExplicit ? item.eventTime : undefined,
+            dateFallback: item.dateFallback,
+            merchant: item.merchant,
+          });
         const changes = await tx.run(
-          `INSERT OR IGNORE INTO sms_candidates(id, provider_id, event_at, kind, state, payload, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT OR IGNORE INTO sms_candidates(id, provider_id, event_at, kind, state, payload, updated_at, received_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             item.id,
             item.providerId,
@@ -1022,6 +1073,7 @@ export class SmsReviewService {
             retention && item.eventDate < retention.value ? 'IGNORED' : 'PENDING',
             retention && item.eventDate < retention.value ? null : JSON.stringify(item),
             new Date().toISOString(),
+            item.receivedAt,
           ],
         );
         if (!changes) this.duplicates.update((n) => n + 1);
@@ -1073,6 +1125,100 @@ export class SmsReviewService {
     });
     await this.refresh();
   }
+  private async sequenceAlerts(
+    tx: Pick<DatabaseSession, 'query'>,
+    candidateId: string,
+  ): Promise<readonly SmsSequenceAlert[]> {
+    const [current] = await tx.query<{ payload: string | null; received_at: number | null }>(
+      'SELECT payload,received_at FROM sms_candidates WHERE id=?',
+      [candidateId],
+    );
+    if (!current) return [];
+    let evidence: SmsEvidence | null = null;
+    try {
+      const value: unknown = current.payload ? JSON.parse(current.payload) : null;
+      if (validEvidence(value)) evidence = value;
+    } catch {
+      return [];
+    }
+    const receipt = current.received_at ?? evidence?.receivedAt;
+    if (!Number.isSafeInteger(receipt) || receipt === undefined) return [];
+    const rows = [
+      ...(await tx.query<{
+        id: string;
+        kind: SmsEvidence['kind'];
+        payload: string | null;
+        state: string;
+        transaction_id: string | null;
+        received_at: number | null;
+        discovery_order: number;
+      }>(
+        `SELECT rowid AS discovery_order,id,kind,payload,state,transaction_id,received_at FROM sms_candidates
+       WHERE COALESCE(received_at,CASE WHEN json_valid(payload) THEN json_extract(payload,'$.receivedAt') END) BETWEEN ? AND ?
+          OR CASE WHEN json_valid(payload) THEN json_extract(payload,'$.reference') END=? ORDER BY rowid LIMIT 5001`,
+        [receipt - 1800000, receipt, evidence?.reference ?? null],
+      )),
+    ];
+    if (rows.length > 5000) return [];
+    if (rows.length) {
+      const orders = rows.map((row) => row.discovery_order);
+      const barriers = await tx.query<(typeof rows)[number]>(
+        `SELECT rowid AS discovery_order,id,kind,payload,state,transaction_id,received_at FROM sms_candidates WHERE rowid BETWEEN ? AND ? AND received_at IS NULL AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.receivedAt') END IS NULL LIMIT 5001`,
+        [Math.min(...orders), Math.max(...orders)],
+      );
+      if (barriers.length > 5000) return [];
+      for (const row of barriers) if (!rows.some((other) => other.id === row.id)) rows.push(row);
+    }
+    return rows.map((row) => {
+      let item: SmsEvidence | null = null;
+      try {
+        const value: unknown = row.payload ? JSON.parse(row.payload) : null;
+        if (validEvidence(value)) item = value;
+      } catch {
+        /* Missing evidence is a continuity barrier. */
+      }
+      return {
+        id: row.id,
+        kind: row.kind,
+        item,
+        state: row.state,
+        transactionId: row.transaction_id ?? undefined,
+        receivedAt: row.received_at ?? item?.receivedAt ?? null,
+        discoveryOrder: row.discovery_order,
+      };
+    });
+  }
+
+  async splitSuggestion(
+    candidate: SmsCandidate,
+    sourceId: string,
+  ): Promise<SmsSplitProposal | null> {
+    this.assertUnlocked();
+    return continuousSmsSplit(
+      await this.sequenceAlerts(this.database, candidate.id),
+      candidate.id,
+      sourceId,
+      this.store.transactions(),
+    );
+  }
+
+  private async assertSplitTarget(
+    tx: DatabaseSession,
+    id: string,
+    sourceId: string,
+    ledger: readonly CardTransaction[],
+    target: string,
+  ): Promise<void> {
+    const proposal = continuousSmsSplit(await this.sequenceAlerts(tx, id), id, sourceId, ledger);
+    const groups = await readPaymentGroups(tx);
+    const resolved =
+      groups.find((group) => group.id === target || group.memberIds.includes(target))?.id ?? target;
+    if (!proposal || resolved !== proposal.targetId)
+      throw new Error(
+        'Financial SMS continuity changed or could not be verified. Approve normally and combine payments manually in Transactions.',
+      );
+  }
+
   async loadPurchaseReview(id: string): Promise<PurchaseReviewDraft | null> {
     this.assertUnlocked();
     const [row] = await this.database.query<{ encrypted_value: string }>(
@@ -1084,6 +1230,24 @@ export class SmsReviewService {
       const draft: unknown = JSON.parse(row.encrypted_value);
       if (!draft || typeof draft !== 'object') return null;
       const values = draft as Record<string, unknown>;
+      if (
+        values['bankPurpose'] !== undefined &&
+        !['PURCHASE', 'INCOME', 'TRANSFER', 'CARD_SETTLEMENT', 'LOAN_REPAYMENT'].includes(
+          String(values['bankPurpose']),
+        )
+      )
+        return null;
+      if (
+        ['categoryOverridden', 'categoryUnavailable'].some(
+          (key) => values[key] !== undefined && typeof values[key] !== 'boolean',
+        )
+      )
+        return null;
+      if (
+        values['splitTargetId'] !== undefined &&
+        (typeof values['splitTargetId'] !== 'string' || values['splitTargetId'].length > 150)
+      )
+        return null;
       if (
         !['CARD', 'BANK'].includes(String(values['mode'])) ||
         typeof values['separate'] !== 'boolean' ||
@@ -1170,6 +1334,12 @@ export class SmsReviewService {
         ? (JSON.parse(pref.encrypted_value) as PaymentSource[])
         : this.store.paymentSources().map((source) => ({ ...source }));
       const source = sources.find((s) => s.id === sourceId);
+      if (!existingId && (card?.archived || source?.archived))
+        throw new Error(
+          item.kind.startsWith('PLUXEE')
+            ? 'This Pluxee wallet is archived. Restore it before creating a new transaction.'
+            : 'This source is archived. Restore it before creating a new transaction; existing historical records can still be matched.',
+        );
       const wallet = item.kind.startsWith('PLUXEE') || item.kind.startsWith('FASTAG');
       if (wallet && hasAnnotationValues(annotation))
         throw new Error('Payment method annotations are available only for card SMS reviews.');
@@ -1207,17 +1377,25 @@ export class SmsReviewService {
       const now = new Date().toISOString();
       let recordedDecision: string = reconciliation;
       const transactionDate = edits.transactionDate ?? item.eventDate;
+      if (edits.splitTargetId) {
+        if (
+          existingId ||
+          allowSeparate ||
+          type !== 'PURCHASE' ||
+          transactionDate !== item.eventDate ||
+          amountMinor !== item.amountMinor
+        )
+          throw new Error(
+            'Split grouping is a distinct new-payment decision. Keep the original SMS amount/date and do not select an existing duplicate.',
+          );
+        await this.assertSplitTarget(tx, item.id, sourceId, ledger, edits.splitTargetId);
+      }
       if (
         !/^\d{4}-\d{2}-\d{2}$/.test(transactionDate) ||
         !Number.isFinite(Date.parse(transactionDate)) ||
         new Date(transactionDate).toISOString().slice(0, 10) !== transactionDate
       )
         throw new Error('Enter a valid event date.');
-      if (
-        edits.categoryId &&
-        !(await tx.query('SELECT id FROM categories WHERE id=?', [edits.categoryId])).length
-      )
-        throw new Error('Choose an existing category.');
       const linkedTransaction = existingId
         ? ledger.find((entry) => entry.id === existingId)
         : undefined;
@@ -1239,7 +1417,7 @@ export class SmsReviewService {
           ? ledger.filter(
               (entry) =>
                 entry.cardId === sourceId &&
-                entry.type === 'PURCHASE' &&
+                isPurchasePayment(entry) &&
                 entry.reference === item.reference,
             )
           : [];
@@ -1287,7 +1465,7 @@ export class SmsReviewService {
         transactionDate === item.eventDate &&
         (!existingId ||
           (linkedTransaction?.cardId === sourceId &&
-            linkedTransaction.type === type &&
+            matchesTransactionType(linkedTransaction, type) &&
             linkedTransaction.amountMinor === item.amountMinor &&
             linkedTransaction.transactionDate === item.eventDate &&
             (!linkedTransaction.transactionTime ||
@@ -1304,11 +1482,46 @@ export class SmsReviewService {
       }
       const reconcileTopupSnapshot =
         reconciliation === 'PENDING' && unchangedEvent && comparison?.automaticRepair === true;
-      const pluxeeCategories = item.kind.startsWith('PLUXEE')
-        ? await tx.query<{ id: string; archived: number; applies_to: Category['appliesTo'] }>(
-            'SELECT id,archived,applies_to FROM categories',
-          )
-        : [];
+      const categoryRows = await tx.query<{
+        id: string;
+        name: string;
+        icon: string;
+        appliesTo: Category['appliesTo'];
+        archived: number;
+      }>('SELECT id,name,icon,applies_to AS appliesTo,archived FROM categories');
+      const usableCategories = categoryRows.map((row) => ({ ...row, archived: !!row.archived }));
+      const categoryStates = await tx.query<CategoryCatalogEntry>(
+        'SELECT canonical_id,category_id,deleted FROM category_catalog_state',
+      );
+      const purposeCategory =
+        type === 'PAYMENT'
+          ? 'payment'
+          : ['CASHBACK', 'REFUND'].includes(type ?? '') ||
+              item.kind === 'PLUXEE_TOPUP' ||
+              item.kind === 'FASTAG_TOPUP'
+            ? 'contra-expenses'
+            : type === 'CREDIT'
+              ? 'income'
+              : 'other';
+      const defaultCategory = resolveCategory(
+        purposeCategory,
+        usableCategories,
+        type ?? 'PURCHASE',
+        categoryStates,
+      );
+      const selectedCategory = edits.categoryId
+        ? resolveCategory(edits.categoryId, usableCategories, type ?? 'PURCHASE', categoryStates)
+        : defaultCategory;
+      const categoryWasExplicit = edits.categoryOverridden ?? !!edits.categoryId;
+      if (
+        (!existingId || reconciliation === 'REPAIR_EXISTING') &&
+        categoryWasExplicit &&
+        edits.categoryId &&
+        selectedCategory !== edits.categoryId
+      )
+        throw new Error(
+          'The selected category is unavailable or incompatible. Choose a valid category.',
+        );
       let statement: CardStatement | null = null;
       let transaction: CardTransaction | null = null;
       let balanceAdjustment: CardTransaction | null = null;
@@ -1316,7 +1529,7 @@ export class SmsReviewService {
       let transactionId = existingId;
       if (existingId) {
         const existing = ledger.find((t) => t.id === existingId);
-        if (!existing || existing.cardId !== sourceId || existing.type !== type)
+        if (!existing || existing.cardId !== sourceId || !matchesTransactionType(existing, type))
           throw new Error('Existing entry must have the same source and event type.');
         if (existing.amountMinor !== amountMinor && reconciliation !== 'REPAIR_EXISTING')
           throw new Error('Amounts differ. Repair the existing transaction before linking.');
@@ -1328,7 +1541,7 @@ export class SmsReviewService {
             amountMinor,
             merchant: merchant.trim().slice(0, 100),
             transactionDate,
-            categoryId: edits.categoryId ?? existing.categoryId,
+            categoryId: selectedCategory ?? existing.categoryId,
             updatedAt: now,
           };
           await tx.run(
@@ -1396,6 +1609,7 @@ export class SmsReviewService {
           );
         if (
           !allowSeparate &&
+          !edits.splitTargetId &&
           (existingSuggestions(item, sourceId, ledger).length ||
             existingSuggestions(item, sourceId, ledger, amountMinor, transactionDate).length)
         )
@@ -1474,21 +1688,7 @@ export class SmsReviewService {
                 : undefined,
             reference: item.reference,
             merchant: merchant.trim().slice(0, 100),
-            categoryId:
-              type === 'PAYMENT'
-                ? 'payment'
-                : item.kind.startsWith('PLUXEE')
-                  ? defaultPluxeeCategory(
-                      item.kind,
-                      pluxeeCategories.map((category) => ({
-                        id: category.id,
-                        archived: !!category.archived,
-                        appliesTo: category.applies_to,
-                      })),
-                    )
-                  : ['CASHBACK', 'REFUND', 'CREDIT'].includes(type)
-                    ? 'contra-expenses'
-                    : 'other',
+            categoryId: selectedCategory,
             attachmentIds: [],
             createdAt: now,
             updatedAt: now,
@@ -1500,7 +1700,6 @@ export class SmsReviewService {
           item.dateFallback ? ['SMS event date unavailable; received date used.'] : [],
         );
         transaction.sourceBalanceApplied = !retainBalance;
-        if (edits.categoryId) transaction.categoryId = edits.categoryId;
         // A verified SMS balance already contains earlier events; applying one would double-count.
         if (!retainBalance && source && walletAnchorPosition(source, transaction) === 'BEFORE')
           throw new Error(
@@ -1556,7 +1755,7 @@ export class SmsReviewService {
           [BANK_CASH_TRACKING_KEY],
         );
         const settings = parseBankCashTracking(trackingRow?.encrypted_value);
-        if (!settings.enabled || !settings.askCardSettlementFunding)
+        if (!bankTrackingEnabled(settings) || !settings.askCardSettlementFunding)
           throw new Error('Turn on bank deduction for card payments in Settings first.');
         const bank = sources.find((entry) => entry.id === edits.fundingSourceId);
         if (!bank || bank.kind !== 'DEBIT' || !bankCashTracked(bank, settings))
@@ -1685,6 +1884,7 @@ export class SmsReviewService {
             id: `sms-adjustment-${item.id}`,
             cardId: sourceId,
             type: 'ADJUSTMENT',
+            adjustmentPurpose: 'BALANCE_RECONCILIATION',
             adjustmentDirection: delta > 0 ? 'DECREASE' : 'INCREASE',
             amountMinor: Math.abs(delta),
             currencyCode: 'INR',
@@ -1723,6 +1923,11 @@ export class SmsReviewService {
           `INSERT INTO app_preferences(key,encrypted_value) VALUES ('payment_sources',?) ON CONFLICT(key) DO UPDATE SET encrypted_value=excluded.encrypted_value`,
           [JSON.stringify(sources)],
         );
+      }
+      if (edits.splitTargetId) {
+        const groupId = await attachPaymentGroup(tx, [transactionId], edits.splitTargetId);
+        recordedDecision = `SPLIT_PAYMENT:${groupId}`;
+        if (transaction) transaction = { ...transaction, splitGroupId: groupId };
       }
       await tx.run(
         `UPDATE sms_candidates SET state = ?, transaction_id = ?, decision = ?, updated_at = ?, read_at=COALESCE(read_at,?) WHERE id = ?`,
@@ -1791,6 +1996,7 @@ export class SmsReviewService {
     });
     if (result) {
       this.store.acceptCommittedImport(result.transaction, result.sources);
+      if (edits.splitTargetId) await this.store.refreshPaymentLedger();
       if (result.balanceAdjustment)
         this.store.acceptCommittedImport(result.balanceAdjustment, result.sources);
       if (result.statement) this.store.acceptCommittedStatement(result.statement);
@@ -1965,6 +2171,19 @@ export class SmsReviewService {
       const now = new Date().toISOString();
       const time =
         item.eventTimeExplicit === true && date === item.eventDate ? item.eventTime : undefined;
+      if (approval.splitTargetId) {
+        if (
+          approval.purpose !== 'PURCHASE' ||
+          approval.existingId ||
+          approval.allowSeparate ||
+          date !== item.eventDate ||
+          amountMinor !== item.amountMinor
+        )
+          throw new Error(
+            'Split grouping requires a distinct new purchase with the original SMS amount and date.',
+          );
+        await this.assertSplitTarget(tx, item.id, source.id, ledger, approval.splitTargetId);
+      }
       // An unknown issuer stays unknown unless the user explicitly enrolled this account's bank.
       const bankName =
         bankDisplayName(item.issuer) ?? (source.lastDigits ? source.institution : undefined);
@@ -2007,7 +2226,7 @@ export class SmsReviewService {
             ledger.some(
               (entry) =>
                 entry.cardId === source.id &&
-                entry.type === type &&
+                matchesTransactionType(entry, type) &&
                 entry.reference === item.reference &&
                 entry.id !== approval.existingId,
             )
@@ -2039,7 +2258,7 @@ export class SmsReviewService {
           if (
             !existing ||
             existing.cardId !== source.id ||
-            existing.type !== type ||
+            !matchesTransactionType(existing, type) ||
             existing.amountMinor !== amountMinor
           )
             throw new Error(
@@ -2069,6 +2288,7 @@ export class SmsReviewService {
         } else {
           if (
             !approval.allowSeparate &&
+            !approval.splitTargetId &&
             (bankExistingSuggestions(item, type, source.id, ledger, amountMinor, date).length ||
               (type === 'PURCHASE' &&
                 bankExistingSuggestions(item, type, source.id, ledger).length))
@@ -2094,11 +2314,42 @@ export class SmsReviewService {
             )
               throw new Error('This referenced bank event is already recorded. Match it instead.');
           }
-          const categoryId =
-            approval.categoryId ||
-            defaultBankCategory(approval.purpose, description, this.store.categories());
-          if (!(await tx.query('SELECT id FROM categories WHERE id=?', [categoryId])).length)
-            throw new Error('Choose an existing category.');
+          const categoryRows = await tx.query<{
+            id: string;
+            name: string;
+            icon: string;
+            colour: string | null;
+            appliesTo: Category['appliesTo'];
+            archived: number;
+          }>('SELECT id,name,icon,colour,applies_to AS appliesTo,archived FROM categories');
+          const categories = categoryRows.map((row) => ({
+            ...row,
+            colour: row.colour ?? undefined,
+            archived: !!row.archived,
+          }));
+          const categoryStates = await tx.query<CategoryCatalogEntry>(
+            'SELECT canonical_id,category_id,deleted FROM category_catalog_state',
+          );
+          const categoryPurpose = approval.purpose === 'INCOME' ? 'INCOME' : 'PURCHASE';
+          const suggestedCategory =
+            approval.categoryId ??
+            resolveCategory(
+              approval.purpose === 'INCOME' ? 'income' : 'other',
+              categories,
+              categoryPurpose,
+              categoryStates,
+            );
+          const categoryId = resolveCategory(
+            suggestedCategory,
+            categories,
+            categoryPurpose,
+            categoryStates,
+          );
+          const categoryWasExplicit = approval.categoryOverridden ?? !!approval.categoryId;
+          if (categoryWasExplicit && approval.categoryId && categoryId !== approval.categoryId)
+            throw new Error(
+              'The selected category is unavailable or incompatible. Choose a valid category.',
+            );
           if (!approval.baselineTiming && needsBaselineConfirmation(source, settings, date, time))
             throw new Error(TIMING_QUESTION);
           transaction = annotateSmsRecord(
@@ -2269,7 +2520,7 @@ export class SmsReviewService {
           } else {
             const card = this.store
               .cards()
-              .find((entry) => entry.id === approval.cardId && !entry.deletedAt);
+              .find((entry) => entry.id === approval.cardId && !entry.archived && !entry.deletedAt);
             if (!card) throw new Error('Choose the credit card that was paid.');
             if (
               !approval.allowSeparate &&
@@ -2365,7 +2616,12 @@ export class SmsReviewService {
             now,
           ],
         );
-      const decision = `BANK_${approval.purpose}${state === 'MATCHED_EXISTING' ? '_LINKED' : approval.purpose === 'PURCHASE' && approval.allowSeparate ? '_CONFIRMED_SEPARATE' : ''}`;
+      let decision = `BANK_${approval.purpose}${state === 'MATCHED_EXISTING' ? '_LINKED' : approval.purpose === 'PURCHASE' && approval.allowSeparate ? '_CONFIRMED_SEPARATE' : ''}`;
+      if (approval.splitTargetId) {
+        const groupId = await attachPaymentGroup(tx, [targetId], approval.splitTargetId);
+        decision = `BANK_PURCHASE_SPLIT:${groupId}`;
+        if (transaction) transaction = { ...transaction, splitGroupId: groupId };
+      }
       await tx.run('DELETE FROM app_preferences WHERE key=?', [`sms_purchase_review:${item.id}`]);
       await tx.run(
         `UPDATE sms_candidates SET state=?,transaction_id=?,decision=?,updated_at=?,read_at=COALESCE(read_at,?) WHERE id=?`,
@@ -2384,6 +2640,7 @@ export class SmsReviewService {
     });
     if (result) {
       this.store.acceptCommittedImport(result.transaction, result.sources);
+      if (approval.splitTargetId) await this.store.refreshPaymentLedger();
       this.store.acceptCommittedTransfer(result.transfer, result.sources);
     }
     ++this.refreshRevision;

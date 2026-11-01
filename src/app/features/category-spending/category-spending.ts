@@ -2,7 +2,7 @@ import { Component, ElementRef, computed, effect, inject, signal, viewChild } fr
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { Category } from '../../core/models/domain';
 import { CardNestStore } from '../../core/services/card-nest-store';
-import { formatMoney, parseMoneyToMinor } from '../../core/services/money';
+import { formatMoney, parseMoneyToMinor, spendingContribution } from '../../core/services/money';
 import { SnackbarService } from '../../core/services/snackbar.service';
 import { AppIcon } from '../../shared/app-icon';
 import { AppDatePipe } from '../../core/services/date-format.service';
@@ -83,11 +83,11 @@ export class CategorySpendingPage {
         (transaction) =>
           transaction.transactionDate >= period.startDate &&
           transaction.transactionDate <= period.endDate &&
-          ['PURCHASE', 'FEE', 'INTEREST'].includes(transaction.type),
+          spendingContribution(transaction) !== 0,
       );
   });
   readonly spentMinor = computed(() =>
-    this.transactions().reduce((sum, transaction) => sum + transaction.amountMinor, 0),
+    this.transactions().reduce((sum, transaction) => sum + spendingContribution(transaction), 0),
   );
   readonly incomeMinor = computed(
     () =>
@@ -103,12 +103,20 @@ export class CategorySpendingPage {
   readonly categoryRows = computed(() =>
     this.store
       .categories()
-      .filter((category) => category.appliesTo !== 'CREDIT' && category.id !== 'payment')
+      .filter(
+        (category) =>
+          category.id !== 'payment' &&
+          (category.appliesTo !== 'CREDIT' ||
+            this.transactions().some((entry) => entry.categoryId === category.id)),
+      )
       .map((category) => {
         const transactions = this.transactions().filter(
           (transaction) => transaction.categoryId === category.id,
         );
-        const spent = transactions.reduce((sum, transaction) => sum + transaction.amountMinor, 0);
+        const spent = transactions.reduce(
+          (sum, transaction) => sum + spendingContribution(transaction),
+          0,
+        );
         const limit = category.showLimit ? category.monthlyLimitMinor : undefined;
         return {
           category,

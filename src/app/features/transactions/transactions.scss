@@ -3,6 +3,24 @@
   min-width: 0;
   max-width: 100%;
 }
+.payment-group-summary {
+  min-width: 0;
+  margin-block: 1rem;
+  overflow-wrap: anywhere;
+}
+.payment-group-summary summary {
+  min-height: 44px;
+  cursor: pointer;
+  font-weight: 600;
+}
+.payment-group-summary .btn {
+  min-height: 44px;
+  white-space: normal;
+  margin: 0.4rem;
+}
+.payment-group-summary app-payment-breakdown {
+  margin-block: 0.6rem;
+}
 .transactions-page {
   min-width: 0;
   max-width: 72rem;
@@ -161,6 +179,30 @@ legend {
 .full {
   grid-column: 1/-1;
 }
+.archived-source-reassignment {
+  display: flex;
+  min-width: 0;
+  min-height: 44px;
+  grid-column: 1 / -1;
+  align-items: flex-start;
+  gap: 0.6rem;
+  padding: 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 0.6rem;
+  background: var(--accent-soft);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.archived-source-reassignment input {
+  width: 1.15rem;
+  min-width: 1.15rem;
+  min-height: 1.15rem;
+  margin: 0.1rem 0 0;
+  accent-color: var(--accent);
+}
+.archived-source-reassignment span {
+  min-width: 0;
+}
 /* ── Custom Pay-From field ───────────────────────────────────────────────── */
 .pay-from-field {
   display: grid;
@@ -191,6 +233,11 @@ legend {
   white-space: nowrap;
   text-overflow: ellipsis;
   font-size: 1rem;
+}
+.pay-from-trigger__value.archived-source-value {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .pay-from-trigger app-icon {
   flex: 0 0 auto;
@@ -426,46 +473,63 @@ label small {
   padding: 0.85rem;
 }
 .filter-panel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
   margin-bottom: 0.75rem;
 }
 .filter-panel__toggle {
-  display: none;
-}
-.source-filter-field {
-  display: grid;
-  min-width: 0;
-  gap: 0.35rem;
-}
-.source-filter-field .field-label {
-  color: var(--muted);
-  font-size: 0.75rem;
-  font-weight: 700;
-}
-.source-filter-trigger {
-  display: flex;
-  width: 100%;
-  min-width: 0;
-  min-height: 2.65rem;
+  display: inline-flex;
+  min-height: 2.75rem;
   align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-  padding: 0.65rem 0.75rem;
+  gap: 0.45rem;
+  padding: 0.5rem 0.75rem;
   border: 1px solid var(--line);
   border-radius: 0.6rem;
   color: var(--ink);
-  background: var(--canvas);
-  text-align: left;
+  background: var(--surface);
 }
-.source-filter-trigger span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.filter-count {
+  display: inline-grid;
+  min-width: 1.25rem;
+  min-height: 1.25rem;
+  box-sizing: border-box;
+  place-items: center;
+  padding-inline: 0.25rem;
+  border-radius: 999px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  font-size: 0.7rem;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
 }
-.source-filter-trigger app-icon {
-  width: 1rem;
-  height: 1rem;
-  flex: 0 0 auto;
-  color: var(--muted);
+.filter-dialog-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+.filter-dialog-actions .clear-filter-draft {
+  grid-column: 1 / -1;
+  justify-self: start;
+}
+.filter-visibility-option {
+  display: flex;
+  min-width: 0;
+  min-height: 2.75rem;
+  grid-column: 1 / -1;
+  align-items: center;
+  gap: 0.65rem;
+  margin: 0;
+  font-size: 0.8rem;
+}
+.filter-visibility-option input {
+  width: auto;
+  min-width: 1.15rem;
+  min-height: 1.15rem;
+  margin: 0;
+  accent-color: var(--accent);
 }
 .toolbar input,
 .toolbar select,
@@ -1206,51 +1270,14 @@ label small {
     padding: 0.9rem;
   }
   .filter-panel {
-    overflow: hidden;
-    border-radius: 0.85rem;
-  }
-  .filter-panel__toggle {
-    display: flex;
-    width: 100%;
-    min-height: 4rem;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.75rem;
-    padding: 0.75rem 0.9rem;
-    border: 0;
-    color: var(--ink);
-    background: var(--surface);
-    text-align: left;
-  }
-  .filter-panel__toggle > span {
-    display: grid;
-    gap: 0.15rem;
-  }
-  .filter-panel__toggle strong {
-    font-size: 0.85rem;
-  }
-  .filter-panel__toggle small {
-    color: var(--muted);
-    font-size: 0.65rem;
-  }
-  .filter-panel__toggle app-icon {
-    width: 1.1rem;
-    height: 1.1rem;
-    color: var(--accent);
-    transition: transform 0.18s ease;
-  }
-  .filter-panel__toggle app-icon.open {
-    transform: rotate(180deg);
+    overflow: visible;
   }
   .toolbar {
-    display: none;
+    display: grid;
     grid-template-columns: 1fr;
     padding: 0.75rem;
     border-top: 1px solid var(--line);
     background: var(--surface-2);
-  }
-  .toolbar.mobile-open {
-    display: grid;
   }
   .toolbar .manage-categories {
     grid-column: auto;

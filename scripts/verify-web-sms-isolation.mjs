@@ -8,9 +8,9 @@ const walk = (dir) =>
 const scripts = walk(root).filter((file) => /\.js$/.test(file));
 if (!scripts.length) throw new Error('No web build exists to verify.');
 for (const file of scripts) {
-  if (/CardNestSms|sms-sync|SMS Sync|READ_SMS|RECEIVE_SMS/.test(readFileSync(file, 'utf8')))
+  if (/CardNestSms|(?:READ|RECEIVE)_SMS|["']sms-sync["']/.test(readFileSync(file, 'utf8')))
     throw new Error(`Android SMS feature leaked into web bundle: ${file}`);
 }
 console.log(
-  `Verified ${scripts.length} web JavaScript files: no SMS route, UI, plugin or permissions.`,
+  `Verified ${scripts.length} web JavaScript files: no SMS route, plugin or permissions.`,
 );

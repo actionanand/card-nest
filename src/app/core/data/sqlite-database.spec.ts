@@ -63,7 +63,10 @@ describe('SQLite shared write queue', () => {
       for (const statement of migration.statements)
         expect(migrations[index].statements).toContain(statement);
       expect(migrations[index].statements).not.toMatch(/\bDROP\s+TABLE\b/i);
-      expect(migrations[index].statements).not.toMatch(/\bDELETE\s+FROM\b/i);
+      const deletedTables = [
+        ...(migrations[index].statements ?? '').matchAll(/\bDELETE\s+FROM\s+(\w+)/gi),
+      ].map((match) => match[1]);
+      expect(deletedTables).toEqual(migration.version === 14 ? ['bank_activity_events'] : []);
     }
     expect(pendingMigrations.map((migration) => migration.version)).toEqual(
       Array.from({ length: currentSchemaVersion - 6 }, (_, index) => index + 7),

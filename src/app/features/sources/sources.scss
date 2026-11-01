@@ -2,6 +2,23 @@
   display: block;
   min-width: 0;
 }
+.archived-bank-accounts {
+  grid-column: 1 / -1;
+  padding: 1rem;
+}
+.archived-bank-accounts summary {
+  min-height: 44px;
+  cursor: pointer;
+}
+.archived-bank-accounts > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding-block: 0.5rem;
+  overflow-wrap: anywhere;
+}
 .sources-page {
   max-width: 74rem;
   container-type: inline-size;
@@ -21,75 +38,130 @@
 }
 .fastag-create {
   margin-bottom: 1rem;
-  overflow: hidden;
 }
-.fastag-create summary {
+.fastag-trigger {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 0.75rem;
   padding: 1rem;
-  min-height: 44px;
-  cursor: pointer;
-  list-style: none;
+  min-height: 3.5rem;
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
   color: var(--accent);
+  background: var(--surface);
+  text-align: left;
+  cursor: pointer;
 }
-.fastag-create summary::-webkit-details-marker {
-  display: none;
-}
-.fastag-create summary > span {
+.fastag-trigger > span {
   display: grid;
   gap: 0.25rem;
 }
-.fastag-create summary small {
+.fastag-trigger small {
   color: var(--muted);
   font-weight: 400;
 }
-.fastag-create summary app-icon {
+.fastag-trigger app-icon {
   width: 1.2rem;
   height: 1.2rem;
 }
-.wallet-chevron {
-  transition: transform 0.18s ease;
+.wallet-form {
+  display: grid;
+  gap: 0.8rem;
+  min-width: 0;
 }
-.fastag-create[open] .wallet-chevron {
-  transform: rotate(180deg);
-}
-.wallet-body {
-  padding: 0 1rem 1rem;
-  border-top: 1px solid var(--line);
-}
-.wallet-body > p {
-  margin-block: 1rem;
+.wallet-form > p {
+  margin: 0;
   color: var(--muted);
   font-size: 0.8rem;
 }
-.wallet-body form {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));
-  align-items: end;
-  gap: 0.75rem;
-}
-.wallet-body label {
+.wallet-form label {
   min-width: 0;
 }
-.wallet-body [role='alert'] {
-  grid-column: 1 / -1;
-  color: var(--danger);
-}
-.wallet-body .btn {
-  justify-self: end;
-}
-@media (prefers-reduced-motion: reduce) {
-  .wallet-chevron {
-    transition: none;
-  }
+.wallet-form .modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
 }
 .source-add app-icon,
 .source-actions app-icon,
 .activity-toolbar app-icon {
   width: 1rem;
   height: 1rem;
+}
+.bank-accounts-section {
+  grid-column: 1 / -1;
+  min-width: 0;
+  padding: 0.35rem 1rem 0.8rem;
+}
+.bank-accounts-section > summary {
+  display: grid;
+  min-height: 48px;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 0.75rem;
+  cursor: pointer;
+  list-style: none;
+}
+.bank-accounts-section > summary::-webkit-details-marker {
+  display: none;
+}
+.bank-accounts-section > summary > span {
+  font-weight: 700;
+}
+.bank-accounts-section > summary > strong,
+.bank-accounts-section > summary > small {
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-align: right;
+}
+.bank-accounts-section > summary > app-icon {
+  width: 1rem;
+  height: 1rem;
+  transition: transform 0.18s ease;
+}
+.bank-accounts-section[open] > summary > app-icon {
+  transform: rotate(90deg);
+}
+.bank-account-list {
+  display: grid;
+  gap: 0.15rem;
+}
+.bank-account-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.45rem 0.8rem;
+  padding-block: 0.55rem;
+  border-bottom: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+.bank-account-row > span:last-child {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+.bank-account-list > .btn {
+  justify-self: start;
+  min-height: 44px;
+  margin-top: 0.45rem;
+}
+@media (max-width: 480px) {
+  .bank-accounts-section > summary {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.4rem;
+  }
+  .bank-accounts-section > summary > strong,
+  .bank-accounts-section > summary > small {
+    grid-column: 1;
+    text-align: left;
+  }
+  .bank-accounts-section > summary > app-icon {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+  }
 }
 .source-tabs {
   display: inline-flex;
@@ -236,12 +308,27 @@
   border-radius: 0.6rem;
   background: var(--canvas);
 }
+.meal-cycle-summary .meal-cycle-period {
+  grid-column: 1 / -1;
+}
+.meal-cycle-summary .meal-cycle-flow {
+  grid-column: 1 / -1;
+  border-top: 1px solid var(--line);
+}
 .meal-cycle-summary small {
   color: var(--muted);
   font-size: 0.62rem;
 }
 .meal-cycle-summary strong {
   font-size: 0.82rem;
+  overflow-wrap: anywhere;
+}
+.meal-cycle-explanation {
+  margin: -0.25rem 0 0;
+  color: var(--muted);
+  font-size: 0.68rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 .source-actions .btn {
   min-height: 2.4rem;

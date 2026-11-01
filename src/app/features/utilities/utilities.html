@@ -120,51 +120,80 @@
           <p class="eyebrow">Mobile</p>
           <h2>Recharge plans</h2>
         </div>
-        <button class="btn btn-primary" type="button" (click)="startAddMobile()">
+        <button
+          id="add-mobile-profile"
+          class="btn btn-primary"
+          type="button"
+          (click)="startAddMobile()"
+        >
           <app-icon name="plus" /> Add profile
         </button>
       </section>
       @if (mobileFormOpen()) {
-        <form class="panel utility-form" [formGroup]="mobileForm" (submit)="saveMobile($event)">
-          <header>
-            <h3>{{ editingMobileId() ? 'Edit mobile profile' : 'New mobile profile' }}</h3>
-            <button class="btn" type="button" (click)="mobileFormOpen.set(false)">Close</button>
-          </header>
-          <div class="form-grid">
-            <label
-              >Person's name<input formControlName="personName" maxlength="80" required
-            /></label>
-            <app-select-picker
-              label="Plan type"
-              formControlName="subscriptionType"
-              [options]="subscriptionOptions"
-            />
-            <app-select-picker
-              label="Operator"
-              formControlName="operator"
-              [options]="mobileOptions"
-            />
-            <label
-              >Indian mobile number (optional)<input
-                formControlName="mobileNumber"
-                inputmode="tel"
-                autocomplete="tel-national"
-                placeholder="9876543210 or +91 9876543210"
-            /></label>
-          </div>
-          @if (mobileForm.controls.subscriptionType.value === 'POSTPAID') {
-            <p class="form-note">
-              Postpaid service is not marked inactive when no prepaid-style recharge has been
-              recorded. Add billing validity only when you know it.
-            </p>
-          }
-          @if (error(); as message) {
-            <p class="form-error" role="alert">{{ message }}</p>
-          }
-          <button class="btn btn-primary" type="submit" [disabled]="saving() || mobileForm.invalid">
-            {{ saving() ? 'Saving…' : 'Save profile' }}
-          </button>
-        </form>
+        <app-profile-modal
+          [title]="editingMobileId() ? 'Edit mobile profile' : 'Add mobile profile'"
+          [busy]="saving()"
+          (closed)="mobileFormOpen.set(false)"
+          ><form class="utility-form" [formGroup]="mobileForm" (submit)="saveMobile($event)">
+            <div class="form-grid">
+              <label
+                >Person's name<input formControlName="personName" maxlength="80" required
+              /></label>
+              <app-select-picker
+                label="Plan type"
+                formControlName="subscriptionType"
+                [options]="subscriptionOptions"
+              />
+              <app-select-picker
+                label="Operator"
+                formControlName="operator"
+                [options]="mobileOptions"
+              />
+              <label
+                >Indian mobile number (optional)<span class="indian-phone-field"
+                  ><span aria-hidden="true">+91-</span
+                  ><input
+                    appIndianPhone
+                    formControlName="mobileNumber"
+                    aria-label="Indian mobile number, +91, ten national digits (optional)"
+                    placeholder="9876543210" /></span
+              ></label>
+              @if (
+                mobileForm.controls.mobileNumber.invalid && mobileForm.controls.mobileNumber.touched
+              ) {
+                <p class="form-error" role="alert">
+                  Enter exactly ten digits starting with 6, 7, 8 or 9, or leave the number empty.
+                </p>
+              }
+            </div>
+            @if (mobileForm.controls.subscriptionType.value === 'POSTPAID') {
+              <p class="form-note">
+                Postpaid service is not marked inactive when no prepaid-style recharge has been
+                recorded. Add billing validity only when you know it.
+              </p>
+            }
+            @if (error(); as message) {
+              <p class="form-error" role="alert">{{ message }}</p>
+            }
+
+            <div class="modal-actions">
+              <button
+                class="btn btn-primary"
+                type="submit"
+                [disabled]="saving() || mobileForm.invalid"
+              >
+                {{ saving() ? 'Saving…' : 'Save profile' }}</button
+              ><button
+                class="btn"
+                type="button"
+                [disabled]="saving()"
+                (click)="mobileFormOpen.set(false)"
+              >
+                Cancel
+              </button>
+            </div>
+          </form></app-profile-modal
+        >
       }
 
       @for (profile of mobileProfiles(); track profile.id) {
@@ -216,84 +245,108 @@
             <button class="btn" type="button" (click)="startRecharge(profile)">
               <app-icon name="plus" /> Add recharge
             </button>
+            <button class="btn" type="button" (click)="openRechargeHistory(profile)">
+              <app-icon name="history" /> Recharge history
+            </button>
             <button class="btn" type="button" (click)="editMobile(profile)">Edit profile</button>
             <button class="btn" type="button" (click)="archiveMobile(profile)">Archive</button>
+            <button
+              class="btn delete-mobile"
+              type="button"
+              (click)="requestMobileDeletion(profile)"
+            >
+              <app-icon name="delete" /> Delete profile
+            </button>
           </div>
           @if (rechargeProfileId() === profile.id) {
-            <form class="nested-form" [formGroup]="rechargeForm" (submit)="saveRecharge($event)">
-              <h4>{{ editingRechargeId() ? 'Edit recharge record' : 'Record recharge' }}</h4>
-              <app-select-picker
-                label="Recharge plan"
-                formControlName="planType"
-                [options]="planOptions"
-              />
-              <div class="form-grid">
-                <label
-                  >Amount (INR, optional)<input
-                    formControlName="amount"
-                    inputmode="decimal"
-                    placeholder="0.00"
-                /></label>
-                <label>Start date<input type="date" formControlName="startDate" required /></label>
-              </div>
-              <div class="segmented-control" aria-label="Set recharge validity">
-                <button
-                  type="button"
-                  [class.active]="validityMode() === 'DAYS'"
-                  (click)="validityMode.set('DAYS')"
-                >
-                  Validity days
-                </button>
-                <button
-                  type="button"
-                  [class.active]="validityMode() === 'END_DATE'"
-                  (click)="validityMode.set('END_DATE')"
-                >
-                  Choose last active date
-                </button>
-              </div>
-              @if (validityMode() === 'DAYS') {
-                <label
-                  >Validity (whole days)<input
-                    formControlName="validityDays"
-                    inputmode="numeric"
-                    pattern="[0-9]+"
-                    required
-                /></label>
+            <app-profile-modal
+              [title]="editingRechargeId() ? 'Edit recharge' : 'Add recharge'"
+              [busy]="saving()"
+              (closed)="closeRecharge()"
+              ><form
+                class="nested-form recharge-form"
+                [formGroup]="rechargeForm"
+                (submit)="saveRecharge($event)"
+              >
                 <p class="form-note">
-                  Last active date: {{ rechargeEndDatePreview() }}. The end date is inclusive.
+                  <strong>{{ profile.personName }}</strong> · {{ profile.operator }}
                 </p>
-              } @else {
+                <app-select-picker
+                  label="Recharge plan"
+                  formControlName="planType"
+                  [options]="planOptions"
+                />
+                <div class="form-grid">
+                  <label
+                    >Amount (INR, optional)<input
+                      formControlName="amount"
+                      inputmode="decimal"
+                      placeholder="0.00"
+                  /></label>
+                  <label
+                    >Start date<input type="date" formControlName="startDate" required
+                  /></label>
+                </div>
+                <div class="segmented-control" aria-label="Set recharge validity">
+                  <button
+                    type="button"
+                    [class.active]="validityMode() === 'DAYS'"
+                    (click)="validityMode.set('DAYS')"
+                  >
+                    Validity days
+                  </button>
+                  <button
+                    type="button"
+                    [class.active]="validityMode() === 'END_DATE'"
+                    (click)="validityMode.set('END_DATE')"
+                  >
+                    Choose last active date
+                  </button>
+                </div>
+                @if (validityMode() === 'DAYS') {
+                  <label
+                    >Validity (whole days)<input
+                      formControlName="validityDays"
+                      inputmode="numeric"
+                      pattern="[0-9]+"
+                      required
+                  /></label>
+                  <p class="form-note">
+                    Last active date: {{ rechargeEndDatePreview() }}. The end date is inclusive.
+                  </p>
+                } @else {
+                  <label
+                    >Last active date<input type="date" formControlName="endDate" required
+                  /></label>
+                }
                 <label
-                  >Last active date<input type="date" formControlName="endDate" required
-                /></label>
-              }
-              <label
-                >Comment (optional)<textarea
-                  rows="2"
-                  maxlength="300"
-                  formControlName="comment"
-                ></textarea>
-              </label>
-              @if (error(); as message) {
-                <p class="form-error" role="alert">{{ message }}</p>
-              }
-              <div class="profile-actions">
-                <button class="btn btn-primary" type="submit" [disabled]="saving()">
-                  Save recharge</button
-                ><button class="btn" type="button" (click)="rechargeProfileId.set(null)">
-                  Cancel
-                </button>
-              </div>
-            </form>
+                  >Comment (optional)<textarea
+                    rows="2"
+                    maxlength="300"
+                    formControlName="comment"
+                  ></textarea>
+                </label>
+                @if (error(); as message) {
+                  <p class="form-error" role="alert">{{ message }}</p>
+                }
+                <div class="modal-actions">
+                  <button class="btn" type="button" [disabled]="saving()" (click)="closeRecharge()">
+                    Cancel
+                  </button>
+                  <button class="btn btn-primary" type="submit" [disabled]="saving()">
+                    {{ saving() ? 'Saving…' : 'Save recharge' }}
+                  </button>
+                </div>
+              </form></app-profile-modal
+            >
           }
           <div class="history-heading">
-            <h4>Recharge history</h4>
-            <span>{{ mobilePlans(profile).length }} records</span>
+            <h4>Active recharges</h4>
+            <span>{{ activeMobilePlans(profile).length }} active</span>
           </div>
-          @if (mobilePlans(profile).length) {
-            <ol class="history-list">
-              @for (plan of mobilePlans(profile); track plan.id) {
+          @if (activeMobilePlans(profile).length) {
+            <ol class="history-list active-recharges">
+              @for (plan of activeMobilePlans(profile); track plan.id) {
                 <li>
                   <div>
                     <strong>{{ planTypeLabel(plan.planType) }}</strong
@@ -307,28 +360,37 @@
                       <small>{{ plan.comment }}</small>
                     }
                   </div>
-                  <div class="history-actions">
-                    <button
-                      class="icon-action"
-                      type="button"
-                      [attr.aria-label]="'Edit recharge starting ' + plan.startDate"
-                      (click)="editRecharge(plan)"
-                    >
-                      <app-icon name="edit" /></button
-                    ><button
-                      class="icon-action"
-                      type="button"
-                      [attr.aria-label]="'Delete recharge starting ' + plan.startDate"
-                      (click)="deleteRecharge(plan)"
-                    >
-                      <app-icon name="delete" />
-                    </button>
-                  </div>
                 </li>
               }
             </ol>
           } @else {
-            <p class="empty-state">No recharge history recorded.</p>
+            <p class="empty-state">
+              No active recharge recorded.
+              @if (mobilePlans(profile).length) {
+                Previous plans remain available through Recharge history.
+              }
+            </p>
+          }
+          @if (scheduledMobilePlans(profile).length) {
+            <div class="history-heading"><h4>Scheduled recharges</h4></div>
+            <ol class="history-list scheduled-recharges">
+              @for (plan of scheduledMobilePlans(profile); track plan.id) {
+                <li>
+                  <div>
+                    <strong>{{ planTypeLabel(plan.planType) }}</strong>
+                    <small
+                      >{{ plan.startDate }} – {{ plan.endDate }} · {{ planPeriodText(plan) }}</small
+                    >
+                    @if (plan.amountMinor !== undefined) {
+                      <small>{{ money(plan.amountMinor) }}</small>
+                    }
+                    @if (plan.comment) {
+                      <small>{{ plan.comment }}</small>
+                    }
+                  </div>
+                </li>
+              }
+            </ol>
           }
         </article>
       } @empty {
@@ -338,15 +400,25 @@
         <details class="archived-list">
           <summary>Archived mobile profiles ({{ archivedMobileProfiles().length }})</summary>
           @for (profile of archivedMobileProfiles(); track profile.id) {
-            <div>
-              <span>{{ profile.personName }} · {{ profile.operator }}</span
-              ><button
-                class="btn"
-                type="button"
-                (click)="utilities.setMobileArchived(profile.id, false)"
-              >
-                Restore
-              </button>
+            <div class="archived-mobile-row">
+              <span>{{ profile.personName }} · {{ profile.operator }}</span>
+              <div class="archived-mobile-actions">
+                <button class="btn" type="button" (click)="openRechargeHistory(profile)">
+                  <app-icon name="history" /> Recharge history</button
+                ><button
+                  class="btn"
+                  type="button"
+                  (click)="utilities.setMobileArchived(profile.id, false)"
+                >
+                  Restore</button
+                ><button
+                  class="btn delete-mobile"
+                  type="button"
+                  (click)="requestMobileDeletion(profile)"
+                >
+                  <app-icon name="delete" /> Delete profile
+                </button>
+              </div>
             </div>
           }
         </details>
@@ -372,93 +444,124 @@
             <p class="eyebrow">Cooking Gas</p>
             <h2>LPG connections</h2>
           </div>
-          <button class="btn btn-primary" type="button" (click)="startAddLpg()">
+          <button
+            id="add-lpg-profile"
+            class="btn btn-primary"
+            type="button"
+            (click)="startAddLpg()"
+          >
             <app-icon name="plus" /> Add LPG connection
           </button>
         </section>
         @if (lpgFormOpen()) {
-          <form class="panel utility-form" [formGroup]="lpgForm" (submit)="saveLpg($event)">
-            <header>
-              <h3>{{ editingLpgId() ? 'Edit LPG connection' : 'New LPG connection' }}</h3>
-              <button class="btn" type="button" (click)="lpgFormOpen.set(false)">Close</button>
-            </header>
-            <div class="form-grid">
+          <app-profile-modal
+            [title]="editingLpgId() ? 'Edit LPG connection' : 'Add LPG connection'"
+            [busy]="saving()"
+            (closed)="lpgFormOpen.set(false)"
+            ><form class="utility-form" [formGroup]="lpgForm" (submit)="saveLpg($event)">
+              <div class="form-grid">
+                <label
+                  >Connection name<input formControlName="connectionName" maxlength="80" required
+                /></label>
+                <app-select-picker
+                  label="LPG provider"
+                  formControlName="provider"
+                  [options]="providerOptions"
+                />
+                <app-select-picker
+                  label="Cylinder size"
+                  formControlName="cylinderSize"
+                  [options]="cylinderOptions"
+                />
+                <label class="check-field"
+                  ><input type="checkbox" formControlName="commercial" /><span
+                    >Commercial connection</span
+                  ></label
+                >
+                <label class="phone-field-label"
+                  >Linked mobile number (optional)
+                  <span class="phone-field">
+                    <span class="country-prefix" aria-hidden="true">+91</span>
+                    <input
+                      appIndianPhone
+                      formControlName="mobileNumber"
+                      inputmode="numeric"
+                      maxlength="10"
+                      placeholder="10-digit mobile number"
+                    />
+                  </span>
+                </label>
+                <label
+                  >Connection ID (optional)<input formControlName="connectionId" maxlength="80"
+                /></label>
+                <label
+                  >Distributor ID (optional)<input formControlName="distributorId" maxlength="80"
+                /></label>
+                <label
+                  >Distributor name (optional)<input
+                    formControlName="distributorName"
+                    maxlength="80"
+                /></label>
+                <label
+                  >Distributor contact number (optional)<input
+                    formControlName="distributorContact"
+                    inputmode="tel"
+                    maxlength="80"
+                    placeholder="+1 800 555 0199"
+                /></label>
+                <label
+                  >Distributor WhatsApp number (optional)<input
+                    formControlName="distributorWhatsApp"
+                    inputmode="tel"
+                    maxlength="80"
+                    placeholder="+44 20 7946 0958"
+                /></label>
+                <label
+                  >Estimated usage days<input
+                    formControlName="estimatedUsageDays"
+                    inputmode="numeric"
+                    pattern="[0-9]+"
+                    required
+                /></label>
+              </div>
+              <p class="form-note">
+                The refill-check estimate is based on the current-cylinder start date. It never
+                marks a cylinder Empty.
+              </p>
               <label
-                >Connection name<input formControlName="connectionName" maxlength="80" required
-              /></label>
-              <app-select-picker
-                label="LPG provider"
-                formControlName="provider"
-                [options]="providerOptions"
-              />
-              <app-select-picker
-                label="Cylinder size"
-                formControlName="cylinderSize"
-                [options]="cylinderOptions"
-              />
-              <label class="check-field"
-                ><input type="checkbox" formControlName="commercial" /><span
-                  >Commercial connection</span
-                ></label
-              >
-              <label
-                >Linked mobile number (optional)<input
-                  formControlName="mobileNumber"
-                  inputmode="tel"
-                  placeholder="+91 mobile number"
-              /></label>
-              <label
-                >Connection ID (optional)<input formControlName="connectionId" maxlength="80"
-              /></label>
-              <label
-                >Distributor ID (optional)<input formControlName="distributorId" maxlength="80"
-              /></label>
-              <label
-                >Distributor name (optional)<input formControlName="distributorName" maxlength="80"
-              /></label>
-              <label
-                >Distributor contact number (optional)<input
-                  formControlName="distributorContact"
-                  inputmode="tel"
-                  maxlength="20"
-              /></label>
-              <label
-                >Distributor WhatsApp number (optional)<input
-                  formControlName="distributorWhatsApp"
-                  inputmode="tel"
-                  maxlength="20"
-              /></label>
-              <label
-                >Estimated usage days<input
-                  formControlName="estimatedUsageDays"
-                  inputmode="numeric"
-                  pattern="[0-9]+"
-                  required
-              /></label>
-            </div>
-            <p class="form-note">
-              The refill-check estimate is based on the current-cylinder start date. It never marks
-              a cylinder Empty.
-            </p>
-            <label
-              >Notes (optional)<textarea
-                rows="2"
-                maxlength="300"
-                formControlName="notes"
-              ></textarea>
-            </label>
-            @if (error(); as message) {
-              <p class="form-error" role="alert">{{ message }}</p>
-            }
-            <button class="btn btn-primary" type="submit" [disabled]="saving() || lpgForm.invalid">
-              Save connection
-            </button>
-          </form>
+                >Notes (optional)<textarea
+                  rows="2"
+                  maxlength="300"
+                  formControlName="notes"
+                ></textarea>
+              </label>
+              @if (error(); as message) {
+                <p class="form-error" role="alert">{{ message }}</p>
+              }
+
+              <div class="modal-actions">
+                <button
+                  class="btn btn-primary"
+                  type="submit"
+                  [disabled]="saving() || lpgForm.invalid"
+                >
+                  Save connection</button
+                ><button
+                  class="btn"
+                  type="button"
+                  [disabled]="saving()"
+                  (click)="lpgFormOpen.set(false)"
+                >
+                  Cancel
+                </button>
+              </div>
+            </form></app-profile-modal
+          >
         }
         @for (profile of lpgProfiles(); track profile.id) {
           <article class="panel lpg-profile">
             <header class="profile-heading">
-              <div>
+              <div class="profile-copy">
                 <p class="eyebrow">
                   {{ profile.provider }} · {{ profile.commercial ? 'Commercial' : 'Domestic' }} ·
                   {{ cylinderSizeLabel(profile.cylinderSize) }} cylinder
@@ -467,11 +570,15 @@
                 <small>{{ profile.mobileNumber || 'No mobile number linked' }}</small>
               </div>
               <span class="status-badge" [class.attention]="lpgCheckDue(profile)">{{
-                utilities.lpgSummary(profile, today).currentCylinderEmpty
-                  ? 'Empty confirmed'
-                  : 'Usage tracked'
+                lpgStatus(profile)
               }}</span>
             </header>
+            @if (utilities.lpgSummary(profile, today).currentCylinderStarted; as started) {
+              <p class="form-note">Cylinder started {{ started }}</p>
+            }
+            @if (lpgHistoryWarning(profile); as warning) {
+              <p class="attention-note" role="status">{{ warning }}</p>
+            }
             <div class="lpg-stats">
               <div>
                 <span>Current usage</span
@@ -484,6 +591,9 @@
               </div>
               <div>
                 <span>Estimated refill check</span><strong>{{ lpgCheckLabel(profile) }}</strong>
+                @if (utilities.lpgSummary(profile, today).estimatedCheckDate; as checkDate) {
+                  <small>{{ checkDate }}</small>
+                }
               </div>
               <div>
                 <span>Refills this year</span
@@ -523,105 +633,98 @@
               </button>
             }
             <div class="profile-actions">
-              <button class="btn" type="button" (click)="startLpgEvent(profile, 'STARTED')">
+              <button
+                class="btn"
+                type="button"
+                [disabled]="saving() || !canRecordLpgEvent(profile, 'STARTED')"
+                (click)="startLpgEvent(profile, 'STARTED')"
+              >
                 Record cylinder started
               </button>
-              <button class="btn" type="button" (click)="startLpgEvent(profile, 'EMPTY')">
+              <button
+                class="btn"
+                type="button"
+                [disabled]="saving() || !canRecordLpgEvent(profile, 'EMPTY')"
+                (click)="startLpgEvent(profile, 'EMPTY')"
+              >
                 Record empty
               </button>
-              <button class="btn" type="button" (click)="startLpgEvent(profile, 'REFILL_RECEIVED')">
+              <button
+                class="btn"
+                type="button"
+                [disabled]="saving() || !canRecordLpgEvent(profile, 'REFILL_RECEIVED')"
+                (click)="startLpgEvent(profile, 'REFILL_RECEIVED')"
+              >
                 Record refill received
               </button>
               <button class="btn" type="button" (click)="editLpg(profile)">Edit connection</button>
               <button class="btn" type="button" (click)="archiveLpg(profile)">Archive</button>
+              <button class="btn" type="button" (click)="openLpgHistory(profile)">
+                <app-icon name="history" /> Cylinder history
+              </button>
+              <button class="btn delete-mobile" type="button" (click)="requestLpgDeletion(profile)">
+                <app-icon name="delete" /> Delete connection
+              </button>
             </div>
             @if (lpgEventProfileId() === profile.id) {
-              <form class="nested-form" [formGroup]="lpgEventForm" (submit)="saveLpgEvent($event)">
-                <h4>{{ editingLpgEventId() ? 'Edit cylinder event' : 'Record cylinder event' }}</h4>
-                <app-select-picker
-                  label="Event"
-                  formControlName="eventType"
-                  [options]="lpgEventOptions"
-                />
-                <div class="form-grid">
-                  <label>Date<input type="date" formControlName="eventDate" required /></label
-                  ><app-select-picker
-                    label="Cylinder size"
-                    formControlName="cylinderSize"
-                    [options]="cylinderOptions"
+              <app-profile-modal
+                [title]="editingLpgEventId() ? 'Edit cylinder event' : 'Record cylinder event'"
+                [busy]="saving()"
+                (closed)="closeLpgEvent()"
+              >
+                <form
+                  class="utility-form lpg-event-form"
+                  [formGroup]="lpgEventForm"
+                  (submit)="saveLpgEvent($event)"
+                >
+                  <p class="form-note">
+                    <strong>{{ profile.connectionName }}</strong> · {{ profile.provider }} ·
+                    {{ profile.commercial ? 'Commercial' : 'Domestic' }}
+                  </p>
+                  <app-select-picker
+                    label="Event"
+                    formControlName="eventType"
+                    [options]="lpgEventOptions()"
                   />
-                </div>
-                @if (lpgEventForm.controls.eventType.value === 'REFILL_RECEIVED') {
+                  <div class="form-grid">
+                    <label>Date<input type="date" formControlName="eventDate" required /></label
+                    ><app-select-picker
+                      label="Cylinder size"
+                      formControlName="cylinderSize"
+                      [options]="cylinderOptions"
+                    />
+                  </div>
+                  @if (lpgEventForm.controls.eventType.value === 'REFILL_RECEIVED') {
+                    <label
+                      >Amount paid (INR, optional)<input
+                        formControlName="amount"
+                        inputmode="decimal"
+                    /></label>
+                  }
                   <label
-                    >Amount paid (INR, optional)<input formControlName="amount" inputmode="decimal"
-                  /></label>
-                }
-                <label
-                  >Comment (optional)<textarea
-                    rows="2"
-                    maxlength="300"
-                    formControlName="comment"
-                  ></textarea>
-                </label>
-                @if (error(); as message) {
-                  <p class="form-error" role="alert">{{ message }}</p>
-                }
-                <div class="profile-actions">
-                  <button class="btn btn-primary" type="submit" [disabled]="saving()">
-                    Save event</button
-                  ><button class="btn" type="button" (click)="lpgEventProfileId.set(null)">
-                    Cancel
-                  </button>
-                </div>
-              </form>
-            }
-            <div class="history-heading">
-              <h4>Cylinder history</h4>
-              <span>Estimates stay estimates</span>
-            </div>
-            @if (lpgHistory(profile).length) {
-              <ol class="history-list">
-                @for (entry of lpgHistory(profile); track entry.id) {
-                  <li>
-                    <div>
-                      <strong>{{ lpgEventLabel(entry.eventType) }}</strong
-                      ><small
-                        >{{ entry.eventDate
-                        }}{{
-                          entry.cylinderSize ? ' · ' + cylinderSizeLabel(entry.cylinderSize) : ''
-                        }}</small
-                      >
-                      @if (entry.amountMinor !== undefined) {
-                        <small>{{ money(entry.amountMinor) }}</small>
-                      }
-                      @if (entry.comment) {
-                        <small>{{ entry.comment }}</small>
-                      }
-                    </div>
-                    <div class="history-actions">
-                      <button
-                        class="icon-action"
-                        type="button"
-                        [attr.aria-label]="'Edit cylinder event on ' + entry.eventDate"
-                        (click)="editLpgEvent(entry)"
-                      >
-                        <app-icon name="edit" /></button
-                      ><button
-                        class="icon-action"
-                        type="button"
-                        [attr.aria-label]="'Delete cylinder event on ' + entry.eventDate"
-                        (click)="deleteLpgEvent(entry)"
-                      >
-                        <app-icon name="delete" />
-                      </button>
-                    </div>
-                  </li>
-                }
-              </ol>
-            } @else {
-              <p class="empty-state">
-                Record a cylinder start, empty event or refill delivery to begin the timeline.
-              </p>
+                    >Comment (optional)<textarea
+                      rows="2"
+                      maxlength="300"
+                      formControlName="comment"
+                    ></textarea>
+                  </label>
+                  @if (error(); as message) {
+                    <p class="form-error" role="alert">{{ message }}</p>
+                  }
+                  <div class="modal-actions">
+                    <button class="btn btn-primary" type="submit" [disabled]="saving()">
+                      Save event</button
+                    ><button
+                      class="btn"
+                      type="button"
+                      [disabled]="saving()"
+                      (click)="closeLpgEvent()"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </form></app-profile-modal
+              >
             }
           </article>
         } @empty {
@@ -631,15 +734,25 @@
           <details class="archived-list">
             <summary>Archived LPG connections ({{ archivedLpgProfiles().length }})</summary>
             @for (profile of archivedLpgProfiles(); track profile.id) {
-              <div>
-                <span>{{ profile.connectionName }} · {{ profile.provider }}</span
-                ><button
-                  class="btn"
-                  type="button"
-                  (click)="utilities.setLpgArchived(profile.id, false)"
-                >
-                  Restore
-                </button>
+              <div class="archived-mobile-row">
+                <span>{{ profile.connectionName }} · {{ profile.provider }}</span>
+                <div class="archived-mobile-actions">
+                  <button class="btn" type="button" (click)="openLpgHistory(profile)">
+                    <app-icon name="history" /> Cylinder history</button
+                  ><button
+                    class="btn"
+                    type="button"
+                    (click)="utilities.setLpgArchived(profile.id, false)"
+                  >
+                    Restore</button
+                  ><button
+                    class="btn delete-mobile"
+                    type="button"
+                    (click)="requestLpgDeletion(profile)"
+                  >
+                    <app-icon name="delete" /> Delete connection
+                  </button>
+                </div>
               </div>
             }
           </details>
@@ -681,4 +794,145 @@
       </div>
     </section>
   </div>
+}
+
+@if (rechargeHistoryProfile(); as profile) {
+  @if (!rechargeProfileId() && !deletion()) {
+    <app-profile-modal title="Recharge history" [busy]="saving()" (closed)="closeRechargeHistory()">
+      <section class="recharge-history" aria-label="Saved recharges">
+        <p class="form-note">
+          <strong>{{ profile.personName }}</strong> · {{ profile.operator }} ·
+          {{ mobilePlans(profile).length }} records
+        </p>
+        <ol class="history-list">
+          @for (plan of mobilePlans(profile); track plan.id) {
+            <li>
+              <div>
+                <strong>{{ planTypeLabel(plan.planType) }}</strong>
+                <small>{{ plan.startDate }} – {{ plan.endDate }}</small>
+                <small>{{ planStatus(plan) }} · {{ planPeriodText(plan) }}</small>
+                @if (plan.amountMinor !== undefined) {
+                  <small>{{ money(plan.amountMinor) }}</small>
+                }
+                @if (plan.comment) {
+                  <small>{{ plan.comment }}</small>
+                }
+              </div>
+              <div class="history-actions">
+                <button
+                  class="icon-action"
+                  type="button"
+                  [id]="'recharge-history-edit-' + plan.id"
+                  [disabled]="saving() || profile.archived"
+                  [attr.aria-label]="'Edit recharge starting ' + plan.startDate"
+                  [title]="profile.archived ? 'Restore profile to edit recharges' : 'Edit recharge'"
+                  (click)="editRecharge(plan)"
+                >
+                  <app-icon name="edit" />
+                </button>
+                <button
+                  class="icon-action"
+                  type="button"
+                  [disabled]="saving()"
+                  [attr.aria-label]="'Delete recharge starting ' + plan.startDate"
+                  title="Delete recharge"
+                  (click)="deleteRecharge(plan)"
+                >
+                  <app-icon name="delete" />
+                </button>
+              </div>
+            </li>
+          } @empty {
+            <li class="empty-state">No recharge history recorded.</li>
+          }
+        </ol>
+        <div class="modal-actions">
+          <button class="btn" type="button" [disabled]="saving()" (click)="closeRechargeHistory()">
+            Close history
+          </button>
+        </div>
+      </section>
+    </app-profile-modal>
+  }
+}
+
+@if (lpgHistoryProfile(); as profile) {
+  @if (!lpgEventProfileId() && !deletion()) {
+    <app-profile-modal title="Cylinder history" [busy]="saving()" (closed)="closeLpgHistory()">
+      <section class="lpg-history" aria-label="Saved cylinder events">
+        <p class="form-note">
+          <strong>{{ profile.connectionName }}</strong> · {{ profile.provider }} ·
+          {{ profile.commercial ? 'Commercial' : 'Domestic' }} ·
+          {{ cylinderSizeLabel(profile.cylinderSize) }} · {{ lpgHistory(profile).length }} events
+        </p>
+        <ol class="history-list">
+          @for (entry of lpgHistory(profile); track entry.id) {
+            <li>
+              <div>
+                <strong>{{ lpgEventLabel(entry.eventType) }}</strong>
+                <small
+                  >{{ entry.eventDate }} ·
+                  {{ cylinderSizeLabel(entry.cylinderSize ?? profile.cylinderSize) }}</small
+                >
+                @if (entry.amountMinor !== undefined) {
+                  <small>{{ money(entry.amountMinor) }}</small>
+                }
+                @if (entry.comment) {
+                  <small>{{ entry.comment }}</small>
+                }
+              </div>
+              <div class="history-actions">
+                <button
+                  [id]="'lpg-history-edit-' + entry.id"
+                  class="icon-action"
+                  type="button"
+                  [disabled]="saving() || profile.archived"
+                  [attr.aria-label]="'Edit cylinder event on ' + entry.eventDate"
+                  [title]="
+                    profile.archived ? 'Restore connection to edit events' : 'Edit cylinder event'
+                  "
+                  (click)="editLpgEvent(entry)"
+                >
+                  <app-icon name="edit" />
+                </button>
+                <button
+                  class="icon-action"
+                  type="button"
+                  [disabled]="saving()"
+                  [attr.aria-label]="'Delete cylinder event on ' + entry.eventDate"
+                  title="Delete cylinder event"
+                  (click)="deleteLpgEvent(entry)"
+                >
+                  <app-icon name="delete" />
+                </button>
+              </div>
+            </li>
+          } @empty {
+            <li class="empty-state">No cylinder events recorded.</li>
+          }
+        </ol>
+        <div class="modal-actions">
+          <button class="btn" type="button" (click)="closeLpgHistory()" [disabled]="saving()">
+            Close history
+          </button>
+        </div>
+      </section>
+    </app-profile-modal>
+  }
+}
+
+@if (deletion(); as choice) {
+  <app-confirmation-dialog
+    [style.--confirmation-danger-ink]="
+      choice.kind === 'MOBILE_PROFILE' || choice.kind === 'LPG_PROFILE' || choice.kind === 'LPG'
+        ? 'var(--surface)'
+        : null
+    "
+    [title]="choice.title"
+    [message]="choice.message"
+    [busy]="saving()"
+    [error]="error()"
+    (confirmed)="confirmDeletion()"
+    (cancelled)="cancelDeletion()"
+  />
 }

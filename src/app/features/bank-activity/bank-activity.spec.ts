@@ -1,5 +1,6 @@
 import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
+import { ActivatedRoute } from '@angular/router';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { BankActivityEvent, BankActivityProfile, bankActivitySummary } from './bank-activity-model';
 import { BankActivityPage } from './bank-activity';
@@ -30,17 +31,28 @@ describe('Bank Activity date refresh', () => {
     TestBed.configureTestingModule({
       imports: [BankActivityPage],
       providers: [
+        { provide: ActivatedRoute, useValue: { snapshot: { queryParamMap: { get: () => null } } } },
         {
           provide: BankActivityService,
           useValue: {
             profiles: signal([profile]),
             events: signal([event]),
+            reviewNotice: signal(''),
             candidates: signal([]),
             summaryFor: (_profileId: string, today: string) => bankActivitySummary([event], today),
             eventsFor: () => [event],
+            transfersFor: () => [],
+            transactionsFor: () => [],
+            transactionDirection: () => undefined,
           },
         },
-        { provide: CardNestStore, useValue: { paymentSources: signal([]) } },
+        {
+          provide: CardNestStore,
+          useValue: {
+            paymentSources: signal([]),
+            bankCashTracking: signal({ enabled: false, askCardSettlementFunding: false }),
+          },
+        },
       ],
     });
   });

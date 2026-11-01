@@ -168,6 +168,17 @@
   color: var(--muted);
   font-size: 0.7rem;
 }
+.floating-shortcut-settings {
+  display: grid;
+  min-width: 0;
+  gap: 0.65rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--line);
+}
+.floating-shortcut-settings h3 {
+  margin: 0;
+  font-size: 0.9rem;
+}
 .setting-row label {
   min-width: 14rem;
 }

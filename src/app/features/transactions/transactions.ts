@@ -1,6 +1,10 @@
+import { CommittedSaveRefreshError } from '../../core/services/committed-save-refresh-error';
+import { suggestCategory } from '../../core/services/category-matcher';
 import {
   Component,
   computed,
+  effect,
+  untracked,
   DestroyRef,
   ElementRef,
   inject,
@@ -21,7 +25,22 @@ import {
   TransactionType,
 } from '../../core/models/domain';
 import { CardNestStore } from '../../core/services/card-nest-store';
-import { formatMoney, parseMoneyToMinor, transactionEffect } from '../../core/services/money';
+import { displayBankAccountSuffix } from '../../core/services/bank-account-identifier';
+import {
+  formatMoney,
+  parseMoneyToMinor,
+  transactionEffect,
+  transactionLabel,
+} from '../../core/services/money';
+import { eligiblePaymentMember } from '../../core/services/payment-groups';
+import { PaymentGroupsPanel } from './payment-groups-panel';
+import { PaymentBreakdown } from '../../shared/payment-breakdown';
+import {
+  composeSmsApprovalNotes,
+  paymentMethodDetailConfig,
+  paymentMethodsFor,
+  validateSmsPaymentAnnotation,
+} from '../../core/services/payment-method-options';
 import { SnackbarService } from '../../core/services/snackbar.service';
 import { AppIcon } from '../../shared/app-icon';
 import { CategoriesPage } from '../categories/categories';
@@ -36,7 +55,7 @@ import {
 import { AppDatePipe, DateFormatService } from '../../core/services/date-format.service';
 import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
 import { AppDatePicker } from '../../shared/app-date-picker';
-import { indiaCurrentMonth, indiaTodayIso } from '../../core/services/india-date';
+import { DeviceCalendarClock } from '../../core/services/device-date';
 import { PlatformTools } from '../../shared/platform-tools';
 import { recordedTransactionTime } from '../../core/services/transaction-time';
 import {
@@ -45,6 +64,7 @@ import {
   savedTimingAnswer,
 } from '../../core/services/source-balance';
 import { SourceMovementDialog } from '../../shared/source-movement-dialog';
+import { ProfileModal } from '../../shared/profile-modal';
 
 type GroupingMode = 'MONTH' | 'CYCLE' | 'STATEMENT';
 type TransactionTypeFilter = TransactionType | 'ALL' | 'WITH_IMAGE';
@@ -56,6 +76,15 @@ interface SelectedFilterSource {
   readonly id: string;
   readonly label: string;
   readonly kind: 'CARD' | 'PAYMENT_SOURCE';
+}
+interface TransactionFilterDraft {
+  readonly search: string;
+  readonly type: TransactionTypeFilter;
+  readonly source: string;
+  readonly category: string;
+  readonly grouping: GroupingMode;
+  readonly hideCredits: boolean;
+  readonly creditCardsOnly: boolean;
 }
 const TRANSACTION_PAGE_SIZE = 200;
 const MAX_RECEIPT_BYTES = 1_000_000;
@@ -69,6 +98,8 @@ function sanitizedMoneyInput(value: string): string {
 @Component({
   selector: 'app-transactions-page',
   imports: [
+    PaymentGroupsPanel,
+    PaymentBreakdown,
     ReactiveFormsModule,
     AppIcon,
     AppDatePipe,
@@ -79,16 +110,20 @@ function sanitizedMoneyInput(value: string): string {
     AppDatePicker,
     PlatformTools,
     SourceMovementDialog,
+    ProfileModal,
   ],
   templateUrl: './transactions.html',
   styleUrl: './transactions.scss',
   host: {
     '(document:keydown.escape)': 'closeOverlays()',
+    '(document:keydown)': 'trapEditorFocus($event)',
+    '(window:cardnest:back)': 'androidBack($event)',
     '(document:click)': 'closeMenusFromOutside($event)',
     '(window:beforeunload)': 'protectBrowserUnload($event)',
   },
 })
 export class TransactionsPage {
+  private readonly calendarClock = inject(DeviceCalendarClock);
   readonly store = inject(CardNestStore);
   recordedTime(transaction: CardTransaction): string {
     return recordedTransactionTime(
@@ -127,11 +162,129 @@ export class TransactionsPage {
   );
   readonly showEmiForm = signal(false);
   readonly showSplitForm = signal(false);
+  readonly saving = signal(false);
+  private pendingCardRecurringIdentity: { transactionId: string; ruleId: string } | null = null;
+  readonly splitTimingOptions = [
+    { value: '', label: 'Choose only if the balance-confirmation day is ambiguous' },
+    { value: 'AFTER_BASELINE', label: 'After the confirmed balance — apply this payment' },
+    {
+      value: 'INCLUDED_IN_BASELINE',
+      label: 'Already included in the confirmed balance — record only',
+    },
+  ];
+  setSplitTiming(index: number, value: string): void {
+    if (value === '' || value === 'AFTER_BASELINE' || value === 'INCLUDED_IN_BASELINE')
+      this.splitForm.controls.parts.at(index).controls.balanceTiming.setValue(value);
+  }
+  readonly transactionEditor = viewChild<ElementRef<HTMLElement>>('transactionEditor');
+  private editorReturnFocus: HTMLElement | null = null;
+  groupTotal(ids: readonly string[]): number {
+    return this.groupEntries(ids).reduce((sum, item) => sum + item.amountMinor, 0);
+  }
+  trapEditorFocus(event: KeyboardEvent): void {
+    if (event.key !== 'Tab' || document.querySelector('app-select-picker dialog[open]')) return;
+    const element = this.transactionEditor()?.nativeElement;
+    if (!element) return;
+    const nodes = Array.from(
+      element.querySelectorAll<HTMLElement>(
+        'button:not([disabled]),input:not([disabled]),textarea:not([disabled]),[tabindex="0"]',
+      ),
+    );
+    const first = nodes[0],
+      last = nodes.at(-1);
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last?.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first?.focus();
+    }
+  }
+  androidBack(event: Event): void {
+    if (document.querySelector('app-select-picker dialog[open]')) return;
+    if (
+      this.filtersOpen() ||
+      this.combineOpen() ||
+      this.showForm() ||
+      this.showSplitForm() ||
+      this.detailTransaction()
+    ) {
+      event.preventDefault();
+      this.closeOverlays();
+    }
+  }
+  readonly combineOpen = signal(false);
+  readonly manageGroupId = signal('');
+  openCombine(transaction?: CardTransaction): void {
+    this.closeDetails();
+    this.manageGroupId.set(transaction?.splitGroupId ?? '');
+    this.combineOpen.set(true);
+  }
+  closeCombine(): void {
+    this.combineOpen.set(false);
+    queueMicrotask(() => document.getElementById('combine-payments')?.focus());
+  }
+  openAddAfterCombine(): void {
+    this.closeCombine();
+    globalThis.setTimeout(() => this.openAdd());
+  }
+  groupEntries(ids: readonly string[]): readonly CardTransaction[] {
+    return this.store.transactions().filter((entry) => ids.includes(entry.id));
+  }
+  relatedPaymentGroup() {
+    return (this.store.paymentGroups?.() ?? []).find(
+      (group) =>
+        group.id === this.form.controls.relatedTransactionId.value ||
+        group.memberIds.includes(this.form.controls.relatedTransactionId.value),
+    );
+  }
+  relatedPaymentEntries(): readonly CardTransaction[] {
+    const group = this.relatedPaymentGroup();
+    return group
+      ? this.groupEntries(group.memberIds)
+      : this.store
+          .transactions()
+          .filter((entry) => entry.id === this.form.controls.relatedTransactionId.value);
+  }
+  paymentDelta(): number {
+    const amount = parseMoneyToMinor(this.form.controls.amount.value) ?? 0;
+    return (
+      amount -
+      (this.relatedPaymentEntries().find((entry) => entry.id === this.editingId())?.amountMinor ??
+        0)
+    );
+  }
+  legacyAdjustment(): CardTransaction | undefined {
+    if (this.form.controls.type.value !== 'ADJUSTMENT') return undefined;
+    return this.store
+      .transactions()
+      .find(
+        (entry) =>
+          entry.id === this.editingId() &&
+          entry.type === 'ADJUSTMENT' &&
+          (entry.adjustmentPurpose !== 'SPLIT_PAYMENT' || !entry.splitGroupId),
+      );
+  }
+  groupTypeChange(): boolean {
+    return !!this.store
+      .transactions()
+      .find(
+        (entry) =>
+          entry.id === this.editingId() &&
+          (entry.splitGroupId ||
+            (this.store.paymentGroups?.() ?? []).some((group) =>
+              group.memberIds.includes(entry.id),
+            )) &&
+          entry.type !== this.form.controls.type.value,
+      );
+  }
   readonly helpOpen = signal(false);
   readonly deleteCandidate = signal<CardTransaction | null>(null);
   readonly payFromOpen = signal(false);
-  readonly sourceFilterOpen = signal(false);
+  readonly payFromSearch = signal('');
+  readonly payFromBankMode = signal(false);
   readonly filtersOpen = signal(false);
+  readonly filterDraft = signal<TransactionFilterDraft | null>(null);
   readonly actionMenuId = signal<string | null>(null);
   readonly actionMenuOpensUp = signal(false);
   readonly summaryMenuOpen = signal(false);
@@ -165,10 +318,23 @@ export class TransactionsPage {
     return source
       ? {
           id,
-          label: `${source.nickname}${source.lastDigits ? ` ${source.lastDigits}` : ''}`,
+          label: `${source.nickname}${source.lastDigits ? ` ${source.kind === 'DEBIT' ? displayBankAccountSuffix(source.lastDigits) : source.lastDigits}` : ''}`,
           kind: 'PAYMENT_SOURCE',
         }
       : null;
+  });
+  readonly editingArchivedCard = computed(() => {
+    this.formChanges();
+    const id = this.editingId();
+    if (!id) return null;
+    const previous = this.store.transactions().find((transaction) => transaction.id === id);
+    if (!previous) return null;
+    return this.store.cards().find((card) => card.id === previous.cardId && card.archived) ?? null;
+  });
+  readonly archivedSourceReassignment = computed(() => {
+    this.formChanges();
+    const original = this.editingArchivedCard();
+    return original && original.id !== this.form.controls.cardId.value ? original : null;
   });
   readonly visibleLimit = signal(TRANSACTION_PAGE_SIZE);
   readonly activeFilterCount = computed(
@@ -177,12 +343,14 @@ export class TransactionsPage {
       Number(this.typeFilter() !== 'ALL') +
       Number(this.sourceFilter() !== 'ALL') +
       Number(this.categoryFilter() !== 'ALL') +
-      Number(this.grouping() !== 'MONTH'),
+      Number(this.grouping() !== 'MONTH') +
+      Number(this.hideCredits()) +
+      Number(this.creditCardsOnly()),
   );
   readonly repeatOptions = Array.from({ length: 36 }, (_, index) => index + 1);
   readonly types: readonly { value: TransactionType; label: string }[] = [
     { value: 'PURCHASE', label: 'Purchase' },
-    { value: 'ADJUSTMENT', label: 'Adjustment' },
+    { value: 'ADJUSTMENT', label: 'Split payment' },
     { value: 'PAYMENT', label: 'Card payment' },
     { value: 'REFUND', label: 'Refund' },
     { value: 'CASHBACK', label: 'Cashback' },
@@ -211,18 +379,51 @@ export class TransactionsPage {
     {
       value: 'MONTH',
       label: 'Calendar month',
-      disabled: this.sourceFilter() !== 'ALL',
+      disabled: (this.filterDraft()?.source ?? this.sourceFilter()) !== 'ALL',
     },
     {
       value: 'CYCLE',
       label: `Budget cycle (day ${this.store.budgetCycleStartDay()})`,
-      disabled: this.isCreditCardSelected(),
+      disabled: this.store
+        .cards()
+        .some((card) => card.id === (this.filterDraft()?.source ?? this.sourceFilter())),
     },
     {
       value: 'STATEMENT',
       label: 'Selected card statement cycle',
-      disabled: !this.isCreditCardSelected(),
+      disabled: !this.store
+        .cards()
+        .some((card) => card.id === (this.filterDraft()?.source ?? this.sourceFilter())),
     },
+  ]);
+  readonly filterDraftGrouping = computed<GroupingMode>(() => {
+    const draft = this.filterDraft();
+    if (!draft) return this.effectiveGrouping();
+    if (this.store.cards().some((card) => card.id === draft.source)) return 'STATEMENT';
+    if (
+      draft.source !== 'ALL' &&
+      this.store.paymentSources().some((source) => source.id === draft.source)
+    )
+      return 'CYCLE';
+    return draft.grouping;
+  });
+  readonly sourceFilterOptions = computed<readonly AppSelectOption[]>(() => [
+    { value: 'ALL', label: 'All cards and sources' },
+    ...this.store.cards().map((card) => ({
+      value: card.id,
+      label: `${card.nickname}${card.archived || card.deletedAt ? ' · Archived' : ''}`,
+      detail: `${card.lastDigits} · ${card.issuerName}`,
+    })),
+    ...this.store.paymentSources().map((source) => ({
+      value: source.id,
+      label: `${source.nickname}${source.archived ? ' · Archived' : ''}`,
+      detail:
+        source.kind === 'DEBIT'
+          ? source.lastDigits
+            ? `•••${source.lastDigits.slice(-3)} · ${source.institution || 'Bank/UPI'}`
+            : source.institution || 'Bank/UPI'
+          : [source.lastDigits, source.institution || source.kind].filter(Boolean).join(' · '),
+    })),
   ]);
   readonly alphabeticalPaymentSources = computed(() =>
     [...this.store.activePaymentSources()].sort((left, right) =>
@@ -264,10 +465,60 @@ export class TransactionsPage {
     })),
     ...this.alphabeticalPaymentSources().map((source) => ({
       value: source.id,
-      label: source.nickname,
-      detail: [source.lastDigits, source.institution || source.kind].filter(Boolean).join(' · '),
+      label:
+        source.kind === 'DEBIT'
+          ? `${source.institution || 'Bank/UPI'} · ${source.nickname}`
+          : source.nickname,
+      detail:
+        source.kind === 'DEBIT'
+          ? source.lastDigits
+            ? `•••${source.lastDigits.slice(-3)}`
+            : 'Bank account'
+          : [source.lastDigits, source.institution || source.kind].filter(Boolean).join(' · '),
     })),
   ]);
+  readonly searchedPayFromCards = computed(() => {
+    const terms = this.payFromSearch().trim().toLowerCase().split(/\s+/).filter(Boolean);
+    return this.store.alphabeticalActiveCards().filter((card) => {
+      const searchable = `${card.nickname} ${card.lastDigits} ${card.issuerName}`.toLowerCase();
+      return terms.every((term) => searchable.includes(term));
+    });
+  });
+  readonly searchedPayFromSources = computed(() => {
+    if (this.editingArchivedCard()) return [];
+    const terms = this.payFromSearch().trim().toLowerCase().split(/\s+/).filter(Boolean);
+    return this.store.activePaymentSources().filter((source) => {
+      if (source.kind === 'DEBIT') return false;
+      const searchable =
+        `${source.institution ?? ''} ${source.nickname} ${source.lastDigits ?? ''} ${source.kind}`.toLowerCase();
+      return terms.every((term) => searchable.includes(term));
+    });
+  });
+  readonly searchedPayFromBanks = computed(() => {
+    if (this.editingArchivedCard()) return [];
+    const terms = this.payFromSearch().trim().toLowerCase().split(/\s+/).filter(Boolean);
+    return this.store.activePaymentSources().filter((source) => {
+      if (source.kind !== 'DEBIT') return false;
+      const searchable =
+        `${source.institution ?? ''} ${source.nickname} ${source.lastDigits ?? ''}`.toLowerCase();
+      return terms.every((term) => searchable.includes(term));
+    });
+  });
+  readonly bankAccountOptions = computed<readonly AppSelectOption[]>(() => {
+    const selectedId = this.form.controls.cardId.value;
+    const sources = this.store
+      .paymentSources()
+      .filter(
+        (source) =>
+          source.kind === 'DEBIT' &&
+          (!source.archived || (this.editingId() && source.id === selectedId)),
+      );
+    return sources.map((source) => ({
+      value: source.id,
+      label: `${source.institution || 'Bank/UPI'} · ${source.nickname}`,
+      detail: `${source.lastDigits ? `•••${source.lastDigits.slice(-3)}` : 'Bank account'}${source.archived ? ' · Archived' : ''}`,
+    }));
+  });
   readonly form = new FormGroup({
     cardId: new FormControl(this.defaultSourceId(), {
       nonNullable: true,
@@ -278,7 +529,7 @@ export class TransactionsPage {
       { nonNullable: true, validators: [Validators.required] },
     ),
     amount: new FormControl('', { nonNullable: true, validators: [Validators.required] }),
-    transactionDate: new FormControl(indiaTodayIso(), {
+    transactionDate: new FormControl(this.calendarClock.calendar().dateIso, {
       nonNullable: true,
       validators: [Validators.required],
     }),
@@ -289,6 +540,19 @@ export class TransactionsPage {
     merchant: new FormControl('', { nonNullable: true, validators: [Validators.maxLength(100)] }),
     notes: new FormControl('', { nonNullable: true, validators: [Validators.maxLength(500)] }),
     relatedTransactionId: new FormControl('', { nonNullable: true }),
+    preserveLegacy: new FormControl(false, { nonNullable: true }),
+    unlinkConfirmed: new FormControl(false, { nonNullable: true }),
+    archivedSourceReassignmentConfirmedFor: new FormControl('', { nonNullable: true }),
+    paymentMethod: new FormControl('NONE', { nonNullable: true }),
+    paymentMethodDetail: new FormControl('', { nonNullable: true }),
+    paymentMethodCustom: new FormControl('', {
+      nonNullable: true,
+      validators: Validators.maxLength(80),
+    }),
+    smsAdditionalComment: new FormControl('', {
+      nonNullable: true,
+      validators: Validators.maxLength(500),
+    }),
     taxIncluded: new FormControl(false, { nonNullable: true }),
     taxAmount: new FormControl('', { nonNullable: true }),
     repeat: new FormControl<RepeatChoice>('NONE', { nonNullable: true }),
@@ -299,6 +563,14 @@ export class TransactionsPage {
     this.formChanges();
     const value = this.form.getRawValue();
     const existing = this.store.transactions().find((item) => item.id === this.editingId());
+    if (
+      existing &&
+      existing.cardId === value.cardId &&
+      existing.amountMinor === parseMoneyToMinor(value.amount) &&
+      existing.transactionDate === value.transactionDate &&
+      transactionEffect(existing) === transactionEffect({ ...existing, type: value.type })
+    )
+      return false;
     return needsBaselineConfirmation(
       this.store.paymentSources().find((source) => source.id === value.cardId),
       this.store.bankCashTracking(),
@@ -382,18 +654,100 @@ export class TransactionsPage {
     this.form.controls.transactionDate.markAsTouched();
   }
 
+  readonly categoryOverridden = signal(false);
+  suggestNewCategory(): void {
+    if (!this.showForm() || this.editingId() || this.categoryOverridden()) return;
+    const value = this.form.getRawValue();
+    const group = this.store
+      .paymentGroups()
+      .find(
+        (row) =>
+          row.id === value.relatedTransactionId ||
+          row.memberIds.includes(value.relatedTransactionId),
+      );
+    const related = this.store
+      .transactions()
+      .find((row) => row.id === (group?.anchorId ?? value.relatedTransactionId));
+    try {
+      const category = suggestCategory(
+        {
+          purpose: value.type,
+          merchant: value.merchant,
+          ...(value.type === 'ADJUSTMENT' ? { inheritedId: related?.categoryId ?? '' } : {}),
+        },
+        this.store.categories(),
+        this.store.categoryCatalog?.() ?? [],
+      );
+      this.form.controls.categoryId.setValue(category, { emitEvent: false });
+    } catch {
+      this.form.controls.categoryId.setErrors({ integrity: true });
+    }
+  }
   setCategory(value: string): void {
+    this.categoryOverridden.set(true);
     this.form.controls.categoryId.setValue(value);
     this.form.controls.categoryId.markAsDirty();
     this.form.controls.categoryId.markAsTouched();
+  }
+  manualPaymentContext() {
+    const source = this.store
+      .paymentSources()
+      .find((item) => item.id === this.form.controls.cardId.value);
+    return source?.kind === 'DEBIT' ||
+      source?.kind === 'CASH' ||
+      (this.form.controls.type.value === 'PAYMENT' &&
+        !!this.store.fundingFor?.(this.editingId() ?? ''))
+      ? ('BANK' as const)
+      : ('CARD' as const);
+  }
+  manualPaymentMethods() {
+    this.formChanges();
+    return paymentMethodsFor(this.manualPaymentContext());
+  }
+  readonly manualPaymentDetail = paymentMethodDetailConfig;
+  setManualPaymentMethod(value: string): void {
+    if (!this.manualPaymentMethods().some((item) => item.value === value)) return;
+    this.form.patchValue({
+      paymentMethod: value,
+      paymentMethodDetail: '',
+      paymentMethodCustom: '',
+    });
+  }
+  setManualPaymentDetail(value: string): void {
+    this.form.controls.paymentMethodDetail.setValue(value);
+    if (this.form.controls.paymentMethod.value === 'UPI')
+      this.form.controls.paymentMethodCustom.setValue('');
+  }
+  customManualPayment(): void {
+    if (this.form.controls.paymentMethodCustom.value)
+      this.form.controls.paymentMethodDetail.setValue('');
   }
 
   relatedOptions(): readonly AppSelectOption[] {
     return [
       { value: '', label: 'Not linked' },
+      ...(this.form.controls.type.value === 'ADJUSTMENT'
+        ? (this.store.paymentGroups?.() ?? []).map((group) => ({
+            value: group.id,
+            label: group.title || 'Existing payment group',
+            detail: group.memberIds
+              .map((id) => {
+                const entry = this.store.transactions().find((row) => row.id === id);
+                return entry
+                  ? `${entry.merchant ?? ''} ${entry.transactionDate} ${entry.amountMinor / 100} ${this.store.sourceDetail(entry.cardId)}`
+                  : '';
+              })
+              .join(' · '),
+          }))
+        : []),
       ...this.relatedTransactionOptions().map((transaction) => ({
         value: transaction.id,
-        label: transaction.merchant || transaction.type,
+        label:
+          (this.store.paymentGroups?.() ?? []).find((group) =>
+            group.memberIds.includes(transaction.id),
+          )?.title ||
+          transaction.merchant ||
+          transactionLabel(transaction),
         detail: `${transaction.transactionDate} · ${this.money(transaction.amountMinor, transaction.currencyCode)} · ${this.store.sourceName(transaction.cardId)}`,
       })),
     ];
@@ -401,6 +755,8 @@ export class TransactionsPage {
 
   setRelatedTransaction(value: string): void {
     this.form.controls.relatedTransactionId.setValue(value);
+    if (value && this.form.controls.type.value === 'ADJUSTMENT')
+      this.form.controls.preserveLegacy.setValue(false);
     this.form.controls.relatedTransactionId.markAsDirty();
   }
 
@@ -427,7 +783,7 @@ export class TransactionsPage {
   readonly filtered = computed(() => {
     const term = this.search().trim().toLocaleLowerCase();
     const numericTerm = term.replace(/[^0-9.]/g, '');
-    const currentMonth = indiaCurrentMonth();
+    const currentMonth = this.calendarClock.calendar().monthIso;
     return this.store
       .transactions()
       .filter(
@@ -436,7 +792,7 @@ export class TransactionsPage {
           (!item.emiInstallmentNumber ||
             item.emiInstallmentNumber === 1 ||
             item.transactionDate.slice(0, 7) <= currentMonth) &&
-          (!this.hideCredits() || !this.isCredit(item.type)) &&
+          (!this.hideCredits() || !this.isCredit(item)) &&
           (!this.creditCardsOnly() || this.store.cards().some((card) => card.id === item.cardId)) &&
           (this.typeFilter() === 'ALL' ||
             (this.typeFilter() === 'WITH_IMAGE'
@@ -445,6 +801,10 @@ export class TransactionsPage {
           (this.sourceFilter() === 'ALL' || item.cardId === this.sourceFilter()) &&
           (this.categoryFilter() === 'ALL' || item.categoryId === this.categoryFilter()) &&
           (!term ||
+            (this.store.paymentGroups?.() ?? []).some(
+              (group) =>
+                group.memberIds.includes(item.id) && group.title.toLowerCase().includes(term),
+            ) ||
             item.merchant?.toLocaleLowerCase().includes(term) ||
             item.bankName?.toLocaleLowerCase().includes(term) ||
             this.cardName(item.cardId).toLocaleLowerCase().includes(term) ||
@@ -500,24 +860,36 @@ export class TransactionsPage {
     });
   });
   readonly visibleTotal = computed(() =>
-    this.filtered().reduce(
-      (sum, item) => sum + (this.isCredit(item.type) ? item.amountMinor : -item.amountMinor),
-      0,
-    ),
+    this.filtered().reduce((sum, item) => sum - transactionEffect(item), 0),
   );
-  readonly visibleTransactions = computed(() => this.filtered().slice(0, this.visibleLimit()));
+  readonly logicalGroups = computed(() =>
+    this.sourceFilter() === 'ALL'
+      ? (this.store.paymentGroups?.() ?? []).filter(
+          (group) =>
+            group.kind === 'PAYMENTS' &&
+            group.memberIds.length > 1 &&
+            group.memberIds.every((id) => this.filtered().some((entry) => entry.id === id)),
+        )
+      : [],
+  );
+  readonly visibleTransactions = computed(() =>
+    this.filtered()
+      .filter((entry) => !this.logicalGroups().some((group) => group.memberIds.includes(entry.id)))
+      .slice(0, this.visibleLimit()),
+  );
   readonly remainingTransactions = computed(() =>
-    Math.max(0, this.filtered().length - this.visibleTransactions().length),
+    Math.max(
+      0,
+      this.filtered().filter(
+        (entry) => !this.logicalGroups().some((group) => group.memberIds.includes(entry.id)),
+      ).length - this.visibleTransactions().length,
+    ),
   );
   readonly groups = computed(() => {
     const totals = new Map<string, number>();
     for (const transaction of this.filtered()) {
       const period = this.periodFor(transaction);
-      totals.set(
-        period.key,
-        (totals.get(period.key) ?? 0) +
-          (this.isCredit(transaction.type) ? transaction.amountMinor : -transaction.amountMinor),
-      );
+      totals.set(period.key, (totals.get(period.key) ?? 0) + -transactionEffect(transaction));
     }
     const grouped = new Map<string, { label: string; transactions: CardTransaction[] }>();
     for (const transaction of this.visibleTransactions()) {
@@ -546,7 +918,7 @@ export class TransactionsPage {
     if (!groups.length) return null;
     const todayKey = this.periodForMode(
       {
-        transactionDate: indiaTodayIso(),
+        transactionDate: this.calendarClock.calendar().dateIso,
         cardId: this.sourceFilter(),
       } as CardTransaction,
       this.effectiveGrouping(),
@@ -556,6 +928,16 @@ export class TransactionsPage {
   });
 
   constructor() {
+    effect(() => {
+      this.formChanges();
+      this.showForm();
+      this.editingId();
+      this.store.categories();
+      this.store.categoryCatalog?.();
+      this.store.transactions();
+      this.store.paymentGroups();
+      untracked(() => this.suggestNewCategory());
+    });
     this.destroyRef.onDestroy(() => this.closeWebCamera());
     if (Capacitor.getPlatform() === 'web') void this.detectWebCamera();
     // Handle edit requested via query param on first load.
@@ -589,8 +971,10 @@ export class TransactionsPage {
   category(categoryId: string) {
     return this.store.categories().find((item) => item.id === categoryId);
   }
-  isCredit(type: TransactionType): boolean {
-    return ['PAYMENT', 'REFUND', 'CASHBACK', 'CREDIT'].includes(type);
+  isCredit(value: TransactionType | CardTransaction): boolean {
+    return typeof value === 'string'
+      ? ['PAYMENT', 'REFUND', 'CASHBACK', 'CREDIT'].includes(value)
+      : transactionEffect(value) < 0;
   }
   updateSearch(event: Event): void {
     this.search.set((event.target as HTMLInputElement).value);
@@ -606,19 +990,7 @@ export class TransactionsPage {
     else if (this.store.paymentSources().some((source) => source.id === id)) {
       this.grouping.set('CYCLE');
     }
-    this.sourceFilterOpen.set(false);
     this.resetVisibleTransactions();
-  }
-  sourceFilterLabel(): string {
-    if (this.sourceFilter() === 'ALL') return 'All cards and sources';
-    const card = this.store.activeCards().find((item) => item.id === this.sourceFilter());
-    if (card) return `${card.nickname} · ${card.lastDigits}`;
-    const source = this.store
-      .activePaymentSources()
-      .find((item) => item.id === this.sourceFilter());
-    return source
-      ? `${source.nickname}${source.lastDigits ? ` · ${source.lastDigits}` : ''}`
-      : 'All cards and sources';
   }
   updateCategory(value: string): void {
     this.categoryFilter.set(value);
@@ -663,10 +1035,16 @@ export class TransactionsPage {
     void this.router.navigate(['/sources'], { fragment: selected.id });
   }
   openAdd(): void {
+    if (this.saving()) return;
+    this.editorReturnFocus =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
     this.editingId.set(null);
     this.resetForm(this.defaultSourceId());
     this.showForm.set(true);
     this.closeMenus();
+    globalThis.setTimeout(() =>
+      this.transactionEditor()?.nativeElement.querySelector<HTMLElement>('button,input')?.focus(),
+    );
   }
   async pickReceipts(): Promise<void> {
     try {
@@ -734,6 +1112,7 @@ export class TransactionsPage {
     this.receiptDraftDirty.set(true);
   }
   closeForm(): void {
+    if (this.saving()) return;
     if (this.hasUnsavedDraft()) {
       this.discardClosesEditor = true;
       this.discardConfirmationOpen.set(true);
@@ -788,6 +1167,11 @@ export class TransactionsPage {
     this.editingId.set(null);
     this.receiptPreviews.set([]);
     this.receiptDraftDirty.set(false);
+    const trigger = this.editorReturnFocus;
+    queueMicrotask(() => {
+      if (trigger?.isConnected) trigger.focus();
+      else document.getElementById('add-transaction')?.focus();
+    });
     void this.router.navigate([], {
       relativeTo: this.route,
       queryParams: { add: null, payment: null, edit: null },
@@ -833,19 +1217,82 @@ export class TransactionsPage {
     }
   }
   selectPayFrom(id: string): void {
+    if (
+      this.editingArchivedCard() &&
+      (id === 'BANK_SOURCE' || !this.store.activeCards().some((card) => card.id === id))
+    )
+      return;
+    if (id === 'BANK_SOURCE') {
+      const currentId = this.form.controls.cardId.value;
+      const sources = this.store.activePaymentSources().filter((source) => source.kind === 'DEBIT');
+      if (!sources.length) return;
+      const current = sources.find((source) => source.id === currentId);
+      const primary = sources.find((source) => source.isPrimaryBank);
+      const selected = current ?? primary ?? sources[0];
+      this.form.controls.cardId.setValue(selected.id);
+      this.form.controls.cardId.markAsDirty();
+      this.form.controls.archivedSourceReassignmentConfirmedFor.setValue('');
+      this.payFromBankMode.set(true);
+      this.payFromOpen.set(false);
+      this.payFromSearch.set('');
+      return;
+    }
+    this.payFromBankMode.set(false);
     this.form.controls.cardId.setValue(id);
     this.form.controls.cardId.markAsDirty();
+    this.form.controls.archivedSourceReassignmentConfirmedFor.setValue('');
     this.payFromOpen.set(false);
+    this.payFromSearch.set('');
+  }
+  selectBankAccount(id: string): void {
+    if (this.editingArchivedCard()) return;
+    if (!this.bankAccountOptions().some((option) => option.value === id)) return;
+    this.form.controls.cardId.setValue(id);
+    this.form.controls.cardId.markAsDirty();
+    this.form.controls.archivedSourceReassignmentConfirmedFor.setValue('');
+  }
+  confirmArchivedSourceReassignment(event: Event): void {
+    const confirmed = (event.target as HTMLInputElement).checked;
+    this.form.controls.archivedSourceReassignmentConfirmedFor.setValue(
+      confirmed ? this.form.controls.cardId.value : '',
+    );
+  }
+  openPayFrom(): void {
+    this.payFromSearch.set('');
+    this.payFromOpen.set(true);
+  }
+  updatePayFromSearch(event: Event): void {
+    this.payFromSearch.set((event.target as HTMLInputElement).value);
   }
   selectedSourceLabel(): string {
+    if (this.payFromBankMode()) return 'Bank/UPI';
     const id = this.form.controls.cardId.value;
-    const card = this.store.activeCards().find((c) => c.id === id);
-    if (card) return `${card.nickname} · ${card.lastDigits}`;
+    const card = this.store.cards().find((item) => item.id === id && !item.deletedAt);
+    if (card) return `${card.nickname} · ${card.lastDigits}${card.archived ? ' · Archived' : ''}`;
     const source = this.store.activePaymentSources().find((s) => s.id === id);
-    if (source) return `${source.nickname}${source.lastDigits ? ` · ${source.lastDigits}` : ''}`;
+    if (source)
+      return source.kind === 'DEBIT'
+        ? `${source.institution || 'Bank/UPI'} · ${source.nickname}${source.lastDigits ? ` · ${displayBankAccountSuffix(source.lastDigits)}` : ''}`
+        : `${source.nickname}${source.lastDigits ? ` · ${source.lastDigits}` : ''}`;
     return 'Select source';
   }
+  selectedSourceIsArchived(): boolean {
+    const previous = this.store.transactions().find((item) => item.id === this.editingId());
+    return (
+      !!previous &&
+      previous.cardId === this.form.controls.cardId.value &&
+      this.store
+        .cards()
+        .some((card) => card.id === previous.cardId && card.archived && !card.deletedAt)
+    );
+  }
+  transactionAccountIdentifierLabel(suffix?: string): string {
+    return displayBankAccountSuffix(suffix);
+  }
   edit(transaction: CardTransaction): void {
+    if (this.saving()) return;
+    this.editorReturnFocus =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
     this.closeDetails();
     this.editingId.set(transaction.id);
     this.form.reset({
@@ -856,7 +1303,19 @@ export class TransactionsPage {
       categoryId: transaction.categoryId,
       merchant: transaction.merchant ?? '',
       notes: transaction.notes ?? '',
-      relatedTransactionId: transaction.relatedTransactionId ?? '',
+      relatedTransactionId:
+        transaction.relatedTransactionId ??
+        (transaction.type === 'ADJUSTMENT' ? transaction.splitGroupId : '') ??
+        '',
+      preserveLegacy:
+        transaction.type === 'ADJUSTMENT' &&
+        (transaction.adjustmentPurpose !== 'SPLIT_PAYMENT' || !transaction.splitGroupId),
+      unlinkConfirmed: false,
+      archivedSourceReassignmentConfirmedFor: '',
+      paymentMethod: transaction.paymentMethod ?? 'NONE',
+      paymentMethodDetail: transaction.paymentMethodDetail ?? '',
+      paymentMethodCustom: transaction.paymentMethodCustom ?? '',
+      smsAdditionalComment: transaction.smsAdditionalComment ?? '',
       taxIncluded: transaction.taxIncluded ?? false,
       taxAmount: transaction.taxMinor === undefined ? '' : String(transaction.taxMinor / 100),
       repeat: 'NONE',
@@ -867,20 +1326,24 @@ export class TransactionsPage {
           transaction,
         ) ?? '',
     });
+    this.payFromBankMode.set(
+      this.store
+        .paymentSources()
+        .some((source) => source.id === transaction.cardId && source.kind === 'DEBIT'),
+    );
     this.receiptPreviews.set(transaction.attachmentIds);
     this.receiptDraftDirty.set(false);
     this.showForm.set(true);
+    globalThis.setTimeout(() =>
+      this.transactionEditor()?.nativeElement.querySelector<HTMLElement>('button,input')?.focus(),
+    );
     this.closeMenus();
     globalThis.scrollTo?.({ top: 0, behavior: 'smooth' });
   }
   transactionTypeChanged(type: TransactionType): void {
-    if (type === 'REFUND' || type === 'CASHBACK') {
-      this.form.controls.categoryId.setValue('contra-expenses');
-    } else if (type === 'CREDIT' || type === 'PAYMENT') {
-      this.form.controls.categoryId.setValue('payment');
-    } else {
-      this.form.controls.categoryId.setValue('other');
-    }
+    if (this.form.controls.type.value !== type) this.form.controls.type.setValue(type);
+    this.form.controls.preserveLegacy.setValue(false);
+    this.form.controls.unlinkConfirmed.setValue(false);
     this.form.controls.relatedTransactionId.setValue('');
   }
 
@@ -903,16 +1366,13 @@ export class TransactionsPage {
         .sort((a, b) => b.transactionDate.localeCompare(a.transactionDate));
     }
     if (type === 'ADJUSTMENT') {
-      const previousDate = new Date(selectedDate);
-      previousDate.setDate(previousDate.getDate() - 1);
-      const previous = previousDate.toISOString().slice(0, 10);
-      const current = this.form.controls.transactionDate.value;
       return this.store
         .transactions()
         .filter(
           (item) =>
             item.id !== this.editingId() &&
-            (item.transactionDate === current || item.transactionDate === previous),
+            eligiblePaymentMember(item) &&
+            (item.type === 'PURCHASE' || !!item.splitGroupId),
         )
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     }
@@ -961,6 +1421,11 @@ export class TransactionsPage {
     return this.store
       .transactions()
       .filter((item) => item.splitGroupId === transaction.splitGroupId);
+  }
+  paymentGroupDetails(transaction: CardTransaction) {
+    return (this.store.paymentGroups?.() ?? []).find((group) =>
+      group.memberIds.includes(transaction.id),
+    );
   }
 
   emiPlan(transaction: CardTransaction): EmiPlan | null {
@@ -1046,7 +1511,12 @@ export class TransactionsPage {
   }
 
   canSplit(transaction: CardTransaction): boolean {
-    return !transaction.emiPlanId && !transaction.recurringRuleId && !transaction.splitGroupId;
+    return (
+      eligiblePaymentMember(transaction) &&
+      !transaction.emiPlanId &&
+      !transaction.recurringRuleId &&
+      !transaction.splitGroupId
+    );
   }
 
   canDuplicate(transaction: CardTransaction): boolean {
@@ -1067,7 +1537,8 @@ export class TransactionsPage {
     this.showEmiForm.set(true);
   }
 
-  saveEmi(transaction: CardTransaction): void {
+  async saveEmi(transaction: CardTransaction): Promise<void> {
+    if (this.saving()) return;
     this.emiForm.markAllAsTouched();
     if (this.emiForm.invalid) return;
     const card = this.store.cards().find((item) => item.id === transaction.cardId);
@@ -1105,9 +1576,27 @@ export class TransactionsPage {
       notes: value.notes.trim() || undefined,
       forFriendsOrRelatives: value.forFriendsOrRelatives,
     };
-    this.store.saveEmiPlan(plan, createEmiSchedule(plan, card));
+    this.saving.set(true);
+    let refreshWarning: string | null = null;
+    try {
+      await this.store.saveEmiPlan(plan, createEmiSchedule(plan, card));
+    } catch (error: unknown) {
+      if (error instanceof CommittedSaveRefreshError) refreshWarning = error.message;
+      else {
+        this.snackbar.show(
+          error instanceof Error ? error.message : 'Unable to save EMI plan.',
+          'WARNING',
+        );
+        return;
+      }
+    } finally {
+      this.saving.set(false);
+    }
     this.showEmiForm.set(false);
-    this.snackbar.show(`Converted into ${value.months} EMI installments.`);
+    this.snackbar.show(
+      refreshWarning ?? `Converted into ${value.months} EMI installments.`,
+      refreshWarning ? 'WARNING' : 'SUCCESS',
+    );
   }
 
   openSplit(transaction: CardTransaction): void {
@@ -1124,18 +1613,19 @@ export class TransactionsPage {
   }
 
   addSplitPart(): void {
-    if (this.splitForm.controls.parts.length < 4)
-      this.splitForm.controls.parts.push(this.createSplitPart());
+    this.splitForm.controls.parts.push(this.createSplitPart());
   }
 
   removeSplitPart(index: number): void {
     if (this.splitForm.controls.parts.length > 2) this.splitForm.controls.parts.removeAt(index);
   }
 
-  saveSplit(transaction: CardTransaction): void {
+  async saveSplit(transaction: CardTransaction): Promise<void> {
+    if (this.saving()) return;
     const parts = this.splitForm.controls.parts.controls.map((part) => ({
       sourceId: part.controls.sourceId.value,
       amountMinor: parseMoneyToMinor(part.controls.amount.value) ?? 0,
+      balanceTiming: part.controls.balanceTiming.value || undefined,
     }));
     if (parts.some((part) => !part.sourceId || part.amountMinor <= 0)) {
       this.snackbar.show('Choose a source and valid amount for every split.', 'WARNING');
@@ -1145,11 +1635,21 @@ export class TransactionsPage {
       this.snackbar.show('Split amounts must equal the original transaction total.', 'WARNING');
       return;
     }
-    const created = this.store.splitTransaction(transaction.id, parts);
-    if (!created.length) return;
-    this.detailTransactionId.set(created[0].id);
-    this.showSplitForm.set(false);
-    this.snackbar.show(`Transaction split into ${created.length} payments.`);
+    this.saving.set(true);
+    try {
+      const created = await this.store.splitTransaction(transaction.id, parts);
+      if (!created.length) return;
+      this.detailTransactionId.set(created[0].id);
+      this.showSplitForm.set(false);
+      this.snackbar.show(`Transaction split into ${created.length} payments.`);
+    } catch (error: unknown) {
+      this.snackbar.show(
+        error instanceof Error ? error.message : 'Unable to divide this payment.',
+        'WARNING',
+      );
+    } finally {
+      this.saving.set(false);
+    }
   }
   toggleActionMenu(event: MouseEvent, transactionId: string): void {
     event.stopPropagation();
@@ -1193,12 +1693,14 @@ export class TransactionsPage {
     });
   }
   closeOverlays(): void {
-    if (this.deleteTransferCandidate()) {
-      this.deleteTransferCandidate.set(null);
+    if (document.querySelector('app-select-picker dialog[open]')) return;
+    if (this.saving()) return;
+    if (this.filtersOpen()) {
+      this.closeFilterPopup();
       return;
     }
-    if (this.sourceFilterOpen()) {
-      this.sourceFilterOpen.set(false);
+    if (this.deleteTransferCandidate()) {
+      this.deleteTransferCandidate.set(null);
       return;
     }
     if (this.payFromOpen()) {
@@ -1233,6 +1735,10 @@ export class TransactionsPage {
       this.closeForm();
       return;
     }
+    if (this.combineOpen()) {
+      this.closeCombine();
+      return;
+    }
     this.closeMenus();
   }
   delete(transaction: CardTransaction): void {
@@ -1263,6 +1769,75 @@ export class TransactionsPage {
           (!term || this.transferTitle(transfer).toLocaleLowerCase().includes(term)),
       );
   });
+  openFilterPopup(): void {
+    this.filterDraft.set({
+      search: this.search(),
+      type: this.typeFilter(),
+      source: this.sourceFilter(),
+      category: this.categoryFilter(),
+      grouping: this.grouping(),
+      hideCredits: this.hideCredits(),
+      creditCardsOnly: this.creditCardsOnly(),
+    });
+    this.filtersOpen.set(true);
+  }
+  closeFilterPopup(): void {
+    this.filtersOpen.set(false);
+    this.filterDraft.set(null);
+  }
+  updateFilterDraft<K extends keyof TransactionFilterDraft>(
+    key: K,
+    value: TransactionFilterDraft[K],
+  ): void {
+    this.filterDraft.update((draft) => (draft ? { ...draft, [key]: value } : draft));
+  }
+  updateDraftType(value: string): void {
+    if (
+      value === 'ALL' ||
+      value === 'WITH_IMAGE' ||
+      this.types.some((item) => item.value === value)
+    )
+      this.updateFilterDraft('type', value as TransactionTypeFilter);
+  }
+  updateFilterDraftSource(source: string): void {
+    this.filterDraft.update((draft) => {
+      if (!draft) return draft;
+      const grouping = this.store.cards().some((card) => card.id === source)
+        ? 'STATEMENT'
+        : this.store.paymentSources().some((item) => item.id === source)
+          ? 'CYCLE'
+          : draft.grouping;
+      return { ...draft, source, grouping };
+    });
+  }
+  updateDraftGrouping(value: string): void {
+    if (value !== 'MONTH' && value !== 'CYCLE' && value !== 'STATEMENT') return;
+    this.updateFilterDraft('grouping', value);
+  }
+  clearFilterDraft(): void {
+    this.filterDraft.set({
+      search: '',
+      type: 'ALL',
+      source: 'ALL',
+      category: 'ALL',
+      grouping: 'MONTH',
+      hideCredits: false,
+      creditCardsOnly: false,
+    });
+  }
+  applyFilterDraft(): void {
+    const draft = this.filterDraft();
+    if (!draft) return;
+    this.search.set(draft.search);
+    this.typeFilter.set(draft.type);
+    this.sourceFilter.set(draft.source);
+    this.categoryFilter.set(draft.category);
+    this.grouping.set(draft.grouping);
+    this.hideCredits.set(draft.hideCredits);
+    this.creditCardsOnly.set(draft.creditCardsOnly);
+    this.closeFilterPopup();
+    this.resetVisibleTransactions();
+  }
   transferTitle(transfer: SourceTransfer): string {
     const to = transfer.toSourceId
       ? this.store.sourceDetail(transfer.toSourceId)
@@ -1297,6 +1872,8 @@ export class TransactionsPage {
   /** Readable kind: the payment source tells a bank purchase from a card purchase. */
   typeLabel(transaction: CardTransaction): string {
     if (transaction.emiPlanId) return 'EMI';
+    if (transaction.splitGroupId && eligiblePaymentMember(transaction))
+      return `${transactionLabel(transaction)} · Split payment member`;
     const source = this.store.paymentSources().find((item) => item.id === transaction.cardId);
     if (this.store.fundingFor(transaction.id)) return 'Credit-card settlement';
     if (source?.kind === 'DEBIT') {
@@ -1307,25 +1884,44 @@ export class TransactionsPage {
       if (transaction.type === 'PURCHASE') return 'Cash purchase';
       if (transaction.type === 'CREDIT') return 'Cash received';
     }
-    return transaction.type.replace('_', ' ');
+    return transactionLabel(transaction);
   }
   transactionTitle(transaction: CardTransaction): string {
-    const label = transaction.merchant || transaction.type.replace('_', ' ');
+    const label = transaction.merchant || transactionLabel(transaction);
     return transaction.bankName ? `${transaction.bankName} · ${label}` : label;
   }
-  confirmDelete(): void {
+  async confirmDelete(): Promise<void> {
     const transaction = this.deleteCandidate();
     if (!transaction) return;
-    this.store.deleteTransaction(transaction.id);
+    try {
+      await this.store.deleteRecordedTransaction(transaction.id);
+    } catch (error: unknown) {
+      this.snackbar.show(
+        error instanceof Error ? error.message : 'Unable to delete transaction.',
+        'WARNING',
+      );
+      return;
+    }
     if (this.detailTransactionId() === transaction.id) this.closeDetails();
     this.deleteCandidate.set(null);
     this.snackbar.show('Transaction deleted.', 'WARNING');
   }
-  duplicate(transaction: CardTransaction): void {
-    if (!this.canDuplicate(transaction)) return;
-    this.store.duplicateTransaction(transaction.id);
-    this.snackbar.show('Transaction duplicated.');
-    this.closeMenus();
+  async duplicate(transaction: CardTransaction): Promise<void> {
+    if (!this.canDuplicate(transaction) || this.saving()) return;
+    this.saving.set(true);
+    try {
+      const duplicate = await this.store.duplicateTransaction(transaction.id);
+      if (duplicate) this.snackbar.show('Transaction duplicated.');
+      this.closeMenus();
+    } catch (error: unknown) {
+      this.snackbar.show(
+        error instanceof Error ? error.message : 'Unable to duplicate transaction.',
+        'WARNING',
+      );
+      if (error instanceof CommittedSaveRefreshError) this.closeMenus();
+    } finally {
+      this.saving.set(false);
+    }
   }
   goToSource(transaction: CardTransaction): void {
     this.closeDetails();
@@ -1350,6 +1946,7 @@ export class TransactionsPage {
     this.typeFilter.set('ALL');
     this.sourceFilter.set('ALL');
     this.categoryFilter.set('ALL');
+    this.grouping.set('MONTH');
     this.hideCredits.set(false);
     this.creditCardsOnly.set(false);
     this.resetVisibleTransactions();
@@ -1425,7 +2022,8 @@ export class TransactionsPage {
     this.visibleLimit.set(TRANSACTION_PAGE_SIZE);
   }
 
-  save(): void {
+  async save(): Promise<void> {
+    if (this.saving()) return;
     this.form.markAllAsTouched();
     const amountMinor = parseMoneyToMinor(this.form.controls.amount.value);
     if (amountMinor === null || amountMinor <= 0) {
@@ -1447,15 +2045,66 @@ export class TransactionsPage {
       return;
     }
     const value = this.form.getRawValue();
+    if (
+      this.archivedSourceReassignment() &&
+      value.archivedSourceReassignmentConfirmedFor !== value.cardId
+    ) {
+      this.form.controls.archivedSourceReassignmentConfirmedFor.setErrors({ required: true });
+      this.snackbar.show(
+        'Confirm moving this transaction from its archived card before saving.',
+        'WARNING',
+      );
+      return;
+    }
+    if (value.type === 'ADJUSTMENT' && !value.preserveLegacy && !value.relatedTransactionId) {
+      this.form.controls.relatedTransactionId.setErrors({ required: true });
+      this.snackbar.show('Choose the related purchase or payment group.', 'WARNING');
+      return;
+    }
+    if (value.type === 'ADJUSTMENT' && !value.preserveLegacy && value.repeat !== 'NONE') {
+      this.snackbar.show(
+        'Each Split payment needs its own confirmed purchase relationship.',
+        'WARNING',
+      );
+      return;
+    }
     const timestamp = new Date().toISOString();
     const existing = this.store
       .transactions()
       .find((transaction) => transaction.id === this.editingId());
+    let annotation;
+    try {
+      annotation = validateSmsPaymentAnnotation(value, this.manualPaymentContext());
+    } catch (error: unknown) {
+      this.snackbar.show(
+        error instanceof Error ? error.message : 'Choose valid payment metadata.',
+        'WARNING',
+      );
+      return;
+    }
+    const newCardRecurrence =
+      !existing &&
+      value.repeat !== 'NONE' &&
+      this.store.cards().some((card) => card.id === value.cardId);
+    if (newCardRecurrence && !this.pendingCardRecurringIdentity)
+      this.pendingCardRecurringIdentity = {
+        transactionId: crypto.randomUUID(),
+        ruleId: crypto.randomUUID(),
+      };
     const recurringRuleId =
-      existing?.recurringRuleId ?? (value.repeat !== 'NONE' ? crypto.randomUUID() : undefined);
+      existing?.recurringRuleId ??
+      (value.repeat !== 'NONE'
+        ? newCardRecurrence
+          ? this.pendingCardRecurringIdentity!.ruleId
+          : crypto.randomUUID()
+        : undefined);
     const transaction: CardTransaction = {
       ...existing,
-      id: existing?.id ?? crypto.randomUUID(),
+      id:
+        existing?.id ??
+        (newCardRecurrence
+          ? this.pendingCardRecurringIdentity!.transactionId
+          : crypto.randomUUID()),
       cardId: value.cardId,
       type: value.type,
       amountMinor,
@@ -1464,6 +2113,8 @@ export class TransactionsPage {
       merchant: value.merchant.trim() || undefined,
       categoryId: value.categoryId,
       notes: value.notes.trim() || undefined,
+      ...annotation,
+      origin: existing ? existing.origin : 'MANUAL',
       relatedTransactionId: value.relatedTransactionId || undefined,
       taxIncluded: value.taxIncluded,
       taxMinor,
@@ -1476,28 +2127,76 @@ export class TransactionsPage {
       createdAt: existing?.createdAt ?? timestamp,
       updatedAt: timestamp,
     };
-    if (existing) this.store.updateTransaction(transaction);
-    else this.store.addTransaction(transaction);
-
-    if (!existing && value.repeat !== 'NONE') {
-      const occurrenceLimit = value.repeat === 'INFINITE' ? undefined : Number(value.repeat);
-      this.store.addRecurringRule({
-        id: recurringRuleId!,
-        cardId: value.cardId,
-        title: value.merchant.trim() || value.type.replace('_', ' '),
-        amountMinor,
-        categoryId: value.categoryId,
-        transactionType: value.type,
-        frequency: 'MONTHLY',
-        startDate: value.transactionDate,
-        occurrenceLimit,
-        nextOccurrenceDate: this.nextMonthlyOccurrence(value.transactionDate),
-        status: 'ACTIVE',
-      });
+    transaction.notes = composeSmsApprovalNotes({
+      existingNotes: value.notes,
+      previousAnnotation: existing,
+      annotation,
+      newlyApprovedSms: false,
+      preserveSmsMarker: existing?.origin === 'SMS',
+    });
+    const recurringRule: RecurringRule | undefined =
+      !existing && value.repeat !== 'NONE'
+        ? {
+            id: recurringRuleId!,
+            cardId: value.cardId,
+            title: value.merchant.trim() || value.type.replace('_', ' '),
+            amountMinor,
+            categoryId: value.categoryId,
+            transactionType: value.type,
+            frequency: 'MONTHLY',
+            startDate: value.transactionDate,
+            occurrenceLimit: value.repeat === 'INFINITE' ? undefined : Number(value.repeat),
+            nextOccurrenceDate: this.nextMonthlyOccurrence(
+              value.transactionDate,
+              !this.store.cards().some((card) => card.id === value.cardId),
+            ),
+            status: 'ACTIVE',
+          }
+        : undefined;
+    const persistedCardRecurrence =
+      !!recurringRule && this.store.cards().some((card) => card.id === value.cardId);
+    this.saving.set(true);
+    let refreshWarning: string | null = null;
+    try {
+      try {
+        await this.store.saveManualTransaction(
+          transaction,
+          value.type === 'ADJUSTMENT' && !value.preserveLegacy ? value.relatedTransactionId : '',
+          value.unlinkConfirmed,
+          persistedCardRecurrence ? recurringRule : undefined,
+          value.archivedSourceReassignmentConfirmedFor,
+        );
+      } catch (error: unknown) {
+        if (error instanceof CommittedSaveRefreshError) refreshWarning = error.message;
+        else {
+          this.snackbar.show(
+            error instanceof Error ? error.message : 'Unable to save payment.',
+            'WARNING',
+          );
+          return;
+        }
+      }
+      if (recurringRule && persistedCardRecurrence) {
+        try {
+          await this.store.materializeRecurringTransactions(undefined, recurringRule.id);
+        } catch (error: unknown) {
+          refreshWarning =
+            error instanceof CommittedSaveRefreshError
+              ? error.message
+              : 'Transaction and recurring schedule saved, but catch-up is incomplete. Reopen CardNest to retry due occurrences; do not enter the original transaction again.';
+        }
+      } else if (recurringRule) {
+        this.saving.set(false);
+        await this.store.addRecurringRule(recurringRule);
+      }
+      this.resetForm(value.cardId);
+      this.saving.set(false);
+      this.closeForm();
+      if (refreshWarning) this.snackbar.show(refreshWarning, 'WARNING');
+      else this.snackbar.show(existing ? 'Transaction updated.' : 'Transaction added.');
+    } finally {
+      this.saving.set(false);
     }
-    this.resetForm(value.cardId);
-    this.closeForm();
-    this.snackbar.show(existing ? 'Transaction updated.' : 'Transaction added.');
   }
 
   private periodFor(transaction: CardTransaction): { key: string; label: string } {
@@ -1576,30 +2275,49 @@ export class TransactionsPage {
   }
 
   private defaultSourceId(): string {
-    return (
-      this.requestedSourceId ??
-      this.store.activeCards()[0]?.id ??
-      this.store.activePaymentSources()[0]?.id ??
-      ''
-    );
+    if (this.requestedSourceId) {
+      const card = this.store.cards().find((item) => item.id === this.requestedSourceId);
+      if (card) return card.archived || card.deletedAt ? '' : card.id;
+      const source = this.store.paymentSources().find((item) => item.id === this.requestedSourceId);
+      return source && !source.archived ? source.id : '';
+    }
+    const firstCardId = this.store.activeCards()[0]?.id;
+    if (firstCardId) return firstCardId;
+    const sources = this.store.activePaymentSources();
+    if (sources.filter((source) => source.kind === 'DEBIT').length > 1) return '';
+    return sources[0]?.id ?? '';
   }
 
   private resetForm(sourceId: string): void {
+    this.pendingCardRecurringIdentity = null;
+    this.categoryOverridden.set(false);
     this.receiptPreviews.set([]);
     this.receiptDraftDirty.set(false);
     this.form.reset({
       cardId: sourceId,
       type: 'PURCHASE',
       amount: '',
-      transactionDate: indiaTodayIso(),
+      transactionDate: this.calendarClock.calendar().dateIso,
       categoryId: 'other',
       merchant: '',
       notes: '',
       relatedTransactionId: '',
+      preserveLegacy: false,
+      unlinkConfirmed: false,
+      archivedSourceReassignmentConfirmedFor: '',
+      paymentMethod: 'NONE',
+      paymentMethodDetail: '',
+      paymentMethodCustom: '',
+      smsAdditionalComment: '',
       taxIncluded: false,
       taxAmount: '',
       repeat: 'NONE',
     });
+    this.payFromBankMode.set(
+      this.store
+        .paymentSources()
+        .some((source) => source.id === sourceId && source.kind === 'DEBIT'),
+    );
   }
 
   private hasUnsavedDraft(): boolean {
@@ -1613,6 +2331,7 @@ export class TransactionsPage {
         nonNullable: true,
         validators: [Validators.required],
       }),
+      balanceTiming: new FormControl<BalanceTiming | ''>('', { nonNullable: true }),
     });
   }
 
@@ -1622,13 +2341,28 @@ export class TransactionsPage {
     customStart: string,
   ): string | null {
     if (mode === 'CUSTOM') return /^\d{4}-\d{2}$/.test(customStart) ? `${customStart}-01` : null;
-    const date = new Date(`${transactionDate}T12:00:00`);
-    date.setDate(1);
-    if (mode === 'NEXT_MONTH') date.setMonth(date.getMonth() + 1);
+    const date = new Date(`${transactionDate}T12:00:00Z`);
+    date.setUTCDate(1);
+    if (mode === 'NEXT_MONTH') date.setUTCMonth(date.getUTCMonth() + 1);
     return date.toISOString().slice(0, 10);
   }
 
-  private nextMonthlyOccurrence(dateValue: string): string {
+  private nextMonthlyOccurrence(dateValue: string, legacyNonCard = false): string {
+    if (legacyNonCard) return this.nextNonCardMonthlyOccurrence(dateValue);
+    const date = new Date(`${dateValue}T12:00:00Z`);
+    const anchorDay = date.getUTCDate();
+    date.setUTCDate(1);
+    date.setUTCMonth(date.getUTCMonth() + 1);
+    date.setUTCDate(
+      Math.min(
+        anchorDay,
+        new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate(),
+      ),
+    );
+    return date.toISOString().slice(0, 10);
+  }
+  private nextNonCardMonthlyOccurrence(dateValue: string): string {
+    // Preserve the deferred non-card path rather than changing its schedule dates here.
     const date = new Date(`${dateValue}T12:00:00`);
     const anchorDay = date.getDate();
     date.setDate(1);

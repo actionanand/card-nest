@@ -134,11 +134,11 @@
       </div>
       @if (byCategory().length) {
         <app-report-chart
-          kind="doughnut"
+          kind="bar"
           [labels]="categoryLabels()"
           [values]="categoryValues()"
           [colours]="categoryColours()"
-          accessibleLabel="Doughnut chart showing spending by category"
+          accessibleLabel="Signed net spending by category, including refunds and legacy adjustments"
         />
         <ul class="chart-legend" aria-label="Category spending breakdown">
           @for (item of byCategory(); track item.id) {

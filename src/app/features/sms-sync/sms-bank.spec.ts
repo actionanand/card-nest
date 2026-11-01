@@ -99,6 +99,75 @@ describe('Bank/UPI review model', () => {
     expect(bankSourceConflict(evidence(), sources[2])).toContain('bank differs');
     expect(bankSourceConflict(evidence(), sources[0])).toBe('');
   });
+  it('uses suffix-only SMS suggestions for unrecognized bank names but preserves known-bank conflicts', () => {
+    const unknownIssuer = evidence({ issuer: 'Unrecognized issuer' });
+    expect(matchingBankAccounts(unknownIssuer, sources).map((source) => source.id)).toEqual([
+      'icici',
+      'other-bank',
+    ]);
+    expect(suggestedBankSources(unknownIssuer, sources, on)).toEqual([]);
+    expect(bankSourceConflict(unknownIssuer, sources[2])).toBe('');
+    expect(bankSourceConflict(evidence(), sources[2])).toContain('bank differs');
+  });
+  it.each([
+    ['Canara', 'Citibank'],
+    ['Citi', 'City Union Bank'],
+    ['Indian Bank', 'Indian Overseas Bank'],
+    ['IOB', 'Indian Bank'],
+  ])('rejects shared-suffix cross-bank matches for %s versus %s', (issuer, institution) => {
+    const saved = account({ institution, lastDigits: '417' });
+    expect(matchingBankAccounts(evidence({ issuer }), [saved])).toEqual([]);
+    expect(bankSourceConflict(evidence({ issuer }), saved)).toContain('bank differs');
+  });
+  it('uses registry abbreviations while keeping missing and ambiguous identities unproven', () => {
+    const saved = account({ institution: 'State Bank of India', lastDigits: '417' });
+    expect(suggestedBankSources(evidence({ issuer: 'SBI' }), [saved], on)).toEqual([saved.id]);
+    expect(
+      matchingBankAccounts(evidence({ issuer: 'SBI', accountDigits: undefined }), [saved]),
+    ).toEqual([]);
+    expect(
+      suggestedBankSources(evidence({ issuer: 'SBI' }), [saved, { ...saved, id: 'second' }], on),
+    ).toEqual([]);
+    expect(
+      suggestedBankSources(
+        evidence({ issuer: 'SBI' }),
+        [saved, { ...saved, id: 'archived', archived: true }],
+        on,
+      ),
+    ).toEqual([]);
+    expect(ledgerType(evidence({ issuer: 'SBI' }))).toBeUndefined();
+  });
+  it('rejects shared-suffix suggestions for Yes Bank, IndusInd and explicit regional bank conflicts', () => {
+    const hdfc = account({ id: 'hdfc', institution: 'HDFC Bank', lastDigits: '417' });
+    const icici = account({ id: 'icici', institution: 'ICICI Bank', lastDigits: '417' });
+    const yesAccount = account({ id: 'yes', institution: 'Yes Bank', lastDigits: '417' });
+    const indusAccount = account({ id: 'indus', institution: 'IndusInd Bank', lastDigits: '417' });
+    expect(normalizedIssuer('YES BANK')).toBe('yes');
+    expect(bankDisplayName('yesbank')).toBe('Yes Bank');
+    expect(matchingBankAccounts(evidence({ issuer: 'Yes Bank' }), [hdfc])).toEqual([]);
+    expect(suggestedBankSources(evidence({ issuer: 'Yes Bank' }), [hdfc], on)).toEqual([]);
+    expect(matchingBankAccounts(evidence({ issuer: 'IndusInd Bank' }), [icici])).toEqual([]);
+    expect(suggestedBankSources(evidence({ issuer: 'IndusInd Bank' }), [icici], on)).toEqual([]);
+    expect(matchingBankAccounts(evidence({ issuer: 'HDFC Bank' }), [yesAccount])).toEqual([]);
+    expect(matchingBankAccounts(evidence({ issuer: 'Some Regional Bank' }), [icici])).toEqual([]);
+    expect(
+      matchingBankAccounts(evidence({ issuer: undefined }), [yesAccount, indusAccount]),
+    ).toHaveLength(2);
+  });
+  it('does not auto-suggest an active SMS source when an archived account shares its suffix', () => {
+    const active = account({ id: 'active', institution: 'ICICI Bank', lastDigits: '417' });
+    const archived = account({
+      id: 'archived',
+      institution: 'Unrecognized issuer',
+      lastDigits: '00417',
+      archived: true,
+    });
+    const unknownIssuer = evidence({ issuer: undefined });
+    expect(
+      matchingBankAccounts(unknownIssuer, [active, archived]).map((source) => source.id),
+    ).toEqual(['active']);
+    expect(suggestedBankSources(unknownIssuer, [active, archived], on)).toEqual([]);
+  });
 
   it('matches HSBC bank repayment and card-purchase evidence without defaulting repayment to spending', () => {
     const hsbcAccount = account({
@@ -176,16 +245,16 @@ describe('Bank/UPI review model', () => {
     ).toEqual([]);
     expect(bankExistingSuggestions(evidence(), 'CREDIT', 'icici', [manual])).toEqual([]);
     const categories = [
-      { id: 'groceries', archived: false, appliesTo: 'BOTH' as const },
+      { id: 'meat-dairy', archived: false, appliesTo: 'BOTH' as const },
       { id: 'dining', archived: false, appliesTo: 'BOTH' as const },
       { id: 'income', archived: false, appliesTo: 'CREDIT' as const },
       { id: 'other', archived: false, appliesTo: 'BOTH' as const },
     ];
-    expect(defaultBankCategory('PURCHASE', 'HILL FARM MEATS', categories)).toBe('groceries');
+    expect(defaultBankCategory('PURCHASE', 'HILL FARM MEATS', categories)).toBe('meat-dairy');
     expect(defaultBankCategory('PURCHASE', 'COFFEE STALL', categories)).toBe('dining');
     expect(defaultBankCategory('PURCHASE', 'HOME RENT PORTAL', categories)).toBe('other');
     expect(defaultBankCategory('INCOME', 'JAMIE RIVERS', categories)).toBe('income');
-    expect(defaultBankCategory('INCOME', undefined, [])).toBe('other');
+    expect(() => defaultBankCategory('INCOME', undefined, [])).toThrow('Category integrity error');
   });
 
   it('validates bank evidence fields', () => {

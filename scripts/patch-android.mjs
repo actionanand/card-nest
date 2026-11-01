@@ -815,8 +815,8 @@ public class MainActivity extends BridgeActivity {
     }
 
     private void openWhatsAppUrl(String number, String message, String packageName) {
-      String digits = number == null ? "" : number.replaceAll("[^0-9]", "");
-      if (!digits.matches("91[6-9][0-9]{9}")) return;
+      String digits = number == null ? "" : number;
+      if (!digits.matches("91[6-9][0-9]{9}") && !digits.matches("[1-9][0-9]{6,14}")) return;
       String safeMessage = message == null ? "" : message.substring(0, Math.min(message.length(), 500));
       Uri uri = Uri.parse("https://wa.me/" + digits +
         (safeMessage.isEmpty() ? "" : "?text=" + Uri.encode(safeMessage)));

@@ -5,6 +5,7 @@ import { ExportDocument } from '../models/export';
 import { CardNestStore } from './card-nest-store';
 import { ExportService } from './export.service';
 import { SnackbarService } from './snackbar.service';
+import { formatMoney } from './money';
 
 /** Fictional accounts and amounts only. */
 describe('ExportService own-account movements', () => {
@@ -104,6 +105,67 @@ describe('ExportService own-account movements', () => {
   });
 
   const may = { range: { startDate: '2026-05-01', endDate: '2026-05-31' } };
+  it('exports signed legacy adjustments and grouping IDs while counting only actual merchant spending in statistics', () => {
+    const entry = (
+      id: string,
+      type: CardTransaction['type'],
+      amountMinor: number,
+      extra: Partial<CardTransaction> = {},
+    ): CardTransaction => ({
+      ...payment,
+      id,
+      type,
+      amountMinor,
+      transactionDate: '2026-05-10',
+      merchant: id,
+      categoryId: 'other',
+      ...extra,
+    });
+    const entries = [
+      entry('purchase', 'PURCHASE', 20000),
+      entry('split', 'ADJUSTMENT', 2000, {
+        adjustmentPurpose: 'SPLIT_PAYMENT',
+        splitGroupId: 'logical-group',
+      }),
+      entry('legacy-decreasing', 'ADJUSTMENT', 1000, {
+        adjustmentDirection: 'DECREASE',
+        adjustmentPurpose: 'LEGACY_MANUAL',
+      }),
+      entry('fee', 'FEE', 100),
+      entry('interest', 'INTEREST', 200),
+      entry('refund', 'REFUND', 500),
+      entry('cashback', 'CASHBACK', 100),
+      entry('ordinary-credit', 'CREDIT', 9000),
+      entry('repayment', 'PAYMENT', 9000),
+      entry('verified-correction', 'ADJUSTMENT', 88888, {
+        adjustmentPurpose: 'BALANCE_RECONCILIATION',
+      }),
+    ];
+    TestBed.inject(CardNestStore).transactions.set(entries);
+    service.exportStatistics('ALL', {
+      key: '2026-05',
+      label: 'May 2026',
+      startDate: '2026-05-01',
+      endDate: '2026-05-31',
+      offset: 0,
+    });
+    const report = pdf.mock.calls[0][0] as ExportDocument;
+    expect(report.summary.find((item) => item.label === 'Expense')?.value).toBe(
+      formatMoney(20700, 'INR'),
+    );
+    service.exportTransactionSelection('CSV', entries, 'May 2026', '2026-05', may);
+    const content = String(csv.mock.calls[0][0]);
+    expect(content).toContain('"Payment group ID"');
+    expect(content).toContain('logical-group');
+    const legacyRow = content.split('\r\n').find((line) => line.includes('legacy-decreasing'))!;
+    expect(legacyRow).toContain('"Credit"');
+    expect(legacyRow).toContain('Legacy adjustment');
+    service.exportTransactionSelection('PDF', entries, 'May 2026', '2026-05', may);
+    const statement = pdf.mock.calls[1][0] as ExportDocument;
+    expect(statement.summary.find((item) => item.label === 'Net merchant spending')?.value).toBe(
+      formatMoney(20700, 'INR'),
+    );
+  });
 
   it('exports a transfers-only month by its range and source filter, each movement once', () => {
     service.exportTransactionSelection('CSV', [], 'May 2026', '2026-05', {

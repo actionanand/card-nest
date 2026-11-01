@@ -10,7 +10,7 @@ import { DatabaseSession, SqliteDatabase } from '../../core/data/sqlite-database
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { AppLockService } from '../../core/services/app-lock.service';
 import { CardTransaction, CreditCard, PaymentSource } from '../../core/models/domain';
-import { SmsReviewService } from './sms-review.service';
+import { SmsReviewFilterRefreshError, SmsReviewService } from './sms-review.service';
 import { defaultReviewFilters, SMS_REVIEW_FILTERS_KEY } from './sms-review-filters';
 import { matchExisting } from './sms-matching';
 import {
@@ -196,6 +196,31 @@ describe('SMS approved import integrity', () => {
       state: 'REJECTED',
       decision: 'newer choice',
     });
+  });
+  it('stores only masked hints and final-three digits for primary and counterparty SMS identifiers', async () => {
+    const primary = '4321234567890417';
+    const counterparty = '7650987654321007';
+    const stageEvidence = service as unknown as {
+      stage(items: readonly SmsEvidence[]): Promise<void>;
+    };
+
+    await stageEvidence.stage([
+      evidence({
+        accountDigits: primary,
+        counterpartyAccountDigits: counterparty,
+      }),
+    ]);
+
+    const payload = rows<{ payload: string }>('SELECT payload FROM sms_candidates')[0].payload;
+    const saved = JSON.parse(payload) as SmsEvidence;
+    expect(saved).toMatchObject({
+      accountDigits: '417',
+      accountMask: '432••••••••••417',
+      counterpartyAccountDigits: '007',
+      counterpartyAccountMask: '765••••••••••007',
+    });
+    expect(payload).not.toContain(primary);
+    expect(payload).not.toContain(counterparty);
   });
   it('isolates rapid Undo tokens, preserves newer read actions, and expires dismissal Undo after seven seconds', async () => {
     const first = stage(evidence());
@@ -614,6 +639,65 @@ describe('SMS approved import integrity', () => {
     expect(count('sms_reconciliation')).toBe(1);
     expect(count('card_transactions')).toBe(1);
   });
+  it('rejects a new archived-card import but preserves explicit historical matching', async () => {
+    const archived = { ...card, archived: true, archivedAt: '2026-10-19T00:00:00Z' };
+    store.cards.set([archived]);
+    try {
+      const candidate = stage(evidence({ issuer: 'AMEX', cardDigits: '54321' }));
+      expect(eligibleSources(candidate.item!, [archived], [])).toEqual([card.id]);
+      await expect(service.approve(candidate, card.id, 45000, 'Synthetic')).rejects.toThrow(
+        'archived',
+      );
+      expect(count('card_transactions')).toBe(0);
+      const existing = manual({
+        cardId: card.id,
+        amountMinor: 45000,
+        transactionDate: '2026-10-18',
+      });
+      await service.approve(candidate, card.id, 45000, 'Synthetic', existing.id);
+      expect(count('card_transactions')).toBe(1);
+      expect(rows('SELECT state,transaction_id FROM sms_candidates')[0]).toEqual({
+        state: 'MATCHED_EXISTING',
+        transaction_id: existing.id,
+      });
+      await service.approve(candidate, card.id, 45000, 'Synthetic', existing.id);
+      expect(count('card_transactions')).toBe(1);
+    } finally {
+      store.cards.set([card]);
+    }
+  });
+  it.each(['PLUXEE_PURCHASE', 'FASTAG_TOLL'] as const)(
+    'rejects archived wallet approval for %s',
+    async (kind) => {
+      const wallet: PaymentSource = {
+        id: 'archived-wallet',
+        kind: kind === 'PLUXEE_PURCHASE' ? 'MEAL' : 'FASTAG',
+        nickname: 'Pluxee',
+        institution: 'Pluxee',
+        lastDigits: '8765',
+        vehicleNumber: 'KA01AB1234',
+        archived: true,
+        noLimit: false,
+        autoLoad: false,
+        balanceMinor: 90000,
+      };
+      sources.set([wallet]);
+      run('INSERT INTO app_preferences VALUES(?,?)', ['payment_sources', JSON.stringify([wallet])]);
+      const candidate = stage(
+        evidence({
+          kind,
+          issuer: kind === 'PLUXEE_PURCHASE' ? 'Pluxee' : undefined,
+          cardDigits: '8765',
+          vehicleNumber: 'KA01AB1234',
+        }),
+      );
+      await expect(service.approve(candidate, wallet.id, 45000, 'Synthetic')).rejects.toThrow(
+        'archived',
+      );
+      expect(count('card_transactions')).toBe(0);
+      expect(sources()[0].balanceMinor).toBe(90000);
+    },
+  );
   it('does not arbitrarily assign one manual purchase between two competing SMS events in the same batch', async () => {
     verifiedManual();
     stage(confident());
@@ -1168,6 +1252,24 @@ describe('SMS approved import integrity', () => {
       read: 'ALL',
       sortOrder: 'TRANSACTION_DESC',
     });
+  });
+  it('distinguishes a saved filter preference from a subsequent inbox refresh failure', async () => {
+    realRefresh();
+    await service.filterReview({ ...defaultReviewFilters(), search: 'previous filter' });
+    const refresh = vi
+      .spyOn(service, 'refresh')
+      .mockRejectedValueOnce(new Error('Synthetic inbox query failure'));
+
+    await expect(service.filterReview(defaultReviewFilters())).rejects.toBeInstanceOf(
+      SmsReviewFilterRefreshError,
+    );
+    const [saved] = rows<{ encrypted_value: string }>(
+      'SELECT encrypted_value FROM app_preferences WHERE key=?',
+      [SMS_REVIEW_FILTERS_KEY],
+    );
+    expect(JSON.parse(saved.encrypted_value)).toEqual(defaultReviewFilters());
+    expect(await service.loadReviewFilters()).toEqual(defaultReviewFilters());
+    refresh.mockRestore();
   });
   it('falls back safely for malformed or invalid restored filter values', async () => {
     run('INSERT INTO app_preferences VALUES(?,?)', [SMS_REVIEW_FILTERS_KEY, 'broken JSON']);
@@ -2446,6 +2548,78 @@ describe('SMS approved import integrity', () => {
       expect(count('card_transactions')).toBe(2);
     },
   );
+  it.each([
+    ['deleted', "DELETE FROM categories WHERE id='dining'"],
+    ['archived', "UPDATE categories SET archived=1 WHERE id='dining'"],
+    ['incompatible', "UPDATE categories SET applies_to='CREDIT' WHERE id='dining'"],
+  ])(
+    're-resolves an automatic card category when it becomes %s before approval',
+    async (_label, sql) => {
+      const candidate = stage(evidence({ merchant: 'Swiggy' }));
+      run(sql);
+
+      await service.approve(
+        candidate,
+        card.id,
+        candidate.item!.amountMinor,
+        'Swiggy',
+        '',
+        'PENDING',
+        false,
+        '',
+        0,
+        {
+          transactionDate: candidate.item!.eventDate,
+          categoryId: 'dining',
+          categoryOverridden: false,
+        },
+      );
+      expect(transactions()[0].categoryId).toBe('other');
+    },
+  );
+  it('rejects a stale explicit card category and keeps a valid explicit category unchanged', async () => {
+    const invalid = stage(evidence({ merchant: 'Swiggy' }));
+    run("DELETE FROM categories WHERE id='dining'");
+    await expect(
+      service.approve(
+        invalid,
+        card.id,
+        invalid.item!.amountMinor,
+        'Swiggy',
+        '',
+        'PENDING',
+        false,
+        '',
+        0,
+        {
+          transactionDate: invalid.item!.eventDate,
+          categoryId: 'dining',
+          categoryOverridden: true,
+        },
+      ),
+    ).rejects.toThrow('selected category is unavailable or incompatible');
+    expect(count('card_transactions')).toBe(0);
+
+    const valid = stage(evidence({ id: 'b'.repeat(64), merchant: 'Swiggy' }));
+    await service.approve(
+      valid,
+      card.id,
+      valid.item!.amountMinor,
+      'Swiggy',
+      '',
+      'PENDING',
+      false,
+      '',
+      0,
+      {
+        transactionDate: valid.item!.eventDate,
+        categoryId: 'groceries',
+        categoryOverridden: true,
+      },
+    );
+    expect(transactions()[0].categoryId).toBe('groceries');
+    expect(count('card_transactions')).toBe(1);
+  });
   it('allows a guarded one-time baseline repair for an already approved Pluxee top-up', async () => {
     const wallet: PaymentSource = {
       id: 'pluxee-6423',

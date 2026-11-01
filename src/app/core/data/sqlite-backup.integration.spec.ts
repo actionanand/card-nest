@@ -5,6 +5,7 @@ import { CapacitorSQLite } from '@capacitor-community/sqlite';
 import { SqliteDatabase } from './sqlite-database';
 import { DATABASE_MIGRATIONS } from './migrations';
 import { CardNestStore } from '../services/card-nest-store';
+import { CardTransaction } from '../models/domain';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
@@ -30,6 +31,7 @@ import {
 } from '../../features/utilities/utilities.service';
 import { BankActivityService } from '../../features/bank-activity/bank-activity.service';
 import { addCalendarDays } from '../../features/utilities/utilities-calculations';
+import { CATEGORY_REGISTRY } from './category-definitions';
 
 const { DatabaseSync } = process.getBuiltinModule('node:sqlite') as typeof import('node:sqlite');
 
@@ -93,6 +95,117 @@ describe('Durable first-run data, additive read migration and private portable b
       await store.initialisePreferences();
       expect(store.showTransactionTime()).toBe(false);
       expect(store.smsSwipeActionsEnabled()).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+  it('restores audited additive and replacement balances without financial transaction effects', async () => {
+    await database.initialise();
+    const store = TestBed.inject(CardNestStore);
+    await store.initialisePreferences();
+    const bank = await store.addBankAccount({ institution: 'ICICI Bank', lastDigits: '419' });
+    await store.enableBankTracking({ [bank.id]: 50000 });
+    await store.enableCashTracking(25000);
+    const meal = store.paymentSources().find((source) => source.kind === 'MEAL')!;
+    await store.setSourceBalance(meal.id, 30000, 'Initial wallet balance');
+    await store.addSourceBalance(bank.id, 5000, 'Bank add');
+    await store.addSourceBalance('source-cash', 2000, 'Cash add');
+    await store.addSourceBalance(meal.id, 4000, 'Meal add');
+    await store.setSourceBalance('source-cash', 31000, 'Cash correction');
+
+    const transactions = rows('SELECT * FROM card_transactions ORDER BY id');
+    const adjustments = rows('SELECT * FROM source_balance_adjustments ORDER BY id');
+    const balances = store.paymentSources().map(({ id, balanceMinor }) => [id, balanceMinor]);
+    vi.stubGlobal('crypto', webcrypto);
+    vi.stubGlobal('Blob', NodeBlob);
+    try {
+      const backups = TestBed.inject(BackupService);
+      const backup = await backups.create('synthetic-balance-passphrase');
+      await store.addSourceBalance(bank.id, 9000, 'Temporary post-backup add');
+      await store.setSourceBalance('source-cash', 1, 'Temporary post-backup set');
+      await backups.restore(backup.contents, 'synthetic-balance-passphrase');
+      await store.initialisePreferences();
+      expect(rows('SELECT * FROM source_balance_adjustments ORDER BY id')).toEqual(adjustments);
+      expect(rows('SELECT * FROM card_transactions ORDER BY id')).toEqual(transactions);
+      expect(store.paymentSources().map(({ id, balanceMinor }) => [id, balanceMinor])).toEqual(
+        balances,
+      );
+      expect(store.balanceAdjustments().some((item) => item.note?.includes('Temporary'))).toBe(
+        false,
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+  it('restores reset category definitions and preserves custom IDs, budgets and transaction references in backup', async () => {
+    await database.initialise();
+    const store = TestBed.inject(CardNestStore);
+    await store.initialisePreferences();
+    const dining = store.categories().find((category) => category.id === 'dining')!;
+    await store.updateCategory({
+      ...dining,
+      name: 'My Dining',
+      icon: 'film',
+      colour: '#123456',
+      archived: true,
+    });
+    await store.setCategoryLimit('dining', 12500, true);
+    await store.addCategory({
+      id: 'backup-custom-category',
+      name: 'Backup Custom',
+      icon: 'tag',
+      colour: '#456789',
+      appliesTo: 'BOTH',
+      archived: false,
+    });
+    const transaction: CardTransaction = {
+      id: 'backup-category-reset-transaction',
+      cardId: 'source-cash',
+      type: 'PURCHASE',
+      amountMinor: 2300,
+      currencyCode: 'INR',
+      transactionDate: indiaTodayIso(),
+      categoryId: 'dining',
+      attachmentIds: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    await store.saveManualTransaction(transaction);
+    await store.deleteCategory('education');
+    await store.resetDefaultCategories();
+    await store.resetDefaultCategories();
+    const expectedTransactions = rows('SELECT * FROM card_transactions ORDER BY id');
+    const expectedLimits = rows('SELECT * FROM category_limits ORDER BY category_id');
+
+    vi.stubGlobal('crypto', webcrypto);
+    vi.stubGlobal('Blob', NodeBlob);
+    try {
+      const backups = TestBed.inject(BackupService);
+      const backup = await backups.create('synthetic-category-reset-passphrase');
+      await store.deleteCategory('wealth-assets');
+      await store.setCategoryLimit('dining', 100, false);
+      await backups.restore(backup.contents, 'synthetic-category-reset-passphrase');
+      const restored = TestBed.runInInjectionContext(() => new CardNestStore());
+      await restored.initialisePreferences();
+
+      expect(
+        restored
+          .categories()
+          .filter((category) =>
+            CATEGORY_REGISTRY.categories.some((definition) => definition.id === category.id),
+          ),
+      ).toHaveLength(24);
+      expect(restored.categories().find((category) => category.id === 'dining')).toMatchObject({
+        name: 'Dining',
+        archived: false,
+        monthlyLimitMinor: 12500,
+        showLimit: true,
+      });
+      expect(
+        restored.categories().find((category) => category.id === 'backup-custom-category'),
+      ).toMatchObject({ name: 'Backup Custom', colour: '#456789' });
+      expect(rows('SELECT * FROM card_transactions ORDER BY id')).toEqual(expectedTransactions);
+      expect(rows('SELECT * FROM category_limits ORDER BY category_id')).toEqual(expectedLimits);
     } finally {
       vi.unstubAllGlobals();
     }
@@ -336,6 +449,509 @@ describe('Durable first-run data, additive read migration and private portable b
     }
   });
 
+  it.each([false, true])(
+    'atomically deletes a mobile profile and its recharges (archived=%s) without touching other data',
+    async (archived) => {
+      await database.initialise();
+      const store = TestBed.inject(CardNestStore);
+      await store.initialisePreferences();
+      const utilities = TestBed.inject(UtilitiesService);
+      await utilities.initialise();
+      const profile = await utilities.saveMobileProfile({
+        personName: 'Deletion target',
+        subscriptionType: 'PREPAID',
+        operator: 'JIO',
+      });
+      const other = await utilities.saveMobileProfile({
+        personName: 'Keep mobile',
+        subscriptionType: 'POSTPAID',
+        operator: 'AIRTEL',
+      });
+      for (const profileId of [profile.id, profile.id, other.id])
+        await utilities.saveRecharge({
+          profileId,
+          planType: 'VOICE_DATA',
+          startDate: '2026-10-01',
+          validityDays: 30,
+        });
+      const lpg = await utilities.saveLpgProfile({
+        connectionName: 'Keep LPG',
+        provider: 'INDANE',
+        commercial: false,
+        cylinderSize: 'NORMAL',
+        estimatedUsageDays: 25,
+      });
+      await utilities.saveLpgEvent({
+        profileId: lpg.id,
+        eventType: 'STARTED',
+        eventDate: '2026-10-01',
+      });
+      await store.addBankAccount({
+        nickname: 'Keep bank',
+        institution: 'Synthetic Bank',
+        lastDigits: '007',
+      });
+      await store.saveManualTransaction({
+        id: 'keep-c1-purchase',
+        cardId: 'source-cash',
+        type: 'PURCHASE',
+        amountMinor: 12345,
+        currencyCode: 'INR',
+        transactionDate: indiaTodayIso(),
+        categoryId: 'other',
+        attachmentIds: [],
+        createdAt: '2026-10-01T12:00:00Z',
+        updatedAt: '2026-10-01T12:00:00Z',
+      });
+      await database.run(
+        "INSERT INTO sms_candidates(id,provider_id,event_at,kind,state,payload,updated_at) VALUES('keep-c1-sms','synthetic','2026-10-01','BANK_DEBIT','PENDING','{}','before')",
+      );
+      const savedRecharges = utilities.rechargesFor(profile.id);
+      const financialTables = [
+        'credit_cards',
+        'card_transactions',
+        'sms_candidates',
+        'sms_reconciliation',
+        'source_transfers',
+        'source_balance_adjustments',
+        'transaction_split_groups',
+        'transaction_split_members',
+        'loan_commitments',
+        'emi_plans',
+        'emi_installments',
+        'recurring_rules',
+        'bank_activity_profiles',
+        'bank_activity_events',
+      ];
+      const financialState = () =>
+        financialTables.map((table) => rows(`SELECT * FROM ${table} ORDER BY rowid`));
+      const unchanged = financialState();
+      const restoredFinancialState = unchanged.map((records, index) =>
+        financialTables[index] === 'sms_candidates'
+          ? records.map((record) => ({ ...record, payload: null }))
+          : records,
+      );
+      const sources = rows("SELECT * FROM app_preferences WHERE key='payment_sources'");
+      await utilities.setMobileArchived(profile.id, true);
+      await utilities.setMobileArchived(profile.id, false);
+      expect(utilities.rechargesFor(profile.id)).toHaveLength(2);
+      if (archived) await utilities.setMobileArchived(profile.id, true);
+      const beforeProfiles = utilities.mobileProfiles();
+      const beforeRecharges = utilities.mobileRecharges();
+      sql.exec(
+        "CREATE TRIGGER fail_mobile_delete BEFORE DELETE ON utility_profiles WHEN OLD.kind='MOBILE' BEGIN SELECT RAISE(ABORT,'mobile delete rollback'); END",
+      );
+      await expect(utilities.deleteMobileProfile(profile.id)).rejects.toThrow(
+        'mobile delete rollback',
+      );
+      expect(utilities.mobileProfiles()).toBe(beforeProfiles);
+      expect(utilities.mobileRecharges()).toBe(beforeRecharges);
+      expect(count('mobile_recharges')).toBe(3);
+      expect(count('utility_profiles')).toBe(3);
+      sql.exec('DROP TRIGGER fail_mobile_delete');
+      await expect(utilities.deleteMobileProfile(lpg.id)).rejects.toThrow(
+        'Mobile profile not found',
+      );
+
+      vi.stubGlobal('crypto', webcrypto);
+      vi.stubGlobal('Blob', NodeBlob);
+      try {
+        const backups = TestBed.inject(BackupService);
+        const before = await backups.create('synthetic-mobile-deletion-passphrase');
+        const refresh = vi
+          .spyOn(utilities, 'reload')
+          .mockRejectedValue(new Error('Post-commit refresh unavailable'));
+        const atomic = database.atomic.bind(database);
+        const publishedBeforeCommit: boolean[] = [];
+        const transaction = vi.spyOn(database, 'atomic').mockImplementation((work) =>
+          atomic(async (tx) => {
+            const result = await work(tx);
+            publishedBeforeCommit.push(
+              utilities.mobileProfiles().some((row) => row.id === profile.id),
+            );
+            return result;
+          }),
+        );
+        await utilities.deleteMobileProfile(profile.id);
+        expect(publishedBeforeCommit).toEqual([true]);
+        transaction.mockRestore();
+        expect(refresh).not.toHaveBeenCalled();
+        refresh.mockRestore();
+        expect(utilities.mobileProfiles().map((row) => row.id)).toEqual([other.id]);
+        expect(utilities.rechargesFor(profile.id)).toEqual([]);
+        expect(utilities.rechargesFor(other.id)).toHaveLength(1);
+        expect(count('lpg_events')).toBe(1);
+        expect(financialState()).toEqual(unchanged);
+        expect(rows("SELECT * FROM app_preferences WHERE key='payment_sources'")).toEqual(sources);
+        const after = await backups.create('synthetic-mobile-deletion-passphrase');
+        const restarted = TestBed.runInInjectionContext(() => new UtilitiesService());
+        await restarted.initialise();
+        expect(restarted.mobileProfiles().map((row) => row.id)).toEqual([other.id]);
+        await backups.restore(before.contents, 'synthetic-mobile-deletion-passphrase');
+        await restarted.initialise();
+        expect(restarted.rechargesFor(profile.id)).toHaveLength(2);
+        expect(restarted.rechargesFor(profile.id)).toEqual(
+          expect.arrayContaining([...savedRecharges]),
+        );
+        expect(restarted.mobileProfiles().find((row) => row.id === profile.id)?.archived).toBe(
+          archived,
+        );
+        expect(financialState()).toEqual(restoredFinancialState);
+        await backups.restore(after.contents, 'synthetic-mobile-deletion-passphrase');
+        await restarted.initialise();
+        expect(restarted.mobileProfiles().map((row) => row.id)).toEqual([other.id]);
+        expect(restarted.rechargesFor(other.id)).toHaveLength(1);
+        expect(restarted.lpgEvents()).toHaveLength(1);
+        expect(financialState()).toEqual(restoredFinancialState);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+
+  it('deletes only an individually selected recharge and retains its sibling and profile after restart', async () => {
+    await database.initialise();
+    const utilities = TestBed.inject(UtilitiesService);
+    await utilities.initialise();
+    const profile = await utilities.saveMobileProfile({
+      personName: 'Keep history',
+      operator: 'JIO',
+      subscriptionType: 'PREPAID',
+    });
+    const first = await utilities.saveRecharge({
+      profileId: profile.id,
+      planType: 'VOICE_ONLY',
+      startDate: '2026-09-01',
+      validityDays: 30,
+    });
+    const second = await utilities.saveRecharge({
+      profileId: profile.id,
+      planType: 'DATA_ONLY',
+      startDate: '2026-10-01',
+      validityDays: 30,
+      comment: 'Retain sibling',
+    });
+    await utilities.deleteRecharge(first.id);
+    const restarted = TestBed.runInInjectionContext(() => new UtilitiesService());
+    await restarted.initialise();
+    expect(restarted.rechargesFor(profile.id)).toEqual([second]);
+    expect(restarted.mobileProfiles().map((row) => row.id)).toEqual([profile.id]);
+    await utilities.deleteMobileProfile(profile.id);
+    const empty = await utilities.saveMobileProfile({
+      personName: 'No recharge history',
+      operator: 'VI',
+      subscriptionType: 'POSTPAID',
+    });
+    await utilities.deleteMobileProfile(empty.id);
+    expect(count('utility_profiles')).toBe(0);
+  });
+
+  it('serializes LPG progression and rejects duplicate, backdated, edited and deleted-event conflicts', async () => {
+    await database.initialise();
+    const utilities = TestBed.inject(UtilitiesService);
+    await utilities.initialise();
+    const profile = await utilities.saveLpgProfile({
+      connectionName: 'Lifecycle connection',
+      provider: 'INDANE',
+      commercial: false,
+      cylinderSize: 'NORMAL',
+      estimatedUsageDays: 25,
+    });
+    const save = (eventType: 'STARTED' | 'EMPTY' | 'REFILL_RECEIVED', eventDate = '2026-10-02') =>
+      utilities.saveLpgEvent({ profileId: profile.id, eventType, eventDate });
+    await expect(save('EMPTY')).rejects.toThrow('preceding cylinder STARTED');
+    const concurrent = await Promise.allSettled([save('STARTED'), save('STARTED')]);
+    expect(concurrent.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(concurrent.filter((result) => result.status === 'rejected')).toHaveLength(1);
+    const started = utilities.eventsFor(profile.id)[0];
+    await expect(save('REFILL_RECEIVED')).rejects.toThrow('in use');
+    const empty = await save('EMPTY');
+    await expect(save('EMPTY')).rejects.toThrow('preceding cylinder STARTED');
+    const received = await save('REFILL_RECEIVED');
+    await expect(save('REFILL_RECEIVED')).rejects.toThrow('already recorded');
+    expect(utilities.eventsFor(profile.id)).toHaveLength(3);
+    await save('STARTED', '2026-10-03');
+    const snapshot = rows('SELECT * FROM lpg_events ORDER BY rowid');
+    await expect(save('STARTED', '2026-10-01')).rejects.toThrow('2026-10-02');
+    await expect(utilities.saveLpgEvent({ ...started, eventDate: '2026-10-04' })).rejects.toThrow();
+    await expect(utilities.deleteLpgEvent(started.id)).rejects.toThrow('EMPTY requires');
+    await expect(utilities.deleteLpgEvent(empty.id)).rejects.toThrow();
+    await expect(
+      utilities.saveLpgEvent({
+        profileId: profile.id,
+        eventType: 'UNKNOWN' as 'STARTED',
+        eventDate: '2026-10-04',
+      }),
+    ).rejects.toThrow('Choose a cylinder event');
+    await expect(
+      utilities.saveLpgEvent({
+        profileId: profile.id,
+        eventType: 'EMPTY',
+        cylinderSize: 'UNKNOWN' as 'NORMAL',
+        eventDate: '2026-10-04',
+      }),
+    ).rejects.toThrow('supported cylinder size');
+    expect(rows('SELECT * FROM lpg_events ORDER BY rowid')).toEqual(snapshot);
+    const edited = await utilities.saveLpgEvent({
+      ...received,
+      comment: 'Receipt correction',
+      amountMinor: 95000,
+    });
+    expect(edited.id).toBe(received.id);
+    expect(edited.createdAt).toBe(received.createdAt);
+    sql.exec(
+      "CREATE TRIGGER fail_lpg_event BEFORE INSERT ON lpg_events BEGIN SELECT RAISE(ABORT,'event write rollback'); END",
+    );
+    const signals = utilities.lpgEvents();
+    await expect(save('EMPTY', '2026-10-04')).rejects.toThrow('event write rollback');
+    expect(utilities.lpgEvents()).toBe(signals);
+    expect(count('lpg_events')).toBe(4);
+    sql.exec('DROP TRIGGER fail_lpg_event');
+    await utilities.reload();
+    expect(utilities.eventsFor(profile.id).map((event) => event.eventType)).toEqual([
+      'STARTED',
+      'EMPTY',
+      'REFILL_RECEIVED',
+      'STARTED',
+    ]);
+    await save('EMPTY', '2026-10-04');
+    await save('STARTED', '2026-10-05');
+    sql.exec(
+      "CREATE TRIGGER fail_lpg_event_delete BEFORE DELETE ON lpg_events BEGIN SELECT RAISE(ABORT,'event delete rollback'); END",
+    );
+    const beforeDelete = utilities.lpgEvents();
+    await expect(utilities.deleteLpgEvent(received.id)).rejects.toThrow('event delete rollback');
+    expect(utilities.lpgEvents()).toBe(beforeDelete);
+    expect(count('lpg_events')).toBe(6);
+    sql.exec('DROP TRIGGER fail_lpg_event_delete');
+    await utilities.deleteLpgEvent(received.id);
+    expect(utilities.eventsFor(profile.id)).toHaveLength(5);
+  });
+
+  it('retains row order for same-day LPG events with identical creation timestamps after restart', async () => {
+    await database.initialise();
+    const utilities = TestBed.inject(UtilitiesService);
+    await utilities.initialise();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-10T12:00:00Z'));
+    try {
+      const profile = await utilities.saveLpgProfile({
+        connectionName: 'Same-day connection',
+        provider: 'INDANE',
+        commercial: false,
+        cylinderSize: 'NORMAL',
+        estimatedUsageDays: 25,
+      });
+      for (const eventType of ['STARTED', 'EMPTY', 'REFILL_RECEIVED', 'STARTED'] as const)
+        await utilities.saveLpgEvent({ profileId: profile.id, eventType, eventDate: '2026-10-10' });
+      expect(new Set(utilities.eventsFor(profile.id).map((event) => event.createdAt)).size).toBe(1);
+      await utilities.saveLpgEvent({
+        ...utilities.eventsFor(profile.id)[1],
+        comment: 'Same-day correction',
+      });
+      const restarted = TestBed.runInInjectionContext(() => new UtilitiesService());
+      await restarted.initialise();
+      expect(restarted.eventsFor(profile.id).map((event) => event.eventType)).toEqual([
+        'STARTED',
+        'EMPTY',
+        'REFILL_RECEIVED',
+        'STARTED',
+      ]);
+      await restarted.saveLpgEvent({
+        profileId: profile.id,
+        eventType: 'EMPTY',
+        eventDate: '2026-10-10',
+      });
+      expect(restarted.eventsFor(profile.id)).toHaveLength(5);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('preserves legacy LPG conflicts and permits safe explicit corrections without rewriting later records', async () => {
+    await database.initialise();
+    const utilities = TestBed.inject(UtilitiesService);
+    await utilities.initialise();
+    const profile = await utilities.saveLpgProfile({
+      connectionName: 'Legacy connection',
+      provider: 'HPCL',
+      commercial: true,
+      cylinderSize: 'SMALL',
+      estimatedUsageDays: 25,
+    });
+    const legacy = {
+      id: 'legacy-empty',
+      profileId: profile.id,
+      eventType: 'EMPTY' as const,
+      eventDate: '2026-10-01',
+      createdAt: '2026-10-01T00:00:00Z',
+      updatedAt: 'before',
+    };
+    await database.run(
+      'INSERT INTO lpg_events(id,profile_id,event_type,event_date,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?)',
+      [
+        legacy.id,
+        profile.id,
+        legacy.eventType,
+        legacy.eventDate,
+        JSON.stringify(legacy),
+        legacy.createdAt,
+        legacy.updatedAt,
+      ],
+    );
+    await utilities.reload();
+    expect(utilities.eventsFor(profile.id)).toEqual([legacy]);
+    await utilities.saveLpgEvent({ ...legacy, comment: 'Explicit historical note' });
+    const started = await utilities.saveLpgEvent({
+      profileId: profile.id,
+      eventType: 'STARTED',
+      eventDate: '2026-10-02',
+    });
+    await expect(utilities.saveLpgEvent({ ...legacy, eventType: 'STARTED' })).rejects.toThrow(
+      '2026-10-02',
+    );
+    await utilities.deleteLpgEvent(legacy.id);
+    expect(utilities.eventsFor(profile.id)).toEqual([started]);
+  });
+
+  it.each([false, true])(
+    'atomically deletes only the selected LPG connection and round trips backups (archived=%s)',
+    async (archived) => {
+      await database.initialise();
+      const store = TestBed.inject(CardNestStore);
+      await store.initialisePreferences();
+      const utilities = TestBed.inject(UtilitiesService);
+      await utilities.initialise();
+      const connection = await utilities.saveLpgProfile({
+        connectionName: 'Delete LPG',
+        provider: 'INDANE',
+        commercial: true,
+        cylinderSize: 'NORMAL',
+        estimatedUsageDays: 25,
+      });
+      const other = await utilities.saveLpgProfile({
+        connectionName: 'Keep LPG',
+        provider: 'HPCL',
+        commercial: false,
+        cylinderSize: 'SMALL',
+        estimatedUsageDays: 25,
+      });
+      for (const profileId of [connection.id, other.id]) {
+        await utilities.saveLpgEvent({ profileId, eventType: 'STARTED', eventDate: '2026-10-01' });
+        await utilities.saveLpgEvent({ profileId, eventType: 'EMPTY', eventDate: '2026-10-20' });
+      }
+      const mobile = await utilities.saveMobileProfile({
+        personName: 'Keep mobile',
+        operator: 'JIO',
+        subscriptionType: 'PREPAID',
+      });
+      await utilities.saveRecharge({
+        profileId: mobile.id,
+        planType: 'VOICE_DATA',
+        startDate: '2026-10-01',
+        validityDays: 30,
+      });
+      await store.addBankAccount({
+        nickname: 'Keep bank',
+        institution: 'Synthetic Bank',
+        lastDigits: '007',
+      });
+      await store.saveManualTransaction({
+        id: 'keep-c2-purchase',
+        cardId: 'source-cash',
+        type: 'PURCHASE',
+        amountMinor: 12345,
+        currencyCode: 'INR',
+        transactionDate: indiaTodayIso(),
+        categoryId: 'other',
+        attachmentIds: [],
+        createdAt: '2026-10-01T12:00:00Z',
+        updatedAt: '2026-10-01T12:00:00Z',
+      });
+      await database.run(
+        "INSERT INTO sms_candidates(id,provider_id,event_at,kind,state,payload,updated_at) VALUES('keep-c2-sms','synthetic','2026-10-01','BANK_DEBIT','PENDING',NULL,'before')",
+      );
+      const tables = [
+        'credit_cards',
+        'card_transactions',
+        'sms_candidates',
+        'sms_reconciliation',
+        'source_transfers',
+        'source_balance_adjustments',
+        'transaction_split_groups',
+        'transaction_split_members',
+        'loan_commitments',
+        'emi_plans',
+        'emi_installments',
+        'recurring_rules',
+        'bank_activity_profiles',
+        'bank_activity_events',
+        'mobile_recharges',
+      ];
+      const untouched = () => tables.map((table) => rows(`SELECT * FROM ${table} ORDER BY rowid`));
+      const before = untouched();
+      const sources = rows("SELECT * FROM app_preferences WHERE key='payment_sources'");
+      await utilities.setLpgArchived(connection.id, true);
+      await utilities.setLpgArchived(connection.id, false);
+      if (archived) await utilities.setLpgArchived(connection.id, true);
+      const profiles = utilities.lpgProfiles();
+      const events = utilities.lpgEvents();
+      sql.exec(
+        "CREATE TRIGGER fail_lpg_delete BEFORE DELETE ON utility_profiles WHEN OLD.kind='LPG' BEGIN SELECT RAISE(ABORT,'connection delete rollback'); END",
+      );
+      await expect(utilities.deleteLpgProfile(connection.id)).rejects.toThrow(
+        'connection delete rollback',
+      );
+      expect(utilities.lpgProfiles()).toBe(profiles);
+      expect(utilities.lpgEvents()).toBe(events);
+      expect(count('lpg_events')).toBe(4);
+      sql.exec('DROP TRIGGER fail_lpg_delete');
+      await expect(utilities.deleteLpgProfile(mobile.id)).rejects.toThrow(
+        'LPG connection not found',
+      );
+      vi.stubGlobal('crypto', webcrypto);
+      vi.stubGlobal('Blob', NodeBlob);
+      try {
+        const backups = TestBed.inject(BackupService);
+        const prior = await backups.create('synthetic-lpg-deletion-passphrase');
+        const atomic = database.atomic.bind(database);
+        const published: boolean[] = [];
+        const transaction = vi.spyOn(database, 'atomic').mockImplementation((work) =>
+          atomic(async (tx) => {
+            const result = await work(tx);
+            published.push(utilities.lpgProfiles().some((row) => row.id === connection.id));
+            return result;
+          }),
+        );
+        await utilities.deleteLpgProfile(connection.id);
+        transaction.mockRestore();
+        expect(published).toEqual([true]);
+        expect(utilities.lpgProfiles().map((row) => row.id)).toEqual([other.id]);
+        expect(utilities.eventsFor(other.id)).toHaveLength(2);
+        expect(untouched()).toEqual(before);
+        expect(rows("SELECT * FROM app_preferences WHERE key='payment_sources'")).toEqual(sources);
+        const after = await backups.create('synthetic-lpg-deletion-passphrase');
+        const restarted = TestBed.runInInjectionContext(() => new UtilitiesService());
+        await restarted.initialise();
+        expect(restarted.eventsFor(connection.id)).toEqual([]);
+        await backups.restore(prior.contents, 'synthetic-lpg-deletion-passphrase');
+        await restarted.initialise();
+        expect(restarted.eventsFor(connection.id)).toHaveLength(2);
+        expect(restarted.lpgProfiles().find((row) => row.id === connection.id)?.archived).toBe(
+          archived,
+        );
+        await backups.restore(after.contents, 'synthetic-lpg-deletion-passphrase');
+        await restarted.initialise();
+        expect(restarted.lpgProfiles().map((row) => row.id)).toEqual([other.id]);
+        expect(restarted.eventsFor(other.id)).toHaveLength(2);
+        expect(restarted.rechargesFor(mobile.id)).toHaveLength(1);
+        expect(untouched()).toEqual(before);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+
   it('persists Utilities and Bank Activity through reload and encrypted backup while keeping finance isolated', async () => {
     const today = indiaTodayIso();
     await database.initialise();
@@ -411,8 +1027,10 @@ describe('Durable first-run data, additive read migration and private portable b
     const linkedBank = await store.addBankAccount({
       nickname: 'Fiction activity bank',
       institution: 'ICICI Bank',
-      lastDigits: '417',
+      accountIdentifier: '000000000417',
+      ifscCode: 'ICIC0000417',
     });
+    expect(linkedBank.accountFingerprint).toMatch(/^hmac-sha256-v1:[0-9a-f]{64}$/);
     const bankProfile = await bankActivity.saveProfile({
       paymentSourceId: linkedBank.id,
       bankName: '',
@@ -435,7 +1053,7 @@ describe('Durable first-run data, additive read migration and private portable b
       id: temporaryEvent.id,
       profileId: bankProfile.id,
       activityDate: '2026-04-21',
-      direction: 'CREDIT',
+      direction: 'DEBIT',
     });
     expect(correctedEvent.origin).toBe('MANUAL');
     expect(correctedEvent.createdAt).toBe(temporaryEvent.createdAt);
@@ -479,7 +1097,9 @@ describe('Durable first-run data, additive read migration and private portable b
         merchant: 'Monthly interest credit',
       }),
     ).toBe(false);
-    expect(await bankActivity.ingestAndroidSms(smsEvidence)).toBe(true);
+    expect(await bankActivity.ingestAndroidSms(smsEvidence)).toBe(false);
+    expect(bankActivity.eventsFor(bankProfile.id)).toHaveLength(1);
+    await bankActivity.approveCandidate(smsEvidence.fingerprint, bankProfile.id);
     expect(await bankActivity.ingestAndroidSms(smsEvidence)).toBe(false);
     expect(bankActivity.eventsFor(bankProfile.id)).toHaveLength(2);
     expect(count('card_transactions')).toBe(0);
@@ -490,6 +1110,7 @@ describe('Durable first-run data, additive read migration and private portable b
       accountSuffix: '417',
       owner: 'OTHERS',
       holderName: 'Fictional Alex',
+      allowIdentityConflict: true,
     });
     expect(
       await bankActivity.ingestAndroidSms({ ...smsEvidence, fingerprint: 'b'.repeat(64) }),
@@ -498,7 +1119,7 @@ describe('Durable first-run data, additive read migration and private portable b
       {
         fingerprint: 'b'.repeat(64),
         activityDate: today,
-        bankName: 'ICICI',
+        bankName: 'ICICI Bank',
         accountSuffix: '417',
       },
     ]);
@@ -616,6 +1237,28 @@ describe('Durable first-run data, additive read migration and private portable b
           .sort(),
       ).toEqual([bankProfile.id, ambiguousProfile.id].sort());
       expect(restoredBankActivity.eventsFor(bankProfile.id)).toHaveLength(2);
+      expect(restoredStore.paymentSources().find((row) => row.id === linkedBank.id)).toMatchObject({
+        lastDigits: '417',
+        accountFingerprint: linkedBank.accountFingerprint,
+        ifscCode: 'ICIC0000417',
+      });
+      expect(await restoredStore.fingerprintBankAccount('000000000417')).toBe(
+        linkedBank.accountFingerprint,
+      );
+      await expect(
+        restoredStore.addBankAccount({
+          institution: 'ICICI',
+          accountIdentifier: '000000000417',
+        }),
+      ).rejects.toThrow('already enrolled');
+      expect(
+        restoredBankActivity.profiles().find((row) => row.id === bankProfile.id),
+      ).toMatchObject({
+        paymentSourceId: linkedBank.id,
+        accountFingerprint: linkedBank.accountFingerprint,
+        ifscCode: 'ICIC0000417',
+      });
+      expect(await database.exportBackupJson()).not.toContain('000000000417');
       expect(
         restoredBankActivity.eventsFor(bankProfile.id).some((item) => item.origin === 'MANUAL'),
       ).toBe(true);
@@ -902,7 +1545,18 @@ describe('Durable first-run data, additive read migration and private portable b
       eventAt: '2026-10-23T00:30:00Z',
       reportedBalanceMinor: undefined,
     });
-    await review.approve(purchase, wallet.id, 50000, 'Fictional breakfast');
+    await review.approve(
+      purchase,
+      wallet.id,
+      50000,
+      'Fictional breakfast',
+      '',
+      'PENDING',
+      false,
+      '',
+      0,
+      { categoryId: 'dining' },
+    );
     expect(repaired().balanceMinor).toBe(923724);
     const second = await stage({
       ...purchase.item!,
@@ -1596,6 +2250,6 @@ describe('Durable first-run data, additive read migration and private portable b
     ]);
     expect(vi.mocked(CapacitorSQLite.closeConnection)).toHaveBeenCalled();
     expect(CapacitorSQLite.createConnection).toHaveBeenCalledTimes(2);
-    expect(sql.prepare('PRAGMA user_version').get()?.['user_version']).toBe(11);
+    expect(sql.prepare('PRAGMA user_version').get()?.['user_version']).toBe(14);
   });
 });

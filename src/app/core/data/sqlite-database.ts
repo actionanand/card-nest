@@ -1,9 +1,11 @@
 import { CapacitorSQLite } from '@capacitor-community/sqlite';
 import { Capacitor } from '@capacitor/core';
 import { Service, signal } from '@angular/core';
-import { DATABASE_MIGRATIONS } from './migrations';
+import { CLASSIFY_LEGACY_ADJUSTMENTS, DATABASE_MIGRATIONS } from './migrations';
 import { clearPlatformDiscovery, prunePlatformDiscovery } from './platform-data';
 import { INITIAL_DATA_KEY } from './app-initialization';
+import { reconcileCategoryCatalog } from './category-catalog';
+import { RECONCILE_BANK_ACTIVITY_LATEST } from './bank-activity-latest';
 
 interface JeepSqliteElement extends HTMLElement {
   wasmPath: string;
@@ -54,6 +56,8 @@ const BACKUP_TABLES = [
   'loan_commitments',
   'monthly_income',
   'category_limits',
+  'category_catalog_state',
+  'category_catalog_conflicts',
   'utility_profiles',
   'mobile_recharges',
   'lpg_events',
@@ -68,6 +72,8 @@ const BACKUP_TABLES = [
 ] as const;
 
 const DELETE_TABLES = [
+  'category_catalog_state',
+  'category_catalog_conflicts',
   'bank_activity_candidates',
   'bank_activity_events',
   'bank_activity_profiles',
@@ -446,7 +452,7 @@ export class SqliteDatabase {
         database: this.databaseName,
         statement:
           name === 'sms_candidates'
-            ? `SELECT id, provider_id, event_at, kind, state, NULL AS payload, transaction_id, updated_at, decision, read_at FROM sms_candidates`
+            ? `SELECT id, provider_id, event_at, kind, state, NULL AS payload, transaction_id, updated_at, decision, read_at, received_at FROM sms_candidates`
             : `SELECT * FROM ${name}`,
         values: [],
       });
@@ -524,6 +530,50 @@ export class SqliteDatabase {
         }
       }
       await flushInserts();
+      for (const statement of RECONCILE_BANK_ACTIVITY_LATEST) {
+        await CapacitorSQLite.run({
+          database: this.databaseName,
+          statement,
+          values: [],
+          transaction: false,
+        });
+      }
+      // Portable imports rebuild rowids. Pending evidence stays durable, but its local replay cursor must restart.
+      await CapacitorSQLite.run({
+        database: this.databaseName,
+        statement: "DELETE FROM app_preferences WHERE key='bank_activity_discovery_cursor'",
+        values: [],
+        transaction: false,
+      });
+      await reconcileCategoryCatalog({
+        query: async <T extends Record<string, unknown>>(
+          statement: string,
+          values: readonly unknown[] = [],
+        ) => {
+          const result = await CapacitorSQLite.query({
+            database: this.databaseName,
+            statement,
+            values: [...values],
+          });
+          return (result.values ?? []) as T[];
+        },
+        run: async (statement, values = []) => {
+          const result = await CapacitorSQLite.run({
+            database: this.databaseName,
+            statement,
+            values: [...values],
+            transaction: false,
+          });
+          return result.changes?.changes ?? 0;
+        },
+      });
+      await CapacitorSQLite.execute({
+        database: this.databaseName,
+        transaction: false,
+        statements: `${CLASSIFY_LEGACY_ADJUSTMENTS};
+        UPDATE transaction_split_groups SET anchor_transaction_id=(SELECT transaction_id FROM transaction_split_members WHERE group_id=transaction_split_groups.id ORDER BY transaction_id LIMIT 1) WHERE anchor_transaction_id IS NULL;
+        UPDATE transaction_split_groups SET currency_code=COALESCE((SELECT currency_code FROM card_transactions WHERE id=anchor_transaction_id),'INR'),updated_at=created_at WHERE updated_at='';`,
+      });
       await CapacitorSQLite.run({
         database: this.databaseName,
         statement: `INSERT INTO app_preferences(key,encrypted_value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET encrypted_value=excluded.encrypted_value`,

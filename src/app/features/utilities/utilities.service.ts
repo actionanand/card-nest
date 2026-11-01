@@ -3,6 +3,8 @@ import { SqliteDatabase } from '../../core/data/sqlite-database';
 import { indiaTodayIso } from '../../core/services/india-date';
 import { AppSelectOption } from '../../shared/app-select-picker';
 import { LPG_PROVIDERS } from './data/lpg-providers';
+import { CYLINDER_OPTIONS } from './data/cylinder-options';
+import { assertLpgTimelineChange } from './lpg-lifecycle';
 import { MOBILE_OPERATORS } from './data/mobile-operators';
 import {
   MOBILE_PLAN_TYPES,
@@ -55,6 +57,23 @@ export function normalizeIndianMobileNumber(value: string): string | undefined {
   if (!tenDigits)
     throw new Error('Enter a ten-digit Indian mobile number, optionally prefixed by +91.');
   return `+91-${tenDigits}`;
+}
+
+export function normalizeInternationalPhoneNumber(value: string): string | undefined {
+  const trimmed = value.trim();
+  if (!trimmed || !/^\+?[0-9][0-9\s()-]*$/.test(trimmed)) return undefined;
+  const digits = trimmed.replace(/\D/g, '');
+  if (digits.length < 7 || digits.length > 15) return undefined;
+  if (!trimmed.startsWith('+') && /^[6-9]\d{9}$/.test(digits)) return `91${digits}`;
+  return digits;
+}
+
+function preserveInternationalPhoneDisplay(value: string): string | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  if (trimmed.length > 80 || !/^\+?[0-9\s()-]+$/.test(trimmed) || !/\d/.test(trimmed))
+    throw new Error('Enter a valid contact number of up to 80 characters.');
+  return trimmed;
 }
 
 export const UTILITY_REMINDER_OFFSETS = [7, 3, 1, 0] as const;
@@ -362,6 +381,20 @@ export class UtilitiesService {
     this.mobileRecharges.update((items) => items.filter((item) => item.id !== id));
   }
 
+  async deleteMobileProfile(profileId: string): Promise<void> {
+    await this.database.atomic(async (tx) => {
+      const [profile] = await tx.query<{ id: string }>(
+        "SELECT id FROM utility_profiles WHERE id=? AND kind='MOBILE'",
+        [profileId],
+      );
+      if (!profile) throw new Error('Mobile profile not found.');
+      await tx.run('DELETE FROM mobile_recharges WHERE profile_id=?', [profileId]);
+      await tx.run("DELETE FROM utility_profiles WHERE id=? AND kind='MOBILE'", [profileId]);
+    });
+    this.mobileRecharges.update((items) => items.filter((item) => item.profileId !== profileId));
+    this.mobileProfiles.update((items) => items.filter((item) => item.id !== profileId));
+  }
+
   async saveLpgProfile(
     input: Omit<LpgProfile, 'id' | 'kind' | 'archived' | 'createdAt' | 'updatedAt'> & {
       id?: string;
@@ -384,8 +417,8 @@ export class UtilitiesService {
       ...input,
       connectionName,
       mobileNumber: normalizeIndianMobileNumber(input.mobileNumber ?? ''),
-      distributorContact: normalizeIndianMobileNumber(input.distributorContact ?? ''),
-      distributorWhatsApp: normalizeIndianMobileNumber(input.distributorWhatsApp ?? ''),
+      distributorContact: preserveInternationalPhoneDisplay(input.distributorContact ?? ''),
+      distributorWhatsApp: preserveInternationalPhoneDisplay(input.distributorWhatsApp ?? ''),
       id: previous?.id ?? crypto.randomUUID(),
       kind: 'LPG',
       archived: previous?.archived ?? false,
@@ -442,35 +475,93 @@ export class UtilitiesService {
       (!Number.isSafeInteger(input.amountMinor) || input.amountMinor < 0)
     )
       throw new Error('Enter a valid amount.');
-    const timestamp = new Date().toISOString();
-    const previous = input.id ? this.lpgEvents().find((item) => item.id === input.id) : undefined;
-    if (input.id && !previous) throw new Error('LPG event not found.');
-    const event: LpgEvent = {
-      ...input,
-      id: previous?.id ?? crypto.randomUUID(),
-      comment: input.comment?.trim().slice(0, 300) || undefined,
-      createdAt: previous?.createdAt ?? timestamp,
-      updatedAt: timestamp,
-    };
-    await this.database.run(
-      `INSERT INTO lpg_events(id,profile_id,event_type,event_date,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET profile_id=excluded.profile_id,event_type=excluded.event_type,event_date=excluded.event_date,payload=excluded.payload,updated_at=excluded.updated_at`,
-      [
-        event.id,
-        event.profileId,
-        event.eventType,
-        event.eventDate,
-        JSON.stringify(event),
-        event.createdAt,
-        timestamp,
-      ],
+    if (
+      input.cylinderSize !== undefined &&
+      !CYLINDER_OPTIONS.some((size) => size.value === input.cylinderSize)
+    )
+      throw new Error('Choose a supported cylinder size.');
+    const event = await this.database.atomic(async (tx) => {
+      const [profile] = await tx.query<{ id: string; archived: number }>(
+        "SELECT id,archived FROM utility_profiles WHERE id=? AND kind='LPG'",
+        [input.profileId],
+      );
+      if (!profile || profile.archived) throw new Error('Choose an active LPG connection.');
+      const rows = await tx.query<{ payload: string }>(
+        'SELECT payload FROM lpg_events WHERE profile_id=? ORDER BY event_date,created_at,rowid',
+        [input.profileId],
+      );
+      const before = rows.map((row) => JSON.parse(row.payload) as LpgEvent);
+      const previous = input.id ? before.find((item) => item.id === input.id) : undefined;
+      if (input.id && !previous) throw new Error('LPG event not found on this connection.');
+      const timestamp = new Date().toISOString();
+      const saved: LpgEvent = {
+        ...input,
+        id: previous?.id ?? crypto.randomUUID(),
+        comment: input.comment?.trim().slice(0, 300) || undefined,
+        createdAt: previous?.createdAt ?? timestamp,
+        updatedAt: timestamp,
+      };
+      assertLpgTimelineChange(
+        before,
+        previous ? before.map((item) => (item.id === saved.id ? saved : item)) : [...before, saved],
+        saved.id,
+      );
+      await tx.run(
+        `INSERT INTO lpg_events(id,profile_id,event_type,event_date,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET profile_id=excluded.profile_id,event_type=excluded.event_type,event_date=excluded.event_date,payload=excluded.payload,updated_at=excluded.updated_at`,
+        [
+          saved.id,
+          saved.profileId,
+          saved.eventType,
+          saved.eventDate,
+          JSON.stringify(saved),
+          saved.createdAt,
+          timestamp,
+        ],
+      );
+      return saved;
+    });
+    this.lpgEvents.update((items) =>
+      items.some((item) => item.id === event.id)
+        ? items.map((item) => (item.id === event.id ? event : item))
+        : [...items, event],
     );
-    this.lpgEvents.update((items) => [event, ...items.filter((item) => item.id !== event.id)]);
     return event;
   }
 
   async deleteLpgEvent(id: string): Promise<void> {
-    await this.database.run('DELETE FROM lpg_events WHERE id=?', [id]);
+    await this.database.atomic(async (tx) => {
+      const [row] = await tx.query<{ payload: string }>(
+        'SELECT payload FROM lpg_events WHERE id=?',
+        [id],
+      );
+      if (!row) throw new Error('LPG event not found.');
+      const event = JSON.parse(row.payload) as LpgEvent;
+      const rows = await tx.query<{ payload: string }>(
+        'SELECT payload FROM lpg_events WHERE profile_id=? ORDER BY event_date,created_at,rowid',
+        [event.profileId],
+      );
+      const before = rows.map((item) => JSON.parse(item.payload) as LpgEvent);
+      assertLpgTimelineChange(
+        before,
+        before.filter((item) => item.id !== id),
+      );
+      await tx.run('DELETE FROM lpg_events WHERE id=?', [id]);
+    });
     this.lpgEvents.update((items) => items.filter((item) => item.id !== id));
+  }
+
+  async deleteLpgProfile(profileId: string): Promise<void> {
+    await this.database.atomic(async (tx) => {
+      const [profile] = await tx.query<{ id: string }>(
+        "SELECT id FROM utility_profiles WHERE id=? AND kind='LPG'",
+        [profileId],
+      );
+      if (!profile) throw new Error('LPG connection not found.');
+      await tx.run('DELETE FROM lpg_events WHERE profile_id=?', [profileId]);
+      await tx.run("DELETE FROM utility_profiles WHERE id=? AND kind='LPG'", [profileId]);
+    });
+    this.lpgEvents.update((items) => items.filter((item) => item.profileId !== profileId));
+    this.lpgProfiles.update((items) => items.filter((item) => item.id !== profileId));
   }
 
   async reload(): Promise<void> {
@@ -483,7 +574,7 @@ export class UtilitiesService {
         'SELECT payload FROM mobile_recharges ORDER BY start_date DESC',
       ),
       this.database.query<{ payload: string }>(
-        'SELECT payload FROM lpg_events ORDER BY event_date DESC',
+        'SELECT payload FROM lpg_events ORDER BY event_date,created_at,rowid',
       ),
     ]);
     const lpgProfiles = await this.database.query<{ payload: string }>(

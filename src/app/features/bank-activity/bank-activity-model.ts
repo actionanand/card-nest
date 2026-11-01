@@ -4,11 +4,15 @@ export type BankActivityOrigin = 'MANUAL' | 'ANDROID_SMS';
 export type BankActivityVerification = 'USER_CONFIRMED' | 'SOURCE_MATCHED';
 
 export interface BankActivityProfile {
+  readonly manualOnly?: boolean;
   readonly id: string;
   readonly paymentSourceId?: string;
   readonly bankName: string;
   readonly nickname?: string;
   readonly accountSuffix?: string;
+  readonly accountMask?: string;
+  readonly accountFingerprint?: string;
+  readonly ifscCode?: string;
   readonly owner: BankActivityOwner;
   readonly holderName?: string;
   readonly remarks?: string;
@@ -31,11 +35,18 @@ export interface BankActivityEvent {
 }
 
 export interface BankActivityCandidate {
+  readonly amountMinor?: number;
+  readonly currencyCode?: string;
+  readonly activityTime?: string;
+  readonly kind?: string;
+  readonly resolvedAt?: string;
+  readonly resolvedProfileId?: string;
   readonly fingerprint: string;
   readonly activityDate: string;
   readonly direction: BankActivityDirection;
   readonly bankName?: string;
   readonly accountSuffix?: string;
+  readonly accountMask?: string;
   readonly reference?: string;
   readonly purposeHint: string;
   readonly createdAt: string;

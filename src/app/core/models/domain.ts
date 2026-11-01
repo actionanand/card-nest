@@ -87,6 +87,7 @@ export interface CardTransaction {
   cardId: string;
   type: TransactionType;
   adjustmentDirection?: 'INCREASE' | 'DECREASE';
+  adjustmentPurpose?: 'SPLIT_PAYMENT' | 'LEGACY_MANUAL' | 'BALANCE_RECONCILIATION';
   amountMinor: Money;
   currencyCode: string;
   originalAmountMinor?: Money;
@@ -130,6 +131,19 @@ export interface CardTransaction {
   paymentMethodDetail?: SmsPaymentMethodDetail;
   paymentMethodCustom?: string;
   smsAdditionalComment?: string;
+}
+
+/** A relationship only: its total is never posted to the financial ledger. */
+export interface PaymentGroup {
+  id: string;
+  kind: 'DIVISION' | 'PAYMENTS';
+  anchorId: string | null;
+  title: string;
+  currency: string;
+  billTotalMinor: number | null;
+  createdAt: string;
+  updatedAt: string;
+  memberIds: readonly string[];
 }
 
 export type BalanceTiming = 'AFTER_BASELINE' | 'INCLUDED_IN_BASELINE';
@@ -217,7 +231,7 @@ export interface SourceTransfer {
 export interface SourceBalanceAdjustment {
   id: string;
   sourceId: string;
-  reason: 'OPENING' | 'CORRECTION' | 'REBASE' | 'MIGRATION' | 'SMS_RECONCILIATION';
+  reason: 'OPENING' | 'ADD' | 'CORRECTION' | 'REBASE' | 'MIGRATION' | 'SMS_RECONCILIATION';
   previousMinor?: Money;
   newMinor: Money;
   correctionMinor: Money;
@@ -227,6 +241,8 @@ export interface SourceBalanceAdjustment {
 
 export interface BankCashTrackingSettings {
   enabled: boolean;
+  bankEnabled?: boolean;
+  cashEnabled?: boolean;
   askCardSettlementFunding: boolean;
   activatedAt?: string;
   disabledAt?: string;
@@ -240,6 +256,12 @@ export interface PaymentSource {
   kind: PaymentSourceKind;
   institution?: string;
   lastDigits?: string;
+  /** Masked display identifier only; complete account numbers are never persisted here. */
+  accountMask?: string;
+  /** One-way fingerprint used only to distinguish same-bank accounts with matching suffixes. */
+  accountFingerprint?: string;
+  ifscCode?: string;
+  isPrimaryBank?: boolean;
   noLimit: boolean;
   balanceMinor?: Money;
   loadAmountMinor?: Money;

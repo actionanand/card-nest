@@ -1,10 +1,22 @@
-import { Component, OnInit, computed, inject, input, output, signal } from '@angular/core';
+import {
+  Component,
+  ElementRef,
+  OnInit,
+  computed,
+  effect,
+  inject,
+  input,
+  output,
+  signal,
+  viewChild,
+} from '@angular/core';
 import { BalanceTiming, SourceTransfer } from '../core/models/domain';
 import { CardNestStore } from '../core/services/card-nest-store';
 import { formatMoney, parseMoneyToMinor } from '../core/services/money';
-import { indiaTodayIso } from '../core/services/india-date';
+import { DeviceCalendarClock } from '../core/services/device-date';
 import {
   bankCashTracked,
+  hasWalletBaseline,
   isBankOrCash,
   needsBaselineConfirmation,
   savedTimingAnswer,
@@ -12,13 +24,15 @@ import {
 import { SnackbarService } from '../core/services/snackbar.service';
 import { AppIcon } from './app-icon';
 import { AppSelectOption, AppSelectPicker } from './app-select-picker';
+import { lockDocumentScroll } from './document-scroll-lock';
 
-export type SourceMovementMode = 'RECEIPT' | 'TRANSFER' | 'BALANCE';
+export type SourceMovementMode = 'RECEIPT' | 'TRANSFER' | 'BALANCE' | 'ADD_MONEY';
 
-/** Manual Bank/Cash movements: receipts, own-account transfers and audited balance setting. */
+/** Manual source movements and audited balance adjustments. */
 @Component({
   selector: 'app-source-movement-dialog',
   imports: [AppIcon, AppSelectPicker],
+  host: { '(window:cardnest:back)': 'back($event)' },
   template: `
     <div
       class="movement-backdrop"
@@ -27,13 +41,14 @@ export type SourceMovementMode = 'RECEIPT' | 'TRANSFER' | 'BALANCE';
       (keydown.escape)="$event.stopPropagation(); close()"
     >
       <section
+        #movementDialog
         class="panel movement-dialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby="movement-title"
         tabindex="-1"
         (click)="$event.stopPropagation()"
-        (keydown)="$event.stopPropagation()"
+        (keydown)="key($event)"
       >
         <header class="movement-heading">
           <div>
@@ -67,19 +82,36 @@ export type SourceMovementMode = 'RECEIPT' | 'TRANSFER' | 'BALANCE';
             }
           }
           <label
-            >{{ mode() === 'BALANCE' ? 'Actual current balance (INR)' : 'Amount (INR)'
+            >{{
+              mode() === 'BALANCE'
+                ? 'Actual current balance (INR)'
+                : mode() === 'ADD_MONEY'
+                  ? source()?.kind === 'CASH'
+                    ? 'Amount: ₹'
+                    : 'Amount to add (INR)'
+                  : 'Amount (INR)'
             }}<input
               inputmode="decimal"
               [value]="amount()"
               (input)="amount.set(value($event))"
               required
           /></label>
-          @if (mode() !== 'BALANCE') {
+          @if (mode() === 'ADD_MONEY' && source()?.kind === 'CASH') {
+            <label class="timing-review">
+              <input
+                type="checkbox"
+                [checked]="replaceCashBalance()"
+                (change)="replaceCashBalance.set($any($event.target).checked)"
+              />
+              Set available balance to this amount
+            </label>
+          }
+          @if (mode() === 'RECEIPT' || mode() === 'TRANSFER') {
             <label
               >Date<input type="date" [value]="date()" (input)="date.set(value($event))" required
             /></label>
           }
-          @if (mode() !== 'BALANCE') {
+          @if (mode() === 'RECEIPT' || mode() === 'TRANSFER') {
             <label
               >Time (optional)<input type="time" [value]="time()" (input)="time.set(value($event))"
             /></label>
@@ -104,6 +136,18 @@ export type SourceMovementMode = 'RECEIPT' | 'TRANSFER' | 'BALANCE';
                 /><span>It is already included in that balance — record only</span></label
               >
             </fieldset>
+            <label class="timing-review">
+              <input type="checkbox" [checked]="timingReviewed()" (change)="reviewTiming($event)" />
+              I checked the timing. Updating a movement already included in the balance would count
+              it twice.
+            </label>
+            <p class="movement-note" role="status">
+              {{
+                timing() === 'INCLUDED_IN_BASELINE'
+                  ? 'Record only: this movement is already included. No balance change will be applied.'
+                  : 'Update balances: confirm that this movement happened after the saved balance.'
+              }}
+            </p>
           }
           @if (mode() === 'RECEIPT') {
             <app-select-picker
@@ -114,7 +158,10 @@ export type SourceMovementMode = 'RECEIPT' | 'TRANSFER' | 'BALANCE';
             />
           }
           <label
-            >{{ mode() === 'BALANCE' ? 'Note (optional)' : 'Description (optional)'
+            >{{
+              mode() === 'BALANCE' || mode() === 'ADD_MONEY'
+                ? 'Note (optional)'
+                : 'Description (optional)'
             }}<input
               maxlength="100"
               [value]="description()"
@@ -123,12 +170,15 @@ export type SourceMovementMode = 'RECEIPT' | 'TRANSFER' | 'BALANCE';
           @if (mode() === 'BALANCE' && balancePreview(); as preview) {
             <p class="movement-note">{{ preview }}</p>
           }
+          @if (mode() === 'ADD_MONEY' && balancePreview(); as preview) {
+            <p class="movement-note">{{ preview }}</p>
+          }
           @if (mode() === 'TRANSFER' && !loan()) {
             <p class="movement-note">
               {{
                 editing()
                   ? 'Saving changes updates both balances together.'
-                  : 'Both balances change together. A transfer is never counted as spending or income.'
+                  : 'A transfer is never counted as spending or income. Any applicable balance changes commit together.'
               }}
             </p>
           }
@@ -140,7 +190,7 @@ export type SourceMovementMode = 'RECEIPT' | 'TRANSFER' | 'BALANCE';
             <button
               class="btn btn-primary"
               type="submit"
-              [disabled]="saving() || (timingNeeded() && !timing())"
+              [disabled]="saving() || (timingNeeded() && (!timing() || !timingReviewed()))"
             >
               {{ saving() ? 'Saving…' : submitLabel() }}
             </button>
@@ -213,9 +263,26 @@ export type SourceMovementMode = 'RECEIPT' | 'TRANSFER' | 'BALANCE';
     }
     .timing-choice .choice {
       display: flex;
-      align-items: center;
-      gap: 0.5rem;
+      align-items: flex-start;
+      justify-content: flex-start;
+      gap: 0.65rem;
       min-height: 44px;
+    }
+    .timing-choice input[type='radio'],
+    .timing-review input {
+      width: 1.1rem;
+      height: 1.1rem;
+      min-width: 1.1rem;
+      min-height: 1.1rem;
+      flex: 0 0 1.1rem;
+      margin: 0.15rem 0 0;
+      padding: 0;
+      accent-color: var(--accent);
+    }
+    .timing-review {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.65rem;
     }
     .movement-note,
     .movement-error {
@@ -236,7 +303,9 @@ export type SourceMovementMode = 'RECEIPT' | 'TRANSFER' | 'BALANCE';
   `,
 })
 export class SourceMovementDialog implements OnInit {
+  private readonly dialog = viewChild<ElementRef<HTMLElement>>('movementDialog');
   readonly store = inject(CardNestStore);
+  private readonly calendarClock = inject(DeviceCalendarClock);
   private readonly snackbar = inject(SnackbarService);
   readonly mode = input.required<SourceMovementMode>();
   readonly sourceId = input('');
@@ -247,11 +316,18 @@ export class SourceMovementDialog implements OnInit {
   readonly fromId = signal('');
   readonly toId = signal('');
   readonly amount = signal('');
-  readonly date = signal(indiaTodayIso());
+  readonly replaceCashBalance = signal(false);
+  readonly replacesBalance = computed(
+    () =>
+      this.mode() === 'BALANCE' ||
+      (this.mode() === 'ADD_MONEY' && this.source()?.kind === 'CASH' && this.replaceCashBalance()),
+  );
+  readonly date = signal(this.calendarClock.calendar().dateIso);
   readonly time = signal('');
   readonly description = signal('');
   readonly categoryId = signal('income');
-  readonly timing = signal<BalanceTiming | ''>('');
+  readonly timing = signal<BalanceTiming | ''>('AFTER_BASELINE');
+  readonly timingReviewed = signal(false);
   readonly saving = signal(false);
   readonly error = signal<string | null>(null);
   readonly editing = computed(() => !!this.transfer());
@@ -259,9 +335,36 @@ export class SourceMovementDialog implements OnInit {
   // Persisted ids are plain strings; a new draft simply starts from a UUID.
   private draftId: string = crypto.randomUUID();
   private initialized = false;
+  constructor() {
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    effect((cleanup) => {
+      const dialog = this.dialog()?.nativeElement;
+      if (!dialog) return;
+      const unlock = lockDocumentScroll();
+      queueMicrotask(() => dialog.querySelector<HTMLInputElement>('input')?.focus());
+      cleanup(() => {
+        unlock();
+        if (previous?.isConnected) previous.focus();
+      });
+    });
+    effect(() => {
+      this.fromId();
+      this.toId();
+      this.sourceId();
+      this.date();
+      this.time();
+      this.timing();
+      this.store.paymentSources();
+      this.store.bankCashTracking();
+      this.timingReviewed.set(false);
+    });
+  }
+  reviewTiming(event: Event): void {
+    this.timingReviewed.set((event.target as HTMLInputElement).checked);
+  }
 
   readonly timingNeeded = computed(() => {
-    if (this.mode() === 'BALANCE') return false;
+    if (this.mode() === 'BALANCE' || this.mode() === 'ADD_MONEY') return false;
     const settings = this.store.bankCashTracking();
     const ids =
       this.mode() === 'RECEIPT'
@@ -307,7 +410,12 @@ export class SourceMovementDialog implements OnInit {
   );
   readonly title = computed(() => {
     if (this.mode() === 'BALANCE')
-      return this.source()?.kind === 'CASH' ? 'Set current cash balance' : 'Set current balance';
+      return this.source()?.kind === 'CASH'
+        ? 'Set current cash balance'
+        : this.source()?.kind === 'MEAL'
+          ? 'Set current wallet balance'
+          : 'Set current balance';
+    if (this.mode() === 'ADD_MONEY') return `Add money to ${this.source()?.nickname ?? 'account'}`;
     if (this.mode() === 'RECEIPT')
       return this.source()?.kind === 'CASH' ? 'Add cash' : 'Record incoming money';
     if (this.editing()) return this.loan() ? 'Edit loan repayment' : 'Edit transfer';
@@ -318,14 +426,27 @@ export class SourceMovementDialog implements OnInit {
     return 'Transfer between my accounts';
   });
   readonly submitLabel = computed(() =>
-    this.mode() === 'BALANCE' ? 'Save balance' : this.editing() ? 'Save changes' : 'Confirm',
+    this.mode() === 'BALANCE'
+      ? 'Save balance'
+      : this.mode() === 'ADD_MONEY'
+        ? 'Add money'
+        : this.editing()
+          ? 'Save changes'
+          : 'Confirm',
   );
   readonly balancePreview = computed(() => {
     const source = this.source();
     const value = parseMoneyToMinor(this.amount());
     if (!source || value === null) return '';
-    if (!bankCashTracked(source, this.store.bankCashTracking()))
-      return 'This sets the starting balance. Older entries are not replayed.';
+    const initialized =
+      bankCashTracked(source, this.store.bankCashTracking()) || hasWalletBaseline(source);
+    if (this.mode() === 'ADD_MONEY' && source.kind === 'MEAL' && !hasWalletBaseline(source))
+      return 'Set your current Pluxee balance first to enable Add money.';
+    if (this.mode() === 'ADD_MONEY' && !this.replacesBalance())
+      return `Current ${formatMoney(source.balanceMinor ?? 0, 'INR')} + ${formatMoney(value, 'INR')} = ${formatMoney((source.balanceMinor ?? 0) + value, 'INR')}. This is an audited balance change, not income or spending.`;
+    if (this.replacesBalance())
+      return `Available balance will be set to ${formatMoney(value, 'INR')} instead of adding to ${formatMoney(source.balanceMinor ?? 0, 'INR')}. This is an audited correction, not income or spending.`;
+    if (!initialized) return 'This sets the starting balance. Older entries are not replayed.';
     const correction = value - (source.balanceMinor ?? 0);
     return `Calculated ${formatMoney(source.balanceMinor ?? 0, 'INR')}. A ${correction < 0 ? '−' : '+'}${formatMoney(Math.abs(correction), 'INR')} correction is saved for audit; it is not income or spending.`;
   });
@@ -378,13 +499,48 @@ export class SourceMovementDialog implements OnInit {
   close(): void {
     if (!this.saving()) this.closed.emit();
   }
+  back(event: Event): void {
+    if (event.defaultPrevented || document.querySelector('app-select-picker dialog[open]')) return;
+    event.preventDefault();
+    this.close();
+  }
+  key(event: KeyboardEvent): void {
+    event.stopPropagation();
+    if (document.querySelector('app-select-picker dialog[open]')) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      this.close();
+      return;
+    }
+    if (event.key !== 'Tab') return;
+    const controls = [
+      ...this.dialog()!.nativeElement.querySelectorAll<HTMLElement>(
+        'button:not([disabled]),input:not([disabled]),textarea:not([disabled]),[tabindex="0"]',
+      ),
+    ].filter((control) => !control.closest('[hidden]'));
+    const first = controls[0],
+      last = controls.at(-1);
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last?.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first?.focus();
+    }
+  }
 
   async submit(event: Event): Promise<void> {
     event.preventDefault();
     if (this.saving()) return;
     this.initialise();
+    if (this.timingNeeded() && (!this.timing() || !this.timingReviewed())) {
+      this.error.set(
+        'Review and confirm whether this movement is already included in the balance.',
+      );
+      return;
+    }
     const amount = parseMoneyToMinor(this.amount().trim());
-    if (amount === null || (this.mode() !== 'BALANCE' && amount <= 0)) {
+    if (amount === null || (!this.replacesBalance() && amount <= 0)) {
       this.error.set('Enter a valid amount.');
       return;
     }
@@ -392,9 +548,12 @@ export class SourceMovementDialog implements OnInit {
     this.saving.set(true);
     const timing = this.timingNeeded() ? this.timing() || undefined : undefined;
     try {
-      if (this.mode() === 'BALANCE') {
+      if (this.replacesBalance()) {
         await this.store.setSourceBalance(this.sourceId(), amount, this.description());
         this.snackbar.show('Balance saved. The correction is recorded for audit.');
+      } else if (this.mode() === 'ADD_MONEY') {
+        await this.store.addSourceBalance(this.sourceId(), amount, this.description());
+        this.snackbar.show('Money added. The balance adjustment is recorded for audit.');
       } else if (this.mode() === 'RECEIPT') {
         const source = this.source();
         if (!source || !isBankOrCash(source)) throw new Error('Choose a bank account or cash.');
@@ -428,7 +587,9 @@ export class SourceMovementDialog implements OnInit {
         this.snackbar.show(
           this.loan()
             ? `${formatMoney(saved.amountMinor, 'INR')} loan repayment saved.`
-            : `${formatMoney(saved.amountMinor, 'INR')} moved. Both balances were updated together.`,
+            : saved.effects?.length
+              ? `${formatMoney(saved.amountMinor, 'INR')} moved. Both balances were updated together.`
+              : 'Movement recorded without changing confirmed balances.',
         );
       }
       this.saving.set(false);

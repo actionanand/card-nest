@@ -69,6 +69,27 @@
   display: grid;
   gap: 0.2rem;
 }
+.review-candidate > header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.35rem;
+  min-width: 0;
+}
+.evidence-copy {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+}
+.evidence-copy strong,
+.evidence-copy small,
+.evidence-status {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.evidence-status {
+  justify-self: start;
+}
 .review-candidate small {
   color: var(--muted);
   font-size: 0.75rem;
@@ -137,6 +158,18 @@
   align-items: start;
   gap: 0.8rem;
 }
+.profile-badges {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.35rem;
+  max-width: 45%;
+}
+.primary-bank-badge {
+  color: var(--accent);
+  background: var(--surface-2);
+}
 .profile-heading h2 {
   margin: 0;
   font-size: 1.05rem;
@@ -182,6 +215,41 @@
   margin: 0.75rem 0 0;
   font-size: 0.9rem;
   font-weight: 650;
+}
+.linked-account,
+.account-latest-activity {
+  margin: 0.55rem 0 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+.bank-transaction-history {
+  margin-top: 0.75rem;
+  border-top: 1px solid var(--line);
+}
+.bank-transaction-history h3 {
+  margin: 0.7rem 0 0.35rem;
+  font-size: 0.9rem;
+}
+.bank-transaction-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.55rem 0;
+  border-bottom: 1px solid var(--line);
+}
+.bank-transaction-row > div {
+  display: grid;
+  min-width: 0;
+  gap: 0.2rem;
+}
+.bank-transaction-row strong,
+.bank-transaction-row small {
+  overflow-wrap: anywhere;
+}
+.bank-transaction-row small {
+  color: var(--muted);
+  font-size: 0.74rem;
 }
 .profile-actions {
   display: flex;
@@ -277,4 +345,141 @@
   .form-grid {
     grid-template-columns: minmax(0, 1fr);
   }
+  .evidence-filters {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.page-header {
+  flex-wrap: wrap;
+  align-items: start;
+}
+.page-header > div {
+  flex: 1 1 15rem;
+  min-width: 0;
+}
+.page-header > .btn {
+  flex: 0 0 auto;
+  min-height: 44px;
+}
+.review-candidate,
+.profile-heading > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.check-field {
+  display: flex !important;
+  align-items: start;
+  gap: 0.6rem;
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
+.check-field input {
+  width: 1.2rem;
+  min-height: 1.2rem;
+  flex: 0 0 auto;
+}
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.6rem;
+  position: sticky;
+  bottom: -1rem;
+  padding: 0.8rem 0;
+  background: var(--surface);
+}
+app-profile-modal .activity-form {
+  padding: 0;
+}
+.discovery-actions {
+  display: grid;
+  justify-items: center;
+  gap: 0.6rem;
+}
+.discovery-actions > .btn {
+  width: fit-content;
+  max-width: 100%;
+  min-height: 48px;
+}
+.discovery-actions p {
+  width: 100%;
+  max-width: 48rem;
+}
+.evidence-filters {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: end;
+  gap: 0.65rem;
+}
+.evidence-filters > label {
+  display: grid;
+  min-width: 0;
+  gap: 0.35rem;
+  font-size: 0.82rem;
+}
+.evidence-filters input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 44px;
+  padding: 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: 0.55rem;
+  color: var(--ink);
+  background: var(--canvas);
+  font: inherit;
+}
+.archived-list h3 {
+  margin: 0.75rem 0 0.2rem;
+  color: var(--ink);
+  font-size: 0.85rem;
+}
+.profile-actions .btn,
+.icon-action {
+  min-height: 44px;
+}
+.review-candidate p {
+  margin: 0.3rem 0;
+}
+
+.bank-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  padding: 0.25rem;
+  gap: 0.25rem;
+  border: 1px solid var(--line);
+  border-radius: 0.8rem;
+  background: var(--surface-2);
+}
+.bank-tabs button {
+  min-width: 0;
+  min-height: 44px;
+  padding: 0.65rem 0.35rem;
+  border: 0;
+  border-radius: 0.6rem;
+  background: transparent;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.bank-tabs button[aria-selected='true'] {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+[role='tabpanel'][hidden] {
+  display: none;
+}
+[role='tabpanel']:not([hidden]) {
+  display: grid;
+  gap: 0.9rem;
+  min-width: 0;
+}
+.latest-activity {
+  margin-top: 0.8rem;
+}
+.activity-history {
+  min-width: 0;
+  padding-block: 0.8rem;
+  border-bottom: 1px solid var(--line);
+}
+.latest-activity h3 {
+  font-size: 0.9rem;
 }

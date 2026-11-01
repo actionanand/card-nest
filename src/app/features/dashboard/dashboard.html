@@ -141,7 +141,7 @@
             />
           </div>
           <div>
-            <strong>{{ transaction.merchant || transaction.type }}</strong
+            <strong>{{ transaction.merchant || transactionKind(transaction) }}</strong
             ><small
               >{{ categoryName(transaction.categoryId) }} ·
               {{ cardName(transaction.cardId) }}</small
@@ -326,7 +326,9 @@
                     </div>
                     <div class="breakdown-list__meta">
                       <strong>
-                        <span class="tx-name">{{ transaction.merchant || transaction.type }}</span>
+                        <span class="tx-name">{{
+                          transaction.merchant || transactionKind(transaction)
+                        }}</span>
                         @if (installmentBadge(transaction); as badge) {
                           <span class="tx-badge"
                             ><app-icon [name]="installmentIcon(transaction)" /> {{ badge }}</span

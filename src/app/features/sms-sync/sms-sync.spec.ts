@@ -1,7 +1,7 @@
 import { TestBed } from '@angular/core/testing';
 import { computed, signal } from '@angular/core';
 import { SmsSyncPage } from './sms-sync';
-import { SmsReviewService } from './sms-review.service';
+import { SmsReviewFilterRefreshError, SmsReviewService } from './sms-review.service';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { PurchaseReviewDraft, ScanStatus, SmsCandidate } from './sms-model';
 import axe from 'axe-core';
@@ -56,6 +56,307 @@ const demoCandidate = (): SmsCandidate => ({
 });
 
 describe('SMS review privacy and explicit approval UI', () => {
+  it('keeps Restore defaults beside Android Enable swipe and retains the enabled hint', async () => {
+    vi.mocked(Capacitor.getPlatform).mockReturnValue('android');
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const row = fixture.nativeElement.querySelector('.review-preference-actions') as HTMLElement;
+    expect(row.classList.contains('single-action')).toBe(false);
+    expect([...row.querySelectorAll('button')].map((button) => button.textContent?.trim())).toEqual(
+      ['Restore defaults', 'Enable swipe'],
+    );
+    expect(row.querySelector('#restore-default-review-filters')?.getAttribute('aria-label')).toBe(
+      'Restore default review filters',
+    );
+    swipePreference.set(true);
+    fixture.detectChanges();
+    expect(row.querySelectorAll('button')).toHaveLength(1);
+    expect(row.textContent).toContain('Swipe right to review and add');
+    fixture.destroy();
+  });
+  it('defaults unmatched Bank/UPI review to the primary account without approving it', async () => {
+    const primary: PaymentSource = {
+      id: 'primary-bank',
+      nickname: 'Everyday',
+      institution: 'ICICI Bank',
+      kind: 'DEBIT',
+      lastDigits: '123',
+      isPrimaryBank: true,
+      noLimit: true,
+      autoLoad: false,
+      archived: false,
+    };
+    const other: PaymentSource = {
+      ...primary,
+      id: 'other-bank',
+      nickname: 'Reserve',
+      institution: 'HDFC Bank',
+      lastDigits: '456',
+      isPrimaryBank: false,
+    };
+    paymentSources.set([primary, other]);
+    const candidate = demoCandidate();
+    candidate.kind = 'BANK_DEBIT';
+    candidate.item = {
+      ...candidate.item!,
+      kind: 'BANK_DEBIT',
+      issuer: undefined,
+      accountDigits: undefined,
+      direction: 'DEBIT',
+      purposeHint: 'PURCHASE',
+    };
+    candidates.set([candidate]);
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    const page = fixture.componentInstance;
+    page.open(candidate);
+    fixture.detectChanges();
+
+    expect(page.bankEditor.controls.source.value).toBe(primary.id);
+    expect(fixture.nativeElement.textContent).toContain('Pay from: Bank/UPI');
+    expect(sync.approveBank).not.toHaveBeenCalled();
+    expect(page.bankSourceOptions().map((option) => option.value)).toEqual([
+      '',
+      primary.id,
+      other.id,
+    ]);
+    fixture.destroy();
+  });
+  it('restores a bank repayment draft using its saved purpose before checking category compatibility', async () => {
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    const page = fixture.componentInstance;
+    store.categories.set([
+      { id: 'other', name: 'Other', icon: 'category', appliesTo: 'BOTH', archived: false },
+      {
+        id: 'payment',
+        name: 'Card Payment',
+        icon: 'payments',
+        appliesTo: 'CREDIT',
+        archived: false,
+      },
+    ]);
+    const candidate = demoCandidate();
+    candidate.kind = 'BANK_DEBIT';
+    candidate.item = {
+      ...candidate.item!,
+      kind: 'BANK_DEBIT',
+      direction: 'DEBIT',
+      accountDigits: '417',
+    };
+    sync.loadPurchaseReview.mockResolvedValueOnce({
+      mode: 'BANK',
+      bankPurpose: 'CARD_SETTLEMENT',
+      source: 'source-debit',
+      amount: '10',
+      merchant: 'Card settlement',
+      transactionDate: candidate.item.eventDate,
+      category: 'payment',
+      categoryOverridden: true,
+      existing: '',
+      separate: false,
+      paymentMethod: 'NONE',
+      paymentMethodDetail: '',
+      paymentMethodCustom: '',
+      smsAdditionalComment: '',
+    });
+    page.open(candidate);
+    await fixture.whenStable();
+    expect(page.bankEditor.controls.purpose.value).toBe('CARD_SETTLEMENT');
+    expect(page.bankEditor.controls.category.value).toBe('payment');
+    expect(page.notice()).not.toContain('category is unavailable');
+    page.bankEditor.controls.description.setValue('Repayment');
+    expect(page.bankEditor.controls.category.value).toBe('payment');
+  });
+  it('confirms restoration of every canonical filter, preserves Cancel and Clear, and guards double confirmation', async () => {
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const page = fixture.componentInstance;
+    page.search.set('old');
+    page.sourceFilter.set('source');
+    page.state.set('ALL');
+    page.kind.set('PURCHASE');
+    page.from.set('2026-01-01');
+    page.to.set('2026-02-01');
+    page.readFilter.set('ALL');
+    page.hideAlreadyAdded.set(false);
+    page.typeMode.set('MULTIPLE');
+    page.multipleKinds.set(['PURCHASE', 'BANK_DEBIT']);
+    page.multipleInitialized.set(true);
+    page.sortOrder.set('TRANSACTION_DESC');
+    sync.reviewPage.set(3);
+    sync.filterReview.mockClear();
+    const button = fixture.nativeElement.querySelector(
+      '#restore-default-review-filters',
+    ) as HTMLButtonElement;
+    button.click();
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('app-confirmation-dialog').textContent).toContain(
+      'Restore default filters?',
+    );
+    const before = page.search();
+    page.cancelRestoreFilters();
+    expect(page.search()).toBe(before);
+    expect(sync.filterReview).not.toHaveBeenCalled();
+    let release!: () => void;
+    sync.filterReview.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => (release = resolve));
+      sync.reviewPage.set(0);
+    });
+    page.requestRestoreFilters();
+    const first = page.confirmRestoreFilters();
+    const second = page.confirmRestoreFilters();
+    expect(sync.filterReview).toHaveBeenCalledTimes(1);
+    expect(page.search()).toBe('old');
+    release();
+    await Promise.all([first, second]);
+    fixture.detectChanges();
+    expect(sync.filterReview).toHaveBeenLastCalledWith(defaultReviewFilters());
+    expect({
+      state: page.state(),
+      kind: page.kind(),
+      search: page.search(),
+      source: page.sourceFilter(),
+      from: page.from(),
+      to: page.to(),
+      read: page.readFilter(),
+      mode: page.typeMode(),
+      kinds: page.multipleKinds(),
+      multipleInitialized: page.multipleInitialized(),
+      hideAlreadyAdded: page.hideAlreadyAdded(),
+      sortOrder: page.sortOrder(),
+    }).toEqual(defaultReviewFilters());
+    expect(sync.reviewPage()).toBe(0);
+    page.clearFilters();
+    expect(page.state()).toBe('ALL');
+    expect(page.readFilter()).toBe('ALL');
+    expect(sync.approve).not.toHaveBeenCalled();
+    expect(sync.approveBank).not.toHaveBeenCalled();
+  });
+  it('does not announce success or change filter signals when restoring defaults fails', async () => {
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const page = fixture.componentInstance;
+    page.search.set('keep');
+    const toast = vi.spyOn(TestBed.inject(SnackbarService), 'show');
+    sync.filterReview.mockRejectedValueOnce(new Error('Synthetic SQLite failure'));
+    page.requestRestoreFilters();
+    await page.confirmRestoreFilters();
+    expect(page.error()).toContain('Synthetic SQLite failure');
+    expect(page.search()).toBe('keep');
+    expect(page.restoringFilters()).toBe(false);
+    expect(toast).not.toHaveBeenCalled();
+  });
+  it('reflects saved default filters after refresh failure and exposes a retry without changing decisions', async () => {
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const page = fixture.componentInstance;
+    page.search.set('previous search');
+    page.sourceFilter.set('previous source');
+    page.state.set('DEFERRED');
+    page.readFilter.set('READ');
+    page.sortOrder.set('TRANSACTION_DESC');
+    const toast = vi.spyOn(TestBed.inject(SnackbarService), 'show');
+    sync.filterReview.mockRejectedValueOnce(
+      new SmsReviewFilterRefreshError(new Error('Synthetic inbox refresh failure')),
+    );
+
+    page.requestRestoreFilters();
+    await page.confirmRestoreFilters();
+    expect({
+      search: page.search(),
+      source: page.sourceFilter(),
+      kind: page.kind(),
+      mode: page.typeMode(),
+      kinds: page.multipleKinds(),
+      multipleInitialized: page.multipleInitialized(),
+      state: page.state(),
+      from: page.from(),
+      to: page.to(),
+      read: page.readFilter(),
+      hideAlreadyAdded: page.hideAlreadyAdded(),
+      sortOrder: page.sortOrder(),
+    }).toEqual(defaultReviewFilters());
+    expect(page.retryRestoredFilterRefresh()).toBe(true);
+    expect(page.notice()).toContain('Default filters were saved');
+    expect(toast).toHaveBeenCalledWith(
+      'Default filters saved. SMS Review could not refresh; retry the inbox refresh.',
+      'WARNING',
+    );
+    expect(toast).not.toHaveBeenCalledWith('Default SMS Review filters restored.');
+    expect(sync.approve).not.toHaveBeenCalled();
+    expect(sync.approveBank).not.toHaveBeenCalled();
+
+    await page.retryReviewInboxRefresh();
+    expect(sync.refresh).toHaveBeenCalled();
+    expect(page.retryRestoredFilterRefresh()).toBe(false);
+    expect(page.notice()).toBe('SMS Review inbox refreshed.');
+    fixture.destroy();
+  });
+  it('shares merchant rules across review forms and preserves an explicit category and draft override', async () => {
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    const page = fixture.componentInstance;
+    store.categories.set([
+      { id: 'other', name: 'Other', icon: 'category', appliesTo: 'BOTH', archived: false },
+      { id: 'dining', name: 'Dining', icon: 'restaurant', appliesTo: 'BOTH', archived: false },
+      { id: 'shopping', name: 'Shopping', icon: 'category', appliesTo: 'BOTH', archived: false },
+    ]);
+    const candidate = demoCandidate();
+    candidate.item!.merchant = 'Swiggy';
+    page.open(candidate);
+    expect(page.editor.controls.category.value).toBe('dining');
+    page.chooseReviewCategory('shopping');
+    page.editor.controls.merchant.setValue('Zomato');
+    expect(page.editor.controls.category.value).toBe('shopping');
+    page.confirmSeparatePurchase();
+    await fixture.whenStable();
+    expect(sync.savePurchaseReview).toHaveBeenLastCalledWith(
+      candidate.id,
+      expect.objectContaining({ category: 'shopping', categoryOverridden: true }),
+    );
+    sync.loadPurchaseReview.mockResolvedValueOnce({
+      mode: 'CARD',
+      source: 'demo-card',
+      amount: '10',
+      merchant: 'Swiggy',
+      transactionDate: candidate.item!.eventDate,
+      category: 'shopping',
+      categoryOverridden: true,
+      existing: '',
+      separate: false,
+      paymentMethod: 'NONE',
+      paymentMethodDetail: '',
+      paymentMethodCustom: '',
+      smsAdditionalComment: '',
+    });
+    page.open(candidate);
+    await fixture.whenStable();
+    expect(page.editor.controls.category.value).toBe('shopping');
+    page.editor.controls.merchant.setValue('Swiggy Instamart');
+    expect(page.editor.controls.category.value).toBe('shopping');
+    sync.loadPurchaseReview.mockResolvedValueOnce({
+      mode: 'CARD',
+      source: 'demo-card',
+      amount: '10',
+      merchant: 'Swiggy',
+      transactionDate: candidate.item!.eventDate,
+      category: 'deleted',
+      categoryOverridden: true,
+      existing: '',
+      separate: false,
+      paymentMethod: 'NONE',
+      paymentMethodDetail: '',
+      paymentMethodCustom: '',
+      smsAdditionalComment: '',
+    });
+    page.open(candidate);
+    await fixture.whenStable();
+    expect(page.editor.controls.category.value).toBe('other');
+    expect(page.notice()).toContain('original category is unavailable');
+  });
   const locked = signal(false);
   const foreground = signal(true);
   const candidates = signal<readonly SmsCandidate[]>([]);
@@ -65,6 +366,7 @@ describe('SMS review privacy and explicit approval UI', () => {
   const navigation = signal<{ extras: { info?: unknown; state?: Record<string, unknown> } } | null>(
     null,
   );
+  const routerNavigate = vi.fn().mockResolvedValue(true);
   const swipePreference = signal(false);
   const setDurableUiPreference = vi.fn().mockResolvedValue(undefined);
   const sync = {
@@ -112,6 +414,7 @@ describe('SMS review privacy and explicit approval UI', () => {
     approveBank: vi.fn().mockResolvedValue(undefined),
     loadPurchaseReview: vi.fn<() => Promise<PurchaseReviewDraft | null>>().mockResolvedValue(null),
     savePurchaseReview: vi.fn().mockResolvedValue(undefined),
+    splitSuggestion: vi.fn().mockResolvedValue(null),
   };
   const bankCashTracking = signal({ enabled: false, askCardSettlementFunding: false });
   const paymentSources = signal<readonly PaymentSource[]>([]);
@@ -169,6 +472,7 @@ describe('SMS review privacy and explicit approval UI', () => {
     expect(buttons[1].textContent).toContain('Mark read');
   });
   beforeEach(() => {
+    sync.splitSuggestion.mockReset().mockResolvedValue(null);
     sync.loadPurchaseReview.mockReset().mockResolvedValue(null);
     sync.savePurchaseReview.mockClear();
     locked.set(false);
@@ -187,7 +491,9 @@ describe('SMS review privacy and explicit approval UI', () => {
     sync.markingRead.set(false);
     store.cards.set([]);
     store.paymentSources.set([]);
-    store.categories.set([]);
+    store.categories.set([
+      { id: 'other', name: 'Other', icon: 'category', archived: false, appliesTo: 'BOTH' },
+    ]);
     bankCashTracking.set({ enabled: false, askCardSettlementFunding: false });
     store.transactions.set([]);
     store.loans.set([]);
@@ -199,7 +505,7 @@ describe('SMS review privacy and explicit approval UI', () => {
     TestBed.configureTestingModule({
       imports: [SmsSyncPage],
       providers: [
-        { provide: Router, useValue: { currentNavigation: navigation } },
+        { provide: Router, useValue: { currentNavigation: navigation, navigate: routerNavigate } },
         { provide: SmsReviewService, useValue: sync },
         {
           provide: CardNestStore,
@@ -207,6 +513,98 @@ describe('SMS review privacy and explicit approval UI', () => {
         },
       ],
     });
+  });
+  it('keeps Add to split payment distinct from duplicate matching and separate-purchase choices without posting money', async () => {
+    store.cards.set([demoCard]);
+    const first: CardTransaction = {
+      id: 'first-split-payment',
+      cardId: 'meal',
+      type: 'PURCHASE',
+      amountMinor: 20000,
+      currencyCode: 'INR',
+      transactionDate: '2026-10-18',
+      merchant: 'Local Market',
+      categoryId: 'other',
+      attachmentIds: [],
+      createdAt: 'before',
+      updatedAt: 'before',
+    };
+    store.transactions.set([
+      first,
+      { ...first, id: 'duplicate-candidate', cardId: demoCard.id, amountMinor: 10000 },
+    ]);
+    const proposal = {
+      targetId: first.id,
+      previousCandidateId: 'previous-sms',
+      previousTransactionId: first.id,
+      approximate: true,
+      reason: 'Consecutive financial alerts; receipt timing is approximate.',
+    };
+    sync.splitSuggestion.mockResolvedValue(proposal);
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const page = fixture.componentInstance;
+    page.open(demoCandidate());
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('app-sms-split-suggestion')?.textContent).toContain(
+      'Add to split payment',
+    );
+    const calls = sync.approve.mock.calls.length;
+    page.chooseSmsSplit(first.id);
+    expect(page.editor.getRawValue()).toMatchObject({
+      existing: '',
+      separate: false,
+      splitTarget: first.id,
+    });
+    expect(sync.savePurchaseReview).toHaveBeenLastCalledWith(
+      expect.any(String),
+      expect.objectContaining({ splitTargetId: first.id }),
+    );
+    page.confirmSeparatePurchase();
+    expect(page.editor.getRawValue()).toMatchObject({
+      existing: '',
+      separate: true,
+      splitTarget: '',
+    });
+    page.chooseSmsSplit(first.id);
+    page.chooseExisting('duplicate-candidate');
+    expect(page.editor.getRawValue()).toMatchObject({
+      existing: 'duplicate-candidate',
+      separate: false,
+      splitTarget: '',
+    });
+    expect(sync.approve.mock.calls.length).toBe(calls);
+    expect(store.transactions()).toHaveLength(2);
+  });
+  it('explains whether a duplicate suggestion came from the original SMS date instead of the edited review date', async () => {
+    store.cards.set([demoCard]);
+    const candidate = demoCandidate();
+    store.transactions.set([
+      {
+        id: 'original-date',
+        cardId: demoCard.id,
+        type: 'PURCHASE',
+        amountMinor: 10000,
+        currencyCode: 'INR',
+        transactionDate: candidate.item!.eventDate,
+        categoryId: 'other',
+        attachmentIds: [],
+        createdAt: 'before',
+        updatedAt: 'before',
+      },
+    ]);
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const page = fixture.componentInstance;
+    page.open(candidate);
+    page.editor.controls.transactionDate.setValue('2026-10-20');
+    expect(page.purchaseMatches()[0].reason).toContain('original SMS event date 2026-10-18');
+    expect(page.purchaseMatches()[0].reason).toContain('edited review date 2026-10-20');
+    expect(page.purchaseTimingNote()).toContain('checked separately');
   });
   it('shows visible match and separate choices without opening reconciliation, preserves edits and only records a choice', async () => {
     store.cards.set([demoCard]);
@@ -230,6 +628,16 @@ describe('SMS review privacy and explicit approval UI', () => {
     fixture.detectChanges();
     await fixture.whenStable();
     const page = fixture.componentInstance;
+    store.categories.update((categories) => [
+      ...categories,
+      {
+        id: 'groceries',
+        name: 'Pantry Staples',
+        icon: 'category',
+        archived: false,
+        appliesTo: 'BOTH',
+      },
+    ]);
     page.open(candidate);
     page.editor.patchValue({
       merchant: 'Milk',
@@ -237,6 +645,7 @@ describe('SMS review privacy and explicit approval UI', () => {
       smsAdditionalComment: 'Second visit',
       paymentMethod: 'CARD',
     });
+    page.chooseReviewCategory('groceries');
     fixture.detectChanges();
     const panel = fixture.nativeElement.querySelector('app-sms-purchase-comparison') as HTMLElement;
     expect(panel).not.toBeNull();
@@ -322,6 +731,32 @@ describe('SMS review privacy and explicit approval UI', () => {
       smsAdditionalComment: 'Second visit',
     });
   });
+  it('clears a saved split choice when the original financial sequence can no longer be established', async () => {
+    store.cards.set([demoCard]);
+    sync.loadPurchaseReview.mockResolvedValueOnce({
+      mode: 'CARD',
+      source: demoCard.id,
+      amount: '100',
+      merchant: 'Saved purchase',
+      transactionDate: '2026-10-18',
+      category: 'other',
+      existing: '',
+      separate: false,
+      splitTargetId: 'stale-group',
+      paymentMethod: 'NONE',
+      paymentMethodDetail: '',
+      paymentMethodCustom: '',
+      smsAdditionalComment: '',
+    });
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.componentInstance.open(demoCandidate());
+    await fixture.whenStable();
+    expect(fixture.componentInstance.editor.controls.splitTarget.value).toBe('');
+    expect(fixture.componentInstance.editor.controls.merchant.value).toBe('Saved purchase');
+    expect(fixture.componentInstance.notice()).toContain('fresh continuity review');
+  });
   it('uses compact icon-labelled swipe actions and keeps explicit row buttons when swipe is off', async () => {
     candidates.set([demoCandidate()]);
     const fixture = TestBed.createComponent(SmsSyncPage);
@@ -341,7 +776,9 @@ describe('SMS review privacy and explicit approval UI', () => {
       sync.reconciling.set(true);
       fixture.detectChanges();
       const status = fixture.nativeElement.querySelector('.review-loading-status') as HTMLElement;
-      const swipe = fixture.nativeElement.querySelector('.swipe-enable') as HTMLElement;
+      const actions = fixture.nativeElement.querySelector(
+        '.review-preference-actions',
+      ) as HTMLElement;
       expect(status.getAttribute('role')).toBe('status');
       expect(status.getAttribute('aria-live')).toBe('polite');
       expect(status.textContent).toContain('Loading review items…');
@@ -349,8 +786,9 @@ describe('SMS review privacy and explicit approval UI', () => {
       expect(status.querySelector('.review-loading-spinner')?.getAttribute('aria-hidden')).toBe(
         'true',
       );
-      expect(swipe.classList.contains('swipe-enable')).toBe(true);
-      expect(swipe.contains(status)).toBe(false);
+      expect(actions.querySelector('#restore-default-review-filters')).not.toBeNull();
+      expect(actions.querySelector('[aria-label="Enable SMS Review swipe actions"]')).toBeNull();
+      expect(actions.contains(status)).toBe(false);
       const audit = await axe.run(status, {
         runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa'] },
         rules: { 'color-contrast': { enabled: false } },
@@ -365,7 +803,7 @@ describe('SMS review privacy and explicit approval UI', () => {
     },
     30_000,
   );
-  it('preselects a suffix-free Pluxee wallet and Dining, with an available-category fallback', async () => {
+  it('preselects a suffix-free Pluxee wallet and merchant-based Dining, with an available-category fallback', async () => {
     const fixture = TestBed.createComponent(SmsSyncPage);
     const actualStore = TestBed.inject(CardNestStore);
     actualStore.paymentSources.set([
@@ -388,7 +826,13 @@ describe('SMS review privacy and explicit approval UI', () => {
     const candidate: SmsCandidate = {
       ...original,
       kind: 'PLUXEE_PURCHASE',
-      item: { ...original.item!, kind: 'PLUXEE_PURCHASE', issuer: 'Pluxee', cardDigits: undefined },
+      item: {
+        ...original.item!,
+        merchant: 'Zomato',
+        kind: 'PLUXEE_PURCHASE',
+        issuer: 'Pluxee',
+        cardDigits: undefined,
+      },
     };
     fixture.componentInstance.open(candidate);
     expect(fixture.componentInstance.editor.controls.source.value).toBe('synthetic-meal');
@@ -544,6 +988,121 @@ describe('SMS review privacy and explicit approval UI', () => {
       }),
     );
   });
+  it('keeps SMS filter edits in a draft until Apply and discards them on Cancel', async () => {
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const page = fixture.componentInstance;
+    vi.mocked(sync.filterReview).mockClear();
+
+    page.openFilterDialog();
+    page.updateFilterDraft('state', 'DEFERRED');
+    page.updateFilterDraft('source', '54321');
+    expect(page.state()).toBe('PENDING');
+    expect(page.sourceFilter()).toBe('');
+    page.closeFilterDialog();
+    expect(page.filterDraft()).toBeNull();
+    expect(page.state()).toBe('PENDING');
+    expect(page.sourceFilter()).toBe('');
+    expect(sync.filterReview).not.toHaveBeenCalled();
+
+    page.openFilterDialog();
+    page.updateFilterDraft('state', 'DEFERRED');
+    page.updateFilterDraft('source', '54321');
+    page.updateFilterDraft('from', '2026-03-02');
+    page.updateFilterDraft('to', '2026-03-01');
+    await page.applyFilterDraft();
+    expect(page.filterDateError()).toBe('The start date must be on or before the through date.');
+    expect(page.state()).toBe('PENDING');
+    expect(sync.filterReview).not.toHaveBeenCalled();
+
+    page.updateFilterDraft('to', '2026-03-03');
+    await page.applyFilterDraft();
+    await fixture.whenStable();
+    expect(page.filterDraft()).toBeNull();
+    expect(page.state()).toBe('DEFERRED');
+    expect(page.sourceFilter()).toBe('54321');
+    expect(sync.filterReview).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        state: 'DEFERRED',
+        source: '54321',
+        from: '2026-03-02',
+        to: '2026-03-03',
+      }),
+    );
+    fixture.destroy();
+  });
+  it('keeps unapplied SMS filters visible and retryable when saving preferences fails', async () => {
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const page = fixture.componentInstance;
+    sync.filterReview
+      .mockClear()
+      .mockRejectedValueOnce(new Error('Synthetic preference write failure'));
+
+    page.openFilterDialog();
+    page.updateFilterDraft('state', 'DEFERRED');
+    await page.applyFilterDraft();
+
+    expect(sync.filterReview).toHaveBeenCalledOnce();
+    expect(page.state()).toBe('PENDING');
+    expect(page.filterDraft()?.state).toBe('DEFERRED');
+    expect(page.filterDialogOpen()).toBe(true);
+    expect(page.filterSaving()).toBe(false);
+    expect(page.filterPersistenceError()).toBe('Synthetic preference write failure');
+    fixture.destroy();
+  });
+  it('applies saved SMS filters and offers retry when the inbox refresh fails afterward', async () => {
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const page = fixture.componentInstance;
+    sync.filterReview
+      .mockClear()
+      .mockRejectedValueOnce(
+        new SmsReviewFilterRefreshError(new Error('Synthetic inbox query failure')),
+      );
+    sync.refresh.mockClear().mockResolvedValue(undefined);
+
+    page.openFilterDialog();
+    page.updateFilterDraft('state', 'DEFERRED');
+    await page.applyFilterDraft();
+
+    expect(page.state()).toBe('DEFERRED');
+    expect(page.filterDialogOpen()).toBe(false);
+    expect(page.retryFilterRefresh()).toBe(true);
+    expect(page.notice()).toContain('filters were saved');
+    await page.retryReviewInboxRefresh();
+    expect(sync.refresh).toHaveBeenCalledOnce();
+    expect(page.retryFilterRefresh()).toBe(false);
+    fixture.destroy();
+  });
+  it('prevents duplicate SMS filter Apply while the preference write is pending', async () => {
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const page = fixture.componentInstance;
+    let finish!: () => void;
+    sync.filterReview
+      .mockClear()
+      .mockReturnValueOnce(new Promise<void>((resolve) => (finish = resolve)));
+
+    page.openFilterDialog();
+    page.updateFilterDraft('state', 'DEFERRED');
+    const applying = page.applyFilterDraft();
+    await page.applyFilterDraft();
+    page.closeFilterDialog();
+    expect(sync.filterReview).toHaveBeenCalledOnce();
+    expect(page.filterSaving()).toBe(true);
+    expect(page.filterDialogOpen()).toBe(true);
+    finish();
+    await applying;
+    expect(page.filterSaving()).toBe(false);
+    expect(page.state()).toBe('DEFERRED');
+    expect(page.filterDialogOpen()).toBe(false);
+    fixture.destroy();
+  });
   it('distinguishes transaction time, SMS receipt time, receipt-date fallback, and paste processing time', async () => {
     const fixture = TestBed.createComponent(SmsSyncPage);
     fixture.detectChanges();
@@ -698,7 +1257,7 @@ describe('SMS review privacy and explicit approval UI', () => {
     const page = fixture.componentInstance;
     page.changeTypeMode('MULTIPLE');
     page.multipleKinds.set(['PURCHASE', 'CASHBACK']);
-    page.advanced.set(true);
+    page.openFilterDialog();
     fixture.detectChanges();
     const root = fixture.nativeElement as HTMLElement;
     expect(root.querySelectorAll('.type-chips .or-separator')).toHaveLength(1);
@@ -961,6 +1520,65 @@ describe('SMS review privacy and explicit approval UI', () => {
       (fixture.nativeElement.querySelector('button[type=submit]') as HTMLButtonElement).disabled,
     ).toBe(true);
   });
+  it('excludes archived and deleted cards without substituting a same-suffix active card', async () => {
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    const archived = {
+      ...demoCard,
+      id: 'archived-card',
+      archived: true,
+      archivedAt: '2026-10-19T00:00:00Z',
+    };
+    store.cards.set([archived, { ...demoCard, id: 'deleted-card', deletedAt: '2026-10-19' }]);
+    fixture.detectChanges();
+    const page = fixture.componentInstance;
+    page.open(demoCandidate());
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(page.sources()).toEqual([]);
+    expect(page.editor.controls.source.value).toBe('');
+    expect(fixture.nativeElement.textContent).toContain('Restore the card');
+    page.reviewArchivedRecords(archived.id);
+    expect(page.editor.controls.source.value).toBe(archived.id);
+    store.cards.set([archived, demoCard]);
+    page.open(demoCandidate());
+    expect(page.sources().map((source) => source.id)).toEqual([demoCard.id]);
+    expect(page.editor.controls.source.value).toBe('');
+    store.cards.set([{ ...archived, archived: false }, demoCard]);
+    expect(page.sources().map((source) => source.id)).toEqual([archived.id, demoCard.id]);
+    fixture.destroy();
+  });
+  it.each(['PLUXEE_PURCHASE', 'FASTAG_TOLL'] as const)(
+    'excludes archived wallets for new %s entries',
+    async (kind) => {
+      const fixture = TestBed.createComponent(SmsSyncPage);
+      const wallet: PaymentSource = {
+        id: 'archived-wallet',
+        kind: kind === 'PLUXEE_PURCHASE' ? 'MEAL' : 'FASTAG',
+        nickname: 'Pluxee',
+        institution: 'Pluxee',
+        lastDigits: '4321',
+        vehicleNumber: 'KA01AB1234',
+        archived: true,
+        noLimit: false,
+        autoLoad: false,
+      };
+      paymentSources.set([wallet]);
+      const candidate = demoCandidate();
+      candidate.kind = kind;
+      candidate.item = {
+        ...candidate.item!,
+        kind,
+        issuer: kind === 'PLUXEE_PURCHASE' ? 'Pluxee' : undefined,
+        vehicleNumber: 'KA01AB1234',
+      };
+      fixture.detectChanges();
+      fixture.componentInstance.open(candidate);
+      await fixture.whenStable();
+      expect(fixture.componentInstance.sources()).toEqual([]);
+      expect(fixture.componentInstance.editor.controls.source.value).toBe('');
+      fixture.destroy();
+    },
+  );
   it('returns focus to the triggering review button and consumes Android Back', async () => {
     const fixture = TestBed.createComponent(SmsSyncPage);
     candidates.set([demoCandidate()]);
@@ -1042,12 +1660,8 @@ describe('SMS review privacy and explicit approval UI', () => {
   it('applies and clears filter chips including the original event-date range', () => {
     const fixture = TestBed.createComponent(SmsSyncPage);
     fixture.detectChanges();
-    const reviewState = fixture.debugElement
-      .queryAll(By.directive(AppSelectPicker))
-      .map((element) => element.componentInstance as AppSelectPicker)
-      .find((picker) => picker.label() === 'Review status');
-    expect(reviewState?.currentValue()).toBe('PENDING');
     const page = fixture.componentInstance;
+    expect(page.state()).toBe('PENDING');
     page.from.set('2026-10-01');
     page.search.set('DEMO');
     page.applyFilters();
@@ -1257,7 +1871,13 @@ describe('SMS review privacy and explicit approval UI', () => {
       },
     ]);
     store.categories.set([
-      { id: 'groceries', name: 'Groceries', icon: 'groceries', appliesTo: 'BOTH', archived: false },
+      {
+        id: 'meat-dairy',
+        name: 'Meat & Dairy',
+        icon: 'groceries',
+        appliesTo: 'BOTH',
+        archived: false,
+      },
       { id: 'other', name: 'Other', icon: 'other', appliesTo: 'BOTH', archived: false },
     ]);
     const fixture = TestBed.createComponent(SmsSyncPage);
@@ -1287,7 +1907,7 @@ describe('SMS review privacy and explicit approval UI', () => {
       purpose: 'PURCHASE',
       source: 'source-debit',
       description: 'HILL FARM MEATS',
-      category: 'groceries',
+      category: 'meat-dairy',
     });
     store.transactions.set([
       {
@@ -1314,7 +1934,7 @@ describe('SMS review privacy and explicit approval UI', () => {
       existing: '',
       separate: true,
       description: 'HILL FARM MEATS',
-      category: 'groceries',
+      category: 'meat-dairy',
     });
     page.approveBankEvent(new Event('submit'));
     await fixture.whenStable();
@@ -1324,7 +1944,7 @@ describe('SMS review privacy and explicit approval UI', () => {
         purpose: 'PURCHASE',
         sourceId: 'source-debit',
         amountMinor: 45000,
-        categoryId: 'groceries',
+        categoryId: 'meat-dairy',
         allowSeparate: true,
       }),
     );
@@ -1342,6 +1962,33 @@ describe('SMS review privacy and explicit approval UI', () => {
     };
     page.open(credit);
     expect(page.bankEditor.controls.purpose.value).toBe('');
+  });
+  it('saves the same SMS review draft before opening Find Banks for identity enrollment', async () => {
+    const candidate = demoCandidate();
+    candidate.kind = 'BANK_DEBIT';
+    candidate.item = {
+      ...candidate.item!,
+      kind: 'BANK_DEBIT',
+      direction: 'DEBIT',
+      accountDigits: '765',
+      accountMask: '432•••••765',
+      issuer: 'ICICI Bank',
+    };
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    const page = fixture.componentInstance;
+    page.open(candidate);
+    await fixture.whenStable();
+
+    await page.enrollFromMessage();
+
+    expect(sync.savePurchaseReview).toHaveBeenCalledWith(
+      candidate.id,
+      expect.objectContaining({ mode: 'BANK', transactionDate: candidate.item.eventDate }),
+    );
+    expect(routerNavigate).toHaveBeenCalledWith(['/bank-activity'], {
+      queryParams: { discoverCandidate: candidate.id },
+    });
+    fixture.destroy();
   });
 
   it('keeps a CRED repayment visible in SMS Review when bank tracking is off', async () => {
@@ -1384,6 +2031,13 @@ describe('SMS review privacy and explicit approval UI', () => {
     expect(fixture.componentInstance.bankIdentity()).toContain('HSBC');
     expect(fixture.componentInstance.bankReviewable()).toBe(false);
     expect(fixture.nativeElement.querySelector('.bank-review')).toBeNull();
+    const controls = fixture.nativeElement.querySelector('.evidence-match-controls') as HTMLElement;
+    expect(controls.querySelector('app-select-picker')).not.toBeNull();
+    expect(controls.querySelector(':scope > button')?.textContent).toContain(
+      'Confirm Payment / EMI match',
+    );
+    expect(getComputedStyle(controls).display).toBe('grid');
+    expect(getComputedStyle(controls).gap).toBe('0.875rem');
     expect(fixture.nativeElement.textContent).toContain(
       'enable Bank/Cash tracking and Ask to deduct bank balance for credit-card payments in Settings',
     );
@@ -1434,6 +2088,15 @@ describe('SMS review privacy and explicit approval UI', () => {
     page.open(candidate);
     fixture.detectChanges();
     expect(page.bankReviewable()).toBe(true);
+    expect(
+      fixture.nativeElement.querySelector(
+        '.reconciliation .evidence-match-controls app-select-picker',
+      ),
+    ).not.toBeNull();
+    expect(
+      fixture.nativeElement.querySelector('.reconciliation .evidence-match-controls > button')
+        ?.disabled,
+    ).toBe(true);
     expect(page.bankEditor.controls.purpose.value).toBe('');
     expect(page.bankPurposeOptions().map((option) => option.value)).toContain('CARD_SETTLEMENT');
     expect(page.bankEditor.controls.source.value).toBe(bank.id);

@@ -1,3 +1,5 @@
+import { suggestCategory } from '../../core/services/category-matcher';
+import { CATEGORY_REGISTRY } from '../../core/data/category-definitions';
 import {
   BankCashTrackingSettings,
   CardTransaction,
@@ -9,6 +11,10 @@ import {
   TransactionType,
 } from '../../core/models/domain';
 import { purchaseCompatible } from './sms-purchase-matching';
+import { matchesTransactionType } from '../../core/services/money';
+import { normalizedBank, recognizedBank } from '../../core/services/bank-account-identifier';
+export { bankDisplayName } from '../../core/services/bank-account-identifier';
+import { bankTrackingEnabled } from '../../core/services/source-balance';
 
 export type SmsKind =
   | 'PURCHASE'
@@ -61,6 +67,7 @@ export interface SmsEvidence {
   merchantEvidence?: string;
   cardDigits?: string;
   accountDigits?: string;
+  accountMask?: string;
   issuer?: string;
   reference?: string;
   reportedBalanceMinor?: number;
@@ -75,6 +82,7 @@ export interface SmsEvidence {
   /** Movement of the customer's own account. Counterparty wording never sets this. */
   direction?: 'DEBIT' | 'CREDIT';
   counterpartyAccountDigits?: string;
+  counterpartyAccountMask?: string;
   purposeHint?:
     | 'PURCHASE'
     | 'INCOMING'
@@ -95,8 +103,10 @@ export function suspectEvidence(item: SmsEvidence): boolean {
   );
 }
 export interface ApprovalEdits {
+  splitTargetId?: string;
   transactionDate?: string;
   categoryId?: string;
+  categoryOverridden?: boolean;
   relatedTransactionId?: string;
   /** Explicit paying bank account for a card payment; never inferred. */
   fundingSourceId?: string;
@@ -108,6 +118,10 @@ export interface ApprovalEdits {
   smsAdditionalComment?: string;
 }
 export interface PurchaseReviewDraft {
+  categoryOverridden?: boolean;
+  bankPurpose?: BankPurpose;
+  categoryUnavailable?: boolean;
+  splitTargetId?: string;
   mode: 'CARD' | 'BANK';
   source: string;
   amount: string;
@@ -270,6 +284,20 @@ export function eligibleSources(
     .map((card) => card.id);
 }
 
+/** Active source IDs for creating a new entry; historical matching keeps using eligibleSources. */
+export function creatableSources(
+  item: SmsEvidence,
+  cards: readonly CreditCard[],
+  sources: readonly PaymentSource[],
+): readonly string[] {
+  return eligibleSources(item, cards, sources).filter((id) => {
+    const card = cards.find((entry) => entry.id === id);
+    if (card) return !card.archived && !card.deletedAt;
+    const source = sources.find((entry) => entry.id === id);
+    return !!source && !source.archived;
+  });
+}
+
 export function isPluxeeSource(source: PaymentSource): boolean {
   return (
     normalizedIssuer(source.institution) === 'pluxee' ||
@@ -307,18 +335,30 @@ export function bankPurposes(
   if (!isBankEvidence(item)) return [];
   const direction = bankDirection(item);
   if (!direction) return [];
-  if (direction === 'CREDIT') return settings.enabled ? ['INCOME', 'TRANSFER'] : ['INCOME'];
+  if (direction === 'CREDIT')
+    return bankTrackingEnabled(settings) ? ['INCOME', 'TRANSFER'] : ['INCOME'];
   const repayment =
     item.kind === 'PAYMENT_INITIATED' ||
     item.kind === 'LOAN_DEBIT' ||
     item.purposeHint === 'CARD_REPAYMENT' ||
     item.purposeHint === 'LOAN_REPAYMENT';
   const purposes: BankPurpose[] = repayment ? [] : ['PURCHASE'];
-  if (settings.enabled && item.kind !== 'LOAN_DEBIT' && item.kind !== 'PAYMENT_INITIATED')
+  if (
+    bankTrackingEnabled(settings) &&
+    item.kind !== 'LOAN_DEBIT' &&
+    item.kind !== 'PAYMENT_INITIATED'
+  )
     purposes.push('TRANSFER');
-  if (settings.enabled && settings.askCardSettlementFunding && item.kind !== 'LOAN_DEBIT')
+  if (
+    bankTrackingEnabled(settings) &&
+    settings.askCardSettlementFunding &&
+    item.kind !== 'LOAN_DEBIT'
+  )
     purposes.push('CARD_SETTLEMENT');
-  if (settings.enabled && (item.kind === 'LOAN_DEBIT' || item.purposeHint === 'LOAN_REPAYMENT'))
+  if (
+    bankTrackingEnabled(settings) &&
+    (item.kind === 'LOAN_DEBIT' || item.purposeHint === 'LOAN_REPAYMENT')
+  )
     purposes.push('LOAN_REPAYMENT');
   return purposes;
 }
@@ -339,26 +379,6 @@ export function defaultBankPurpose(
   return '';
 }
 
-export function bankDisplayName(issuer: string | undefined): string | undefined {
-  if (!issuer) return undefined;
-  const names: Record<string, string> = {
-    hsbc: 'HSBC',
-    icici: 'ICICI Bank',
-    hdfc: 'HDFC Bank',
-    axis: 'Axis Bank',
-    pnb: 'Punjab National Bank',
-    scb: 'Standard Chartered',
-    federal: 'Federal Bank',
-    idfc: 'IDFC FIRST Bank',
-    au: 'AU Small Finance Bank',
-    kotak: 'Kotak Mahindra Bank',
-    sbi: 'State Bank of India',
-    bob: 'Bank of Baroda',
-    slice: 'Slice',
-  };
-  return names[normalizedIssuer(issuer)] ?? issuer;
-}
-
 /** Masks expose 3–5 trailing digits; the shorter value must be the tail of the longer one. */
 export function accountSuffixMatches(left: string | undefined, right: string | undefined): boolean {
   if (!left || !right) return false;
@@ -369,9 +389,13 @@ export function accountSuffixMatches(left: string | undefined, right: string | u
 function bankConflicts(source: PaymentSource, issuer: string | undefined): boolean {
   const institution = source.institution?.trim();
   if (!issuer || !institution || institution === 'Primary bank') return false;
-  const left = normalizedIssuer(institution);
-  const right = normalizedIssuer(issuer);
-  return !!left && !!right && !left.includes(right) && !right.includes(left);
+  const left = normalizedBank(institution);
+  const right = normalizedBank(issuer);
+  const explicitBankName = /\b(bank|banc|credit union|small finance|financial institution)\b/i.test(
+    issuer,
+  );
+  const trustworthyIssuer = recognizedBank(issuer) || explicitBankName;
+  return trustworthyIssuer && !!left && !!right && left !== right;
 }
 
 /**
@@ -382,10 +406,16 @@ export function matchingBankAccounts(
   item: Pick<SmsEvidence, 'accountDigits' | 'issuer'>,
   sources: readonly PaymentSource[],
 ): readonly PaymentSource[] {
+  return matchingBankAccountCandidates(item, sources).filter((source) => !source.archived);
+}
+
+export function matchingBankAccountCandidates(
+  item: Pick<SmsEvidence, 'accountDigits' | 'issuer'>,
+  sources: readonly PaymentSource[],
+): readonly PaymentSource[] {
   return sources.filter(
     (source) =>
       source.kind === 'DEBIT' &&
-      !source.archived &&
       !!source.lastDigits &&
       accountSuffixMatches(item.accountDigits, source.lastDigits) &&
       !bankConflicts(source, item.issuer),
@@ -398,9 +428,9 @@ export function suggestedBankSources(
   sources: readonly PaymentSource[],
   settings: BankCashTrackingSettings,
 ): readonly string[] {
-  const matches = matchingBankAccounts(item, sources);
-  if (matches.length) return matches.length === 1 ? [matches[0].id] : [];
-  if (settings.enabled) return [];
+  const matches = matchingBankAccountCandidates(item, sources);
+  if (matches.length) return matches.length === 1 && !matches[0].archived ? [matches[0].id] : [];
+  if (bankTrackingEnabled(settings)) return [];
   const generic = sources.filter(
     (source) => source.kind === 'DEBIT' && !source.archived && !source.lastDigits,
   );
@@ -432,7 +462,7 @@ export function bankExistingSuggestions(
   return transactions.filter(
     (entry) =>
       entry.cardId === sourceId &&
-      entry.type === type &&
+      matchesTransactionType(entry, type) &&
       entry.currencyCode === item.currency &&
       entry.amountMinor === amountMinor &&
       (type === 'PURCHASE'
@@ -442,45 +472,28 @@ export function bankExistingSuggestions(
   );
 }
 
-const BANK_PURCHASE_CATEGORY_HINTS: readonly [RegExp, string][] = [
-  [/\b(?:mart|grocer\w*|supermarket|vegetables?|fruits?|meats?|fish|dairy|milk)\b/i, 'groceries'],
-  [/\b(?:cafe|coffee|restaurant|eatery|dining|bakery|food)\b/i, 'dining'],
-  [/\b(?:fuel|petrol|diesel)\b/i, 'fuel'],
-  [/\b(?:electricity|water bill|gas bill|broadband)\b/i, 'utilities'],
-];
-
-/** Existing usable category for a bank event; Other is the safe fallback. */
+/** Compatibility entry point; review screens share the offline matcher. */
 export function defaultBankCategory(
   purpose: BankPurpose | '',
   merchant: string | undefined,
-  categories: readonly Pick<Category, 'id' | 'archived' | 'appliesTo'>[],
+  categories: readonly (Pick<Category, 'id' | 'archived' | 'appliesTo'> &
+    Partial<Pick<Category, 'name' | 'icon'>>)[],
 ): string {
-  const usable = (id: string, incompatible: Category['appliesTo']) =>
-    categories.some(
-      (category) => category.id === id && !category.archived && category.appliesTo !== incompatible,
-    );
-  if (purpose === 'INCOME')
-    return usable('income', 'EXPENSE')
-      ? 'income'
-      : usable('contra-expenses', 'EXPENSE')
-        ? 'contra-expenses'
-        : 'other';
-  const hint = BANK_PURCHASE_CATEGORY_HINTS.find(([pattern]) => pattern.test(merchant ?? ''))?.[1];
-  return hint && usable(hint, 'CREDIT') ? hint : 'other';
-}
-
-export function defaultPluxeeCategory(
-  kind: SmsKind,
-  categories: readonly Pick<Category, 'id' | 'archived' | 'appliesTo'>[],
-): string {
-  const preferred = kind === 'PLUXEE_PURCHASE' ? 'dining' : 'contra-expenses';
-  const incompatible = kind === 'PLUXEE_PURCHASE' ? 'CREDIT' : 'EXPENSE';
-  return categories.some(
-    (category) =>
-      category.id === preferred && !category.archived && category.appliesTo !== incompatible,
-  )
-    ? preferred
-    : 'other';
+  return suggestCategory(
+    {
+      purpose:
+        purpose === 'INCOME' ? 'INCOME' : purpose === 'CARD_SETTLEMENT' ? 'PAYMENT' : 'PURCHASE',
+      merchant,
+    },
+    categories.map((category) => ({
+      ...category,
+      name:
+        category.name ??
+        CATEGORY_REGISTRY.categories.find((def) => def.id === category.id)?.name ??
+        category.id,
+      icon: category.icon ?? 'category',
+    })),
+  );
 }
 
 /** Aliases identify issuers; only cardDigits (never accountDigits) identifies a card. */
@@ -501,6 +514,8 @@ export function normalizedIssuer(value: string | undefined): string {
     [/federal/, 'federal'],
     [/kotak/, 'kotak'],
     [/rbl|ratnakar/, 'rbl'],
+    [/yesbank|^yes$/, 'yes'],
+    [/indusind/, 'indusind'],
     [/sodexo|pluxee/, 'pluxee'],
   ];
   return (
@@ -552,7 +567,7 @@ export function existingSuggestions(
   return transactions.filter(
     (t) =>
       t.cardId === sourceId &&
-      t.type === type &&
+      matchesTransactionType(t, type) &&
       t.currencyCode === item.currency &&
       t.amountMinor === amountMinor &&
       Math.abs(Date.parse(t.transactionDate) - Date.parse(reviewDate)) <= 3 * 86400000,

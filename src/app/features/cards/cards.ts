@@ -1,4 +1,5 @@
 import { DOCUMENT } from '@angular/common';
+import { CommittedSaveRefreshError } from '../../core/services/committed-save-refresh-error';
 import { Component, computed, effect, inject, signal } from '@angular/core';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
@@ -964,26 +965,32 @@ export class CardsPage {
           ? 'Outstanding paid'
           : 'Card payment';
     const funding = this.paymentFundingSourceId();
-    if (funding) {
-      this.paymentSaving.set(true);
-      try {
+    this.paymentSaving.set(true);
+    let refreshWarning: string | null = null;
+    try {
+      if (funding) {
         await this.store.recordFundedPayment(card.id, amount, label, funding);
-      } catch (error: unknown) {
+      } else await this.store.recordPayment(card.id, amount, label);
+    } catch (error: unknown) {
+      if (error instanceof CommittedSaveRefreshError) refreshWarning = error.message;
+      else {
         this.paymentConfirmationOpen.set(false);
         this.paymentError.set(
           error instanceof Error ? error.message : 'The payment could not be saved.',
         );
         return;
-      } finally {
-        this.paymentSaving.set(false);
       }
-    } else this.store.recordPayment(card.id, amount, label);
+    } finally {
+      this.paymentSaving.set(false);
+    }
     this.paymentConfirmationOpen.set(false);
     this.paymentCard.set(null);
     this.snackbar.show(
-      funding
-        ? `${this.money(amount, card.currencyCode)} payment recorded and deducted from ${this.store.sourceDetail(funding)}.`
-        : `${this.money(amount, card.currencyCode)} payment recorded.`,
+      refreshWarning ??
+        (funding
+          ? `${this.money(amount, card.currencyCode)} payment recorded and deducted from ${this.store.sourceDetail(funding)}.`
+          : `${this.money(amount, card.currencyCode)} payment recorded.`),
+      refreshWarning ? 'WARNING' : 'SUCCESS',
     );
   }
   delete(card: CreditCard): void {

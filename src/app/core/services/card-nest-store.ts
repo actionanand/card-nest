@@ -1,4 +1,5 @@
 import { Service, computed, inject, signal } from '@angular/core';
+import { CommittedSaveRefreshError } from './committed-save-refresh-error';
 import {
   BalanceTiming,
   BankCashTrackingSettings,
@@ -12,6 +13,7 @@ import {
   LoanCommitment,
   MonthlyIncomeRecord,
   PaymentSource,
+  PaymentGroup,
   RecurringRule,
   SourceBalanceAdjustment,
   SourceTransfer,
@@ -19,16 +21,30 @@ import {
 import { DatabaseSession, SqliteDatabase } from '../data/sqlite-database';
 import { walletEffectApplies } from './wallet-anchor';
 import {
+  bankDisplayName,
+  displayBankAccountSuffix,
+  fingerprintCompleteBankAccount,
+  fingerprintsMatch,
+  fingerprintsProveDistinct,
+  legacyFingerprintCompleteBankAccount,
+  matchesBank,
+  parseBankAccountIdentifier,
+} from './bank-account-identifier';
+import {
   BANK_CASH_TRACKING_KEY,
   DEFAULT_BANK_CASH_TRACKING,
+  bankTrackingEnabled,
+  cashTrackingEnabled,
   applyBankCashTransaction,
   applyTransferEffects,
   applyWalletTransaction,
   bankAccountLabel,
   bankCashTracked,
+  hasWalletBaseline,
   isBankOrCash,
   liquidTotals,
   parseBankCashTracking,
+  sourceBalanceTrackingEnabled,
   reverseBalanceEffect,
   reverseTransferEffects,
   TIMING_QUESTION,
@@ -45,9 +61,30 @@ import {
   toIsoDate,
 } from './billing-cycle';
 import { calculateNetSpending, calculateOutstanding, transactionEffect } from './money';
+import {
+  attachPaymentGroup,
+  detachPaymentGroup,
+  eligiblePaymentMember,
+  PaymentGroupEdits,
+  readPaymentGroups,
+} from './payment-groups';
 import { indiaTimeOfDay, indiaTodayIso } from './india-date';
+import { currentLocalCalendar, DeviceCalendarClock } from './device-date';
 import { APP_ENVIRONMENT } from './app-environment';
 import { initialiseAppData } from '../data/app-initialization';
+import {
+  DEFAULT_CATEGORIES,
+  CATEGORY_REGISTRY,
+  categoryDefinition,
+  formatNewCategoryName,
+  normalizedCategoryName,
+} from '../data/category-definitions';
+import {
+  reconcileCategoryCatalog,
+  deletePersistedCategory,
+  CategoryCatalogEntry,
+  CategoryMigrationRecord,
+} from '../data/category-catalog';
 import {
   configureMoneyDisplay,
   countryOption,
@@ -55,11 +92,9 @@ import {
   isSupportedDisplayCurrency,
 } from './currency-display';
 
-const now = new Date();
-const today = now.toISOString().slice(0, 10);
-const monthStart = `${today.slice(0, 7)}-01`;
 const FLASH_SOURCE_STORAGE_KEY = 'cardnest_flash_transaction_source_id';
 const PAYMENT_SOURCES_PREFERENCE_KEY = 'payment_sources';
+const BANK_ACCOUNT_FINGERPRINT_KEY = 'bank_account_fingerprint_key';
 
 function readFlashSourcePreference(): string | null {
   try {
@@ -85,186 +120,194 @@ function clearFlashSourcePreference(): void {
   }
 }
 
-const SAMPLE_CARDS: readonly CreditCard[] = [
-  {
-    id: 'card-demo-one',
-    nickname: 'Everyday',
-    issuerName: 'Northstar Bank',
-    lastDigits: '4821',
-    network: 'VISA',
-    subtype: 'Visa Signature',
-    theme: 'indigo',
-    statementDay: 18,
-    dueDateMode: 'DAYS_AFTER_STATEMENT',
-    daysAfterStatement: 20,
-    adjustDueDateOnWeekend: true,
-    creditLimitMinor: 25000000,
-    currencyCode: 'INR',
-    openingBalanceMinor: 0,
-    remindToSettle: true,
-    annualFeeEnabled: true,
-    annualFee: {
-      amountMinor: 99900,
-      renewalMonth: 10,
-      renewalDay: 12,
-      frequencyMonths: 12,
-      waiverThresholdMinor: 10000000,
-      waiverPeriod: 'ANNIVERSARY',
-    },
-    emergencyPhones: [],
-    supportEmails: [],
-    archived: false,
-    createdAt: today,
-    updatedAt: today,
-  },
-  {
-    id: 'card-demo-two',
-    nickname: 'Travel',
-    issuerName: 'Atlas Credit',
-    lastDigits: '1907',
-    network: 'MASTERCARD',
-    subtype: 'World',
-    theme: 'teal',
-    statementDay: 4,
-    dueDateMode: 'DAYS_AFTER_STATEMENT',
-    daysAfterStatement: 20,
-    adjustDueDateOnWeekend: true,
-    creditLimitMinor: 40000000,
-    currencyCode: 'INR',
-    openingBalanceMinor: 0,
-    remindToSettle: true,
-    annualFeeEnabled: false,
-    emergencyPhones: [],
-    supportEmails: [],
-    archived: false,
-    createdAt: today,
-    updatedAt: today,
-  },
-];
+function normalizePrimaryBankSources(sources: readonly PaymentSource[]): PaymentSource[] {
+  const banks = sources.filter(
+    (source) =>
+      source.kind === 'DEBIT' &&
+      !source.archived &&
+      source.id !== 'source-debit' &&
+      source.institution !== 'Primary bank',
+  );
+  if (!banks.length) return sources.map((source) => ({ ...source }));
+  const primaryId = banks.find((source) => source.isPrimaryBank)?.id ?? banks[0].id;
+  return sources.map((source) => {
+    if (source.kind !== 'DEBIT') return source;
+    if (source.id === 'source-debit') return { ...source, archived: true, isPrimaryBank: false };
+    if (source.institution === 'Primary bank') return source;
+    return { ...source, isPrimaryBank: !source.archived && source.id === primaryId };
+  });
+}
 
-const CATEGORIES: readonly Category[] = [
-  ['groceries', 'Groceries', 'shopping_basket', '#e0a860'],
-  ['dining', 'Dining', 'restaurant', '#de7d68'],
-  ['fuel', 'Fuel', 'local_gas_station', '#5a9d90'],
-  ['shopping', 'Shopping', 'shopping_bag', '#9075b5'],
-  ['travel', 'Travel', 'flight', '#4e87c7'],
-  ['utilities', 'Utilities', 'bolt', '#c8a43b'],
-  ['healthcare', 'Healthcare', 'health_and_safety', '#d56a7b'],
-  ['subscription', 'Subscription', 'subscriptions', '#65758b'],
-  ['payment', 'Card Payment', 'payments', '#4e9d73'],
-  ['contra-expenses', 'Contra-expenses', 'banknote_arrow_down', '#4e9d73'],
-  ['income', 'Income', 'banknote_arrow_up', '#3f8f63'],
-  ['other', 'Other', 'category', '#7a8797'],
-].map(
-  ([id, name, icon, colour]) =>
-    ({
-      id,
-      name,
-      icon,
-      colour,
-      appliesTo:
-        id === 'payment' || id === 'contra-expenses' || id === 'income' ? 'CREDIT' : 'BOTH',
+function sampleCards(today: string): readonly CreditCard[] {
+  return [
+    {
+      id: 'card-demo-one',
+      nickname: 'Everyday',
+      issuerName: 'Northstar Bank',
+      lastDigits: '4821',
+      network: 'VISA',
+      subtype: 'Visa Signature',
+      theme: 'indigo',
+      statementDay: 18,
+      dueDateMode: 'DAYS_AFTER_STATEMENT',
+      daysAfterStatement: 20,
+      adjustDueDateOnWeekend: true,
+      creditLimitMinor: 25000000,
+      currencyCode: 'INR',
+      openingBalanceMinor: 0,
+      remindToSettle: true,
+      annualFeeEnabled: true,
+      annualFee: {
+        amountMinor: 99900,
+        renewalMonth: 10,
+        renewalDay: 12,
+        frequencyMonths: 12,
+        waiverThresholdMinor: 10000000,
+        waiverPeriod: 'ANNIVERSARY',
+      },
+      emergencyPhones: [],
+      supportEmails: [],
       archived: false,
-    }) as Category,
-);
+      createdAt: today,
+      updatedAt: today,
+    },
+    {
+      id: 'card-demo-two',
+      nickname: 'Travel',
+      issuerName: 'Atlas Credit',
+      lastDigits: '1907',
+      network: 'MASTERCARD',
+      subtype: 'World',
+      theme: 'teal',
+      statementDay: 4,
+      dueDateMode: 'DAYS_AFTER_STATEMENT',
+      daysAfterStatement: 20,
+      adjustDueDateOnWeekend: true,
+      creditLimitMinor: 40000000,
+      currencyCode: 'INR',
+      openingBalanceMinor: 0,
+      remindToSettle: true,
+      annualFeeEnabled: false,
+      emergencyPhones: [],
+      supportEmails: [],
+      archived: false,
+      createdAt: today,
+      updatedAt: today,
+    },
+  ];
+}
 
-const SAMPLE_TRANSACTIONS: readonly CardTransaction[] = [
-  {
-    id: 'tx-1',
-    cardId: 'card-demo-one',
-    type: 'PURCHASE',
-    amountMinor: 284900,
-    currencyCode: 'INR',
-    transactionDate: today,
-    merchant: 'Fresh Basket',
-    categoryId: 'groceries',
-    attachmentIds: [],
-    createdAt: today,
-    updatedAt: today,
-  },
-  {
-    id: 'tx-2',
-    cardId: 'card-demo-two',
-    type: 'PURCHASE',
-    amountMinor: 1249900,
-    currencyCode: 'INR',
-    transactionDate: monthStart,
-    merchant: 'Skyline Hotels',
-    categoryId: 'travel',
-    attachmentIds: [],
-    createdAt: today,
-    updatedAt: today,
-  },
-  {
-    id: 'tx-3',
-    cardId: 'card-demo-one',
-    type: 'PURCHASE',
-    amountMinor: 89900,
-    currencyCode: 'INR',
-    transactionDate: monthStart,
-    merchant: 'Streambox',
-    categoryId: 'subscription',
-    attachmentIds: [],
-    createdAt: today,
-    updatedAt: today,
-  },
-  {
-    id: 'tx-4',
-    cardId: 'card-demo-one',
-    type: 'PAYMENT',
-    amountMinor: 500000,
-    currencyCode: 'INR',
-    transactionDate: monthStart,
-    merchant: 'Payment received',
-    categoryId: 'payment',
-    attachmentIds: [],
-    createdAt: today,
-    updatedAt: today,
-  },
-];
+const CATEGORIES = DEFAULT_CATEGORIES;
+
+function sampleTransactions(today: string): readonly CardTransaction[] {
+  const monthStart = `${today.slice(0, 7)}-01`;
+  return [
+    {
+      id: 'tx-1',
+      cardId: 'card-demo-one',
+      type: 'PURCHASE',
+      amountMinor: 284900,
+      currencyCode: 'INR',
+      transactionDate: today,
+      merchant: 'Fresh Basket',
+      categoryId: 'groceries',
+      attachmentIds: [],
+      createdAt: today,
+      updatedAt: today,
+    },
+    {
+      id: 'tx-2',
+      cardId: 'card-demo-two',
+      type: 'PURCHASE',
+      amountMinor: 1249900,
+      currencyCode: 'INR',
+      transactionDate: monthStart,
+      merchant: 'Skyline Hotels',
+      categoryId: 'travel',
+      attachmentIds: [],
+      createdAt: today,
+      updatedAt: today,
+    },
+    {
+      id: 'tx-3',
+      cardId: 'card-demo-one',
+      type: 'PURCHASE',
+      amountMinor: 89900,
+      currencyCode: 'INR',
+      transactionDate: monthStart,
+      merchant: 'Streambox',
+      categoryId: 'subscription',
+      attachmentIds: [],
+      createdAt: today,
+      updatedAt: today,
+    },
+    {
+      id: 'tx-4',
+      cardId: 'card-demo-one',
+      type: 'PAYMENT',
+      amountMinor: 500000,
+      currencyCode: 'INR',
+      transactionDate: monthStart,
+      merchant: 'Payment received',
+      categoryId: 'payment',
+      attachmentIds: [],
+      createdAt: today,
+      updatedAt: today,
+    },
+  ];
+}
 
 const TRANSACTION_CACHE_KEY = 'cardnest.transactions.cache.v1';
 
-const PAYMENT_SOURCES: readonly PaymentSource[] = [
-  {
-    id: 'source-cash',
-    nickname: 'Cash',
-    kind: 'CASH',
-    noLimit: true,
-    autoLoad: false,
-    archived: false,
-  },
-  {
-    id: 'source-debit',
-    nickname: 'Bank / UPI',
-    kind: 'DEBIT',
-    institution: 'Primary bank',
-    noLimit: true,
-    autoLoad: false,
-    archived: false,
-  },
-  {
-    id: 'source-meal',
-    nickname: 'Pluxee meal card',
-    kind: 'MEAL',
-    institution: 'Pluxee',
-    noLimit: false,
-    balanceMinor: 0,
-    autoLoad: false,
-    lastLoadedPeriod: today.slice(0, 7),
-    archived: false,
-  },
-];
+function defaultPaymentSources(): readonly PaymentSource[] {
+  return [
+    {
+      id: 'source-cash',
+      nickname: 'Cash',
+      kind: 'CASH',
+      noLimit: true,
+      autoLoad: false,
+      archived: false,
+    },
+    {
+      id: 'source-debit',
+      nickname: 'Bank / UPI',
+      kind: 'DEBIT',
+      institution: 'Primary bank',
+      noLimit: true,
+      autoLoad: false,
+      archived: false,
+    },
+    {
+      id: 'source-meal',
+      nickname: 'Pluxee meal card',
+      kind: 'MEAL',
+      institution: 'Pluxee',
+      noLimit: false,
+      balanceMinor: 0,
+      autoLoad: false,
+      lastLoadedPeriod: currentLocalCalendar().monthIso,
+      archived: false,
+    },
+  ];
+}
 
 @Service()
 export class CardNestStore {
+  private readonly calendarClock = inject(DeviceCalendarClock);
+  private readonly legacyNonCardCutoff = new Date().toISOString().slice(0, 10);
   private readonly database = inject(SqliteDatabase);
   private readonly environment = inject(APP_ENVIRONMENT);
   private dataWasCleared = false;
   readonly cards = signal<readonly CreditCard[]>([]);
   readonly transactions = signal<readonly CardTransaction[]>([]);
+  readonly paymentGroups = signal<readonly PaymentGroup[]>([]);
+  readonly transactionWriteError = signal('');
+  readonly initialisationWarning = signal('');
   readonly categories = signal<readonly Category[]>(CATEGORIES);
-  readonly paymentSources = signal<readonly PaymentSource[]>(PAYMENT_SOURCES);
+  readonly categoryCatalog = signal<readonly CategoryCatalogEntry[]>([]);
+  readonly categoryMigrationRecords = signal<readonly CategoryMigrationRecord[]>([]);
+  readonly paymentSources = signal<readonly PaymentSource[]>(defaultPaymentSources());
   readonly recurringRules = signal<readonly RecurringRule[]>([]);
   readonly loans = signal<readonly LoanCommitment[]>([]);
   readonly emiPlans = signal<readonly EmiPlan[]>([]);
@@ -289,13 +332,41 @@ export class CardNestStore {
   readonly liquidFunds = computed(() =>
     liquidTotals(this.paymentSources(), this.bankCashTracking()),
   );
+
+  async fingerprintBankAccount(value: string): Promise<string | undefined> {
+    const compact = value.trim().replace(/[\s-]/g, '');
+    if (!/^\d{6,24}$/.test(compact)) return undefined;
+    if (!this.database.ready()) throw new Error('Database is not ready.');
+    const keyHex = await this.database.atomic(async (tx) => {
+      const [row] = await tx.query<{ encrypted_value: string }>(
+        'SELECT encrypted_value FROM app_preferences WHERE key=?',
+        [BANK_ACCOUNT_FINGERPRINT_KEY],
+      );
+      if (row) {
+        if (!/^[a-f0-9]{64}$/.test(row.encrypted_value))
+          throw new Error(
+            'Saved bank identity key is invalid; account fingerprints were not changed.',
+          );
+        return row.encrypted_value;
+      }
+      const key = crypto.getRandomValues(new Uint8Array(32));
+      const encoded = [...key].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+      await tx.run('INSERT INTO app_preferences(key,encrypted_value) VALUES(?,?)', [
+        BANK_ACCOUNT_FINGERPRINT_KEY,
+        encoded,
+      ]);
+      return encoded;
+    });
+    const key = new Uint8Array(keyHex.match(/.{2}/g)!.map((byte) => Number.parseInt(byte, 16)));
+    return fingerprintCompleteBankAccount(compact, key);
+  }
   readonly bankAccounts = computed(() =>
     this.paymentSources().filter((source) => source.kind === 'DEBIT' && !source.archived),
   );
   /** Bank accounts that may fund a card settlement: both toggles on and a confirmed balance. */
   readonly cardSettlementFundingAccounts = computed(() => {
     const settings = this.bankCashTracking();
-    return settings.enabled && settings.askCardSettlementFunding
+    return bankTrackingEnabled(settings) && settings.askCardSettlementFunding
       ? this.bankAccounts().filter((source) => bankCashTracked(source, settings))
       : [];
   });
@@ -304,7 +375,7 @@ export class CardNestStore {
     return name ? [this.profileTitle(), name].filter(Boolean).join(' ') : '';
   });
   readonly currentIncomePeriod = computed(() =>
-    this.incomePeriodFor(new Date(), this.budgetCycleStartDay()),
+    this.incomePeriodFor(this.localFinancialDate(new Date()), this.budgetCycleStartDay()),
   );
   readonly currentIncomePeriodLabel = computed(() => {
     const period = this.currentIncomePeriod();
@@ -325,15 +396,20 @@ export class CardNestStore {
   );
 
   readonly dashboard = computed<DashboardSnapshot>(() => {
+    const reference = new Date();
+    const calendar = this.currentFinancialCalendar(reference);
     const cards = this.activeCards();
     const transactions = this.transactions();
     const outstandingMinor = cards.reduce(
-      (sum, card) => sum + Math.max(0, this.cardOutstanding(card.id)),
+      (sum, card) => sum + Math.max(0, this.cardOutstanding(card.id, reference)),
       0,
     );
-    const statementDueMinor = cards.reduce((sum, card) => sum + this.cardDueAmount(card.id), 0);
+    const statementDueMinor = cards.reduce(
+      (sum, card) => sum + this.cardDueAmount(card.id, reference),
+      0,
+    );
     const totalCredit = cards.reduce((sum, card) => sum + (card.creditLimitMinor ?? 0), 0);
-    const month = today.slice(0, 7);
+    const month = calendar.monthIso;
     const monthlySpendMinor = calculateNetSpending(
       transactions.filter((item) => item.transactionDate.startsWith(month)),
     );
@@ -351,10 +427,12 @@ export class CardNestStore {
 
   async initialisePreferences(): Promise<void> {
     if (!this.database.ready()) return;
+    this.initialisationWarning.set('');
+    const calendar = this.currentFinancialCalendar();
     await initialiseAppData(this.database, this.environment.seedDemoData, {
       categories: CATEGORIES,
-      cards: SAMPLE_CARDS,
-      transactions: SAMPLE_TRANSACTIONS,
+      cards: sampleCards(calendar.dateIso),
+      transactions: sampleTransactions(calendar.dateIso),
       income: {
         ...this.currentIncomePeriod(),
         amountMinor: 8000000,
@@ -426,15 +504,15 @@ export class CardNestStore {
       const sources = JSON.parse(values.get(PAYMENT_SOURCES_PREFERENCE_KEY) ?? '[]') as unknown;
       if (Array.isArray(sources) && values.has(PAYMENT_SOURCES_PREFERENCE_KEY)) {
         this.paymentSources.set(sources as PaymentSource[]);
-      } else this.paymentSources.set(PAYMENT_SOURCES);
+      } else this.paymentSources.set(defaultPaymentSources());
     } catch {
-      this.paymentSources.set(PAYMENT_SOURCES);
+      this.paymentSources.set(defaultPaymentSources());
     }
     if (!values.has(PAYMENT_SOURCES_PREFERENCE_KEY)) {
       const sources = await this.database.atomic(async (tx) => {
         await tx.run('INSERT OR IGNORE INTO app_preferences(key,encrypted_value) VALUES(?,?)', [
           PAYMENT_SOURCES_PREFERENCE_KEY,
-          JSON.stringify(PAYMENT_SOURCES),
+          JSON.stringify(defaultPaymentSources()),
         ]);
         return this.readStoredSources(tx);
       });
@@ -451,6 +529,14 @@ export class CardNestStore {
       });
       this.paymentSources.set(sources);
     }
+    const normalizedSources = await this.database.atomic(async (tx) => {
+      const stored = await this.readStoredSources(tx);
+      const normalized = normalizePrimaryBankSources(stored);
+      if (JSON.stringify(stored) !== JSON.stringify(normalized))
+        await this.writeStoredSources(tx, normalized);
+      return normalized;
+    });
+    this.paymentSources.set(normalizedSources);
     await this.loadBankCashTracking(values.get(BANK_CASH_TRACKING_KEY));
     await Promise.all([this.loadCurrentIncome(), this.loadCards()]);
     await this.loadCategories();
@@ -464,9 +550,42 @@ export class CardNestStore {
       statementRows.map((row) => JSON.parse(row.payload) as CardStatement),
     );
     await this.loadRecurringRules();
-    this.materializeRecurringTransactions();
-    await this.loadEmiPlans();
-    await this.loadLoans();
+    let recurringFailure: { error: unknown } | undefined;
+    const historyFailures: { area: string; error: unknown }[] = [];
+    try {
+      await this.materializeRecurringTransactions();
+    } catch (error: unknown) {
+      recurringFailure = { error };
+    }
+    try {
+      await this.loadEmiPlans();
+    } catch (error: unknown) {
+      historyFailures.push({ area: 'EMI history could not be fully loaded', error });
+    }
+    try {
+      await this.loadLoans();
+    } catch (error: unknown) {
+      historyFailures.push({ area: 'Loan history could not be loaded', error });
+    }
+    const failures = [
+      ...historyFailures,
+      ...(recurringFailure
+        ? [{ area: 'Recurring generation failed', error: recurringFailure.error }]
+        : []),
+    ];
+    if (failures.length) {
+      const warning = failures
+        .map(
+          ({ area, error }) => `${area}: ${error instanceof Error ? error.message : String(error)}`,
+        )
+        .join('. ');
+      this.initialisationWarning.set(warning);
+      if (failures.length === 1) throw failures[0].error;
+      throw new AggregateError(
+        failures.map(({ error }) => error),
+        warning,
+      );
+    }
   }
 
   readonly smsSwipeActionsEnabled = signal(false);
@@ -592,9 +711,18 @@ export class CardNestStore {
     await this.upsertPreference('snoozed_reminder_card_ids', JSON.stringify(updated));
   }
 
-  cardOutstanding(cardId: string): number {
+  private currentFinancialCalendar(reference = new Date()) {
+    this.calendarClock.calendar();
+    return currentLocalCalendar(reference);
+  }
+
+  private localFinancialDate(reference: Date): Date {
+    return new Date(`${this.currentFinancialCalendar(reference).dateIso}T12:00:00`);
+  }
+
+  cardOutstanding(cardId: string, reference = new Date()): number {
     const card = this.cards().find((item) => item.id === cardId);
-    const currentMonth = new Date().toISOString().slice(0, 7);
+    const currentMonth = this.currentFinancialCalendar(reference).monthIso;
     return card
       ? calculateOutstanding(
           card.openingBalanceMinor,
@@ -611,11 +739,8 @@ export class CardNestStore {
   cardDueAmount(cardId: string, reference = new Date()): number {
     const card = this.cards().find((item) => item.id === cardId);
     if (!card) return 0;
-    const nextStatement = statementDateFor(reference, card.statementDay);
-    const latestStatement =
-      nextStatement.getTime() > reference.getTime()
-        ? previousStatementDate(nextStatement, card.statementDay)
-        : nextStatement;
+    const latestStatement = this.latestStatementFor(card, reference);
+    const currentMonth = this.currentFinancialCalendar(reference).monthIso;
     const statementIso = toIsoDate(latestStatement);
     if (
       this.reconciledStatements().some(
@@ -628,6 +753,7 @@ export class CardNestStore {
               t.id === statement.reconciledPaymentId &&
               t.type === 'PAYMENT' &&
               t.cardId === cardId &&
+              t.transactionDate.slice(0, 7) <= currentMonth &&
               t.amountMinor === statement.reconciledPaymentAmountMinor,
           ),
       )
@@ -647,6 +773,7 @@ export class CardNestStore {
         (item) =>
           item.cardId === cardId &&
           !item.emiCancelled &&
+          item.transactionDate.slice(0, 7) <= currentMonth &&
           (excludesStatementDay
             ? item.transactionDate >= statementIso
             : item.transactionDate > statementIso) &&
@@ -657,8 +784,9 @@ export class CardNestStore {
   }
 
   private latestStatementFor(card: CreditCard, reference: Date): Date {
-    const nextStatement = statementDateFor(reference, card.statementDay);
-    return nextStatement.getTime() > reference.getTime()
+    const localReference = this.localFinancialDate(reference);
+    const nextStatement = statementDateFor(localReference, card.statementDay);
+    return nextStatement.getTime() > localReference.getTime()
       ? previousStatementDate(nextStatement, card.statementDay)
       : nextStatement;
   }
@@ -688,7 +816,7 @@ export class CardNestStore {
       this.latestStatementFor(card, reference),
       card.statementDay,
     );
-    const currentMonth = new Date().toISOString().slice(0, 7);
+    const currentMonth = this.currentFinancialCalendar(reference).monthIso;
     return this.transactions().filter(
       (item) =>
         item.cardId === cardId &&
@@ -705,10 +833,12 @@ export class CardNestStore {
     const previousStatement = previousStatementDate(latestStatement, card.statementDay);
     const statementIso = toIsoDate(latestStatement);
     const excludesStatementDay = excludesStatementDayTransactions(card);
+    const currentMonth = this.currentFinancialCalendar(reference).monthIso;
     return this.transactions().filter(
       (item) =>
         item.cardId === cardId &&
         !item.emiCancelled &&
+        item.transactionDate.slice(0, 7) <= currentMonth &&
         // Transactions billed in the latest statement cycle only.
         ((isTransactionIncludedInStatement(item.transactionDate, latestStatement, card) &&
           !isTransactionIncludedInStatement(item.transactionDate, previousStatement, card)) ||
@@ -726,7 +856,7 @@ export class CardNestStore {
     const latestStatement = this.latestStatementFor(card, reference);
     const statementIso = toIsoDate(latestStatement);
     const excludesStatementDay = excludesStatementDayTransactions(card);
-    const currentMonth = new Date().toISOString().slice(0, 7);
+    const currentMonth = this.currentFinancialCalendar(reference).monthIso;
     return this.transactions().filter(
       (item) =>
         item.cardId === cardId &&
@@ -749,6 +879,248 @@ export class CardNestStore {
     this.cards.update((cards) => cards.map((card) => (card.id === updated.id ? updated : card)));
     void this.persistCard(updated);
   }
+  async refreshPaymentGroups(): Promise<void> {
+    if (this.database.ready()) this.paymentGroups.set(await readPaymentGroups(this.database));
+  }
+  async refreshPaymentLedger(): Promise<void> {
+    await this.loadTransactions();
+  }
+
+  async combinePayments(
+    ids: readonly string[],
+    targetId = ids[0],
+    edits: PaymentGroupEdits = {},
+  ): Promise<string> {
+    if (!this.database.ready()) throw new Error('Database is not ready.');
+    const id = await this.database.atomic((tx) => attachPaymentGroup(tx, ids, targetId, edits));
+    await this.loadTransactions();
+    return id;
+  }
+
+  async removePaymentMember(id: string, dissolve = false): Promise<void> {
+    await this.database.atomic((tx) => detachPaymentGroup(tx, id, dissolve));
+    await this.loadTransactions();
+  }
+
+  async updatePaymentGroup(id: string, edits: PaymentGroupEdits): Promise<void> {
+    await this.database.atomic(async (tx) => {
+      const group = (await readPaymentGroups(tx)).find((row) => row.id === id);
+      if (!group) throw new Error('Payment group no longer exists.');
+      const bill = edits.billTotalMinor === undefined ? group.billTotalMinor : edits.billTotalMinor;
+      if (bill !== null && (!Number.isSafeInteger(bill) || bill < 0))
+        throw new Error('Enter a valid bill total.');
+      await tx.run(
+        'UPDATE transaction_split_groups SET title=?,bill_total_minor=?,updated_at=? WHERE id=?',
+        [(edits.title ?? group.title).trim().slice(0, 150), bill, new Date().toISOString(), id],
+      );
+    });
+    await this.loadTransactions();
+  }
+
+  /** Manual saves publish only after all ledger, grouping and balance writes commit. */
+  async saveManualTransaction(
+    transaction: CardTransaction,
+    targetId = '',
+    unlinkConfirmed = false,
+    recurringRule?: RecurringRule,
+    archivedSourceReassignmentConfirmedFor = '',
+  ): Promise<void> {
+    if (!this.database.ready()) throw new Error('Database is not ready.');
+    const result = await this.database.atomic(async (tx) => {
+      const [row] = await tx.query<{ payload: string }>(
+        'SELECT payload FROM card_transactions WHERE id=?',
+        [transaction.id],
+      );
+      const previous = row ? (JSON.parse(row.payload) as CardTransaction) : null;
+      if (
+        !Number.isSafeInteger(transaction.amountMinor) ||
+        transaction.amountMinor <= 0 ||
+        !validTransferDate(transaction.transactionDate)
+      )
+        throw new Error('Enter a valid amount and transaction date.');
+      const sources = await this.readStoredSources(tx);
+      const card = this.cards().find((item) => item.id === transaction.cardId && !item.deletedAt);
+      const previousCard = previous
+        ? this.cards().find((item) => item.id === previous.cardId && !item.deletedAt)
+        : undefined;
+      const archivedCardReassignment =
+        !!previous && !!previousCard?.archived && previous.cardId !== transaction.cardId;
+      if (card?.archived && (!previous || previous.cardId !== card.id))
+        throw new Error('Archived credit cards cannot be used for new transactions.');
+      const previousGroup = (await readPaymentGroups(tx)).find((group) =>
+        group.memberIds.includes(transaction.id),
+      );
+      if (archivedCardReassignment) {
+        if (!card || card.archived)
+          throw new Error('Archived transactions can only be reassigned to an active credit card.');
+        if (transaction.type === 'PAYMENT' && previous?.type !== 'PAYMENT')
+          throw new Error(
+            'A card payment cannot be reassigned from an archived card. Record it on the card it settles.',
+          );
+        if (archivedSourceReassignmentConfirmedFor !== card.id)
+          throw new Error(
+            `Confirm moving this transaction from its archived card to ${card.nickname} · ${card.lastDigits}.`,
+          );
+        const [funding] = await tx.query<{ id: string }>(
+          'SELECT id FROM source_transfers WHERE payment_transaction_id=?',
+          [transaction.id],
+        );
+        const [emiPlan] = await tx.query<{ id: string }>(
+          'SELECT id FROM emi_plans WHERE transaction_id=?',
+          [transaction.id],
+        );
+        const statements = await tx.query<{ payload: string }>('SELECT payload FROM statements');
+        const hasReconciledStatement = statements.some((row) => {
+          const statement = JSON.parse(row.payload) as { reconciledPaymentId?: string };
+          return statement.reconciledPaymentId === transaction.id;
+        });
+        const linkedRows = await tx.query<{ payload: string }>(
+          'SELECT payload FROM card_transactions WHERE id<>?',
+          [transaction.id],
+        );
+        const hasRelatedTransaction = linkedRows.some((row) => {
+          const linked = JSON.parse(row.payload) as CardTransaction;
+          return linked.relatedTransactionId === transaction.id;
+        });
+        if (
+          previousGroup ||
+          previous?.splitGroupId ||
+          previous?.relatedTransactionId ||
+          transaction.relatedTransactionId ||
+          previous?.emiPlanId ||
+          emiPlan ||
+          previous?.recurringRuleId ||
+          previous?.type === 'PAYMENT' ||
+          funding ||
+          hasReconciledStatement ||
+          hasRelatedTransaction
+        )
+          throw new Error(
+            'This transaction has linked financial history and cannot be reassigned safely. Edit it on its original card or resolve its links first.',
+          );
+      }
+      if (!card && !sources.some((item) => item.id === transaction.cardId))
+        throw new Error('Choose an existing payment source.');
+      if (transaction.currencyCode !== (card?.currencyCode ?? 'INR'))
+        throw new Error('The payment currency differs from the source.');
+      if (targetId === transaction.id) throw new Error('A payment cannot link to itself.');
+      const next = { ...transaction };
+      if (previous?.sourceBalanceApplied === false && previous.cardId !== next.cardId)
+        next.sourceBalanceApplied = true;
+      if (previousGroup) next.splitGroupId = previousGroup.id;
+      if (
+        previousGroup &&
+        eligiblePaymentMember(next) &&
+        previousGroup.currency !== next.currencyCode
+      )
+        throw new Error('Unlink this payment before changing its currency.');
+      if (next.type === 'ADJUSTMENT') {
+        if (targetId) {
+          if (previous?.adjustmentPurpose === 'BALANCE_RECONCILIATION')
+            throw new Error(
+              'A verified balance correction is not a merchant payment. Record the real payment separately.',
+            );
+          if (next.adjustmentDirection === 'DECREASE')
+            throw new Error(
+              'A decreasing legacy adjustment cannot be a new positive Split payment.',
+            );
+          next.adjustmentPurpose = 'SPLIT_PAYMENT';
+          next.adjustmentDirection = 'INCREASE';
+          const group = (await readPaymentGroups(tx)).find(
+            (item) => item.id === targetId || item.memberIds.includes(targetId),
+          );
+          const anchorId = group?.anchorId ?? targetId;
+          if (anchorId === next.id && !previousGroup)
+            throw new Error('A payment cannot link to itself.');
+          next.relatedTransactionId = anchorId === next.id ? undefined : (anchorId ?? undefined);
+        } else if (
+          !previous ||
+          previous.type !== 'ADJUSTMENT' ||
+          (previous.adjustmentPurpose === 'SPLIT_PAYMENT' && !!previous.splitGroupId)
+        )
+          throw new Error('Choose the related purchase or payment group for this Split payment.');
+        else {
+          next.adjustmentPurpose = previous.adjustmentPurpose ?? 'LEGACY_MANUAL';
+          if (
+            next.relatedTransactionId &&
+            !(
+              await tx.query('SELECT id FROM card_transactions WHERE id=?', [
+                next.relatedTransactionId,
+              ])
+            ).length
+          )
+            next.relatedTransactionId = undefined;
+        }
+      } else {
+        next.adjustmentPurpose = undefined;
+        next.adjustmentDirection = undefined;
+        if (next.type !== 'REFUND') next.relatedTransactionId = undefined;
+      }
+      if (
+        previous &&
+        previousGroup &&
+        (!eligiblePaymentMember(next) || (previous.type !== next.type && !targetId))
+      ) {
+        if (!unlinkConfirmed)
+          throw new Error('Confirm removing this payment from its group before changing its type.');
+        await detachPaymentGroup(tx, next.id);
+        next.splitGroupId = undefined;
+      }
+      const saved = await this.writeTransaction(tx, next);
+      let savedRule: RecurringRule | undefined;
+      if (recurringRule) {
+        if (
+          !card ||
+          recurringRule.cardId !== next.cardId ||
+          recurringRule.id !== next.recurringRuleId
+        )
+          throw new Error('The recurring schedule must belong to this credit-card transaction.');
+        const [existingRule] = await tx.query<{ payload: string }>(
+          'SELECT payload FROM recurring_rules WHERE id=?',
+          [recurringRule.id],
+        );
+        savedRule = existingRule
+          ? (JSON.parse(existingRule.payload) as RecurringRule)
+          : recurringRule;
+        if (!existingRule) await this.writeRecurringRule(tx, savedRule);
+      }
+      if (previous && previous.type !== next.type) {
+        const note = `MANUAL_TYPE_CHANGE:${previous.type}->${next.type}`;
+        await tx.run(
+          "UPDATE sms_candidates SET decision='EXPLICIT_TYPE_CHANGE: '||COALESCE(decision,'')||'; '||? WHERE transaction_id=? AND state IN ('IMPORTED','MATCHED_EXISTING')",
+          [note, next.id],
+        );
+        await tx.run("UPDATE sms_reconciliation SET decision=decision||'; '||? WHERE target_id=?", [
+          note,
+          next.id,
+        ]);
+      }
+      if (targetId && next.type === 'ADJUSTMENT') await attachPaymentGroup(tx, [next.id], targetId);
+      return { ...saved, savedRule };
+    });
+    // The durable write is now complete. Publish the exact committed row even if a later read fails.
+    if (result.savedRule) {
+      const rule = result.savedRule;
+      this.recurringRules.update((rules) => [...rules.filter((item) => item.id !== rule.id), rule]);
+    }
+    this.publishStoredBalances(result.wallets);
+    this.transactions.update((items) => [
+      result.persisted,
+      ...items.filter((item) => item.id !== result.persisted.id),
+    ]);
+    try {
+      await this.loadTransactions();
+      if (result.fundingChanged) await this.loadTransfers();
+    } catch (error: unknown) {
+      throw new CommittedSaveRefreshError(transaction.id, error);
+    }
+  }
+
+  async deleteRecordedTransaction(id: string): Promise<void> {
+    await this.removePersistedTransaction(id);
+    await this.loadTransactions();
+  }
+
   addTransaction(transaction: CardTransaction): void {
     this.transactions.update((items) => {
       const updated = [transaction, ...items];
@@ -799,6 +1171,19 @@ export class CardNestStore {
     if (!existing) return false;
     if (existing.sourceBalanceApplied === false && updated.cardId !== existing.cardId)
       updated = { ...updated, sourceBalanceApplied: true };
+    if (existing.splitGroupId) {
+      void this.saveManualTransaction(
+        updated,
+        updated.type === 'ADJUSTMENT' && updated.adjustmentPurpose === 'SPLIT_PAYMENT'
+          ? (updated.relatedTransactionId ?? '')
+          : '',
+      ).catch((error: unknown) =>
+        this.transactionWriteError.set(
+          error instanceof Error ? error.message : 'Unable to save grouped payment.',
+        ),
+      );
+      return true;
+    }
     this.adjustPaymentSourceBalance(existing, -1);
     this.transactions.update((items) => {
       const next = items.map((transaction) =>
@@ -814,6 +1199,14 @@ export class CardNestStore {
   deleteTransaction(transactionId: string): boolean {
     const existing = this.transactions().find((transaction) => transaction.id === transactionId);
     if (!existing) return false;
+    if (existing.splitGroupId) {
+      void this.deleteRecordedTransaction(transactionId).catch((error: unknown) =>
+        this.transactionWriteError.set(
+          error instanceof Error ? error.message : 'Unable to delete grouped payment.',
+        ),
+      );
+      return true;
+    }
     this.adjustPaymentSourceBalance(existing, -1);
     this.transactions.update((items) => {
       const next = items.filter((transaction) => transaction.id !== transactionId);
@@ -825,11 +1218,50 @@ export class CardNestStore {
     }
     return true;
   }
-  duplicateTransaction(transactionId: string): CardTransaction | null {
+  private readonly pendingTransactionDrafts = new Map<string, CardTransaction>();
+
+  private async saveNewTransactionDraft(
+    key: string,
+    draft: CardTransaction,
+    paymentCardId?: string,
+  ): Promise<void> {
+    this.pendingTransactionDrafts.set(key, draft);
+    const result = await this.database.atomic(async (tx) => {
+      const [existing] = await tx.query<{ payload: string }>(
+        'SELECT payload FROM card_transactions WHERE id=?',
+        [draft.id],
+      );
+      if (existing)
+        return {
+          persisted: JSON.parse(existing.payload) as CardTransaction,
+          wallets: await this.readStoredSources(tx),
+        };
+      if (paymentCardId) {
+        const [row] = await tx.query<{ payload: string }>(
+          'SELECT payload FROM credit_cards WHERE id=?',
+          [paymentCardId],
+        );
+        const card = row ? (JSON.parse(row.payload) as CreditCard) : null;
+        if (!card || card.deletedAt) throw new Error('Choose an existing credit card.');
+        return this.writeTransaction(tx, { ...draft, currencyCode: card.currencyCode });
+      }
+      return this.writeTransaction(tx, draft);
+    });
+    this.pendingTransactionDrafts.delete(key);
+    this.publishStoredBalances(result.wallets);
+    this.transactions.update((items) => [
+      result.persisted,
+      ...items.filter((item) => item.id !== draft.id),
+    ]);
+    await this.refreshCommittedLedger(draft.id);
+  }
+
+  async duplicateTransaction(transactionId: string): Promise<CardTransaction | null> {
     const existing = this.transactions().find((transaction) => transaction.id === transactionId);
     if (!existing) return null;
     const timestamp = new Date().toISOString();
-    const duplicate: CardTransaction = {
+    const key = `duplicate:${transactionId}`;
+    const duplicate: CardTransaction = this.pendingTransactionDrafts.get(key) ?? {
       ...existing,
       id: crypto.randomUUID(),
       recurringRuleId: undefined,
@@ -853,128 +1285,308 @@ export class CardNestStore {
       createdAt: timestamp,
       updatedAt: timestamp,
     };
-    this.addTransaction(duplicate);
+    await this.saveNewTransactionDraft(key, duplicate);
     return duplicate;
   }
-  saveEmiPlan(plan: EmiPlan, installments: readonly EmiInstallment[]): void {
-    // A rescheduled plan replaces, rather than duplicates, its future generated transactions.
-    for (const existing of this.transactions().filter(
-      (item) => item.emiPlanId === plan.id && item.id !== plan.transactionId,
-    )) {
-      this.deleteTransaction(existing.id);
-    }
+  async saveEmiPlan(plan: EmiPlan, installments: readonly EmiInstallment[]): Promise<void> {
+    const result = await this.database.atomic(async (tx) => {
+      const ledger = await this.readTransactionRows(tx);
+      // A rescheduled plan replaces, rather than duplicates, its future generated transactions.
+      for (const existing of ledger.filter(
+        (item) => item.emiPlanId === plan.id && item.id !== plan.transactionId,
+      )) {
+        await this.removeTransactionInSession(tx, existing.id);
+      }
+      const storedInstallments = installments.map((installment) => ({
+        ...installment,
+        id: installment.id ?? crypto.randomUUID(),
+        emiPlanId: plan.id,
+      }));
+      const transaction = ledger.find((item) => item.id === plan.transactionId);
+      if (transaction && storedInstallments.length) {
+        const merchant = transaction.merchant?.replace(/ · EMI \d+\/\d+$/, '') || 'Purchase';
+        const [firstInstallment, ...futureInstallments] = storedInstallments;
+        await this.writeTransaction(tx, {
+          ...transaction,
+          amountMinor: firstInstallment.totalMinor,
+          transactionDate: firstInstallment.statementDate,
+          merchant: `${merchant} · EMI 1/${plan.tenureMonths}`,
+          emiPlanId: plan.id,
+          emiInstallmentNumber: 1,
+          emiTenureMonths: plan.tenureMonths,
+          emiOriginalAmountMinor: plan.convertedAmountMinor,
+          updatedAt: new Date().toISOString(),
+        });
+        for (const installment of futureInstallments) {
+          const timestamp = new Date().toISOString();
+          await this.writeTransaction(tx, {
+            ...transaction,
+            id: crypto.randomUUID(),
+            amountMinor: installment.totalMinor,
+            transactionDate: installment.statementDate,
+            merchant: `${merchant} · EMI ${installment.installmentNumber}/${plan.tenureMonths}`,
+            taxIncluded: false,
+            taxMinor: undefined,
+            relatedTransactionId: undefined,
+            attachmentIds: [],
+            recurringRuleId: undefined,
+            generatedOccurrenceDate: undefined,
+            emiPlanId: plan.id,
+            emiInstallmentNumber: installment.installmentNumber,
+            emiTenureMonths: plan.tenureMonths,
+            emiOriginalAmountMinor: undefined,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          });
+        }
+      }
+      await this.persistEmiPlan(tx, plan, storedInstallments);
+      return {
+        ledger: await this.readTransactionRows(tx),
+        wallets: await this.readStoredSources(tx),
+        installments: storedInstallments,
+      };
+    });
+    this.transactions.set(result.ledger);
+    this.publishStoredBalances(result.wallets);
     this.emiPlans.update((plans) => [plan, ...plans.filter((item) => item.id !== plan.id)]);
-    const storedInstallments = installments.map((installment) => ({
-      ...installment,
-      id: installment.id ?? crypto.randomUUID(),
-      emiPlanId: plan.id,
-    }));
     this.emiInstallments.update((items) => [
       ...items.filter((item) => item.emiPlanId !== plan.id),
-      ...storedInstallments,
+      ...result.installments,
     ]);
-    const transaction = this.transactions().find((item) => item.id === plan.transactionId);
-    if (transaction && storedInstallments.length) {
-      const merchant = transaction.merchant?.replace(/ · EMI \d+\/\d+$/, '') || 'Purchase';
-      const [firstInstallment, ...futureInstallments] = storedInstallments;
-      this.updateTransaction({
-        ...transaction,
-        amountMinor: firstInstallment.totalMinor,
-        transactionDate: firstInstallment.statementDate,
-        merchant: `${merchant} · EMI 1/${plan.tenureMonths}`,
-        emiPlanId: plan.id,
-        emiInstallmentNumber: 1,
-        emiTenureMonths: plan.tenureMonths,
-        emiOriginalAmountMinor: plan.convertedAmountMinor,
-        updatedAt: new Date().toISOString(),
-      });
-      for (const installment of futureInstallments) {
-        const timestamp = new Date().toISOString();
-        this.addTransaction({
+    await this.refreshCommittedLedger(plan.transactionId);
+  }
+
+  async closeEmiPlan(planId: string): Promise<void> {
+    const result = await this.database.atomic(async (tx) => {
+      const [row] = await tx.query<{ payload: string }>(
+        'SELECT payload FROM emi_plans WHERE id=?',
+        [planId],
+      );
+      const plan = row ? (JSON.parse(row.payload) as EmiPlan) : null;
+      if (!plan || plan.status !== 'ACTIVE') return null;
+      const instant = new Date();
+      const closedAt = instant.toISOString();
+      const currentMonth = currentLocalCalendar(instant).monthIso;
+      const updatedPlan: EmiPlan = { ...plan, status: 'CANCELLED', closedAt };
+      for (const transaction of (await this.readTransactionRows(tx)).filter(
+        (item) => item.emiPlanId === planId && item.transactionDate.slice(0, 7) > currentMonth,
+      )) {
+        await this.writeTransaction(tx, {
           ...transaction,
-          id: crypto.randomUUID(),
-          amountMinor: installment.totalMinor,
-          transactionDate: installment.statementDate,
-          merchant: `${merchant} · EMI ${installment.installmentNumber}/${plan.tenureMonths}`,
-          taxIncluded: false,
-          taxMinor: undefined,
-          relatedTransactionId: undefined,
-          attachmentIds: [],
-          recurringRuleId: undefined,
-          generatedOccurrenceDate: undefined,
-          emiPlanId: plan.id,
-          emiInstallmentNumber: installment.installmentNumber,
-          emiTenureMonths: plan.tenureMonths,
-          emiOriginalAmountMinor: undefined,
-          createdAt: timestamp,
-          updatedAt: timestamp,
+          emiCancelled: true,
+          updatedAt: closedAt,
         });
       }
-    }
-    if (this.database.ready()) void this.persistEmiPlan(plan, storedInstallments);
+      await tx.run('UPDATE emi_plans SET status=?,payload=? WHERE id=?', [
+        updatedPlan.status,
+        JSON.stringify(updatedPlan),
+        planId,
+      ]);
+      return {
+        plan: updatedPlan,
+        ledger: await this.readTransactionRows(tx),
+        wallets: await this.readStoredSources(tx),
+      };
+    });
+    if (!result) return;
+    this.transactions.set(result.ledger);
+    this.publishStoredBalances(result.wallets);
+    this.emiPlans.update((plans) => plans.map((plan) => (plan.id === planId ? result.plan : plan)));
+    await this.refreshCommittedLedger(result.plan.transactionId);
   }
 
-  closeEmiPlan(planId: string): void {
-    const plan = this.emiPlans().find((item) => item.id === planId);
-    if (!plan || plan.status !== 'ACTIVE') return;
-    const closedAt = new Date().toISOString();
-    const currentMonth = closedAt.slice(0, 7);
-    const updatedPlan: EmiPlan = { ...plan, status: 'CANCELLED', closedAt };
-    this.emiPlans.update((plans) => plans.map((item) => (item.id === planId ? updatedPlan : item)));
-    for (const transaction of this.transactions().filter(
-      (item) => item.emiPlanId === planId && item.transactionDate.slice(0, 7) > currentMonth,
-    )) {
-      this.updateTransaction({ ...transaction, emiCancelled: true, updatedAt: closedAt });
-    }
-    if (this.database.ready()) {
-      void this.persistEmiPlan(
-        updatedPlan,
-        this.emiInstallments().filter((item) => item.emiPlanId === planId),
-      );
+  private async readTransactionRows(tx: DatabaseSession): Promise<CardTransaction[]> {
+    return (
+      await tx.query<{ payload: string }>(
+        'SELECT payload FROM card_transactions ORDER BY transaction_date DESC, created_at DESC',
+      )
+    ).map((row) => JSON.parse(row.payload) as CardTransaction);
+  }
+
+  private async refreshCommittedLedger(transactionId: string): Promise<void> {
+    try {
+      this.cacheTransactions(this.transactions());
+      const snapshot = await this.database.atomic(async (tx) => ({
+        ledger: await this.readTransactionRows(tx),
+        groups: await readPaymentGroups(tx),
+        transfers: (
+          await tx.query<{ payload: string }>(
+            'SELECT payload FROM source_transfers ORDER BY transfer_date DESC, created_at DESC',
+          )
+        ).map((row) => JSON.parse(row.payload) as SourceTransfer),
+        wallets: await this.readStoredSources(tx),
+      }));
+      this.transactions.set(snapshot.ledger);
+      this.paymentGroups.set(snapshot.groups);
+      this.transfers.set(snapshot.transfers);
+      this.publishStoredBalances(snapshot.wallets);
+      this.cacheTransactions(snapshot.ledger);
+    } catch (error: unknown) {
+      throw new CommittedSaveRefreshError(transactionId, error);
     }
   }
 
-  splitTransaction(
+  async splitTransaction(
     transactionId: string,
-    parts: readonly { sourceId: string; amountMinor: number }[],
-  ): readonly CardTransaction[] {
-    const original = this.transactions().find((item) => item.id === transactionId);
-    if (!original || parts.length < 2 || parts.length > 4) return [];
-    const total = parts.reduce((sum, part) => sum + part.amountMinor, 0);
-    if (total !== original.amountMinor) return [];
-    const groupId = crypto.randomUUID();
-    const timestamp = new Date().toISOString();
-    const splitTransactions = parts.map((part, index): CardTransaction => ({
-      ...original,
-      id: index === 0 ? original.id : crypto.randomUUID(),
-      cardId: part.sourceId,
-      amountMinor: part.amountMinor,
-      splitGroupId: groupId,
-      splitOriginalAmountMinor: original.amountMinor,
-      emiPlanId: undefined,
-      createdAt: index === 0 ? original.createdAt : timestamp,
-      updatedAt: timestamp,
-    }));
-    this.updateTransaction(splitTransactions[0]);
-    for (const transaction of splitTransactions.slice(1)) this.addTransaction(transaction);
-    if (this.database.ready())
-      void this.persistSplitGroup(groupId, original.amountMinor, splitTransactions);
-    return splitTransactions;
+    parts: readonly { sourceId: string; amountMinor: number; balanceTiming?: BalanceTiming }[],
+  ): Promise<readonly CardTransaction[]> {
+    const result = await this.database.atomic(async (tx) => {
+      const [row] = await tx.query<{ payload: string }>(
+        'SELECT payload FROM card_transactions WHERE id=?',
+        [transactionId],
+      );
+      const original = row ? (JSON.parse(row.payload) as CardTransaction) : null;
+      if (
+        !original ||
+        !eligiblePaymentMember(original) ||
+        original.emiPlanId ||
+        original.recurringRuleId ||
+        (await readPaymentGroups(tx)).some((group) => group.memberIds.includes(transactionId))
+      )
+        throw new Error(
+          'Only an ungrouped positive purchase payment without EMI or recurrence can be divided.',
+        );
+      if (
+        parts.length < 2 ||
+        parts.some((part) => !Number.isSafeInteger(part.amountMinor) || part.amountMinor <= 0) ||
+        parts.reduce((sum, part) => sum + part.amountMinor, 0) !== original.amountMinor
+      )
+        throw new Error('Payment parts must be positive and total the original amount.');
+      const sources = await this.readStoredSources(tx);
+      const timestamp = new Date().toISOString();
+      const entries: CardTransaction[] = [];
+      for (const [index, part] of parts.entries()) {
+        const card = this.cards().find((item) => item.id === part.sourceId && !item.deletedAt);
+        if (!card && !sources.some((item) => item.id === part.sourceId))
+          throw new Error('Choose an existing payment source.');
+        if ((card?.currencyCode ?? 'INR') !== original.currencyCode)
+          throw new Error('Payment currencies must match.');
+        const entry: CardTransaction = {
+          ...original,
+          id: index === 0 ? original.id : crypto.randomUUID(),
+          cardId: part.sourceId,
+          amountMinor: part.amountMinor,
+          splitOriginalAmountMinor: original.amountMinor,
+          balanceTiming: part.balanceTiming ?? (index === 0 ? original.balanceTiming : undefined),
+          balanceTimingAt: part.balanceTiming
+            ? timestamp
+            : index === 0
+              ? original.balanceTimingAt
+              : undefined,
+          ...(index === 0
+            ? {}
+            : {
+                origin: 'MANUAL' as const,
+                reference: undefined,
+                attachmentIds: [],
+                notes: undefined,
+                transactionTime: undefined,
+                relatedTransactionId: undefined,
+                balanceEffect: undefined,
+                sourceBalanceApplied: undefined,
+                bankName: undefined,
+                accountSuffix: undefined,
+                paymentMethod: undefined,
+                paymentMethodDetail: undefined,
+                paymentMethodCustom: undefined,
+                smsAdditionalComment: undefined,
+              }),
+          createdAt: index === 0 ? original.createdAt : timestamp,
+          updatedAt: timestamp,
+        };
+        if (
+          index === 0 &&
+          original.sourceBalanceApplied === false &&
+          original.cardId !== entry.cardId
+        )
+          entry.sourceBalanceApplied = true;
+        const saved = await this.writeTransaction(tx, entry);
+        entries.push(saved.persisted);
+      }
+      const groupId = crypto.randomUUID();
+      await tx.run(
+        `INSERT INTO transaction_split_groups(id,original_amount_minor,created_at,kind,anchor_transaction_id,title,currency_code,bill_total_minor,updated_at) VALUES(?,?,?,'DIVISION',?,?,?,?,?)`,
+        [
+          groupId,
+          original.amountMinor,
+          timestamp,
+          original.id,
+          original.merchant ?? '',
+          original.currencyCode,
+          original.amountMinor,
+          timestamp,
+        ],
+      );
+      for (const entry of entries) {
+        await tx.run('INSERT INTO transaction_split_members(group_id,transaction_id) VALUES(?,?)', [
+          groupId,
+          entry.id,
+        ]);
+        await tx.run('UPDATE card_transactions SET payload=? WHERE id=?', [
+          JSON.stringify({ ...entry, splitGroupId: groupId }),
+          entry.id,
+        ]);
+      }
+      const note = `EXPLICIT_DIVISION:${groupId}`;
+      await tx.run(
+        "UPDATE sms_candidates SET decision=?||'; '||COALESCE(decision,'') WHERE transaction_id=? AND state IN ('IMPORTED','MATCHED_EXISTING')",
+        [note, original.id],
+      );
+      await tx.run("UPDATE sms_reconciliation SET decision=decision||'; '||? WHERE target_id=?", [
+        note,
+        original.id,
+      ]);
+      return entries.map((entry) => ({ ...entry, splitGroupId: groupId }));
+    });
+    await this.loadTransactions();
+    this.publishStoredBalances(await this.readStoredSources(this.database));
+    return result;
   }
-  addRecurringRule(rule: RecurringRule): void {
+  async addRecurringRule(rule: RecurringRule): Promise<void> {
+    if (this.cards().some((card) => card.id === rule.cardId)) {
+      const saved = await this.database.atomic(async (tx) => {
+        const [existing] = await tx.query<{ payload: string }>(
+          'SELECT payload FROM recurring_rules WHERE id=?',
+          [rule.id],
+        );
+        if (existing) return JSON.parse(existing.payload) as RecurringRule;
+        await this.writeRecurringRule(tx, rule);
+        return rule;
+      });
+      this.recurringRules.update((rules) => [
+        ...rules.filter((item) => item.id !== saved.id),
+        saved,
+      ]);
+      await this.materializeRecurringTransactions();
+      return;
+    }
     this.recurringRules.update((rules) => [...rules, rule]);
     void this.persistRecurringRule(rule);
-    this.materializeRecurringTransactions();
+    this.materializeNonCardRecurringTransactions(this.legacyNonCardCutoff);
   }
-  updateRecurringRule(ruleId: string, amountMinor: number): void {
+  async updateRecurringRule(ruleId: string, amountMinor: number): Promise<void> {
     if (amountMinor <= 0) return;
+    const rule = this.recurringRules().find((item) => item.id === ruleId);
+    if (rule && this.cards().some((card) => card.id === rule.cardId)) {
+      await this.updatePersistedRecurringRule(ruleId, { amountMinor });
+      return;
+    }
     this.recurringRules.update((rules) =>
       rules.map((rule) => (rule.id === ruleId ? { ...rule, amountMinor } : rule)),
     );
     const updated = this.recurringRules().find((rule) => rule.id === ruleId);
     if (updated) void this.persistRecurringRule(updated);
   }
-  terminateRecurringRule(ruleId: string): void {
+  async terminateRecurringRule(ruleId: string): Promise<void> {
+    const rule = this.recurringRules().find((item) => item.id === ruleId);
+    if (rule && this.cards().some((card) => card.id === rule.cardId)) {
+      await this.updatePersistedRecurringRule(ruleId, {
+        status: 'COMPLETED',
+        nextOccurrenceDate: undefined,
+      });
+      return;
+    }
     this.recurringRules.update((rules) =>
       rules.map((rule) =>
         rule.id === ruleId ? { ...rule, status: 'COMPLETED', nextOccurrenceDate: undefined } : rule,
@@ -983,37 +1595,206 @@ export class CardNestStore {
     const updated = this.recurringRules().find((rule) => rule.id === ruleId);
     if (updated) void this.persistRecurringRule(updated);
   }
-  updatePaymentSource(updated: PaymentSource): void {
+
+  private async updatePersistedRecurringRule(
+    ruleId: string,
+    changes: Partial<Pick<RecurringRule, 'amountMinor' | 'status' | 'nextOccurrenceDate'>>,
+  ): Promise<void> {
+    const saved = await this.database.atomic(async (tx) => {
+      const [row] = await tx.query<{ payload: string }>(
+        'SELECT payload FROM recurring_rules WHERE id=?',
+        [ruleId],
+      );
+      if (!row) throw new Error('This recurring schedule no longer exists.');
+      const next = { ...(JSON.parse(row.payload) as RecurringRule), ...changes };
+      await this.writeRecurringRule(tx, next);
+      return next;
+    });
+    this.recurringRules.update((rules) => rules.map((rule) => (rule.id === ruleId ? saved : rule)));
+  }
+  async updatePaymentSource(updated: PaymentSource): Promise<void> {
+    if (!this.database.ready()) throw new Error('Database is not ready.');
     const previous = this.paymentSources().find((source) => source.id === updated.id);
-    if (previous?.balanceMinor !== updated.balanceMinor)
-      updated = {
-        ...updated,
-        balanceCutoverAt: new Date().toISOString(),
-        balanceSnapshotMinor: updated.balanceMinor,
-        ...(updated.kind === 'MEAL' ? { balanceCutoverReason: 'MANUAL' as const } : {}),
-      };
-    this.paymentSources.update((sources) =>
-      sources.map((source) => (source.id === updated.id ? updated : source)),
-    );
-    if (!this.database.ready()) return;
+    if (!previous || previous.kind !== updated.kind)
+      throw new Error('Choose an existing payment source of the same kind.');
+    const bankIdentityChanged =
+      updated.kind === 'DEBIT' &&
+      (updated.lastDigits !== previous.lastDigits || updated.accountMask !== previous.accountMask);
+    let rawIdentifier: string | undefined;
+    if (bankIdentityChanged) {
+      rawIdentifier =
+        updated.accountMask !== previous.accountMask && updated.accountMask
+          ? updated.accountMask
+          : updated.lastDigits;
+      if (rawIdentifier) {
+        const identifier = parseBankAccountIdentifier(rawIdentifier);
+        if (!identifier)
+          throw new Error('Enter a masked identifier with at least three account digits.');
+        const accountFingerprint =
+          (await this.fingerprintBankAccount(rawIdentifier)) ??
+          (identifier.mask === previous.accountMask &&
+          identifier.suffix === previous.lastDigits?.slice(-3)
+            ? previous.accountFingerprint
+            : undefined);
+        updated = {
+          ...updated,
+          lastDigits: identifier.suffix,
+          accountMask: identifier.mask,
+          accountFingerprint,
+        };
+      } else {
+        updated = { ...updated, accountMask: undefined, accountFingerprint: undefined };
+      }
+    }
+    if (!updated.nickname.trim() || updated.nickname.length > 80)
+      throw new Error('Enter an account nickname of up to 80 characters.');
+    if (updated.kind === 'DEBIT' && updated.lastDigits && !/^\d{3,5}$/.test(updated.lastDigits))
+      throw new Error('Enter the last 3 to 5 account digits.');
+    if (
+      updated.kind === 'DEBIT' &&
+      updated.ifscCode &&
+      !/^[A-Z]{4}0[A-Z0-9]{6}$/.test(updated.ifscCode)
+    )
+      throw new Error('Enter a valid 11-character IFSC code.');
     const changed = Object.keys(updated).filter(
-      (key) => updated[key as keyof PaymentSource] !== previous?.[key as keyof PaymentSource],
+      (key) => updated[key as keyof PaymentSource] !== previous[key as keyof PaymentSource],
     );
-    void this.database
-      .atomic(async (tx) => {
-        const sources = await this.readStoredSources(tx);
-        const next = sources.map((source) =>
-          source.id === updated.id
-            ? (Object.fromEntries([
-                ...Object.entries(source),
-                ...changed.map((key) => [key, updated[key as keyof PaymentSource]]),
-              ]) as unknown as PaymentSource)
-            : source,
+    if (!changed.length) return;
+    if (
+      isBankOrCash(updated) &&
+      changed.some((key) =>
+        [
+          'balanceMinor',
+          'balanceSnapshotMinor',
+          'balanceCutoverAt',
+          'balanceCutoverReason',
+        ].includes(key),
+      )
+    )
+      throw new Error('Use Set Current Balance to change a Bank/Cash balance.');
+    if (
+      updated.kind === 'MEAL' &&
+      changed.some((key) =>
+        [
+          'balanceMinor',
+          'balanceSnapshotMinor',
+          'balanceCutoverAt',
+          'balanceCutoverReason',
+        ].includes(key),
+      )
+    )
+      throw new Error('Use Set Current Balance to audit a meal-wallet balance change.');
+    const sources = await this.database.atomic(async (tx) => {
+      const stored = await this.readStoredSources(tx);
+      const current = stored.find((source) => source.id === updated.id);
+      if (!current || current.kind !== updated.kind)
+        throw new Error('This payment source is no longer available.');
+      if (updated.kind === 'DEBIT' && updated.isPrimaryBank && !current.isPrimaryBank)
+        throw new Error('Confirm a primary-bank switch using the dedicated selection action.');
+      const merged = Object.fromEntries([
+        ...Object.entries(current),
+        ...changed.map((key) => [key, updated[key as keyof PaymentSource]]),
+      ]) as unknown as PaymentSource;
+      if (
+        merged.kind === 'DEBIT' &&
+        (current.lastDigits || merged.lastDigits) &&
+        changed.includes('institution') &&
+        (!merged.institution?.trim() || merged.institution.length > 80)
+      )
+        throw new Error('Enter a bank name of up to 80 characters.');
+      const legacyFingerprint = bankIdentityChanged
+        ? await legacyFingerprintCompleteBankAccount(rawIdentifier ?? '')
+        : undefined;
+      if (
+        merged.kind === 'DEBIT' &&
+        changed.some((key) =>
+          ['institution', 'lastDigits', 'accountMask', 'accountFingerprint'].includes(key),
+        )
+      ) {
+        const sameSuffix = stored.filter(
+          (other) =>
+            other.id !== merged.id &&
+            other.kind === 'DEBIT' &&
+            matchesBank(other.institution, merged.institution) &&
+            other.lastDigits?.slice(-3) === merged.lastDigits?.slice(-3),
         );
-        await this.writeStoredSources(tx, next);
-        return next;
-      })
-      .then((sources) => this.paymentSources.set(sources));
+        const duplicate = sameSuffix.find(
+          (other) =>
+            fingerprintsMatch(merged.accountFingerprint, other.accountFingerprint) ||
+            fingerprintsMatch(legacyFingerprint, other.accountFingerprint),
+        );
+        if (duplicate) throw new Error('This complete bank account identity already exists.');
+        const unresolved = sameSuffix.find(
+          (other) =>
+            !fingerprintsProveDistinct(merged.accountFingerprint, other.accountFingerprint) &&
+            !fingerprintsProveDistinct(legacyFingerprint, other.accountFingerprint),
+        );
+        if (unresolved)
+          throw new Error(
+            unresolved.archived
+              ? 'An archived bank account has this bank and suffix. Restore or identify it explicitly before changing this account.'
+              : 'This bank and suffix already exist without proof of a different account. Confirm the full account number before proceeding.',
+          );
+      }
+      if (changed.includes('balanceMinor')) {
+        if (isBankOrCash(merged)) this.assertBalanceValue(merged, merged.balanceMinor ?? 0);
+        merged.balanceCutoverAt = new Date().toISOString();
+        merged.balanceSnapshotMinor = merged.balanceMinor;
+        if (merged.kind === 'MEAL') merged.balanceCutoverReason = 'MANUAL';
+      }
+      const withUpdate = stored.map((source) => (source.id === merged.id ? merged : source));
+      const realBanks = withUpdate.filter(
+        (source) =>
+          source.kind === 'DEBIT' &&
+          !source.archived &&
+          source.id !== 'source-debit' &&
+          source.institution !== 'Primary bank',
+      );
+      const requestedPrimary = realBanks.find(
+        (source) => source.id === merged.id && source.isPrimaryBank,
+      );
+      const previousPrimary = realBanks.find(
+        (source) => source.id !== merged.id && source.isPrimaryBank,
+      );
+      const primaryId = requestedPrimary?.id ?? previousPrimary?.id ?? realBanks[0]?.id;
+      const next = withUpdate.map((source) => {
+        if (source.id === 'source-debit' && source.kind === 'DEBIT' && realBanks.length)
+          return { ...source, archived: true, isPrimaryBank: false };
+        if (source.kind === 'DEBIT' && source.institution !== 'Primary bank')
+          return { ...source, isPrimaryBank: source.id === primaryId };
+        return source;
+      });
+      await this.writeStoredSources(tx, next);
+      return next;
+    });
+    this.paymentSources.set(sources);
+  }
+  async setPrimaryBankAccount(sourceId: string): Promise<void> {
+    if (!this.database.ready()) throw new Error('Database is not ready.');
+    const sources = await this.database.atomic(async (tx) => {
+      const stored = await this.readStoredSources(tx);
+      const target = stored.find(
+        (source) =>
+          source.id === sourceId &&
+          source.kind === 'DEBIT' &&
+          !source.archived &&
+          source.id !== 'source-debit' &&
+          source.institution !== 'Primary bank',
+      );
+      if (!target) throw new Error('Choose an active bank account to set as primary.');
+      const next = normalizePrimaryBankSources(
+        stored.map((source) =>
+          source.kind === 'DEBIT' &&
+          source.id !== 'source-debit' &&
+          source.institution !== 'Primary bank'
+            ? { ...source, isPrimaryBank: !source.archived && source.id === sourceId }
+            : source,
+        ),
+      );
+      await this.writeStoredSources(tx, next);
+      return next;
+    });
+    this.paymentSources.set(sources);
   }
   addLoan(loan: LoanCommitment): void {
     this.loans.update((loans) => [loan, ...loans]);
@@ -1040,22 +1821,27 @@ export class CardNestStore {
       updatedAt: new Date().toISOString(),
     });
   }
-  recordPayment(cardId: string, amountMinor: number, label = 'Card payment'): void {
+  async recordPayment(cardId: string, amountMinor: number, label = 'Card payment'): Promise<void> {
     if (amountMinor <= 0) return;
+    const card = this.cards().find((item) => item.id === cardId && !item.deletedAt);
+    if (!card) throw new Error('Choose an existing credit card.');
+    if (!Number.isSafeInteger(amountMinor)) throw new Error('Enter a valid payment amount.');
     const timestamp = new Date().toISOString();
-    this.addTransaction({
+    const key = JSON.stringify(['payment', cardId, amountMinor, label]);
+    const draft = this.pendingTransactionDrafts.get(key) ?? {
       id: crypto.randomUUID(),
       cardId,
-      type: 'PAYMENT',
+      type: 'PAYMENT' as const,
       amountMinor,
-      currencyCode: 'INR',
-      transactionDate: timestamp.slice(0, 10),
+      currencyCode: card.currencyCode,
+      transactionDate: indiaTodayIso(new Date(timestamp)),
       merchant: label,
       categoryId: 'payment',
       attachmentIds: [],
       createdAt: timestamp,
       updatedAt: timestamp,
-    });
+    };
+    await this.saveNewTransactionDraft(key, draft, cardId);
   }
 
   /** One atomic card payment plus its explicit bank deduction; never a second purchase. */
@@ -1067,8 +1853,10 @@ export class CardNestStore {
   ): Promise<void> {
     if (!Number.isSafeInteger(amountMinor) || amountMinor <= 0)
       throw new Error('Enter a valid payment amount.');
-    if (!this.cards().some((card) => card.id === cardId && !card.deletedAt))
-      throw new Error('Choose an existing credit card.');
+    const card = this.cards().find((card) => card.id === cardId && !card.deletedAt);
+    if (!card) throw new Error('Choose an existing credit card.');
+    if (card.currencyCode !== 'INR')
+      throw new Error('Bank-funded payments are supported only for INR credit cards.');
     const timestamp = new Date().toISOString();
     // Recorded now, so the payment is after any balance confirmed earlier.
     const recordedAt = new Date(timestamp);
@@ -1088,8 +1876,14 @@ export class CardNestStore {
       updatedAt: timestamp,
     };
     const result = await this.database.atomic(async (tx) => {
+      const [storedCard] = await tx.query<{ payload: string }>(
+        'SELECT payload FROM credit_cards WHERE id=?',
+        [cardId],
+      );
+      if (!storedCard || (JSON.parse(storedCard.payload) as CreditCard).currencyCode !== 'INR')
+        throw new Error('Bank-funded payments are supported only for INR credit cards.');
       const settings = await this.readTrackingSettings(tx);
-      if (!settings.enabled || !settings.askCardSettlementFunding)
+      if (!bankTrackingEnabled(settings) || !settings.askCardSettlementFunding)
         throw new Error('Turn on bank deduction for card payments in Settings first.');
       const sources = await this.readStoredSources(tx);
       const funding = sources.find((source) => source.id === fundingSourceId);
@@ -1224,13 +2018,42 @@ export class CardNestStore {
   }
 
   async enableBankCashTracking(balances: Readonly<Record<string, number | null>>): Promise<void> {
+    await this.enableBalanceTracking('ALL', balances);
+  }
+
+  async enableBankTracking(balances: Readonly<Record<string, number | null>>): Promise<void> {
+    await this.enableBalanceTracking('BANK', balances);
+  }
+
+  async enableCashTracking(balanceMinor: number): Promise<void> {
+    const source = this.paymentSources().find((item) => item.kind === 'CASH' && !item.archived);
+    if (!source) throw new Error('Cash source is unavailable.');
+    await this.enableBalanceTracking('CASH', { [source.id]: balanceMinor });
+  }
+
+  private async enableBalanceTracking(
+    scope: 'ALL' | 'BANK' | 'CASH',
+    balances: Readonly<Record<string, number | null>>,
+  ): Promise<void> {
     const now = new Date().toISOString();
     const result = await this.database.atomic(async (tx) => {
       const stored = await this.readStoredSources(tx);
       const sources = stored.length ? stored : this.paymentSources().map((item) => ({ ...item }));
       const previous = await this.readTrackingSettings(tx);
       const adjustments: SourceBalanceAdjustment[] = [];
-      for (const source of sources.filter(isBankOrCash)) {
+      const selected = sources.filter((source) =>
+        scope === 'ALL'
+          ? isBankOrCash(source)
+          : scope === 'BANK'
+            ? source.kind === 'DEBIT' &&
+              !source.archived &&
+              source.id !== 'source-debit' &&
+              source.institution !== 'Primary bank'
+            : source.kind === 'CASH' && !source.archived,
+      );
+      if (scope === 'BANK' && !selected.length)
+        throw new Error('Add a bank account before initializing Bank/UPI tracking.');
+      for (const source of selected) {
         const value = balances[source.id];
         // Unconfirmed balances stay unknown; the previous value is kept for reference only.
         if (value === null || value === undefined) {
@@ -1253,10 +2076,14 @@ export class CardNestStore {
         source.balanceSnapshotMinor = value;
         source.balanceCutoverAt = now;
       }
+      const bankEnabled = scope === 'CASH' ? bankTrackingEnabled(previous) : true;
+      const cashEnabled = scope === 'BANK' ? cashTrackingEnabled(previous) : true;
       const settings: BankCashTrackingSettings = {
-        enabled: true,
+        enabled: bankEnabled || cashEnabled,
+        bankEnabled,
+        cashEnabled,
         askCardSettlementFunding: previous.askCardSettlementFunding,
-        activatedAt: now,
+        activatedAt: previous.activatedAt ?? now,
       };
       await this.writeTrackingSettings(tx, settings);
       await this.writeStoredSources(tx, sources);
@@ -1269,12 +2096,28 @@ export class CardNestStore {
 
   /** Keeps balances, baselines and history; re-enabling requires a fresh balance confirmation. */
   async disableBankCashTracking(): Promise<void> {
+    await this.disableBalanceTracking('ALL');
+  }
+
+  async disableBankTracking(): Promise<void> {
+    await this.disableBalanceTracking('BANK');
+  }
+
+  async disableCashTracking(): Promise<void> {
+    await this.disableBalanceTracking('CASH');
+  }
+
+  private async disableBalanceTracking(scope: 'ALL' | 'BANK' | 'CASH'): Promise<void> {
     const settings = await this.database.atomic(async (tx) => {
       const previous = await this.readTrackingSettings(tx);
+      const bankEnabled = scope === 'CASH' ? bankTrackingEnabled(previous) : false;
+      const cashEnabled = scope === 'BANK' ? cashTrackingEnabled(previous) : false;
       const next: BankCashTrackingSettings = {
         ...previous,
-        enabled: false,
-        disabledAt: new Date().toISOString(),
+        enabled: bankEnabled || cashEnabled,
+        bankEnabled,
+        cashEnabled,
+        disabledAt: bankEnabled || cashEnabled ? undefined : new Date().toISOString(),
       };
       await this.writeTrackingSettings(tx, next);
       return next;
@@ -1285,8 +2128,8 @@ export class CardNestStore {
   async setCardSettlementFunding(enabled: boolean): Promise<void> {
     const settings = await this.database.atomic(async (tx) => {
       const previous = await this.readTrackingSettings(tx);
-      if (enabled && !previous.enabled)
-        throw new Error('Turn on Bank & Cash tracking before enabling bank deductions.');
+      if (enabled && !bankTrackingEnabled(previous))
+        throw new Error('Turn on Bank/UPI balance tracking before enabling bank deductions.');
       const next = { ...previous, askCardSettlementFunding: enabled };
       await this.writeTrackingSettings(tx, next);
       return next;
@@ -1299,12 +2142,14 @@ export class CardNestStore {
     const now = new Date().toISOString();
     const result = await this.database.atomic(async (tx) => {
       const settings = await this.readTrackingSettings(tx);
-      if (!settings.enabled) throw new Error('Turn on Bank & Cash tracking first.');
       const sources = await this.readStoredSources(tx);
       const source = sources.find((item) => item.id === sourceId);
-      if (!source || !isBankOrCash(source)) throw new Error('Choose a bank account or cash.');
+      if (!source || source.archived || (!isBankOrCash(source) && source.kind !== 'MEAL'))
+        throw new Error('Choose an account with a supported balance.');
+      if (isBankOrCash(source) && !sourceBalanceTrackingEnabled(source, settings))
+        throw new Error('Turn on balance tracking for this source first.');
       this.assertBalanceValue(source, newMinor);
-      const tracked = bankCashTracked(source, settings);
+      const tracked = bankCashTracked(source, settings) || hasWalletBaseline(source);
       const adjustment: SourceBalanceAdjustment = {
         id: crypto.randomUUID(),
         sourceId,
@@ -1319,6 +2164,51 @@ export class CardNestStore {
       source.balanceMinor = newMinor;
       source.balanceSnapshotMinor = newMinor;
       source.balanceCutoverAt = now;
+      if (source.kind === 'MEAL') {
+        source.noLimit = false;
+        source.balanceCutoverReason = 'MANUAL';
+      }
+      await this.writeStoredSources(tx, sources);
+      return { sources, adjustment };
+    });
+    this.paymentSources.set(result.sources);
+    this.balanceAdjustments.update((items) => [result.adjustment, ...items]);
+  }
+
+  /** Adds funds as an audited balance adjustment, without creating an income transaction. */
+  async addSourceBalance(sourceId: string, amountMinor: number, note?: string): Promise<void> {
+    if (!Number.isSafeInteger(amountMinor) || amountMinor <= 0)
+      throw new Error('Enter a positive amount to add.');
+    const now = new Date().toISOString();
+    const result = await this.database.atomic(async (tx) => {
+      const settings = await this.readTrackingSettings(tx);
+      const sources = await this.readStoredSources(tx);
+      const source = sources.find((item) => item.id === sourceId);
+      if (!source || source.archived || (!isBankOrCash(source) && source.kind !== 'MEAL'))
+        throw new Error('Choose an account with a supported balance.');
+      if (
+        (isBankOrCash(source) && !bankCashTracked(source, settings)) ||
+        (source.kind === 'MEAL' && !hasWalletBaseline(source))
+      )
+        throw new Error('Set the current balance before adding money.');
+      const current = source.balanceMinor ?? 0;
+      const newMinor = current + amountMinor;
+      this.assertBalanceValue(source, newMinor);
+      const adjustment: SourceBalanceAdjustment = {
+        id: crypto.randomUUID(),
+        sourceId,
+        reason: 'ADD',
+        previousMinor: current,
+        newMinor,
+        correctionMinor: amountMinor,
+        note: note?.trim().slice(0, 200) || undefined,
+        createdAt: now,
+      };
+      await this.insertBalanceAdjustment(tx, adjustment);
+      source.balanceMinor = newMinor;
+      source.balanceSnapshotMinor = newMinor;
+      source.balanceCutoverAt = now;
+      if (source.kind === 'MEAL') source.balanceCutoverReason = 'MANUAL';
       await this.writeStoredSources(tx, sources);
       return { sources, adjustment };
     });
@@ -1328,22 +2218,36 @@ export class CardNestStore {
 
   /** Explicit enrollment only; reading an SMS never creates a source. */
   async addBankAccount(input: {
-    nickname: string;
+    nickname?: string;
     institution: string;
-    lastDigits: string;
+    lastDigits?: string;
+    accountIdentifier?: string;
+    ifscCode?: string;
   }): Promise<PaymentSource> {
-    const nickname = input.nickname.trim().slice(0, 80);
     const institution = input.institution.trim().slice(0, 80);
-    const lastDigits = input.lastDigits.trim();
-    if (!nickname || !institution) throw new Error('Enter the account name and bank.');
-    if (!/^\d{3,5}$/.test(lastDigits))
-      throw new Error('Enter the last 3 to 5 digits shown in your bank messages.');
+    const rawIdentifier = input.accountIdentifier ?? input.lastDigits ?? '';
+    const identifier = parseBankAccountIdentifier(rawIdentifier);
+    if (!institution) throw new Error('Enter the bank name.');
+    if (!identifier)
+      throw new Error('Enter a masked account identifier with at least three digits.');
+    const ifscCode = input.ifscCode?.trim().toUpperCase() || undefined;
+    if (ifscCode && !/^[A-Z]{4}0[A-Z0-9]{6}$/.test(ifscCode))
+      throw new Error('Enter a valid 11-character IFSC code.');
+    const accountFingerprint = await this.fingerprintBankAccount(rawIdentifier);
+    const legacyFingerprint = await legacyFingerprintCompleteBankAccount(rawIdentifier);
+    const lastDigits = identifier.suffix;
+    const bankName = bankDisplayName(institution) ?? institution;
+    const nickname =
+      input.nickname?.trim().slice(0, 80) || `${bankName} ${displayBankAccountSuffix(lastDigits)}`;
     const account: PaymentSource = {
       id: `bank-${crypto.randomUUID()}`,
       nickname,
       kind: 'DEBIT',
       institution,
       lastDigits,
+      accountMask: identifier.mask,
+      accountFingerprint,
+      ifscCode,
       noLimit: true,
       autoLoad: false,
       archived: false,
@@ -1351,26 +2255,60 @@ export class CardNestStore {
     const sources = await this.database.atomic(async (tx) => {
       const stored = await this.readStoredSources(tx);
       const current = stored.length ? stored : this.paymentSources().map((item) => ({ ...item }));
-      const sameBank = (value?: string) =>
-        (value ?? '')
-          .toLowerCase()
-          .replace(/[^a-z0-9]/g, '')
-          .replace(/bank$/, '') ===
-        institution
-          .toLowerCase()
-          .replace(/[^a-z0-9]/g, '')
-          .replace(/bank$/, '');
-      if (
-        current.some(
+      const sameSuffix = current.filter(
+        (item) =>
+          item.kind === 'DEBIT' &&
+          item.lastDigits?.slice(-3) === lastDigits &&
+          matchesBank(item.institution, institution),
+      );
+      const duplicate = sameSuffix.find(
+        (item) =>
+          fingerprintsMatch(item.accountFingerprint, accountFingerprint) ||
+          fingerprintsMatch(item.accountFingerprint, legacyFingerprint),
+      );
+      if (duplicate)
+        throw new Error(
+          duplicate.archived
+            ? 'An archived bank account with this identity already exists. Restore it explicitly instead.'
+            : 'This bank account is already enrolled.',
+        );
+      const unresolved = sameSuffix.find(
+        (item) =>
+          !fingerprintsProveDistinct(item.accountFingerprint, accountFingerprint) &&
+          !fingerprintsProveDistinct(item.accountFingerprint, legacyFingerprint),
+      );
+      if (unresolved)
+        throw new Error(
+          unresolved.archived
+            ? 'An archived bank account has this bank and suffix. Restore or identify it explicitly before creating another account.'
+            : 'This bank account is already enrolled or its identity cannot be distinguished from the existing account. Confirm the full account number before proceeding.',
+        );
+      const currentPrimary =
+        current.find(
           (item) =>
             item.kind === 'DEBIT' &&
             !item.archived &&
-            item.lastDigits === lastDigits &&
-            sameBank(item.institution),
-        )
-      )
-        throw new Error('This bank account is already enrolled.');
-      const next = [...current, account];
+            item.id !== 'source-debit' &&
+            item.institution !== 'Primary bank' &&
+            item.isPrimaryBank,
+        ) ??
+        current.find(
+          (item) =>
+            item.kind === 'DEBIT' &&
+            !item.archived &&
+            item.id !== 'source-debit' &&
+            item.institution !== 'Primary bank',
+        );
+      const primaryId = currentPrimary?.id ?? account.id;
+      account.isPrimaryBank = primaryId === account.id;
+      const normalized = current.map((item) =>
+        item.id === 'source-debit' && item.kind === 'DEBIT'
+          ? { ...item, archived: true, isPrimaryBank: false }
+          : item.kind === 'DEBIT' && !item.archived && item.institution !== 'Primary bank'
+            ? { ...item, isPrimaryBank: item.id === primaryId }
+            : item,
+      );
+      const next = [...normalized, account];
       await this.writeStoredSources(tx, next);
       return next;
     });
@@ -1472,15 +2410,32 @@ export class CardNestStore {
   }
 
   private assertBalanceValue(source: PaymentSource, value: number): void {
-    if (!Number.isSafeInteger(value) || (source.kind === 'CASH' && value < 0))
+    if (!Number.isSafeInteger(value) || (source.kind !== 'DEBIT' && value < 0))
       throw new Error(
-        source.kind === 'CASH' ? 'Cash balance cannot be negative.' : 'Enter a valid balance.',
+        source.kind === 'CASH'
+          ? 'Cash balance cannot be negative.'
+          : source.kind === 'MEAL'
+            ? 'Wallet balance cannot be negative.'
+            : 'Enter a valid balance.',
       );
   }
 
   private async loadBankCashTracking(raw: string | undefined): Promise<void> {
     if (raw !== undefined) {
-      this.bankCashTracking.set(parseBankCashTracking(raw));
+      const settings = parseBankCashTracking(raw);
+      this.bankCashTracking.set(settings);
+      try {
+        const saved: unknown = JSON.parse(raw);
+        if (
+          saved &&
+          typeof saved === 'object' &&
+          (!Object.prototype.hasOwnProperty.call(saved, 'bankEnabled') ||
+            !Object.prototype.hasOwnProperty.call(saved, 'cashEnabled'))
+        )
+          await this.database.atomic((tx) => this.writeTrackingSettings(tx, settings));
+      } catch {
+        this.bankCashTracking.set({ ...DEFAULT_BANK_CASH_TRACKING });
+      }
       await this.loadBalanceAdjustments();
       return;
     }
@@ -1500,7 +2455,13 @@ export class CardNestStore {
       );
       const now = new Date().toISOString();
       const settings: BankCashTrackingSettings = legacy.length
-        ? { enabled: true, askCardSettlementFunding: false, activatedAt: now }
+        ? {
+            enabled: true,
+            bankEnabled: true,
+            cashEnabled: true,
+            askCardSettlementFunding: false,
+            activatedAt: now,
+          }
         : { ...DEFAULT_BANK_CASH_TRACKING };
       for (const source of legacy) {
         await this.insertBalanceAdjustment(tx, {
@@ -1577,8 +2538,11 @@ export class CardNestStore {
     await this.database.deleteAllData();
     this.cards.set([]);
     this.transactions.set([]);
+    this.paymentGroups.set([]);
     this.categories.set(CATEGORIES);
-    this.paymentSources.set(PAYMENT_SOURCES);
+    this.categoryCatalog.set([]);
+    this.categoryMigrationRecords.set([]);
+    this.paymentSources.set(defaultPaymentSources());
     this.recurringRules.set([]);
     this.loans.set([]);
     this.emiPlans.set([]);
@@ -1604,6 +2568,7 @@ export class CardNestStore {
     this.balanceAdjustments.set([]);
     writeCachedTransactions([]);
     for (const category of CATEGORIES) await this.persistCategory(category);
+    await this.loadCategories();
     this.dataWasCleared = true;
     await this.upsertPreference('data_cleared', '1');
   }
@@ -1664,39 +2629,150 @@ export class CardNestStore {
     return removedTransactions.length;
   }
 
-  addCategory(category: Category): void {
-    this.categories.update((categories) => [...categories, category]);
-    void this.persistCategory(category);
+  async addCategory(category: Category): Promise<void> {
+    await this.saveCategory(category, false);
   }
-
-  updateCategory(updated: Category): void {
-    this.categories.update((categories) =>
-      categories.map((category) => (category.id === updated.id ? updated : category)),
-    );
-    void this.persistCategory(updated);
+  async updateCategory(category: Category): Promise<void> {
+    await this.saveCategory(category, true);
   }
-
-  deleteCategory(categoryId: string, replacementCategoryId = 'other'): boolean {
-    if (categoryId === 'other' || categoryId === 'payment') return false;
-    if (replacementCategoryId) {
-      this.transactions.update((transactions) =>
-        transactions.map((transaction) =>
-          transaction.categoryId === categoryId
-            ? {
-                ...transaction,
-                categoryId: replacementCategoryId,
-                updatedAt: new Date().toISOString(),
-              }
-            : transaction,
-        ),
+  async resetDefaultCategories(): Promise<void> {
+    if (!this.database.ready()) throw new Error('Category storage is unavailable.');
+    await this.database.atomic(async (tx) => {
+      const rows = await tx.query<{
+        id: string;
+        name: string;
+      }>('SELECT id,name FROM categories');
+      const states = await tx.query<CategoryCatalogEntry>('SELECT * FROM category_catalog_state');
+      const planned = CATEGORY_REGISTRY.categories.map((definition) => {
+        const state = states.find((row) => row.canonical_id === definition.id);
+        const names = [definition.name, ...definition.aliases].map(normalizedCategoryName);
+        const mapped = state?.category_id
+          ? rows.find((row) => row.id === state.category_id)
+          : undefined;
+        const stableId = rows.find((row) => row.id === definition.id);
+        const selected =
+          mapped ??
+          (stableId && names.includes(normalizedCategoryName(stableId.name))
+            ? stableId
+            : undefined);
+        return { definition, names, selected, id: selected?.id ?? definition.id };
+      });
+      const plannedIds = new Set<string>();
+      for (const item of planned) {
+        if (plannedIds.has(item.id))
+          throw new Error(
+            'Category catalog mappings conflict. Resolve the category mapping before resetting.',
+          );
+        plannedIds.add(item.id);
+        const nameConflict = rows.find(
+          (row) => row.id !== item.id && item.names.includes(normalizedCategoryName(row.name)),
+        );
+        if (nameConflict)
+          throw new Error(
+            `Cannot restore ${item.definition.name}: a custom category uses its name or alias. Rename the custom category and retry.`,
+          );
+        if (!item.selected && rows.some((row) => row.id === item.id))
+          throw new Error(
+            `Cannot restore ${item.definition.name}: its stable category ID is occupied by a custom category.`,
+          );
+      }
+      for (const item of planned) {
+        const definition = item.definition;
+        await tx.run(
+          'INSERT INTO categories(id,name,icon,colour,applies_to,archived) VALUES(?,?,?,?,?,0) ON CONFLICT(id) DO UPDATE SET name=excluded.name,icon=excluded.icon,colour=excluded.colour,applies_to=excluded.applies_to,archived=0',
+          [item.id, definition.name, definition.icon, definition.colour, definition.appliesTo],
+        );
+        await tx.run(
+          'INSERT INTO category_catalog_state(canonical_id,category_id,deleted) VALUES(?,?,0) ON CONFLICT(canonical_id) DO UPDATE SET category_id=excluded.category_id,deleted=0',
+          [definition.id, item.id],
+        );
+      }
+    });
+    await this.loadCategories();
+    await this.loadCategoryLimits();
+  }
+  private async saveCategory(category: Category, editing: boolean): Promise<void> {
+    if (!this.database.ready()) throw new Error('Category storage is unavailable.');
+    await this.database.atomic(async (tx) => {
+      const rows = await tx.query<{ id: string; name: string }>('SELECT id,name FROM categories');
+      if (!editing && rows.some((row) => row.id === category.id))
+        throw new Error('This category ID already exists.');
+      const definition = categoryDefinition(category.name);
+      if (definition) {
+        const [mapping] = await tx.query<CategoryCatalogEntry>(
+          'SELECT * FROM category_catalog_state WHERE canonical_id=?',
+          [definition.id],
+        );
+        if (
+          mapping?.category_id &&
+          mapping.category_id !== category.id &&
+          rows.some((row) => row.id === mapping.category_id)
+        )
+          throw new Error('A category for this built-in name already exists.');
+      }
+      const name =
+        definition?.name ??
+        (editing
+          ? category.name.trim().replace(/\s+/gu, ' ')
+          : formatNewCategoryName(category.name));
+      if (!name || name.length > 40)
+        throw new Error('Enter a category name of up to 40 characters.');
+      if (
+        rows.some(
+          (row) =>
+            row.id !== category.id &&
+            (normalizedCategoryName(row.name) === normalizedCategoryName(name) ||
+              (!!definition && categoryDefinition(row.name)?.id === definition.id)),
+        )
+      )
+        throw new Error('A category with this name already exists.');
+      if (editing && !rows.some((row) => row.id === category.id))
+        throw new Error('This category no longer exists.');
+      if (
+        this.categoryProtected(category.id) &&
+        (category.archived ||
+          (category.id === 'other' && category.appliesTo !== 'BOTH') ||
+          (category.id === 'payment' && category.appliesTo === 'EXPENSE'))
+      )
+        throw new Error('Essential categories must remain active and compatible.');
+      await tx.run(
+        'INSERT INTO categories(id,name,icon,colour,applies_to,archived) VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,icon=excluded.icon,colour=excluded.colour,applies_to=excluded.applies_to,archived=excluded.archived',
+        [
+          category.id,
+          name,
+          category.icon,
+          category.colour ?? null,
+          category.appliesTo,
+          category.archived ? 1 : 0,
+        ],
       );
-    }
-    this.categories.update((categories) =>
-      categories.filter((category) => category.id !== categoryId),
+      if (definition)
+        await tx.run(
+          'INSERT INTO category_catalog_state(canonical_id,category_id,deleted) VALUES(?,?,0) ON CONFLICT(canonical_id) DO UPDATE SET category_id=excluded.category_id,deleted=0',
+          [definition.id, category.id],
+        );
+    });
+    await this.loadCategories();
+    await this.loadCategoryLimits();
+  }
+  categoryProtected(id: string): boolean {
+    return CATEGORY_REGISTRY.categories.some(
+      (def) =>
+        def.protected &&
+        (def.id === id ||
+          this.categoryCatalog().some(
+            (row) => row.canonical_id === def.id && row.category_id === id,
+          )),
     );
-    if (this.database.ready()) {
-      void this.database.run('DELETE FROM categories WHERE id = ?', [categoryId]);
-    }
+  }
+  async deleteCategory(categoryId: string): Promise<boolean> {
+    if (this.categoryProtected(categoryId)) return false;
+    if (!this.database.ready()) throw new Error('Category storage is unavailable.');
+    await this.database.atomic((tx) => deletePersistedCategory(tx, categoryId));
+    await this.loadCategories();
+    await this.loadCategoryLimits();
+    await this.loadTransactions();
+    await this.loadRecurringRules();
     return true;
   }
 
@@ -1734,7 +2810,7 @@ export class CardNestStore {
     return (
       (card ? `${card.nickname}${card.deletedAt ? ' (deleted card)' : ''}` : undefined) ??
       (source
-        ? `${source.nickname}${source.lastDigits ? ` ${source.lastDigits}` : ''}`
+        ? `${source.nickname}${source.lastDigits ? ` ${source.kind === 'DEBIT' ? displayBankAccountSuffix(source.lastDigits) : source.lastDigits}` : ''}`
         : undefined) ??
       'Unknown source'
     );
@@ -1751,12 +2827,112 @@ export class CardNestStore {
       : 'Unknown source';
   }
 
-  materializeRecurringTransactions(asOf = today): void {
+  async materializeRecurringTransactions(asOf?: string, ruleId?: string): Promise<void> {
+    if (!this.database.ready()) return;
+    const result = await this.database.atomic(async (tx) => {
+      const instant = new Date();
+      const cutoff = asOf ?? currentLocalCalendar(instant).dateIso;
+      const rules = (
+        await tx.query<{ payload: string }>('SELECT payload FROM recurring_rules ORDER BY rowid')
+      ).map((row) => JSON.parse(row.payload) as RecurringRule);
+      const cards = (await tx.query<{ payload: string }>('SELECT payload FROM credit_cards')).map(
+        (row) => JSON.parse(row.payload) as CreditCard,
+      );
+      const batch = this.recurringBatch(
+        ruleId ? rules.filter((rule) => rule.id === ruleId) : rules,
+        await this.readTransactionRows(tx),
+        cutoff,
+        cards,
+        instant.toISOString(),
+      );
+      if (!batch.changedRules.length && !batch.generated.length) return null;
+      for (const transaction of batch.generated) await this.writeTransaction(tx, transaction);
+      for (const rule of batch.changedRules) await this.writeRecurringRule(tx, rule);
+      return {
+        rules: batch.rules,
+        ledger: await this.readTransactionRows(tx),
+        wallets: await this.readStoredSources(tx),
+        transactionId: batch.generated[0]?.id,
+      };
+    });
+    if (result) {
+      this.recurringRules.update((rules) => [
+        ...result.rules,
+        ...rules.filter((rule) => !result.rules.some((stored) => stored.id === rule.id)),
+      ]);
+      this.transactions.set(result.ledger);
+      this.publishStoredBalances(result.wallets);
+      if (result.transactionId) await this.refreshCommittedLedger(result.transactionId);
+    }
+    // Non-card recurrence retains its existing transient behavior pending separate approval.
+    if (!ruleId) this.materializeNonCardRecurringTransactions(asOf ?? this.legacyNonCardCutoff);
+  }
+
+  private recurringBatch(
+    rules: readonly RecurringRule[],
+    ledger: readonly CardTransaction[],
+    asOf: string,
+    cards: readonly CreditCard[],
+    nowStamp: string,
+  ) {
+    const generated: CardTransaction[] = [];
+    const changedRules: RecurringRule[] = [];
+    const nextRules = rules.map((rule) => {
+      let next = rule.nextOccurrenceDate;
+      let guard = 0;
+      let occurrenceCount = ledger.filter((item) => item.recurringRuleId === rule.id).length;
+      let status = rule.status;
+      while (rule.status === 'ACTIVE' && next && next <= asOf && guard < 120) {
+        if (rule.occurrenceLimit !== undefined && occurrenceCount >= rule.occurrenceLimit) {
+          status = 'COMPLETED';
+          next = undefined;
+          break;
+        }
+        const occurrence = next;
+        const exists = ledger.some(
+          (item) => item.recurringRuleId === rule.id && item.generatedOccurrenceDate === occurrence,
+        );
+        if (!exists) {
+          generated.push({
+            id: crypto.randomUUID(),
+            cardId: rule.cardId,
+            type: rule.transactionType ?? 'PURCHASE',
+            amountMinor: rule.amountMinor,
+            currencyCode: cards.find((card) => card.id === rule.cardId)!.currencyCode,
+            transactionDate: occurrence,
+            merchant: rule.title,
+            categoryId: rule.categoryId,
+            recurringRuleId: rule.id,
+            generatedOccurrenceDate: occurrence,
+            attachmentIds: [],
+            createdAt: nowStamp,
+            updatedAt: nowStamp,
+          });
+          occurrenceCount += 1;
+        }
+        if (rule.occurrenceLimit !== undefined && occurrenceCount >= rule.occurrenceLimit) {
+          status = 'COMPLETED';
+          next = undefined;
+        } else {
+          next = this.nextRecurringDate(rule, occurrence);
+        }
+        guard += 1;
+      }
+      if (next === rule.nextOccurrenceDate && status === rule.status) return rule;
+      const updated = { ...rule, nextOccurrenceDate: next, status };
+      changedRules.push(updated);
+      return updated;
+    });
+    return { rules: nextRules, generated, changedRules };
+  }
+
+  private materializeNonCardRecurringTransactions(asOf: string): void {
     const generated: CardTransaction[] = [];
     const changedRules: RecurringRule[] = [];
     const nowStamp = new Date().toISOString();
     this.recurringRules.update((rules) =>
       rules.map((rule) => {
+        if (this.cards().some((card) => card.id === rule.cardId)) return rule;
         let next = rule.nextOccurrenceDate;
         let guard = 0;
         let occurrenceCount = this.transactions().filter(
@@ -1796,7 +2972,7 @@ export class CardNestStore {
             status = 'COMPLETED';
             next = undefined;
           } else {
-            next = this.nextRecurringDate(rule, occurrence);
+            next = this.nextLegacyNonCardRecurringDate(rule, occurrence);
           }
           guard += 1;
         }
@@ -1837,6 +3013,35 @@ export class CardNestStore {
   }
 
   private nextRecurringDate(rule: RecurringRule, occurrence: string): string {
+    const date = new Date(`${occurrence}T12:00:00Z`);
+    if (rule.frequency === 'WEEKLY') date.setUTCDate(date.getUTCDate() + 7);
+    else if (rule.frequency === 'BIWEEKLY') date.setUTCDate(date.getUTCDate() + 14);
+    else if (rule.frequency === 'DAILY') date.setUTCDate(date.getUTCDate() + 1);
+    else if (rule.frequency === 'YEARLY') date.setUTCFullYear(date.getUTCFullYear() + 1);
+    else {
+      const months =
+        rule.frequency === 'BIMONTHLY'
+          ? 2
+          : rule.frequency === 'QUARTERLY'
+            ? 3
+            : rule.frequency === 'HALF_YEARLY'
+              ? 6
+              : Math.max(1, rule.interval ?? 1);
+      const anchorDay = Number(rule.startDate.slice(8, 10));
+      date.setUTCDate(1);
+      date.setUTCMonth(date.getUTCMonth() + months);
+      date.setUTCDate(
+        Math.min(
+          anchorDay,
+          new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate(),
+        ),
+      );
+    }
+    return date.toISOString().slice(0, 10);
+  }
+
+  private nextLegacyNonCardRecurringDate(rule: RecurringRule, occurrence: string): string {
+    // Non-card recurrence retains its existing calendar behavior pending separate approval.
     const date = new Date(`${occurrence}T12:00:00`);
     if (rule.frequency === 'WEEKLY') date.setDate(date.getDate() + 7);
     else if (rule.frequency === 'BIWEEKLY') date.setDate(date.getDate() + 14);
@@ -1924,6 +3129,7 @@ export class CardNestStore {
   }
 
   private async loadCategories(): Promise<void> {
+    await this.database.atomic((tx) => reconcileCategoryCatalog(tx));
     const rows = await this.database.query<
       {
         id: string;
@@ -1937,31 +3143,28 @@ export class CardNestStore {
       `SELECT id, name, icon, colour, applies_to AS appliesTo, archived
        FROM categories ORDER BY name COLLATE NOCASE`,
     );
-    if (rows.length) {
-      const storedCategories = rows.map((row) => ({
+    this.categories.set(
+      rows.map((row) => ({
         id: row.id,
         name: row.name,
         icon: row.icon,
         colour: row.colour ?? undefined,
         appliesTo: row.appliesTo,
-        archived: Boolean(row.archived),
-      }));
-      const missingDefaults = CATEGORIES.filter(
-        (category) =>
-          !storedCategories.some(
-            (stored) =>
-              stored.id === category.id ||
-              stored.name.localeCompare(category.name, undefined, { sensitivity: 'base' }) === 0,
-          ),
-      );
-      this.categories.set([...storedCategories, ...missingDefaults]);
-      for (const category of missingDefaults) await this.persistCategory(category);
-      return;
-    }
-    for (const category of this.categories()) await this.persistCategory(category);
+        archived: !!row.archived,
+      })),
+    );
+    this.categoryCatalog.set(
+      await this.database.query<CategoryCatalogEntry>('SELECT * FROM category_catalog_state'),
+    );
+    this.categoryMigrationRecords.set(
+      await this.database.query<CategoryMigrationRecord>(
+        'SELECT * FROM category_catalog_conflicts ORDER BY created_at',
+      ),
+    );
   }
 
   private async loadTransactions(): Promise<void> {
+    await this.refreshPaymentGroups();
     const rows = await this.database.query<{ payload: string }>(
       'SELECT payload FROM card_transactions ORDER BY transaction_date DESC, created_at DESC',
     );
@@ -2053,7 +3256,7 @@ export class CardNestStore {
       if (!transaction || transaction.emiInstallmentNumber) continue;
       const installments = this.emiInstallments().filter((item) => item.emiPlanId === plan.id);
       if (!installments.length) continue;
-      this.saveEmiPlan(
+      await this.saveEmiPlan(
         {
           ...plan,
           remainingPurchaseMinor: 0,
@@ -2071,43 +3274,61 @@ export class CardNestStore {
 
   private async persistTransaction(transaction: CardTransaction): Promise<void> {
     if (!this.database.ready()) return;
-    const result = await this.database.atomic(async (tx) => {
-      const [stored] = await tx.query<{ payload: string }>(
-        'SELECT payload FROM card_transactions WHERE id = ?',
-        [transaction.id],
-      );
-      const previous = stored ? (JSON.parse(stored.payload) as CardTransaction) : null;
-      const wallets = await this.readStoredSources(tx);
-      const settings = await this.readTrackingSettings(tx);
-      const now = new Date().toISOString();
+    const result = await this.database.atomic((tx) => this.writeTransaction(tx, transaction));
+    this.publishStoredBalances(result.wallets);
+    if (result.fundingChanged) await this.loadTransfers();
+  }
+
+  private async writeTransaction(tx: DatabaseSession, transaction: CardTransaction) {
+    const [stored] = await tx.query<{ payload: string }>(
+      'SELECT payload FROM card_transactions WHERE id = ?',
+      [transaction.id],
+    );
+    const previous = stored ? (JSON.parse(stored.payload) as CardTransaction) : null;
+    const wallets = await this.readStoredSources(tx);
+    const settings = await this.readTrackingSettings(tx);
+    const now = new Date().toISOString();
+    const metadataOnly =
+      previous &&
+      previous.cardId === transaction.cardId &&
+      previous.amountMinor === transaction.amountMinor &&
+      previous.transactionDate === transaction.transactionDate &&
+      previous.transactionTime === transaction.transactionTime &&
+      transactionEffect(previous) === transactionEffect(transaction) &&
+      previous.sourceBalanceApplied === transaction.sourceBalanceApplied &&
+      previous.balanceTiming === transaction.balanceTiming &&
+      previous.balanceTimingAt === transaction.balanceTimingAt;
+    let persisted: CardTransaction;
+    if (metadataOnly)
+      persisted = {
+        ...transaction,
+        balanceEffect: previous.balanceEffect,
+        sourceBalanceApplied: previous.sourceBalanceApplied,
+        balanceTiming: previous.balanceTiming,
+        balanceTimingAt: previous.balanceTimingAt,
+      };
+    else {
       applyWalletTransaction(wallets, previous, -1);
       applyWalletTransaction(wallets, transaction, 1);
       reverseBalanceEffect(wallets, previous?.balanceEffect, settings);
-      const persisted = applyBankCashTransaction(wallets, previous, transaction, settings, now);
-      await this.upsertTransactionRow(tx, persisted);
-      await tx.run('DELETE FROM transaction_links WHERE transaction_id = ?', [transaction.id]);
-      if (
-        transaction.relatedTransactionId &&
-        (transaction.type === 'REFUND' || transaction.type === 'ADJUSTMENT')
-      ) {
-        await tx.run(
-          `INSERT INTO transaction_links
+      persisted = applyBankCashTransaction(wallets, previous, transaction, settings, now);
+    }
+    await this.upsertTransactionRow(tx, persisted);
+    await tx.run('DELETE FROM transaction_links WHERE transaction_id = ?', [transaction.id]);
+    if (
+      transaction.relatedTransactionId &&
+      (transaction.type === 'REFUND' || transaction.type === 'ADJUSTMENT')
+    ) {
+      await tx.run(
+        `INSERT INTO transaction_links
          (transaction_id, related_transaction_id, relationship_type, created_at)
          VALUES (?, ?, ?, ?)`,
-          [
-            transaction.id,
-            transaction.relatedTransactionId,
-            transaction.type,
-            transaction.createdAt,
-          ],
-        );
-      }
-      const fundingChanged = await this.syncCardFunding(tx, wallets, settings, persisted, now);
-      if (wallets.length) await this.writeStoredSources(tx, wallets);
-      return { wallets, fundingChanged };
-    });
-    this.publishStoredBalances(result.wallets);
-    if (result.fundingChanged) await this.loadTransfers();
+        [transaction.id, transaction.relatedTransactionId, transaction.type, transaction.createdAt],
+      );
+    }
+    const fundingChanged = await this.syncCardFunding(tx, wallets, settings, persisted, now);
+    if (wallets.length) await this.writeStoredSources(tx, wallets);
+    return { wallets, fundingChanged, persisted };
   }
 
   private async upsertTransactionRow(
@@ -2277,44 +3498,51 @@ export class CardNestStore {
   }
 
   private async removePersistedTransaction(id: string): Promise<void> {
-    const result = await this.database.atomic(async (tx) => {
-      const [row] = await tx.query<{ payload: string }>(
-        'SELECT payload FROM card_transactions WHERE id=?',
-        [id],
-      );
-      const wallets = await this.readStoredSources(tx);
-      const settings = await this.readTrackingSettings(tx);
-      const previous = row ? (JSON.parse(row.payload) as CardTransaction) : null;
-      applyWalletTransaction(wallets, previous, -1);
-      reverseBalanceEffect(wallets, previous?.balanceEffect, settings);
-      const [funding] = await tx.query<{ payload: string }>(
-        'SELECT payload FROM source_transfers WHERE payment_transaction_id=?',
-        [id],
-      );
-      if (funding) {
-        reverseTransferEffects(wallets, JSON.parse(funding.payload) as SourceTransfer, settings);
-        await tx.run('DELETE FROM source_transfers WHERE payment_transaction_id=?', [id]);
-      }
-      await tx.run('DELETE FROM card_transactions WHERE id=?', [id]);
-      if (wallets.length) await this.writeStoredSources(tx, wallets);
-      return { wallets, funding: !!funding };
-    });
+    const result = await this.database.atomic((tx) => this.removeTransactionInSession(tx, id));
     this.publishStoredBalances(result.wallets);
     if (result.funding) await this.loadTransfers();
+  }
+
+  private async removeTransactionInSession(tx: DatabaseSession, id: string) {
+    const [row] = await tx.query<{ payload: string }>(
+      'SELECT payload FROM card_transactions WHERE id=?',
+      [id],
+    );
+    const wallets = await this.readStoredSources(tx);
+    const settings = await this.readTrackingSettings(tx);
+    const previous = row ? (JSON.parse(row.payload) as CardTransaction) : null;
+    applyWalletTransaction(wallets, previous, -1);
+    reverseBalanceEffect(wallets, previous?.balanceEffect, settings);
+    const [funding] = await tx.query<{ payload: string }>(
+      'SELECT payload FROM source_transfers WHERE payment_transaction_id=?',
+      [id],
+    );
+    if (funding) {
+      reverseTransferEffects(wallets, JSON.parse(funding.payload) as SourceTransfer, settings);
+      await tx.run('DELETE FROM source_transfers WHERE payment_transaction_id=?', [id]);
+    }
+    await detachPaymentGroup(tx, id);
+    await tx.run('DELETE FROM card_transactions WHERE id=?', [id]);
+    if (wallets.length) await this.writeStoredSources(tx, wallets);
+    return { wallets, funding: !!funding };
   }
 
   private async persistRecurringRule(rule: RecurringRule): Promise<void> {
     if (!this.database.ready()) return;
     const creditCardId = this.cards().some((card) => card.id === rule.cardId) ? rule.cardId : null;
     if (!creditCardId) return;
-    await this.database.run(
+    await this.database.atomic((tx) => this.writeRecurringRule(tx, rule));
+  }
+
+  private async writeRecurringRule(tx: DatabaseSession, rule: RecurringRule): Promise<void> {
+    await tx.run(
       `INSERT INTO recurring_rules (id, card_id, next_occurrence_date, status, payload)
        VALUES (?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          next_occurrence_date = excluded.next_occurrence_date,
          status = excluded.status,
          payload = excluded.payload`,
-      [rule.id, creditCardId, rule.nextOccurrenceDate ?? null, rule.status, JSON.stringify(rule)],
+      [rule.id, rule.cardId, rule.nextOccurrenceDate ?? null, rule.status, JSON.stringify(rule)],
     );
   }
 
@@ -2332,18 +3560,19 @@ export class CardNestStore {
   }
 
   private async persistEmiPlan(
+    tx: DatabaseSession,
     plan: EmiPlan,
     installments: readonly EmiInstallment[],
   ): Promise<void> {
-    await this.database.run(
+    await tx.run(
       `INSERT INTO emi_plans (id, transaction_id, card_id, status, payload)
        VALUES (?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET status = excluded.status, payload = excluded.payload`,
       [plan.id, plan.transactionId, plan.cardId, plan.status, JSON.stringify(plan)],
     );
-    await this.database.run('DELETE FROM emi_installments WHERE emi_plan_id = ?', [plan.id]);
+    await tx.run('DELETE FROM emi_installments WHERE emi_plan_id = ?', [plan.id]);
     for (const installment of installments) {
-      await this.database.run(
+      await tx.run(
         `INSERT INTO emi_installments
          (id, emi_plan_id, installment_number, statement_date, due_date,
           principal_minor, interest_minor, paid, payload)
@@ -2359,25 +3588,6 @@ export class CardNestStore {
           installment.paid ? 1 : 0,
           JSON.stringify(installment),
         ],
-      );
-    }
-  }
-
-  private async persistSplitGroup(
-    groupId: string,
-    originalAmountMinor: number,
-    transactions: readonly CardTransaction[],
-  ): Promise<void> {
-    for (const transaction of transactions) await this.persistTransaction(transaction);
-    await this.database.run(
-      `INSERT INTO transaction_split_groups (id, original_amount_minor, created_at)
-       VALUES (?, ?, ?)`,
-      [groupId, originalAmountMinor, new Date().toISOString()],
-    );
-    for (const transaction of transactions) {
-      await this.database.run(
-        `INSERT INTO transaction_split_members (group_id, transaction_id) VALUES (?, ?)`,
-        [groupId, transaction.id],
       );
     }
   }

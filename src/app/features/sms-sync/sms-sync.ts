@@ -1,4 +1,9 @@
+import { suggestCategory, categoryCompatible } from '../../core/services/category-matcher';
+import { ConfirmationDialog } from '../../shared/confirmation-dialog';
+import { ProfileModal } from '../../shared/profile-modal';
 import {
+  defaultReviewFilters,
+  SmsReviewFilters,
   INITIAL_MULTIPLE_KINDS,
   reviewFilters,
   SMS_REVIEW_SORT_ORDERS,
@@ -18,7 +23,7 @@ import {
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
 import { debounceTime, Observable } from 'rxjs';
-import { Router } from '@angular/router';
+import { ActivatedRoute, Router } from '@angular/router';
 import { Capacitor } from '@capacitor/core';
 import { SmsSwipe } from './sms-swipe';
 import { AppIcon } from '../../shared/app-icon';
@@ -27,18 +32,22 @@ import { SnackbarService } from '../../core/services/snackbar.service';
 import { lockDocumentScroll } from '../../shared/document-scroll-lock';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { indiaTodayIso } from '../../core/services/india-date';
-import { parseMoneyToMinor } from '../../core/services/money';
-import { SmsReviewService } from './sms-review.service';
+import { parseMoneyToMinor, matchesTransactionType } from '../../core/services/money';
+import { SmsReviewFilterRefreshError, SmsReviewService } from './sms-review.service';
 import { SmsTypePicker } from './sms-type-picker';
 import { matchExisting, walletComparison } from './sms-matching';
+import { SmsSplitProposal } from './sms-split-continuity';
+import { SmsSplitSuggestion } from './sms-split-suggestion';
 import { purchaseAnchor, purchaseTiming } from './sms-purchase-matching';
 import { PurchaseReviewMatch, SmsPurchaseComparison } from './sms-purchase-comparison';
 import {
+  bankTrackingEnabled,
   bankCashTracked,
   isBankOrCash,
   needsBaselineConfirmation,
 } from '../../core/services/source-balance';
 import { BalanceTiming } from '../../core/models/domain';
+import { displayBankAccountSuffix } from '../../core/services/bank-account-identifier';
 import {
   paymentMethodDetailConfig as getPaymentMethodDetailConfig,
   paymentMethodsFor,
@@ -51,21 +60,21 @@ import {
   ReconciliationChoice,
   PurchaseReviewDraft,
   eligibleSources,
+  creatableSources,
   existingSuggestions,
   ledgerType,
   merchantTitle,
   suspectEvidence,
-  defaultPluxeeCategory,
   BankPurpose,
   accountSuffixMatches,
   bankDirection,
   bankDisplayName,
   bankExistingSuggestions,
   bankPurposes,
-  defaultBankCategory,
   defaultBankPurpose,
   isBankEvidence,
   matchingBankAccounts,
+  matchingBankAccountCandidates,
   suggestedBankSources,
 } from './sms-model';
 
@@ -105,6 +114,9 @@ const CANDIDATE_MENU_ITEM_HEIGHT = 44;
 @Component({
   selector: 'app-sms-sync',
   imports: [
+    ConfirmationDialog,
+    ProfileModal,
+    SmsSplitSuggestion,
     ReactiveFormsModule,
     AppIcon,
     AppSelectPicker,
@@ -126,7 +138,10 @@ const CANDIDATE_MENU_ITEM_HEIGHT = 44;
 export class SmsSyncPage {
   readonly sync = inject(SmsReviewService);
   readonly store = inject(CardNestStore);
+  private readonly route = inject(ActivatedRoute, { optional: true });
+  private readonly requestedReviewId = this.route?.snapshot.queryParamMap.get('review') ?? '';
   private readonly snackbar = inject(SnackbarService);
+  readonly android = Capacitor.getPlatform() === 'android';
   readonly readFilter = signal('UNREAD');
   readonly hideAlreadyAdded = signal(true);
   readonly swipeEnabled = computed(
@@ -172,7 +187,10 @@ export class SmsSyncPage {
     'ERROR',
   ].map((value) => ({ value, label: this.label(value) }));
   readonly categoryOptions = computed<readonly AppSelectOption[]>(() =>
-    this.store.categories().map((category) => ({ value: category.id, label: category.name })),
+    this.store
+      .categories()
+      .filter((category) => !category.archived)
+      .map((category) => ({ value: category.id, label: category.name })),
   );
   sourceOptions(): readonly AppSelectOption[] {
     return [
@@ -267,7 +285,11 @@ export class SmsSyncPage {
   readonly sourceFilter = signal('');
   readonly from = signal('');
   readonly to = signal('');
-  readonly advanced = signal(false);
+  readonly filterDialogOpen = signal(false);
+  readonly filterDraft = signal<SmsReviewFilters | null>(null);
+  readonly filterDateError = signal('');
+  readonly filterPersistenceError = signal('');
+  readonly filterSaving = signal(false);
   readonly loading = signal(false);
   readonly notice = signal('');
   readonly pageCount = computed(() => Math.max(1, Math.ceil(this.sync.total() / 200)));
@@ -323,6 +345,211 @@ export class SmsSyncPage {
     controls[key]?.set(key === 'kind' || key === 'state' || key === 'read' ? 'ALL' : '');
     this.applyFilters();
   }
+  readonly cardCategoryOverridden = signal(false);
+  readonly bankCategoryOverridden = signal(false);
+  chooseReviewCategory(value: string, bank = false): void {
+    (bank ? this.bankCategoryOverridden : this.cardCategoryOverridden).set(true);
+    (bank ? this.bankEditor : this.editor).controls.category.setValue(value);
+  }
+  suggestReviewCategory(): void {
+    const candidate = this.selected();
+    if (!candidate?.item || this.hydratingReview) return;
+    if (['IMPORTED', 'MATCHED_EXISTING'].includes(candidate.state)) {
+      const saved = this.store.transactions().find((row) => row.id === candidate.transactionId);
+      if (saved)
+        (isBankEvidence(candidate.item) ? this.bankEditor : this.editor).controls.category.setValue(
+          saved.categoryId,
+          { emitEvent: false },
+        );
+      return;
+    }
+    const bank = isBankEvidence(candidate.item);
+    if ((bank ? this.bankCategoryOverridden : this.cardCategoryOverridden)()) return;
+    const value = (bank ? this.bankEditor : this.editor).getRawValue();
+    const target = value.splitTarget;
+    const group = this.store
+      .paymentGroups?.()
+      .find((row) => row.id === target || row.memberIds.includes(target));
+    const related = this.store.transactions().find((row) => row.id === (group?.anchorId ?? target));
+    const bankPurpose = this.bankEditor.controls.purpose.value;
+    const purpose = bank
+      ? bankPurpose === 'INCOME'
+        ? 'INCOME'
+        : bankPurpose === 'CARD_SETTLEMENT'
+          ? 'PAYMENT'
+          : 'PURCHASE'
+      : ['PLUXEE_TOPUP', 'FASTAG_TOPUP'].includes(candidate.kind)
+        ? 'TOPUP'
+        : (ledgerType(candidate.item) ?? 'PURCHASE');
+    try {
+      const category = suggestCategory(
+        {
+          purpose,
+          merchant: bank
+            ? this.bankEditor.controls.description.value
+            : this.editor.controls.merchant.value,
+          ...(target ? { inheritedId: related?.categoryId ?? '' } : {}),
+        },
+        this.store.categories(),
+        this.store.categoryCatalog?.() ?? [],
+      );
+      (bank ? this.bankEditor : this.editor).controls.category.setValue(category, {
+        emitEvent: false,
+      });
+    } catch (error: unknown) {
+      this.error.set(error instanceof Error ? error.message : 'Category integrity error.');
+    }
+  }
+  readonly restoreFiltersConfirmation = signal(false);
+  readonly restoringFilters = signal(false);
+  readonly retryRestoredFilterRefresh = signal(false);
+  readonly retryFilterRefresh = signal(false);
+  requestRestoreFilters(): void {
+    if (!this.restoringFilters() && !this.filterSaving()) this.restoreFiltersConfirmation.set(true);
+  }
+  cancelRestoreFilters(): void {
+    this.restoreFiltersConfirmation.set(false);
+    queueMicrotask(() => document.getElementById('restore-default-review-filters')?.focus());
+  }
+  private currentReviewFilters(): SmsReviewFilters {
+    return {
+      state: this.state(),
+      kind: this.kind(),
+      search: this.search(),
+      source: this.sourceFilter(),
+      from: this.from(),
+      to: this.to(),
+      read: this.readFilter(),
+      mode: this.typeMode(),
+      kinds: [...this.multipleKinds()],
+      multipleInitialized: this.multipleInitialized(),
+      hideAlreadyAdded: this.hideAlreadyAdded(),
+      sortOrder: this.sortOrder(),
+    };
+  }
+  openFilterDialog(): void {
+    if (this.filterSaving() || this.restoringFilters()) return;
+    this.filterDraft.set(this.currentReviewFilters());
+    this.filterDateError.set('');
+    this.filterPersistenceError.set('');
+    this.filterDialogOpen.set(true);
+  }
+  closeFilterDialog(persisted = false): void {
+    if (this.filterSaving() && !persisted) return;
+    this.filterDialogOpen.set(false);
+    this.filterDraft.set(null);
+    this.filterDateError.set('');
+    this.filterPersistenceError.set('');
+  }
+  updateFilterDraft<K extends keyof SmsReviewFilters>(key: K, value: SmsReviewFilters[K]): void {
+    this.filterDraft.update((draft) => (draft ? { ...draft, [key]: value } : draft));
+    this.filterDateError.set('');
+    this.filterPersistenceError.set('');
+  }
+  changeFilterDraftMode(mode: 'SINGLE' | 'MULTIPLE'): void {
+    this.filterDraft.update((draft) => {
+      if (!draft) return draft;
+      return mode === 'MULTIPLE' && !draft.multipleInitialized
+        ? { ...draft, mode, kinds: [...INITIAL_MULTIPLE_KINDS], multipleInitialized: true }
+        : { ...draft, mode };
+    });
+    this.filterDateError.set('');
+    this.filterPersistenceError.set('');
+  }
+  updateDraftSortOrder(value: string): void {
+    if (SMS_REVIEW_SORT_ORDERS.includes(value as SmsReviewSortOrder)) {
+      this.updateFilterDraft('sortOrder', value as SmsReviewSortOrder);
+    }
+  }
+  async applyFilterDraft(): Promise<void> {
+    const draft = this.filterDraft();
+    if (!draft || this.filterSaving() || this.restoringFilters()) return;
+    if (draft.from && draft.to && draft.from > draft.to) {
+      this.filterDateError.set('The start date must be on or before the through date.');
+      return;
+    }
+    this.filterSaving.set(true);
+    this.filterPersistenceError.set('');
+    this.retryFilterRefresh.set(false);
+    try {
+      await this.sync.filterReview(draft);
+      this.setFilterSignals(draft);
+      this.closeFilterDialog(true);
+    } catch (error: unknown) {
+      if (error instanceof SmsReviewFilterRefreshError && error.preferencesSaved) {
+        this.setFilterSignals(draft);
+        this.closeFilterDialog(true);
+        this.retryFilterRefresh.set(true);
+        this.notice.set('SMS Review filters were saved, but the inbox could not refresh.');
+        this.snackbar.show(
+          'Filter preferences saved. SMS Review could not refresh; retry the inbox refresh.',
+          'WARNING',
+        );
+      } else {
+        this.filterPersistenceError.set(
+          error instanceof Error ? error.message : 'Filter preferences could not be saved.',
+        );
+      }
+    } finally {
+      this.filterSaving.set(false);
+    }
+  }
+  private setFilterSignals(filters: SmsReviewFilters): void {
+    this.search.set(filters.search);
+    this.sourceFilter.set(filters.source);
+    this.kind.set(filters.kind);
+    this.typeMode.set(filters.mode);
+    this.multipleKinds.set([...filters.kinds]);
+    this.multipleInitialized.set(filters.multipleInitialized);
+    this.state.set(filters.state);
+    this.from.set(filters.from);
+    this.to.set(filters.to);
+    this.readFilter.set(filters.read);
+    this.hideAlreadyAdded.set(filters.hideAlreadyAdded);
+    this.sortOrder.set(filters.sortOrder);
+  }
+  async confirmRestoreFilters(): Promise<void> {
+    if (!this.restoreFiltersConfirmation() || this.restoringFilters() || this.filterSaving())
+      return;
+    this.restoringFilters.set(true);
+    this.restoreFiltersConfirmation.set(false);
+    this.retryRestoredFilterRefresh.set(false);
+    this.retryFilterRefresh.set(false);
+    const defaults = defaultReviewFilters();
+    try {
+      await this.sync.filterReview(defaults);
+      this.setFilterSignals(defaults);
+      this.snackbar.show('Default SMS Review filters restored.');
+    } catch (error: unknown) {
+      if (error instanceof SmsReviewFilterRefreshError && error.preferencesSaved) {
+        this.setFilterSignals(defaults);
+        this.retryRestoredFilterRefresh.set(true);
+        this.notice.set('Default filters were saved. The SMS Review inbox could not refresh.');
+        this.snackbar.show(
+          'Default filters saved. SMS Review could not refresh; retry the inbox refresh.',
+          'WARNING',
+        );
+      } else {
+        this.error.set(error instanceof Error ? error.message : 'Filters could not be restored.');
+      }
+    } finally {
+      this.restoringFilters.set(false);
+      queueMicrotask(() => document.getElementById('restore-default-review-filters')?.focus());
+    }
+  }
+  async retryReviewInboxRefresh(): Promise<void> {
+    if (!(this.retryRestoredFilterRefresh() || this.retryFilterRefresh()) || this.loading()) return;
+    try {
+      await this.run(() => this.sync.refresh());
+      if (!this.error()) {
+        this.retryRestoredFilterRefresh.set(false);
+        this.retryFilterRefresh.set(false);
+        this.notice.set('SMS Review inbox refreshed.');
+      }
+    } catch {
+      // run() preserves the retry state and reports the refresh error.
+    }
+  }
   clearFilters(): void {
     this.search.set('');
     this.sourceFilter.set('');
@@ -335,6 +562,24 @@ export class SmsSyncPage {
     this.applyFilters();
   }
   readonly selected = signal<SmsCandidate | null>(null);
+  readonly splitProposal = signal<SmsSplitProposal | null>(null);
+  splitSource(): string {
+    return (this.bankItem() ? this.bankEditor : this.editor).controls.source.value;
+  }
+  splitSelection(): string {
+    return (this.bankItem() ? this.bankEditor : this.editor).controls.splitTarget.value;
+  }
+  chooseSmsSplit(target: string): void {
+    const proposal = this.splitProposal();
+    if (!proposal || target !== proposal.targetId) return;
+    const bank = !!this.bankItem();
+    (bank ? this.bankEditor : this.editor).patchValue({
+      existing: '',
+      separate: false,
+      splitTarget: target,
+    });
+    void this.savePurchaseChoice(bank);
+  }
   private hydratingReview = false;
   private reviewRevision = 0;
 
@@ -368,8 +613,8 @@ export class SmsSyncPage {
       .transactions()
       .filter((entry) => ids.includes(entry.id))
       .map((entry) => {
-        const timing =
-          purchaseTiming(item, entry, value.transactionDate) ?? purchaseTiming(item, entry);
+        const editedTiming = purchaseTiming(item, entry, value.transactionDate);
+        const timing = editedTiming ?? purchaseTiming(item, entry);
         const minutes =
           timing?.differenceMs === null || timing?.differenceMs === undefined
             ? null
@@ -381,8 +626,10 @@ export class SmsSyncPage {
           reason:
             entry.amountMinor !== parseMoneyToMinor(value.amount)
               ? 'The original SMS amount matches this record. Restore the matching amount to link, or verify a separate purchase.'
-              : (timing?.reason ??
-                'The verified transaction reference matches. Timing differs; inspect the original event before linking.'),
+              : !editedTiming && timing
+                ? `Suggested from the original SMS event date ${item.eventDate}; the edited review date ${value.transactionDate} does not independently match. ${timing.reason}`
+                : (timing?.reason ??
+                  'The verified transaction reference matches. Timing differs; inspect the original event before linking.'),
           canMatch: entry.amountMinor === parseMoneyToMinor(value.amount),
           timeDifference:
             minutes === null
@@ -402,7 +649,7 @@ export class SmsSyncPage {
     return anchor.kind === 'EXPLICIT_TRANSACTION_TIME'
       ? `SMS transaction time: ${item.eventDate} ${item.eventTime} IST.`
       : anchor.kind === 'REVIEW_DATE_ONLY'
-        ? `Review date edited. Only same-date manual suggestions are shown. Original SMS event date: ${item.eventDate}.`
+        ? `Original SMS date ${item.eventDate} and edited review date ${anchor.localDate} are checked separately. No transaction time is assumed for the edited date.`
         : `SMS received: ${anchor.timestamp === null ? 'time unavailable' : new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Kolkata' }).format(anchor.timestamp) + ' IST'}. This is approximate, not the purchase time. Original event date: ${item.eventDate}.${anchor.delayed ? ' Receipt was on a different local date; delivery-day purchases are excluded.' : ''}`;
   }
 
@@ -415,14 +662,19 @@ export class SmsSyncPage {
   }
 
   confirmSeparatePurchase(bank = false): void {
-    (bank ? this.bankEditor : this.editor).patchValue({ existing: '', separate: true });
+    (bank ? this.bankEditor : this.editor).patchValue({
+      existing: '',
+      separate: true,
+      splitTarget: '',
+    });
     void this.savePurchaseChoice(bank);
   }
 
-  private async savePurchaseChoice(bank = false): Promise<void> {
+  private async savePurchaseChoice(bank = false): Promise<boolean> {
     const candidate = this.selected();
-    if (!candidate || this.hydratingReview || !this.purchaseReviewActive(bank)) return;
+    if (!candidate || this.hydratingReview) return false;
     const value = (bank ? this.bankEditor : this.editor).getRawValue();
+    if (!candidate.item || !['PENDING', 'DEFERRED'].includes(candidate.state)) return false;
     const draft: PurchaseReviewDraft = {
       mode: bank ? 'BANK' : 'CARD',
       source: value.source,
@@ -430,8 +682,13 @@ export class SmsSyncPage {
       merchant: 'merchant' in value ? value.merchant : value.description,
       transactionDate: value.transactionDate,
       category: value.category,
+      ...(bank && this.bankEditor.controls.purpose.value
+        ? { bankPurpose: this.bankEditor.controls.purpose.value as BankPurpose }
+        : {}),
+      categoryOverridden: (bank ? this.bankCategoryOverridden : this.cardCategoryOverridden)(),
       existing: value.existing,
       separate: value.separate,
+      splitTargetId: value.splitTarget || undefined,
       paymentMethod: value.paymentMethod,
       paymentMethodDetail: value.paymentMethodDetail,
       paymentMethodCustom: value.paymentMethodCustom,
@@ -439,10 +696,12 @@ export class SmsSyncPage {
     };
     try {
       await this.sync.savePurchaseReview(candidate.id, draft);
+      return true;
     } catch {
       this.error.set(
         'Review choice could not be saved. Keep this review open and retry before leaving.',
       );
+      return false;
     }
   }
 
@@ -452,11 +711,79 @@ export class SmsSyncPage {
       if (!draft || this.selected()?.id !== candidate.id || this.reviewRevision !== revision)
         return;
       const bank = draft.mode === 'BANK';
-      if (!this.purchaseReviewActive(bank)) return;
+      if (bank !== isBankEvidence(candidate.item)) return;
+
+      let verifiedSplit = '';
+      if (draft.splitTargetId) {
+        const proposal = await this.sync.splitSuggestion(candidate, draft.source);
+        if (this.selected()?.id !== candidate.id || this.reviewRevision !== revision) return;
+        if (
+          proposal?.targetId === draft.splitTargetId &&
+          draft.transactionDate === candidate.item?.eventDate &&
+          parseMoneyToMinor(draft.amount) === candidate.item?.amountMinor
+        )
+          verifiedSplit = draft.splitTargetId;
+        else
+          this.notice.set(
+            'The saved split choice needs a fresh continuity review. No grouping is selected.',
+          );
+      }
       this.hydratingReview = true;
-      const { mode, merchant, ...values } = draft;
-      if (mode === 'BANK') this.bankEditor.patchValue({ ...values, description: merchant });
-      else this.editor.patchValue({ ...values, merchant });
+      const {
+        mode,
+        merchant,
+        splitTargetId,
+        categoryOverridden,
+        categoryUnavailable,
+        bankPurpose,
+        ...values
+      } = draft;
+      const purpose = bank
+        ? (bankPurpose ?? this.bankEditor.controls.purpose.value) === 'INCOME'
+          ? 'INCOME'
+          : (bankPurpose ?? this.bankEditor.controls.purpose.value) === 'CARD_SETTLEMENT'
+            ? 'PAYMENT'
+            : 'PURCHASE'
+        : ['PLUXEE_TOPUP', 'FASTAG_TOPUP'].includes(candidate.kind)
+          ? 'TOPUP'
+          : (ledgerType(candidate.item!) ?? 'PURCHASE');
+      const saved = this.store
+        .categories()
+        .find((row) => row.id === draft.category && categoryCompatible(row, purpose));
+      if (!saved || categoryUnavailable) {
+        values.category = 'other';
+        this.notice.update(
+          (message) =>
+            (message ? message + ' ' : '') +
+            'The original category is unavailable. Other is selected; review it before approval.',
+        );
+      }
+      (bank ? this.bankCategoryOverridden : this.cardCategoryOverridden).set(
+        categoryOverridden ?? true,
+      );
+      const splitTarget = splitTargetId ? verifiedSplit : '';
+      if (mode === 'BANK')
+        this.bankEditor.patchValue({
+          ...values,
+          ...(bankPurpose ? { purpose: bankPurpose } : {}),
+          description: merchant,
+          splitTarget,
+        });
+      else {
+        const inactive =
+          this.store
+            .cards()
+            .some((card) => card.id === values.source && (card.archived || !!card.deletedAt)) ||
+          this.store
+            .paymentSources()
+            .some((source) => source.id === values.source && source.archived);
+        this.editor.patchValue({
+          ...values,
+          ...(inactive ? { source: '', existing: '' } : {}),
+          merchant,
+          splitTarget,
+        });
+      }
       const form = bank ? this.bankEditor : this.editor;
       if (
         draft.existing &&
@@ -484,6 +811,7 @@ export class SmsSyncPage {
     amount: new FormControl('', { nonNullable: true, validators: Validators.required }),
     merchant: new FormControl('', { nonNullable: true, validators: Validators.maxLength(100) }),
     existing: new FormControl('', { nonNullable: true }),
+    splitTarget: new FormControl('', { nonNullable: true }),
     reconciliation: new FormControl<ReconciliationChoice>('PENDING', {
       nonNullable: true,
     }),
@@ -509,7 +837,7 @@ export class SmsSyncPage {
       { value: '', label: 'Do not deduct from a bank account' },
       ...this.store.cardSettlementFundingAccounts().map((source) => ({
         value: source.id,
-        label: this.store.sourceDetail(source.id),
+        label: `${source.institution || 'Bank/UPI'} · ${source.nickname}${source.lastDigits ? ` · •••${source.lastDigits.slice(-3)}` : ''}`,
         detail: this.balanceDetail(source.id),
       })),
     ];
@@ -549,6 +877,7 @@ export class SmsSyncPage {
       ).length,
   );
   applyFilters(): void {
+    if (this.restoringFilters()) return;
     void this.run(() =>
       this.sync.filterReview({
         state: this.state(),
@@ -590,8 +919,8 @@ export class SmsSyncPage {
         ? 'FASTAG'
         : '';
     const available = wallets
-      ? this.store.paymentSources().filter((s) => s.kind === wallets)
-      : this.store.cards().filter((c) => !c.deletedAt);
+      ? this.store.paymentSources().filter((source) => source.kind === wallets && !source.archived)
+      : this.store.cards().filter((card) => !card.archived && !card.deletedAt);
     return available.map((s) => ({
       id: s.id,
       label: this.store.sourceDetail(s.id),
@@ -600,16 +929,24 @@ export class SmsSyncPage {
   });
   sourceLabel(candidate: SmsCandidate): string {
     this.editorChanges();
+    this.bankEditorChanges();
     const smsDigits = candidate.item?.cardDigits;
     if (candidate.state === 'IMPORTED') return 'Added from SMS · Recorded transaction';
     if (candidate.state === 'MATCHED_EXISTING')
       return 'Already added · Matched to existing transaction';
     if (isBankEvidence(candidate.item)) {
-      const matches = matchingBankAccounts(candidate.item, this.store.paymentSources());
-      if (matches.length === 1) return this.store.sourceDetail(matches[0].id);
+      const matches = matchingBankAccountCandidates(candidate.item, this.store.paymentSources());
+      const chosen =
+        this.selected()?.id === candidate.id ? this.bankEditor.controls.source.value : '';
+      if (chosen && (matches.length !== 1 || matches[0].id !== chosen))
+        return `Manually selected bank source: ${this.store.sourceDetail(chosen)}. This selection is not automatic SMS identity verification; check the bank and account before approval.`;
+      if (matches.length === 1 && !matches[0].archived)
+        return this.store.sourceDetail(matches[0].id);
+      if (matches.length === 1 && matches[0].archived)
+        return `Archived account match · ${matches[0].institution ?? 'Bank'} · •••${matches[0].lastDigits?.slice(-3) ?? ''}. Restore or identify an active account explicitly.`;
       return matches.length > 1
-        ? `Ambiguous · ${matches.length} matching accounts; choose one`
-        : `${bankDisplayName(candidate.item.issuer) ?? 'Bank not identified'}${candidate.item.accountDigits ? ` · A/c ••${candidate.item.accountDigits}` : ''} · choose an account`;
+        ? `Ambiguous · ${matches.length} matching accounts including archived accounts; choose an active account explicitly`
+        : `${bankDisplayName(candidate.item.issuer) ?? 'Bank not identified'}${candidate.item.accountDigits ? ` · A/c ${displayBankAccountSuffix(candidate.item.accountDigits)}` : ''} · choose an account`;
     }
     const ids = candidate.item
       ? eligibleSources(candidate.item, this.store.cards(), this.store.paymentSources())
@@ -621,6 +958,8 @@ export class SmsSyncPage {
     if (ids.length === 1) {
       const card = this.store.cards().find((card) => card.id === ids[0]);
       const wallet = this.store.paymentSources().find((source) => source.id === ids[0]);
+      if (card?.archived)
+        return `Archived card identified: ${card.nickname}. Existing historical records can still be matched. Restore this card in Cards before creating a new entry.`;
       return `Source identified from SMS: ${card?.nickname ?? wallet?.nickname} ${card?.lastDigits || wallet?.lastDigits ? `••${card?.lastDigits ?? wallet?.lastDigits}` : ''}${card?.archived ? ' · archived' : ''}`;
     }
     return ids.length > 1
@@ -631,6 +970,20 @@ export class SmsSyncPage {
     const item = this.selected()?.item;
     return !!item && !!ledgerType(item);
   });
+  readonly archivedHistoricalSources = computed(() => {
+    const item = this.selected()?.item;
+    if (!item) return [];
+    const identified = eligibleSources(item, this.store.cards(), this.store.paymentSources());
+    return this.store
+      .cards()
+      .filter((card) => card.archived && !card.deletedAt && identified.includes(card.id));
+  });
+  reviewArchivedRecords(sourceId: string): void {
+    if (!this.archivedHistoricalSources().some((source) => source.id === sourceId)) return;
+    this.editor.controls.source.setValue(sourceId);
+    this.editor.controls.existing.setValue('');
+    this.notice.set('Historical matching only. Restore this card before creating a new entry.');
+  }
   readonly cardAnnotationsVisible = computed(() => {
     this.editorChanges();
     const item = this.selected()?.item;
@@ -658,6 +1011,7 @@ export class SmsSyncPage {
     transactionDate: new FormControl('', { nonNullable: true }),
     category: new FormControl('other', { nonNullable: true }),
     existing: new FormControl('', { nonNullable: true }),
+    splitTarget: new FormControl('', { nonNullable: true }),
     counterparty: new FormControl('', { nonNullable: true }),
     existingTransfer: new FormControl('', { nonNullable: true }),
     card: new FormControl('', { nonNullable: true }),
@@ -670,10 +1024,6 @@ export class SmsSyncPage {
       nonNullable: true,
       validators: [Validators.maxLength(500)],
     }),
-  });
-  readonly enrollBankName = new FormControl('', {
-    nonNullable: true,
-    validators: [Validators.required, Validators.maxLength(80)],
   });
   private readonly bankEditorChanges = toSignal(this.bankEditor.valueChanges);
   readonly bankItem = computed(() => {
@@ -752,19 +1102,23 @@ export class SmsSyncPage {
   }
   bankSourceOptions(): readonly AppSelectOption[] {
     const item = this.bankItem();
+    const matchCandidates = item
+      ? matchingBankAccountCandidates(item, this.store.paymentSources())
+      : [];
     const matches = new Set(
-      item
-        ? matchingBankAccounts(item, this.store.paymentSources()).map((source) => source.id)
-        : [],
+      matchCandidates.filter((source) => !source.archived).map((source) => source.id),
     );
+    const ambiguous = matchCandidates.length > 1;
     return [
       { value: '', label: 'Select the bank account' },
       ...this.store.bankAccounts().map((source) => ({
         value: source.id,
-        label: this.store.sourceDetail(source.id),
-        detail: matches.has(source.id)
-          ? 'Matches the message suffix — verify before approval'
-          : this.balanceDetail(source.id),
+        label: `${source.institution || 'Bank/UPI'} · ${source.nickname}${source.lastDigits ? ` · •••${source.lastDigits.slice(-3)}` : ''}`,
+        detail: ambiguous
+          ? 'Ambiguous suffix — archived or active accounts also match; choose explicitly'
+          : matches.has(source.id)
+            ? 'Matches the message suffix — verify before approval'
+            : this.balanceDetail(source.id),
       })),
     ];
   }
@@ -783,7 +1137,7 @@ export class SmsSyncPage {
         )
         .map((source) => ({
           value: source.id,
-          label: this.store.sourceDetail(source.id),
+          label: `${source.institution || 'Bank/UPI'} · ${source.nickname}${source.lastDigits ? ` · •••${source.lastDigits.slice(-3)}` : ''}`,
           detail:
             item?.counterpartyAccountDigits &&
             accountSuffixMatches(source.lastDigits, item.counterpartyAccountDigits)
@@ -876,7 +1230,9 @@ export class SmsSyncPage {
     const item = this.bankItem();
     if (!item) return '';
     const bank = bankDisplayName(item.issuer) ?? 'Bank not identified';
-    const account = item.accountDigits ? `A/c ••${item.accountDigits}` : 'Account not identified';
+    const account = item.accountDigits
+      ? `A/c ${displayBankAccountSuffix(item.accountDigits)}`
+      : 'Account not identified';
     const direction = bankDirection(item);
     return `${bank} · ${account} · ${
       direction === 'DEBIT'
@@ -930,28 +1286,29 @@ export class SmsSyncPage {
       .find((item) => item.id === this.bankEditor.controls.source.value);
     return (
       !!source &&
-      this.store.bankCashTracking().enabled &&
+      bankTrackingEnabled(this.store.bankCashTracking()) &&
       !bankCashTracked(source, this.store.bankCashTracking())
     );
   }
+  readonly bankBalanceTrackingEnabled = computed(() =>
+    bankTrackingEnabled(this.store.bankCashTracking()),
+  );
   private balanceDetail(sourceId: string): string {
     const source = this.store.paymentSources().find((item) => item.id === sourceId);
     return source && bankCashTracked(source, this.store.bankCashTracking())
       ? `Balance ${this.money(source.balanceMinor)}`
       : 'Balance not tracked';
   }
-  enrollFromMessage(): void {
+  accountIdentifierLabel(mask?: string, suffix?: string): string {
+    return displayBankAccountSuffix(suffix);
+  }
+  async enrollFromMessage(): Promise<void> {
     const item = this.bankItem();
-    if (!item?.accountDigits || !this.enrollBankName.valid || this.saving()) return;
-    const bank = this.enrollBankName.value.trim();
-    void this.run(async () => {
-      const account = await this.store.addBankAccount({
-        nickname: `${bank} A/c`,
-        institution: bank,
-        lastDigits: item.accountDigits!,
-      });
-      this.bankEditor.controls.source.setValue(account.id);
-      this.snackbar.show(`${this.store.sourceDetail(account.id)} enrolled.`);
+    const candidate = this.selected();
+    if (!item?.accountDigits || !candidate || this.saving()) return;
+    if (!(await this.savePurchaseChoice(true))) return;
+    await this.router.navigate(['/bank-activity'], {
+      queryParams: { discoverCandidate: candidate.id },
     });
   }
   approveBankEvent(event: Event): void {
@@ -985,11 +1342,13 @@ export class SmsSyncPage {
           description: value.description,
           transactionDate: value.transactionDate,
           categoryId: value.category,
+          categoryOverridden: this.bankCategoryOverridden(),
           existingId: value.existing || undefined,
           counterpartySourceId: value.counterparty || undefined,
           existingTransferId: value.existingTransfer || undefined,
           cardId: value.card || undefined,
           allowSeparate: value.separate,
+          splitTargetId: value.splitTarget || undefined,
           baselineTiming: value.timing || undefined,
           ...annotation,
         });
@@ -1015,16 +1374,10 @@ export class SmsSyncPage {
     return `${this.money(amount)} will be deducted once from ${this.store.sourceDetail(value.source)}. The card payment reduces its outstanding and is not counted as spending.`;
   }
   setBankPurpose(value: string): void {
-    const item = this.bankItem();
     this.bankEditor.patchValue({
       purpose: value as BankPurpose | '',
       existing: '',
       existingTransfer: '',
-      category: defaultBankCategory(
-        value as BankPurpose | '',
-        item?.merchant,
-        this.store.categories(),
-      ),
     });
   }
   matchReason(candidate: SmsCandidate): string {
@@ -1040,7 +1393,7 @@ export class SmsSyncPage {
         return 'Linked record unavailable. The original review decision is retained; inspect Activity before recording anything again.';
       if (
         candidate.item &&
-        (target.type !== ledgerType(candidate.item) ||
+        (!matchesTransactionType(target, ledgerType(candidate.item)) ||
           target.amountMinor !== candidate.item.amountMinor ||
           target.transactionDate !== candidate.item.eventDate)
       )
@@ -1189,6 +1542,63 @@ export class SmsSyncPage {
   });
   constructor() {
     const destroyRef = inject(DestroyRef);
+    let restoredRequestedReview = false;
+    effect(() => {
+      if (!this.requestedReviewId || restoredRequestedReview) return;
+      const candidate = this.sync.candidates().find((row) => row.id === this.requestedReviewId);
+      if (!candidate) return;
+      restoredRequestedReview = true;
+      this.open(candidate);
+    });
+    let splitKey = '';
+    let splitLedger: readonly unknown[] = [];
+    effect(() => {
+      this.editorChanges();
+      this.bankEditorChanges();
+      const candidate = this.selected();
+      const item = candidate?.item;
+      const ledger = this.store.transactions();
+      const bank = !!this.bankItem();
+      const value = (bank ? this.bankEditor : this.editor).getRawValue();
+      const key = [
+        candidate?.id,
+        value.source,
+        value.amount,
+        value.transactionDate,
+        bank ? this.bankPurpose() : 'CARD',
+      ].join('|');
+      if (key === splitKey && ledger === splitLedger) return;
+      splitKey = key;
+      splitLedger = ledger;
+      this.splitProposal.set(null);
+      if (
+        !candidate ||
+        !item ||
+        !['PENDING', 'DEFERRED'].includes(candidate.state) ||
+        !value.source ||
+        value.transactionDate !== item.eventDate ||
+        parseMoneyToMinor(value.amount) !== item.amountMinor ||
+        (bank
+          ? this.bankPurpose() !== 'PURCHASE'
+          : !['PURCHASE', 'PLUXEE_PURCHASE'].includes(item.kind))
+      )
+        return;
+      void this.sync
+        .splitSuggestion(candidate, value.source)
+        .then((proposal) => {
+          if (splitKey === key && this.selected()?.id === candidate.id) {
+            this.splitProposal.set(proposal);
+            const control = (bank ? this.bankEditor : this.editor).controls.splitTarget;
+            if (control.value && control.value !== proposal?.targetId) {
+              control.setValue('');
+              this.notice.set(
+                'Split continuity changed. Review the grouping choice again before approval.',
+              );
+            }
+          }
+        })
+        .catch(() => this.splitProposal.set(null));
+    });
     for (const [mode, form] of [
       ['CARD', this.editor],
       ['BANK', this.bankEditor],
@@ -1197,6 +1607,7 @@ export class SmsSyncPage {
       let wasPurchase = false;
       const changes: Observable<unknown> = form.valueChanges;
       changes.pipe(takeUntilDestroyed(destroyRef)).subscribe(() => {
+        if (!this.hydratingReview) this.suggestReviewCategory();
         const value = form.getRawValue();
         const key = [
           value.source,
@@ -1204,10 +1615,11 @@ export class SmsSyncPage {
           value.transactionDate,
           'purpose' in value ? value.purpose : '',
         ].join('|');
-        const purchase = this.purchaseReviewActive(mode === 'BANK');
+        const purchase = this.purchaseReviewActive(mode === 'BANK') || !!value.splitTarget;
         if (!this.hydratingReview && (purchase || wasPurchase) && key !== identity) {
           form.controls.existing.setValue('', { emitEvent: false });
           form.controls.separate.setValue(false, { emitEvent: false });
+          form.controls.splitTarget.setValue('', { emitEvent: false });
         }
         identity = key;
         wasPurchase = purchase;
@@ -1216,6 +1628,14 @@ export class SmsSyncPage {
       changes.pipe(debounceTime(250), takeUntilDestroyed(destroyRef)).subscribe(() => {
         void this.savePurchaseChoice(mode === 'BANK');
       });
+      form.controls.existing.valueChanges.pipe(takeUntilDestroyed(destroyRef)).subscribe((id) => {
+        if (id) form.controls.splitTarget.setValue('', { emitEvent: false });
+      });
+      form.controls.separate.valueChanges
+        .pipe(takeUntilDestroyed(destroyRef))
+        .subscribe((separate) => {
+          if (separate) form.controls.splitTarget.setValue('', { emitEvent: false });
+        });
     }
     inject(DestroyRef).onDestroy(() => {
       this.sync.candidates.set([]);
@@ -1286,6 +1706,11 @@ export class SmsSyncPage {
   }
   androidBack(event: Event): void {
     if (document.querySelector('app-select-picker dialog[open]')) return;
+    if (this.restoreFiltersConfirmation()) {
+      event.preventDefault();
+      this.cancelRestoreFilters();
+      return;
+    }
     if (this.candidateMenuId()) {
       event.preventDefault();
       this.closeCandidateMenu();
@@ -1489,6 +1914,8 @@ export class SmsSyncPage {
   }
   open(candidate: SmsCandidate): void {
     this.hydratingReview = true;
+    this.cardCategoryOverridden.set(false);
+    this.bankCategoryOverridden.set(false);
     this.confirmBalance.set(false);
     this.error.set('');
     this.notice.set('');
@@ -1503,16 +1930,17 @@ export class SmsSyncPage {
       const item = candidate.item;
       const settings = this.store.bankCashTracking();
       const sources = suggestedBankSources(item, this.store.paymentSources(), settings);
+      const primaryBankId = this.store.bankAccounts().find((source) => source.isPrimaryBank)?.id;
       const purpose = defaultBankPurpose(item, settings);
-      this.enrollBankName.reset(bankDisplayName(item.issuer) ?? '');
       this.bankEditor.reset({
         purpose,
-        source: sources.length === 1 ? sources[0] : '',
+        source: sources.length === 1 ? sources[0] : (primaryBankId ?? ''),
         amount: String(item.amountMinor / 100),
         description: item.merchant ? merchantTitle(item, candidate.kind) : '',
         transactionDate: item.eventDate,
-        category: defaultBankCategory(purpose, item.merchant, this.store.categories()),
+        category: 'other',
         existing: '',
+        splitTarget: '',
         counterparty: '',
         existingTransfer: '',
         card: '',
@@ -1527,32 +1955,34 @@ export class SmsSyncPage {
     this.editor.reset({
       source: candidate.item
         ? (() => {
-            const ids = eligibleSources(
+            const identified = eligibleSources(
+              candidate.item,
+              this.store.cards(),
+              this.store.paymentSources(),
+            );
+            const ids = creatableSources(
               candidate.item,
               this.store.cards(),
               this.store.paymentSources(),
             );
             return (
-              this.store.transactions().find((entry) => entry.id === candidate.transactionId)
-                ?.cardId ?? (ids.length === 1 ? ids[0] : '')
+              (['IMPORTED', 'MATCHED_EXISTING'].includes(candidate.state)
+                ? this.store.transactions().find((entry) => entry.id === candidate.transactionId)
+                    ?.cardId
+                : undefined) ?? (identified.length === 1 && ids.length === 1 ? ids[0] : '')
             );
           })()
         : '',
       amount: String((candidate.item?.amountMinor ?? 0) / 100),
       merchant: merchantTitle(candidate.item, candidate.kind),
       existing: '',
+      splitTarget: '',
       reconciliation: 'PENDING',
       separate: false,
       statementDate: '',
       statementDue: '',
       transactionDate: candidate.item?.eventDate ?? '',
-      category: candidate.kind.startsWith('PLUXEE')
-        ? defaultPluxeeCategory(candidate.kind, this.store.categories())
-        : candidate.kind === 'CARD_PAYMENT_RECEIVED'
-          ? 'payment'
-          : ['CASHBACK', 'REFUND', 'PLUXEE_TOPUP', 'FASTAG_TOPUP'].includes(candidate.kind)
-            ? 'contra-expenses'
-            : 'other',
+      category: 'other',
       relatedPurchase: '',
       funding: '',
       fundingTiming: '',
@@ -1562,8 +1992,9 @@ export class SmsSyncPage {
       smsAdditionalComment: '',
     });
     this.hydratingReview = false;
+    this.suggestReviewCategory();
     const revision = this.reviewRevision;
-    if (candidate.kind === 'PURCHASE' || isBankEvidence(candidate.item))
+    if (!!(candidate.item && ledgerType(candidate.item)) || isBankEvidence(candidate.item))
       void this.restorePurchaseReview(candidate, revision);
     queueMicrotask(() => document.getElementById('sms-review-heading')?.focus());
   }
@@ -1709,9 +2140,11 @@ export class SmsSyncPage {
           {
             transactionDate: value.transactionDate,
             categoryId: value.category,
+            categoryOverridden: this.cardCategoryOverridden(),
             relatedTransactionId: value.relatedPurchase || undefined,
             fundingSourceId: value.funding || undefined,
             fundingTiming: value.fundingTiming || undefined,
+            splitTargetId: value.splitTarget || undefined,
             ...annotation,
           },
         );
@@ -1727,7 +2160,8 @@ export class SmsSyncPage {
   readonly evidenceTarget = new FormControl('', { nonNullable: true });
   escape(): void {
     if (document.querySelector('app-select-picker dialog[open]')) return;
-    if (this.candidateMenuId()) this.closeCandidateMenu();
+    if (this.restoreFiltersConfirmation()) this.cancelRestoreFilters();
+    else if (this.candidateMenuId()) this.closeCandidateMenu();
     else if (this.confirmReadCount() !== null) this.confirmReadCount.set(null);
     else this.closeEditor();
   }

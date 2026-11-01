@@ -1,7 +1,7 @@
 import { Service, inject } from '@angular/core';
 import { Capacitor } from '@capacitor/core';
 import { NativeExport } from './native-export';
-import { CardTransaction, SourceTransfer, TransactionType } from '../models/domain';
+import { CardTransaction, SourceTransfer } from '../models/domain';
 import { transferLabel } from './source-balance';
 import {
   ExportDocument,
@@ -11,7 +11,13 @@ import {
   ExportSection,
 } from '../models/export';
 import { CardNestStore } from './card-nest-store';
-import { formatMoney } from './money';
+import {
+  calculateNetSpending,
+  formatMoney,
+  spendingContribution,
+  transactionEffect,
+  transactionLabel,
+} from './money';
 import { SnackbarService } from './snackbar.service';
 
 interface StatisticsCycleRange {
@@ -26,9 +32,6 @@ interface ExportRange {
   readonly startDate: string;
   readonly endDate: string;
 }
-
-const EXPENSE_TYPES: readonly TransactionType[] = ['PURCHASE', 'FEE', 'INTEREST'];
-const CREDIT_TYPES: readonly TransactionType[] = ['PAYMENT', 'REFUND', 'CASHBACK', 'CREDIT'];
 
 @Service()
 export class ExportService {
@@ -102,10 +105,10 @@ export class ExportService {
     }
     // Transfers move money between the user's own accounts; they never count as spending or income.
     const debits = transactions
-      .filter((item) => !this.isCredit(item.type))
+      .filter((item) => !(transactionEffect(item) < 0))
       .reduce((sum, item) => sum + item.amountMinor, 0);
     const credits = transactions
-      .filter((item) => this.isCredit(item.type))
+      .filter((item) => transactionEffect(item) < 0)
       .reduce((sum, item) => sum + item.amountMinor, 0);
     const document: ExportDocument = {
       title: 'CardNest transaction statement',
@@ -116,6 +119,7 @@ export class ExportService {
         { label: 'Spent / charged', value: this.money(debits) },
         { label: 'Payments / credits', value: this.money(credits) },
         { label: 'Net outflow', value: this.money(debits - credits) },
+        { label: 'Net merchant spending', value: this.money(calculateNetSpending(transactions)) },
         ...(transfers.length
           ? [
               {
@@ -145,8 +149,8 @@ export class ExportService {
               item.transactionDate <= selectedCycle.endDate,
           )
       : this.inPeriod(this.store.transactions(), period);
-    const expenses = transactions.filter((item) => EXPENSE_TYPES.includes(item.type));
-    const totalSpent = expenses.reduce((sum, item) => sum + item.amountMinor, 0);
+    const expenses = transactions.filter((item) => spendingContribution(item) !== 0);
+    const totalSpent = expenses.reduce((sum, item) => sum + spendingContribution(item), 0);
     const cycles = selectedCycle ? [selectedCycle] : this.cycles(period);
     const cycleRows: ExportRow[] = cycles.map((cycle) => {
       const income =
@@ -159,7 +163,7 @@ export class ExportService {
           (item) =>
             item.transactionDate >= cycle.startDate && item.transactionDate <= cycle.endDate,
         )
-        .reduce((sum, item) => sum + item.amountMinor, 0);
+        .reduce((sum, item) => sum + spendingContribution(item), 0);
       const remaining = income - expense;
       return {
         state: remaining < 0 ? 'warning' : 'normal',
@@ -207,15 +211,15 @@ export class ExportService {
         title: 'Largest expenses',
         headers: ['Date', 'Merchant', 'Category', 'Source', 'Amount'],
         rows: [...expenses]
-          .sort((left, right) => right.amountMinor - left.amountMinor)
+          .sort((left, right) => spendingContribution(right) - spendingContribution(left))
           .slice(0, 15)
           .map((item) => ({
             cells: [
               this.displayDate(item.transactionDate),
-              item.merchant || this.typeName(item.type),
+              item.merchant || transactionLabel(item),
               this.categoryName(item.categoryId),
               this.store.sourceName(item.cardId),
-              this.money(item.amountMinor),
+              this.money(spendingContribution(item)),
             ],
           })),
       },
@@ -262,25 +266,19 @@ export class ExportService {
           { label: 'Entries', value: String(items.length) },
           {
             label: 'Net',
-            value: this.money(
-              items.reduce(
-                (sum, item) =>
-                  sum + (this.isCredit(item.type) ? -item.amountMinor : item.amountMinor),
-                0,
-              ),
-            ),
+            value: this.money(items.reduce((sum, item) => sum + transactionEffect(item), 0)),
           },
         ],
         headers: ['Date', 'Transaction', 'Category', 'Payment source', 'Type', 'Amount'],
         rows: items.map((item) => ({
-          state: this.isCredit(item.type) ? 'credit' : 'normal',
+          state: transactionEffect(item) < 0 ? 'credit' : 'normal',
           cells: [
             this.displayDate(item.transactionDate),
-            item.merchant || this.typeName(item.type),
+            item.merchant || transactionLabel(item),
             this.categoryName(item.categoryId),
             this.store.sourceName(item.cardId),
-            this.typeName(item.type),
-            `${this.isCredit(item.type) ? '+' : '-'}${this.money(item.amountMinor)}`,
+            transactionLabel(item),
+            `${transactionEffect(item) < 0 ? '+' : '-'}${this.money(item.amountMinor)}`,
           ],
         })),
       }));
@@ -336,19 +334,21 @@ export class ExportService {
         'Direction',
         'Currency',
         'Notes',
+        'Payment group ID',
       ],
       ...transactions.map((item) => [
         item.transactionDate,
         item.transactionTime ?? '',
         item.merchant ?? '',
-        this.typeName(item.type),
+        transactionLabel(item),
         this.categoryName(item.categoryId),
         this.store.sourceName(item.cardId),
         this.store.sourceDetail(item.cardId),
         (item.amountMinor / 100).toFixed(2),
-        this.isCredit(item.type) ? 'Credit' : 'Debit',
+        transactionEffect(item) < 0 ? 'Credit' : 'Debit',
         item.currencyCode,
         item.notes ?? '',
+        item.splitGroupId ?? '',
       ]),
       ...transfers.map((transfer) => [
         transfer.transferDate,
@@ -362,6 +362,7 @@ export class ExportService {
         'Transfer',
         transfer.currencyCode,
         transfer.reference ? `Ref ${transfer.reference}` : '',
+        '',
       ]),
     ];
     return `\uFEFF${rows.map((row) => row.map((cell) => this.csvCell(cell)).join(',')).join('\r\n')}`;
@@ -410,7 +411,7 @@ export class ExportService {
     const amounts = new Map<string, number>();
     for (const transaction of transactions) {
       const name = nameFor(transaction);
-      amounts.set(name, (amounts.get(name) ?? 0) + transaction.amountMinor);
+      amounts.set(name, (amounts.get(name) ?? 0) + spendingContribution(transaction));
     }
     return [...amounts.entries()]
       .sort(([, left], [, right]) => right - left)
@@ -601,14 +602,6 @@ export class ExportService {
 
   private categoryName(categoryId: string): string {
     return this.store.categories().find((item) => item.id === categoryId)?.name ?? 'Other';
-  }
-
-  private typeName(type: TransactionType): string {
-    return type.charAt(0) + type.slice(1).toLocaleLowerCase().replaceAll('_', ' ');
-  }
-
-  private isCredit(type: TransactionType): boolean {
-    return CREDIT_TYPES.includes(type);
   }
 
   private displayDate(value: string): string {
