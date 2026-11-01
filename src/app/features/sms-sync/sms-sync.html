@@ -805,7 +805,23 @@
           }
           @if (importable() && (candidate.state === 'PENDING' || candidate.state === 'DEFERRED')) {
             <form [formGroup]="editor" (submit)="approve($event)">
-              @if (!sources().length) {
+              @if (archivedHistoricalSources().length) {
+                <aside class="review-notice source-notice" aria-label="Archived source identified">
+                  <app-icon name="cards" />
+                  <div>
+                    <strong>Archived source identified</strong>
+                    <p>
+                      Restore the card in Cards before creating a new entry. Existing historical
+                      transactions can still be matched.
+                    </p>
+                    @for (source of archivedHistoricalSources(); track source.id) {
+                      <button class="btn" type="button" (click)="reviewArchivedRecords(source.id)">
+                        Review existing records for {{ source.nickname }}
+                      </button>
+                    }
+                  </div>
+                </aside>
+              } @else if (!sources().length) {
                 <aside class="review-notice source-notice" aria-label="Source needed">
                   <app-icon name="cards" />
                   <div>
@@ -1282,24 +1298,26 @@
                 <span>Link to an existing card payment, EMI or loan</span
                 ><app-icon name="chevron_down" />
               </summary>
-              <app-select-picker
-                label="Existing payment, installment or loan"
-                [formControl]="evidenceTarget"
-                [options]="evidenceOptions()"
-                [searchable]="true"
-              />
-              <button
-                type="button"
-                class="btn"
-                (click)="confirmEvidence()"
-                [disabled]="!evidenceTarget.value"
-              >
-                Confirm Payment / EMI match
-              </button>
-              <p class="muted">
-                Confirms evidence only; it does not change any balance. A bank debit is not issuer
-                confirmation.
-              </p>
+              <div class="evidence-match-controls">
+                <app-select-picker
+                  label="Existing payment, installment or loan"
+                  [formControl]="evidenceTarget"
+                  [options]="evidenceOptions()"
+                  [searchable]="true"
+                />
+                <button
+                  type="button"
+                  class="btn"
+                  (click)="confirmEvidence()"
+                  [disabled]="!evidenceTarget.value"
+                >
+                  Confirm Payment / EMI match
+                </button>
+                <p class="muted">
+                  Confirms evidence only; it does not change any balance. A bank debit is not issuer
+                  confirmation.
+                </p>
+              </div>
             </details>
           } @else {
             @if (importable()) {
@@ -1344,24 +1362,26 @@
                   'LOAN_DEBIT',
                 ].includes(candidate.kind)
               ) {
-                <app-select-picker
-                  label="Existing payment, installment or loan"
-                  [formControl]="evidenceTarget"
-                  [options]="evidenceOptions()"
-                  [searchable]="true"
-                />
-                <button
-                  type="button"
-                  class="btn"
-                  (click)="confirmEvidence()"
-                  [disabled]="!evidenceTarget.value"
-                >
-                  Confirm Payment / EMI match
-                </button>
-                <p class="muted">
-                  Confirm only after checking the source, lender, amount and date. A bank debit is
-                  not issuer confirmation.
-                </p>
+                <div class="evidence-match-controls">
+                  <app-select-picker
+                    label="Existing payment, installment or loan"
+                    [formControl]="evidenceTarget"
+                    [options]="evidenceOptions()"
+                    [searchable]="true"
+                  />
+                  <button
+                    type="button"
+                    class="btn"
+                    (click)="confirmEvidence()"
+                    [disabled]="!evidenceTarget.value"
+                  >
+                    Confirm Payment / EMI match
+                  </button>
+                  <p class="muted">
+                    Confirm only after checking the source, lender, amount and date. A bank debit is
+                    not issuer confirmation.
+                  </p>
+                </div>
               }
             }
           }

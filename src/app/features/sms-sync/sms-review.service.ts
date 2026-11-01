@@ -1334,6 +1334,12 @@ export class SmsReviewService {
         ? (JSON.parse(pref.encrypted_value) as PaymentSource[])
         : this.store.paymentSources().map((source) => ({ ...source }));
       const source = sources.find((s) => s.id === sourceId);
+      if (!existingId && (card?.archived || source?.archived))
+        throw new Error(
+          item.kind.startsWith('PLUXEE')
+            ? 'This Pluxee wallet is archived. Restore it before creating a new transaction.'
+            : 'This source is archived. Restore it before creating a new transaction; existing historical records can still be matched.',
+        );
       const wallet = item.kind.startsWith('PLUXEE') || item.kind.startsWith('FASTAG');
       if (wallet && hasAnnotationValues(annotation))
         throw new Error('Payment method annotations are available only for card SMS reviews.');
@@ -2514,7 +2520,7 @@ export class SmsReviewService {
           } else {
             const card = this.store
               .cards()
-              .find((entry) => entry.id === approval.cardId && !entry.deletedAt);
+              .find((entry) => entry.id === approval.cardId && !entry.archived && !entry.deletedAt);
             if (!card) throw new Error('Choose the credit card that was paid.');
             if (
               !approval.allowSeparate &&

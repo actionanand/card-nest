@@ -60,6 +60,7 @@ import {
   ReconciliationChoice,
   PurchaseReviewDraft,
   eligibleSources,
+  creatableSources,
   existingSuggestions,
   ledgerType,
   merchantTitle,
@@ -768,7 +769,21 @@ export class SmsSyncPage {
           description: merchant,
           splitTarget,
         });
-      else this.editor.patchValue({ ...values, merchant, splitTarget });
+      else {
+        const inactive =
+          this.store
+            .cards()
+            .some((card) => card.id === values.source && (card.archived || !!card.deletedAt)) ||
+          this.store
+            .paymentSources()
+            .some((source) => source.id === values.source && source.archived);
+        this.editor.patchValue({
+          ...values,
+          ...(inactive ? { source: '', existing: '' } : {}),
+          merchant,
+          splitTarget,
+        });
+      }
       const form = bank ? this.bankEditor : this.editor;
       if (
         draft.existing &&
@@ -904,8 +919,8 @@ export class SmsSyncPage {
         ? 'FASTAG'
         : '';
     const available = wallets
-      ? this.store.paymentSources().filter((s) => s.kind === wallets)
-      : this.store.cards().filter((c) => !c.deletedAt);
+      ? this.store.paymentSources().filter((source) => source.kind === wallets && !source.archived)
+      : this.store.cards().filter((card) => !card.archived && !card.deletedAt);
     return available.map((s) => ({
       id: s.id,
       label: this.store.sourceDetail(s.id),
@@ -943,6 +958,8 @@ export class SmsSyncPage {
     if (ids.length === 1) {
       const card = this.store.cards().find((card) => card.id === ids[0]);
       const wallet = this.store.paymentSources().find((source) => source.id === ids[0]);
+      if (card?.archived)
+        return `Archived card identified: ${card.nickname}. Existing historical records can still be matched. Restore this card in Cards before creating a new entry.`;
       return `Source identified from SMS: ${card?.nickname ?? wallet?.nickname} ${card?.lastDigits || wallet?.lastDigits ? `••${card?.lastDigits ?? wallet?.lastDigits}` : ''}${card?.archived ? ' · archived' : ''}`;
     }
     return ids.length > 1
@@ -953,6 +970,20 @@ export class SmsSyncPage {
     const item = this.selected()?.item;
     return !!item && !!ledgerType(item);
   });
+  readonly archivedHistoricalSources = computed(() => {
+    const item = this.selected()?.item;
+    if (!item) return [];
+    const identified = eligibleSources(item, this.store.cards(), this.store.paymentSources());
+    return this.store
+      .cards()
+      .filter((card) => card.archived && !card.deletedAt && identified.includes(card.id));
+  });
+  reviewArchivedRecords(sourceId: string): void {
+    if (!this.archivedHistoricalSources().some((source) => source.id === sourceId)) return;
+    this.editor.controls.source.setValue(sourceId);
+    this.editor.controls.existing.setValue('');
+    this.notice.set('Historical matching only. Restore this card before creating a new entry.');
+  }
   readonly cardAnnotationsVisible = computed(() => {
     this.editorChanges();
     const item = this.selected()?.item;
@@ -1924,14 +1955,21 @@ export class SmsSyncPage {
     this.editor.reset({
       source: candidate.item
         ? (() => {
-            const ids = eligibleSources(
+            const identified = eligibleSources(
+              candidate.item,
+              this.store.cards(),
+              this.store.paymentSources(),
+            );
+            const ids = creatableSources(
               candidate.item,
               this.store.cards(),
               this.store.paymentSources(),
             );
             return (
-              this.store.transactions().find((entry) => entry.id === candidate.transactionId)
-                ?.cardId ?? (ids.length === 1 ? ids[0] : '')
+              (['IMPORTED', 'MATCHED_EXISTING'].includes(candidate.state)
+                ? this.store.transactions().find((entry) => entry.id === candidate.transactionId)
+                    ?.cardId
+                : undefined) ?? (identified.length === 1 && ids.length === 1 ? ids[0] : '')
             );
           })()
         : '',

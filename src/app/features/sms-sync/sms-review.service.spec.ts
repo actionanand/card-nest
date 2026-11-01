@@ -639,6 +639,65 @@ describe('SMS approved import integrity', () => {
     expect(count('sms_reconciliation')).toBe(1);
     expect(count('card_transactions')).toBe(1);
   });
+  it('rejects a new archived-card import but preserves explicit historical matching', async () => {
+    const archived = { ...card, archived: true, archivedAt: '2026-10-19T00:00:00Z' };
+    store.cards.set([archived]);
+    try {
+      const candidate = stage(evidence({ issuer: 'AMEX', cardDigits: '54321' }));
+      expect(eligibleSources(candidate.item!, [archived], [])).toEqual([card.id]);
+      await expect(service.approve(candidate, card.id, 45000, 'Synthetic')).rejects.toThrow(
+        'archived',
+      );
+      expect(count('card_transactions')).toBe(0);
+      const existing = manual({
+        cardId: card.id,
+        amountMinor: 45000,
+        transactionDate: '2026-10-18',
+      });
+      await service.approve(candidate, card.id, 45000, 'Synthetic', existing.id);
+      expect(count('card_transactions')).toBe(1);
+      expect(rows('SELECT state,transaction_id FROM sms_candidates')[0]).toEqual({
+        state: 'MATCHED_EXISTING',
+        transaction_id: existing.id,
+      });
+      await service.approve(candidate, card.id, 45000, 'Synthetic', existing.id);
+      expect(count('card_transactions')).toBe(1);
+    } finally {
+      store.cards.set([card]);
+    }
+  });
+  it.each(['PLUXEE_PURCHASE', 'FASTAG_TOLL'] as const)(
+    'rejects archived wallet approval for %s',
+    async (kind) => {
+      const wallet: PaymentSource = {
+        id: 'archived-wallet',
+        kind: kind === 'PLUXEE_PURCHASE' ? 'MEAL' : 'FASTAG',
+        nickname: 'Pluxee',
+        institution: 'Pluxee',
+        lastDigits: '8765',
+        vehicleNumber: 'KA01AB1234',
+        archived: true,
+        noLimit: false,
+        autoLoad: false,
+        balanceMinor: 90000,
+      };
+      sources.set([wallet]);
+      run('INSERT INTO app_preferences VALUES(?,?)', ['payment_sources', JSON.stringify([wallet])]);
+      const candidate = stage(
+        evidence({
+          kind,
+          issuer: kind === 'PLUXEE_PURCHASE' ? 'Pluxee' : undefined,
+          cardDigits: '8765',
+          vehicleNumber: 'KA01AB1234',
+        }),
+      );
+      await expect(service.approve(candidate, wallet.id, 45000, 'Synthetic')).rejects.toThrow(
+        'archived',
+      );
+      expect(count('card_transactions')).toBe(0);
+      expect(sources()[0].balanceMinor).toBe(90000);
+    },
+  );
   it('does not arbitrarily assign one manual purchase between two competing SMS events in the same batch', async () => {
     verifiedManual();
     stage(confident());

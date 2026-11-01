@@ -284,6 +284,20 @@ export function eligibleSources(
     .map((card) => card.id);
 }
 
+/** Active source IDs for creating a new entry; historical matching keeps using eligibleSources. */
+export function creatableSources(
+  item: SmsEvidence,
+  cards: readonly CreditCard[],
+  sources: readonly PaymentSource[],
+): readonly string[] {
+  return eligibleSources(item, cards, sources).filter((id) => {
+    const card = cards.find((entry) => entry.id === id);
+    if (card) return !card.archived && !card.deletedAt;
+    const source = sources.find((entry) => entry.id === id);
+    return !!source && !source.archived;
+  });
+}
+
 export function isPluxeeSource(source: PaymentSource): boolean {
   return (
     normalizedIssuer(source.institution) === 'pluxee' ||

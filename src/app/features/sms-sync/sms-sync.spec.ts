@@ -1520,6 +1520,65 @@ describe('SMS review privacy and explicit approval UI', () => {
       (fixture.nativeElement.querySelector('button[type=submit]') as HTMLButtonElement).disabled,
     ).toBe(true);
   });
+  it('excludes archived and deleted cards without substituting a same-suffix active card', async () => {
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    const archived = {
+      ...demoCard,
+      id: 'archived-card',
+      archived: true,
+      archivedAt: '2026-10-19T00:00:00Z',
+    };
+    store.cards.set([archived, { ...demoCard, id: 'deleted-card', deletedAt: '2026-10-19' }]);
+    fixture.detectChanges();
+    const page = fixture.componentInstance;
+    page.open(demoCandidate());
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(page.sources()).toEqual([]);
+    expect(page.editor.controls.source.value).toBe('');
+    expect(fixture.nativeElement.textContent).toContain('Restore the card');
+    page.reviewArchivedRecords(archived.id);
+    expect(page.editor.controls.source.value).toBe(archived.id);
+    store.cards.set([archived, demoCard]);
+    page.open(demoCandidate());
+    expect(page.sources().map((source) => source.id)).toEqual([demoCard.id]);
+    expect(page.editor.controls.source.value).toBe('');
+    store.cards.set([{ ...archived, archived: false }, demoCard]);
+    expect(page.sources().map((source) => source.id)).toEqual([archived.id, demoCard.id]);
+    fixture.destroy();
+  });
+  it.each(['PLUXEE_PURCHASE', 'FASTAG_TOLL'] as const)(
+    'excludes archived wallets for new %s entries',
+    async (kind) => {
+      const fixture = TestBed.createComponent(SmsSyncPage);
+      const wallet: PaymentSource = {
+        id: 'archived-wallet',
+        kind: kind === 'PLUXEE_PURCHASE' ? 'MEAL' : 'FASTAG',
+        nickname: 'Pluxee',
+        institution: 'Pluxee',
+        lastDigits: '4321',
+        vehicleNumber: 'KA01AB1234',
+        archived: true,
+        noLimit: false,
+        autoLoad: false,
+      };
+      paymentSources.set([wallet]);
+      const candidate = demoCandidate();
+      candidate.kind = kind;
+      candidate.item = {
+        ...candidate.item!,
+        kind,
+        issuer: kind === 'PLUXEE_PURCHASE' ? 'Pluxee' : undefined,
+        vehicleNumber: 'KA01AB1234',
+      };
+      fixture.detectChanges();
+      fixture.componentInstance.open(candidate);
+      await fixture.whenStable();
+      expect(fixture.componentInstance.sources()).toEqual([]);
+      expect(fixture.componentInstance.editor.controls.source.value).toBe('');
+      fixture.destroy();
+    },
+  );
   it('returns focus to the triggering review button and consumes Android Back', async () => {
     const fixture = TestBed.createComponent(SmsSyncPage);
     candidates.set([demoCandidate()]);
@@ -1972,6 +2031,13 @@ describe('SMS review privacy and explicit approval UI', () => {
     expect(fixture.componentInstance.bankIdentity()).toContain('HSBC');
     expect(fixture.componentInstance.bankReviewable()).toBe(false);
     expect(fixture.nativeElement.querySelector('.bank-review')).toBeNull();
+    const controls = fixture.nativeElement.querySelector('.evidence-match-controls') as HTMLElement;
+    expect(controls.querySelector('app-select-picker')).not.toBeNull();
+    expect(controls.querySelector(':scope > button')?.textContent).toContain(
+      'Confirm Payment / EMI match',
+    );
+    expect(getComputedStyle(controls).display).toBe('grid');
+    expect(getComputedStyle(controls).gap).toBe('0.875rem');
     expect(fixture.nativeElement.textContent).toContain(
       'enable Bank/Cash tracking and Ask to deduct bank balance for credit-card payments in Settings',
     );
@@ -2022,6 +2088,15 @@ describe('SMS review privacy and explicit approval UI', () => {
     page.open(candidate);
     fixture.detectChanges();
     expect(page.bankReviewable()).toBe(true);
+    expect(
+      fixture.nativeElement.querySelector(
+        '.reconciliation .evidence-match-controls app-select-picker',
+      ),
+    ).not.toBeNull();
+    expect(
+      fixture.nativeElement.querySelector('.reconciliation .evidence-match-controls > button')
+        ?.disabled,
+    ).toBe(true);
     expect(page.bankEditor.controls.purpose.value).toBe('');
     expect(page.bankPurposeOptions().map((option) => option.value)).toContain('CARD_SETTLEMENT');
     expect(page.bankEditor.controls.source.value).toBe(bank.id);

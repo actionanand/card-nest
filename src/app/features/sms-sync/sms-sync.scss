@@ -428,6 +428,7 @@ details p,
   flex-shrink: 0;
 }
 .dialog-actions {
+  gap: 0.6rem;
   border-top: 1px solid var(--line);
   padding-top: 0.8rem;
   margin-top: 0.8rem;
@@ -435,6 +436,27 @@ details p,
 .review-dialog form > button {
   width: 100%;
   margin-top: 0.8rem;
+}
+.evidence-match-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.875rem;
+  margin-top: 0.75rem;
+  min-width: 0;
+}
+.evidence-match-controls > app-select-picker {
+  display: block;
+  min-width: 0;
+  margin: 0;
+}
+.evidence-match-controls > button {
+  min-height: 44px;
+  justify-self: start;
+  max-width: 100%;
+  white-space: normal;
+}
+.evidence-match-controls > p {
+  margin: 0;
 }
 .review-notice,
 .feedback {
