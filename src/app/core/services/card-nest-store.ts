@@ -953,6 +953,10 @@ export class CardNestStore {
       if (archivedCardReassignment) {
         if (!card || card.archived)
           throw new Error('Archived transactions can only be reassigned to an active credit card.');
+        if (transaction.type === 'PAYMENT' && previous?.type !== 'PAYMENT')
+          throw new Error(
+            'A card payment cannot be reassigned from an archived card. Record it on the card it settles.',
+          );
         if (archivedSourceReassignmentConfirmedFor !== card.id)
           throw new Error(
             `Confirm moving this transaction from its archived card to ${card.nickname} · ${card.lastDigits}.`,

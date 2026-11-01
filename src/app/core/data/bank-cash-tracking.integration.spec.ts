@@ -1107,6 +1107,27 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     expect(count('card_transactions')).toBe(1);
     expect(page.searchedPayFromCards().map((source) => source.id)).not.toContain(card.id);
 
+    const beforePaymentReassignment = financialState();
+    await expect(
+      store.saveManualTransaction(
+        { ...edited, cardId: active.id, type: 'PAYMENT', amountMinor: 14000 },
+        '',
+        false,
+        undefined,
+        active.id,
+      ),
+    ).rejects.toThrow(
+      'A card payment cannot be reassigned from an archived card. Record it on the card it settles.',
+    );
+    expect(financialState()).toEqual(beforePaymentReassignment);
+    expect(
+      store.transactions().find((transaction) => transaction.id === original.id),
+    ).toMatchObject({
+      id: original.id,
+      cardId: card.id,
+      type: 'PURCHASE',
+    });
+
     await expect(
       store.saveManualTransaction({ ...edited, cardId: otherArchived.id }),
     ).rejects.toThrow('Archived credit cards cannot be used');

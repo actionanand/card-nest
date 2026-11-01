@@ -4,10 +4,16 @@ import { readFileSync } from 'node:fs';
 import { SourceMovementDialog } from './source-movement-dialog';
 import { CardNestStore } from '../core/services/card-nest-store';
 import { PaymentSource, SourceTransfer } from '../core/models/domain';
-import { indiaTodayIso } from '../core/services/india-date';
+import { currentLocalCalendar, DeviceCalendarClock } from '../core/services/device-date';
 
 describe('Movement timing selection', () => {
-  const today = indiaTodayIso();
+  const today = '2026-11-01';
+  const calendar = signal({
+    timeZone: 'UTC',
+    dateIso: today,
+    monthIso: '2026-11',
+    timeOfDay: '20:00:00',
+  });
   const sources = signal<readonly PaymentSource[]>([
     {
       id: 'bank',
@@ -47,12 +53,23 @@ describe('Movement timing selection', () => {
   const saveTransfer = vi.fn().mockResolvedValue(saved);
   const addSourceBalance = vi.fn().mockResolvedValue(undefined);
   const setSourceBalance = vi.fn().mockResolvedValue(undefined);
+  const setCalendar = (dateIso: string, timeZone: string, timeOfDay = '12:00:00') => {
+    calendar.set({ dateIso, timeZone, monthIso: dateIso.slice(0, 7), timeOfDay });
+    sources.update((items) =>
+      items.map((source) => ({
+        ...source,
+        balanceCutoverAt: `${dateIso}T10:00:00+05:30`,
+      })),
+    );
+  };
   beforeEach(() => {
+    setCalendar(today, 'UTC', '20:00:00');
     saveTransfer.mockReset().mockResolvedValue(saved);
     addSourceBalance.mockReset().mockResolvedValue(undefined);
     setSourceBalance.mockReset().mockResolvedValue(undefined);
     TestBed.configureTestingModule({
       providers: [
+        { provide: DeviceCalendarClock, useValue: { calendar } },
         {
           provide: CardNestStore,
           useValue: {
@@ -69,6 +86,7 @@ describe('Movement timing selection', () => {
       ],
     });
   });
+  afterEach(() => vi.restoreAllMocks());
   const create = (editing = false) => {
     const fixture = TestBed.createComponent(SourceMovementDialog);
     fixture.componentRef.setInput('mode', 'TRANSFER');
@@ -105,6 +123,29 @@ describe('Movement timing selection', () => {
     expect(styles).toMatch(
       /width:\s*1.1rem;[\s\S]*?min-height:\s*1.1rem;[\s\S]*?flex:\s*0 0 1.1rem/,
     );
+    fixture.destroy();
+  });
+  it.each([
+    ['UTC', '2026-11-01'],
+    ['Asia/Kolkata', '2026-11-02'],
+  ])('renders both timing choices in %s at the UTC/IST date boundary', (timeZone, dateIso) => {
+    const nativeOptions = Intl.DateTimeFormat.prototype.resolvedOptions;
+    vi.spyOn(Intl.DateTimeFormat.prototype, 'resolvedOptions').mockImplementation(function (
+      this: Intl.DateTimeFormat,
+    ) {
+      return { ...nativeOptions.call(this), timeZone } as Intl.ResolvedDateTimeFormatOptions;
+    });
+    const localCalendar = currentLocalCalendar(new Date('2026-11-01T20:00:00Z'));
+    expect(localCalendar.dateIso).toBe(dateIso);
+    setCalendar(localCalendar.dateIso, localCalendar.timeZone, localCalendar.timeOfDay);
+
+    const fixture = create();
+    const page = fixture.componentInstance;
+    expect(page.date()).toBe(dateIso);
+    expect(page.timingNeeded()).toBe(true);
+    expect(
+      fixture.nativeElement.querySelectorAll('.timing-choice input[type="radio"]'),
+    ).toHaveLength(2);
     fixture.destroy();
   });
   it('preserves a saved timing answer and resets review when date/source changes', () => {
