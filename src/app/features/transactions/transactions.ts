@@ -20,7 +20,6 @@ import {
   BalanceTiming,
   CardTransaction,
   EmiPlan,
-  PaymentSource,
   RecurringRule,
   SourceTransfer,
   TransactionType,
@@ -56,8 +55,7 @@ import {
 import { AppDatePipe, DateFormatService } from '../../core/services/date-format.service';
 import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
 import { AppDatePicker } from '../../shared/app-date-picker';
-import { indiaTodayIso } from '../../core/services/india-date';
-import { currentLocalCalendar, DeviceCalendarClock } from '../../core/services/device-date';
+import { DeviceCalendarClock } from '../../core/services/device-date';
 import { PlatformTools } from '../../shared/platform-tools';
 import { recordedTransactionTime } from '../../core/services/transaction-time';
 import {
@@ -66,6 +64,7 @@ import {
   savedTimingAnswer,
 } from '../../core/services/source-balance';
 import { SourceMovementDialog } from '../../shared/source-movement-dialog';
+import { ProfileModal } from '../../shared/profile-modal';
 
 type GroupingMode = 'MONTH' | 'CYCLE' | 'STATEMENT';
 type TransactionTypeFilter = TransactionType | 'ALL' | 'WITH_IMAGE';
@@ -102,6 +101,7 @@ function sanitizedMoneyInput(value: string): string {
     AppDatePicker,
     PlatformTools,
     SourceMovementDialog,
+    ProfileModal,
   ],
   templateUrl: './transactions.html',
   styleUrl: './transactions.scss',
@@ -268,7 +268,6 @@ export class TransactionsPage {
   readonly payFromOpen = signal(false);
   readonly payFromSearch = signal('');
   readonly payFromBankMode = signal(false);
-  readonly sourceFilterOpen = signal(false);
   readonly filtersOpen = signal(false);
   readonly actionMenuId = signal<string | null>(null);
   readonly actionMenuOpensUp = signal(false);
@@ -414,6 +413,10 @@ export class TransactionsPage {
           : [source.lastDigits, source.institution || source.kind].filter(Boolean).join(' · '),
     })),
   ]);
+  readonly sourceFilterOptions = computed<readonly AppSelectOption[]>(() => [
+    { value: 'ALL', label: 'All cards and sources' },
+    ...this.paymentSourceOptions(),
+  ]);
   readonly searchedPayFromCards = computed(() => {
     const terms = this.payFromSearch().trim().toLowerCase().split(/\s+/).filter(Boolean);
     return this.store.alphabeticalActiveCards().filter((card) => {
@@ -464,7 +467,7 @@ export class TransactionsPage {
       { nonNullable: true, validators: [Validators.required] },
     ),
     amount: new FormControl('', { nonNullable: true, validators: [Validators.required] }),
-    transactionDate: new FormControl(indiaTodayIso(), {
+    transactionDate: new FormControl(this.calendarClock.calendar().dateIso, {
       nonNullable: true,
       validators: [Validators.required],
     }),
@@ -717,8 +720,7 @@ export class TransactionsPage {
   readonly filtered = computed(() => {
     const term = this.search().trim().toLocaleLowerCase();
     const numericTerm = term.replace(/[^0-9.]/g, '');
-    this.calendarClock.calendar();
-    const currentMonth = currentLocalCalendar().monthIso;
+    const currentMonth = this.calendarClock.calendar().monthIso;
     return this.store
       .transactions()
       .filter(
@@ -853,7 +855,7 @@ export class TransactionsPage {
     if (!groups.length) return null;
     const todayKey = this.periodForMode(
       {
-        transactionDate: indiaTodayIso(),
+        transactionDate: this.calendarClock.calendar().dateIso,
         cardId: this.sourceFilter(),
       } as CardTransaction,
       this.effectiveGrouping(),
@@ -925,19 +927,7 @@ export class TransactionsPage {
     else if (this.store.paymentSources().some((source) => source.id === id)) {
       this.grouping.set('CYCLE');
     }
-    this.sourceFilterOpen.set(false);
     this.resetVisibleTransactions();
-  }
-  sourceFilterLabel(): string {
-    if (this.sourceFilter() === 'ALL') return 'All cards and sources';
-    const card = this.store.activeCards().find((item) => item.id === this.sourceFilter());
-    if (card) return `${card.nickname} · ${card.lastDigits}`;
-    const source = this.store
-      .activePaymentSources()
-      .find((item) => item.id === this.sourceFilter());
-    return source
-      ? `${source.nickname}${source.lastDigits ? ` · ${source.kind === 'DEBIT' ? displayBankAccountSuffix(source.lastDigits) : source.lastDigits}` : ''}`
-      : 'All cards and sources';
   }
   updateCategory(value: string): void {
     this.categoryFilter.set(value);
@@ -1207,9 +1197,6 @@ export class TransactionsPage {
         ? `${source.institution || 'Bank/UPI'} · ${source.nickname}${source.lastDigits ? ` · ${displayBankAccountSuffix(source.lastDigits)}` : ''}`
         : `${source.nickname}${source.lastDigits ? ` · ${source.lastDigits}` : ''}`;
     return 'Select source';
-  }
-  accountIdentifierLabel(source: PaymentSource): string {
-    return displayBankAccountSuffix(source.lastDigits);
   }
   transactionAccountIdentifierLabel(suffix?: string): string {
     return displayBankAccountSuffix(suffix);
@@ -1621,10 +1608,6 @@ export class TransactionsPage {
     if (this.saving()) return;
     if (this.deleteTransferCandidate()) {
       this.deleteTransferCandidate.set(null);
-      return;
-    }
-    if (this.sourceFilterOpen()) {
-      this.sourceFilterOpen.set(false);
       return;
     }
     if (this.payFromOpen()) {
@@ -2134,7 +2117,7 @@ export class TransactionsPage {
       cardId: sourceId,
       type: 'PURCHASE',
       amount: '',
-      transactionDate: indiaTodayIso(),
+      transactionDate: this.calendarClock.calendar().dateIso,
       categoryId: 'other',
       merchant: '',
       notes: '',

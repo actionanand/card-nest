@@ -988,6 +988,50 @@ describe('SMS review privacy and explicit approval UI', () => {
       }),
     );
   });
+  it('keeps SMS filter edits in a draft until Apply and discards them on Cancel', async () => {
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const page = fixture.componentInstance;
+    vi.mocked(sync.filterReview).mockClear();
+
+    page.openFilterDialog();
+    page.updateFilterDraft('state', 'DEFERRED');
+    page.updateFilterDraft('source', '54321');
+    expect(page.state()).toBe('PENDING');
+    expect(page.sourceFilter()).toBe('');
+    page.closeFilterDialog();
+    expect(page.filterDraft()).toBeNull();
+    expect(page.state()).toBe('PENDING');
+    expect(page.sourceFilter()).toBe('');
+    expect(sync.filterReview).not.toHaveBeenCalled();
+
+    page.openFilterDialog();
+    page.updateFilterDraft('state', 'DEFERRED');
+    page.updateFilterDraft('source', '54321');
+    page.updateFilterDraft('from', '2026-03-02');
+    page.updateFilterDraft('to', '2026-03-01');
+    page.applyFilterDraft();
+    expect(page.filterDateError()).toBe('The start date must be on or before the through date.');
+    expect(page.state()).toBe('PENDING');
+    expect(sync.filterReview).not.toHaveBeenCalled();
+
+    page.updateFilterDraft('to', '2026-03-03');
+    page.applyFilterDraft();
+    await fixture.whenStable();
+    expect(page.filterDraft()).toBeNull();
+    expect(page.state()).toBe('DEFERRED');
+    expect(page.sourceFilter()).toBe('54321');
+    expect(sync.filterReview).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        state: 'DEFERRED',
+        source: '54321',
+        from: '2026-03-02',
+        to: '2026-03-03',
+      }),
+    );
+    fixture.destroy();
+  });
   it('distinguishes transaction time, SMS receipt time, receipt-date fallback, and paste processing time', async () => {
     const fixture = TestBed.createComponent(SmsSyncPage);
     fixture.detectChanges();
@@ -1142,7 +1186,7 @@ describe('SMS review privacy and explicit approval UI', () => {
     const page = fixture.componentInstance;
     page.changeTypeMode('MULTIPLE');
     page.multipleKinds.set(['PURCHASE', 'CASHBACK']);
-    page.advanced.set(true);
+    page.openFilterDialog();
     fixture.detectChanges();
     const root = fixture.nativeElement as HTMLElement;
     expect(root.querySelectorAll('.type-chips .or-separator')).toHaveLength(1);
@@ -1486,12 +1530,8 @@ describe('SMS review privacy and explicit approval UI', () => {
   it('applies and clears filter chips including the original event-date range', () => {
     const fixture = TestBed.createComponent(SmsSyncPage);
     fixture.detectChanges();
-    const reviewState = fixture.debugElement
-      .queryAll(By.directive(AppSelectPicker))
-      .map((element) => element.componentInstance as AppSelectPicker)
-      .find((picker) => picker.label() === 'Review status');
-    expect(reviewState?.currentValue()).toBe('PENDING');
     const page = fixture.componentInstance;
+    expect(page.state()).toBe('PENDING');
     page.from.set('2026-10-01');
     page.search.set('DEMO');
     page.applyFilters();

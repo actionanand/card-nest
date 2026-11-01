@@ -469,7 +469,7 @@
     <button
       class="filter-panel__toggle"
       type="button"
-      (click)="filtersOpen.set(!filtersOpen())"
+      (click)="filtersOpen.set(true)"
       [attr.aria-expanded]="filtersOpen()"
       aria-controls="transaction-filter-fields"
     >
@@ -479,145 +479,51 @@
           {{ activeFilterCount() ? activeFilterCount() + ' active' : 'Search and narrow activity' }}
         </small>
       </span>
-      <app-icon name="chevron_down" [class.open]="filtersOpen()" />
+      <app-icon name="chevron_down" />
     </button>
-    <div id="transaction-filter-fields" class="toolbar" [class.mobile-open]="filtersOpen()">
-      <label
-        ><span>Search</span
-        ><input
-          type="search"
-          placeholder="Merchant, category or source"
-          [value]="search()"
-          (input)="updateSearch($event)"
-      /></label>
-      <app-select-picker
-        label="Transaction type"
-        [options]="typeFilterOptions"
-        [value]="typeFilter()"
-        (valueChange)="updateType($event)"
-      />
-      <div class="source-filter-field">
-        <span class="field-label" id="source-filter-label">Payment source</span>
-        <button
-          class="source-filter-trigger"
-          type="button"
-          aria-labelledby="source-filter-label"
-          aria-haspopup="dialog"
-          [attr.aria-expanded]="sourceFilterOpen()"
-          (click)="sourceFilterOpen.set(true)"
-        >
-          <span>{{ sourceFilterLabel() }}</span>
-          <app-icon name="chevron_down" />
-        </button>
-      </div>
-      <app-select-picker
-        label="Transaction category"
-        [options]="categoryFilterOptions()"
-        [value]="categoryFilter()"
-        (valueChange)="updateCategory($event)"
-      />
-      <app-select-picker
-        label="Grouping cycle"
-        [options]="groupingOptions()"
-        [value]="effectiveGrouping()"
-        (valueChange)="updateGrouping($event)"
-      />
-      <button class="btn manage-categories" type="button" (click)="manageCategoriesOpen.set(true)">
-        <app-icon name="categories" /> Manage categories
-      </button>
-    </div>
+    <button class="btn manage-categories" type="button" (click)="manageCategoriesOpen.set(true)">
+      <app-icon name="categories" /> Manage categories
+    </button>
   </section>
 
-  @if (sourceFilterOpen()) {
-    <div
-      class="pay-from-backdrop source-filter-backdrop"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="source-filter-sheet-title"
-      tabindex="-1"
-      (click)="sourceFilterOpen.set(false)"
-      (keydown.escape)="sourceFilterOpen.set(false)"
-    >
-      <div
-        class="pay-from-sheet"
-        role="listbox"
-        tabindex="-1"
-        (click)="$event.stopPropagation()"
-        (keydown)="$event.stopPropagation()"
-      >
-        <div class="pay-from-sheet__header">
-          <span id="source-filter-sheet-title">Payment source</span>
-          <button type="button" (click)="sourceFilterOpen.set(false)" aria-label="Close">
-            <app-icon name="close" />
-          </button>
-        </div>
-        <button
-          type="button"
-          class="pay-from-option"
-          [class.selected]="sourceFilter() === 'ALL'"
-          role="option"
-          [attr.aria-selected]="sourceFilter() === 'ALL'"
-          (click)="selectSourceFilter('ALL')"
-        >
-          <span class="pay-from-option__name">All cards and sources</span>
-          @if (sourceFilter() === 'ALL') {
-            <app-icon name="success" class="pay-from-option__check" />
-          }
-        </button>
-        @if (store.alphabeticalActiveCards().length) {
-          <p class="pay-from-group">Credit cards</p>
-          @for (card of store.alphabeticalActiveCards(); track card.id) {
-            <button
-              type="button"
-              class="pay-from-option"
-              [class.selected]="sourceFilter() === card.id"
-              role="option"
-              [attr.aria-selected]="sourceFilter() === card.id"
-              (click)="selectSourceFilter(card.id)"
-            >
-              <span class="pay-from-option__name">{{ card.nickname }}</span>
-              <span class="pay-from-option__detail"
-                >{{ card.lastDigits }} · {{ card.issuerName }}</span
-              >
-              @if (sourceFilter() === card.id) {
-                <app-icon name="success" class="pay-from-option__check" />
-              }
-            </button>
-          }
-        }
-        @if (alphabeticalPaymentSources().length) {
-          <p class="pay-from-group">Other payment sources</p>
-          @for (source of alphabeticalPaymentSources(); track source.id) {
-            <button
-              type="button"
-              class="pay-from-option"
-              [class.selected]="sourceFilter() === source.id"
-              role="option"
-              [attr.aria-selected]="sourceFilter() === source.id"
-              (click)="selectSourceFilter(source.id)"
-            >
-              <span class="pay-from-option__name">{{ source.nickname }}</span>
-              @if (source.lastDigits || source.institution) {
-                <span class="pay-from-option__detail">
-                  @if (source.lastDigits) {
-                    {{
-                      source.kind === 'DEBIT' ? accountIdentifierLabel(source) : source.lastDigits
-                    }}
-                  }
-                  @if (source.lastDigits && source.institution) {
-                    ·
-                  }
-                  {{ source.institution }}
-                </span>
-              }
-              @if (sourceFilter() === source.id) {
-                <app-icon name="success" class="pay-from-option__check" />
-              }
-            </button>
-          }
-        }
+  @if (filtersOpen()) {
+    <app-profile-modal title="Filter transactions" (closed)="filtersOpen.set(false)">
+      <div id="transaction-filter-fields" class="toolbar">
+        <label
+          ><span>Search</span
+          ><input
+            type="search"
+            placeholder="Merchant, category or source"
+            [value]="search()"
+            (input)="updateSearch($event)"
+        /></label>
+        <app-select-picker
+          label="Transaction type"
+          [options]="typeFilterOptions"
+          [value]="typeFilter()"
+          (valueChange)="updateType($event)"
+        />
+        <app-select-picker
+          label="Payment source"
+          [options]="sourceFilterOptions()"
+          [value]="sourceFilter()"
+          [searchable]="true"
+          (valueChange)="selectSourceFilter($event)"
+        />
+        <app-select-picker
+          label="Transaction category"
+          [options]="categoryFilterOptions()"
+          [value]="categoryFilter()"
+          (valueChange)="updateCategory($event)"
+        />
+        <app-select-picker
+          label="Grouping cycle"
+          [options]="groupingOptions()"
+          [value]="effectiveGrouping()"
+          (valueChange)="updateGrouping($event)"
+        />
       </div>
-    </div>
+    </app-profile-modal>
   }
 
   <section class="ledger-summary panel" aria-label="Visible transaction summary">

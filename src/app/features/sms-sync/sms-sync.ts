@@ -1,5 +1,6 @@
 import { suggestCategory, categoryCompatible } from '../../core/services/category-matcher';
 import { ConfirmationDialog } from '../../shared/confirmation-dialog';
+import { ProfileModal } from '../../shared/profile-modal';
 import {
   defaultReviewFilters,
   SmsReviewFilters,
@@ -113,6 +114,7 @@ const CANDIDATE_MENU_ITEM_HEIGHT = 44;
   selector: 'app-sms-sync',
   imports: [
     ConfirmationDialog,
+    ProfileModal,
     SmsSplitSuggestion,
     ReactiveFormsModule,
     AppIcon,
@@ -282,7 +284,9 @@ export class SmsSyncPage {
   readonly sourceFilter = signal('');
   readonly from = signal('');
   readonly to = signal('');
-  readonly advanced = signal(false);
+  readonly filterDialogOpen = signal(false);
+  readonly filterDraft = signal<SmsReviewFilters | null>(null);
+  readonly filterDateError = signal('');
   readonly loading = signal(false);
   readonly notice = signal('');
   readonly pageCount = computed(() => Math.max(1, Math.ceil(this.sync.total() / 200)));
@@ -402,6 +406,61 @@ export class SmsSyncPage {
   cancelRestoreFilters(): void {
     this.restoreFiltersConfirmation.set(false);
     queueMicrotask(() => document.getElementById('restore-default-review-filters')?.focus());
+  }
+  private currentReviewFilters(): SmsReviewFilters {
+    return {
+      state: this.state(),
+      kind: this.kind(),
+      search: this.search(),
+      source: this.sourceFilter(),
+      from: this.from(),
+      to: this.to(),
+      read: this.readFilter(),
+      mode: this.typeMode(),
+      kinds: [...this.multipleKinds()],
+      multipleInitialized: this.multipleInitialized(),
+      hideAlreadyAdded: this.hideAlreadyAdded(),
+      sortOrder: this.sortOrder(),
+    };
+  }
+  openFilterDialog(): void {
+    this.filterDraft.set(this.currentReviewFilters());
+    this.filterDateError.set('');
+    this.filterDialogOpen.set(true);
+  }
+  closeFilterDialog(): void {
+    this.filterDialogOpen.set(false);
+    this.filterDraft.set(null);
+    this.filterDateError.set('');
+  }
+  updateFilterDraft<K extends keyof SmsReviewFilters>(key: K, value: SmsReviewFilters[K]): void {
+    this.filterDraft.update((draft) => (draft ? { ...draft, [key]: value } : draft));
+    this.filterDateError.set('');
+  }
+  changeFilterDraftMode(mode: 'SINGLE' | 'MULTIPLE'): void {
+    this.filterDraft.update((draft) => {
+      if (!draft) return draft;
+      return mode === 'MULTIPLE' && !draft.multipleInitialized
+        ? { ...draft, mode, kinds: [...INITIAL_MULTIPLE_KINDS], multipleInitialized: true }
+        : { ...draft, mode };
+    });
+    this.filterDateError.set('');
+  }
+  updateDraftSortOrder(value: string): void {
+    if (SMS_REVIEW_SORT_ORDERS.includes(value as SmsReviewSortOrder)) {
+      this.updateFilterDraft('sortOrder', value as SmsReviewSortOrder);
+    }
+  }
+  applyFilterDraft(): void {
+    const draft = this.filterDraft();
+    if (!draft) return;
+    if (draft.from && draft.to && draft.from > draft.to) {
+      this.filterDateError.set('The start date must be on or before the through date.');
+      return;
+    }
+    this.setFilterSignals(draft);
+    this.closeFilterDialog();
+    this.applyFilters();
   }
   private setFilterSignals(filters: SmsReviewFilters): void {
     this.search.set(filters.search);

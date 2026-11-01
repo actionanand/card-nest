@@ -7,6 +7,7 @@ import {
   TransactionType,
 } from '../../core/models/domain';
 import { CardNestStore } from '../../core/services/card-nest-store';
+import { DeviceCalendarClock } from '../../core/services/device-date';
 import { displayBankAccountSuffix } from '../../core/services/bank-account-identifier';
 import { formatMoney, parseMoneyToMinor } from '../../core/services/money';
 import { SnackbarService } from '../../core/services/snackbar.service';
@@ -61,6 +62,7 @@ interface SourceCycleGroup {
   styleUrl: './sources.scss',
 })
 export class SourcesPage {
+  private readonly calendarClock = inject(DeviceCalendarClock);
   readonly walletOpen = signal(false);
   readonly walletSaving = signal(false);
   openWallet(): void {
@@ -267,7 +269,9 @@ export class SourcesPage {
           right.createdAt.localeCompare(left.createdAt),
       ),
   );
-  readonly currentCycle = computed(() => this.cycleFor(new Date().toISOString().slice(0, 10)));
+  readonly currentCycle = computed(() => {
+    return this.cycleFor(this.calendarClock.calendar().dateIso);
+  });
   readonly currentCycleTransactions = computed(() => {
     const period = this.currentCycle();
     return this.visibleTransactions().filter(
@@ -445,23 +449,28 @@ export class SourcesPage {
   }
 
   monthlyUsed(source: PaymentSource): number {
-    return this.store
-      .transactions()
-      .filter(
-        (transaction) =>
-          transaction.cardId === source.id &&
-          transaction.transactionDate >= this.currentCycle().startIso &&
-          transaction.transactionDate <= this.currentCycle().endIso &&
-          !this.isCredit(transaction.type),
-      )
+    return this.currentCycleTransactionsFor(source.id)
+      .filter((transaction) => !this.isCredit(transaction.type))
       .reduce((sum, transaction) => sum + transaction.amountMinor, 0);
   }
 
   monthlyRemaining(source: PaymentSource): number {
-    const loads = this.currentCycleTransactions()
-      .filter((t) => t.cardId === source.id && this.isCredit(t.type))
-      .reduce((sum, t) => sum + t.amountMinor, 0);
+    const loads = this.currentCycleTransactionsFor(source.id)
+      .filter((transaction) => this.isCredit(transaction.type))
+      .reduce((sum, transaction) => sum + transaction.amountMinor, 0);
     return loads - this.monthlyUsed(source);
+  }
+
+  private currentCycleTransactionsFor(sourceId: string): readonly CardTransaction[] {
+    const period = this.currentCycle();
+    return this.store
+      .transactions()
+      .filter(
+        (transaction) =>
+          transaction.cardId === sourceId &&
+          transaction.transactionDate >= period.startIso &&
+          transaction.transactionDate <= period.endIso,
+      );
   }
 
   private cycleFor(dateIso: string): { startIso: string; endIso: string; label: string } {

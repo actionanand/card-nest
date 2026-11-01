@@ -213,17 +213,6 @@
           All history
         </button>
       </div>
-      <label class="check"
-        ><input
-          type="checkbox"
-          [checked]="hideAlreadyAdded()"
-          (change)="hideAlreadyAdded.set(checked($event)); applyFilters()"
-        /><span>Hide already added</span></label
-      >
-      <p class="muted">
-        Hides imported and matched items in active or all-history results. Already added remains
-        available.
-      </p>
       @if (!sync.reconciling() && !sync.verificationFailed()) {
         <p class="muted">
           Needs review {{ sync.pendingTotal() }} · Already added {{ sync.matchedTotal() }} ·
@@ -282,83 +271,110 @@
         ><button
           class="btn"
           type="button"
-          [attr.aria-expanded]="advanced()"
+          [attr.aria-expanded]="filterDialogOpen()"
           aria-controls="sms-filters"
-          (click)="advanced.set(!advanced())"
+          (click)="openFilterDialog()"
         >
           Filters
         </button>
       </div>
-      <div class="sort-order-control">
-        <app-select-picker
-          label="Sort order"
-          [options]="sortOrderOptions"
-          [value]="sortOrder()"
-          (valueChange)="changeSortOrder($event)"
-        />
-      </div>
-      <div id="sms-filters" [hidden]="!advanced()">
-        <div class="filters">
-          <label
-            >Card / wallet suffix or vehicle<input
-              maxlength="1000"
-              [value]="sourceFilter()"
-              (input)="sourceFilter.set(value($event))"
-          /></label>
-          <div class="type-filter">
-            <span>Type</span>
-            <div class="type-mode" role="group" aria-label="Transaction type selection mode">
-              <button
-                type="button"
-                [attr.aria-pressed]="typeMode() === 'SINGLE'"
-                (click)="changeTypeMode('SINGLE')"
-              >
-                Single
-              </button>
-              <button
-                type="button"
-                [attr.aria-pressed]="typeMode() === 'MULTIPLE'"
-                (click)="changeTypeMode('MULTIPLE')"
-              >
-                Multiple
+      @if (filterDialogOpen()) {
+        <app-profile-modal title="SMS filters" (closed)="closeFilterDialog()">
+          <div id="sms-filters">
+            <div class="filters">
+              <label
+                >Card / wallet suffix or vehicle<input
+                  maxlength="1000"
+                  [value]="filterDraft()?.source ?? ''"
+                  (input)="updateFilterDraft('source', value($event))"
+              /></label>
+              <div class="type-filter">
+                <span>Type</span>
+                <div class="type-mode" role="group" aria-label="Transaction type selection mode">
+                  <button
+                    type="button"
+                    [attr.aria-pressed]="filterDraft()?.mode === 'SINGLE'"
+                    (click)="changeFilterDraftMode('SINGLE')"
+                  >
+                    Single
+                  </button>
+                  <button
+                    type="button"
+                    [attr.aria-pressed]="filterDraft()?.mode === 'MULTIPLE'"
+                    (click)="changeFilterDraftMode('MULTIPLE')"
+                  >
+                    Multiple
+                  </button>
+                </div>
+                @if (filterDraft()?.mode === 'SINGLE') {
+                  <app-select-picker
+                    label="Single type"
+                    [options]="kindOptions()"
+                    [value]="filterDraft()?.kind ?? 'ALL'"
+                    (valueChange)="updateFilterDraft('kind', $event)"
+                    [searchable]="true"
+                  />
+                } @else {
+                  <app-sms-type-picker
+                    [value]="filterDraft()?.kinds ?? []"
+                    (changed)="
+                      updateFilterDraft('kinds', $event);
+                      updateFilterDraft('multipleInitialized', true)
+                    "
+                  />
+                }
+              </div>
+              <app-select-picker
+                label="Review status"
+                [options]="stateOptions"
+                [value]="filterDraft()?.state ?? 'PENDING'"
+                (valueChange)="updateFilterDraft('state', $event)"
+              />
+              <label
+                >From date<input
+                  type="date"
+                  [value]="filterDraft()?.from ?? ''"
+                  (change)="updateFilterDraft('from', value($event))" /></label
+              ><label
+                >Through date<input
+                  type="date"
+                  [value]="filterDraft()?.to ?? ''"
+                  (change)="updateFilterDraft('to', value($event))"
+              /></label>
+            </div>
+            <p class="muted">
+              Dates filter the original event date. Source searches extracted suffix / vehicle
+              evidence; cards sharing a suffix may both appear.
+            </p>
+            <label class="check"
+              ><input
+                type="checkbox"
+                [checked]="filterDraft()?.hideAlreadyAdded ?? true"
+                (change)="updateFilterDraft('hideAlreadyAdded', checked($event))"
+              /><span>Hide already added</span></label
+            >
+            <p class="muted">
+              Hides imported and matched items in active or all-history results. Already added
+              remains available.
+            </p>
+            <app-select-picker
+              label="Sort order"
+              [options]="sortOrderOptions"
+              [value]="filterDraft()?.sortOrder ?? 'RECEIVED_DESC'"
+              (valueChange)="updateDraftSortOrder($event)"
+            />
+            @if (filterDateError()) {
+              <p role="alert" class="filter-date-error">{{ filterDateError() }}</p>
+            }
+            <div class="filter-dialog-actions">
+              <button class="btn" type="button" (click)="closeFilterDialog()">Cancel</button>
+              <button class="btn btn-primary" type="button" (click)="applyFilterDraft()">
+                Apply filters
               </button>
             </div>
-            @if (typeMode() === 'SINGLE') {
-              <app-select-picker
-                label="Single type"
-                [options]="kindOptions()"
-                [value]="kind()"
-                (valueChange)="kind.set($event)"
-                [searchable]="true"
-              />
-            } @else {
-              <app-sms-type-picker
-                [value]="multipleKinds()"
-                (changed)="multipleKinds.set($event)"
-              />
-            }
           </div>
-          <app-select-picker
-            label="Review status"
-            [options]="stateOptions"
-            [value]="state()"
-            (valueChange)="state.set($event)"
-          />
-          <label
-            >From date<input
-              type="date"
-              [value]="from()"
-              (change)="from.set(value($event))" /></label
-          ><label
-            >Through date<input type="date" [value]="to()" (change)="to.set(value($event))"
-          /></label>
-        </div>
-        <p class="muted">
-          Dates filter the original event date. Source searches extracted suffix / vehicle evidence;
-          cards sharing a suffix may both appear.
-        </p>
-        <button class="btn" type="button" (click)="applyFilters()">Apply filters</button>
-      </div>
+        </app-profile-modal>
+      }
       <div class="chips" aria-label="Review filters">
         <div class="chips type-chips" role="group" aria-label="Transaction types">
           @for (chip of typeChips(); track chip.key) {

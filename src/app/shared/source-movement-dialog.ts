@@ -13,7 +13,7 @@ import {
 import { BalanceTiming, SourceTransfer } from '../core/models/domain';
 import { CardNestStore } from '../core/services/card-nest-store';
 import { formatMoney, parseMoneyToMinor } from '../core/services/money';
-import { indiaTodayIso } from '../core/services/india-date';
+import { DeviceCalendarClock } from '../core/services/device-date';
 import {
   bankCashTracked,
   isBankOrCash,
@@ -304,6 +304,7 @@ export type SourceMovementMode = 'RECEIPT' | 'TRANSFER' | 'BALANCE' | 'ADD_MONEY
 export class SourceMovementDialog implements OnInit {
   private readonly dialog = viewChild<ElementRef<HTMLElement>>('movementDialog');
   readonly store = inject(CardNestStore);
+  private readonly calendarClock = inject(DeviceCalendarClock);
   private readonly snackbar = inject(SnackbarService);
   readonly mode = input.required<SourceMovementMode>();
   readonly sourceId = input('');
@@ -320,7 +321,7 @@ export class SourceMovementDialog implements OnInit {
       this.mode() === 'BALANCE' ||
       (this.mode() === 'ADD_MONEY' && this.source()?.kind === 'CASH' && this.replaceCashBalance()),
   );
-  readonly date = signal(indiaTodayIso());
+  readonly date = signal(this.calendarClock.calendar().dateIso);
   readonly time = signal('');
   readonly description = signal('');
   readonly categoryId = signal('income');

@@ -4,8 +4,9 @@ import { SourcesPage } from './sources';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { SqliteDatabase } from '../../core/data/sqlite-database';
 import { SnackbarService } from '../../core/services/snackbar.service';
-import { CardTransaction } from '../../core/models/domain';
+import { CardTransaction, PaymentSource } from '../../core/models/domain';
 import { TransactionsPage } from '../transactions/transactions';
+import axe from 'axe-core';
 
 describe('Explicit FASTag wallet creation and feedback', () => {
   const setup = () => {
@@ -167,7 +168,7 @@ describe('Explicit FASTag wallet creation and feedback', () => {
     expect(details.textContent).toContain('Total · ₹3,500.00');
     fixture.destroy();
   });
-  it('orders wallet activity by event time and shows recorded time without using scan time', () => {
+  it('orders wallet activity by event time and shows recorded time without using scan time', async () => {
     const fixture = setup();
     const store = TestBed.inject(CardNestStore);
     store.paymentSources.set([
@@ -223,5 +224,125 @@ describe('Explicit FASTag wallet creation and feedback', () => {
     expect(activity.nativeElement.querySelector('.transaction-detail')?.textContent).toContain(
       activity.componentInstance.recordedEventTime(entry),
     );
+    activity.detectChanges();
+    const filterTrigger = activity.nativeElement.querySelector(
+      '.filter-panel__toggle',
+    ) as HTMLButtonElement;
+    filterTrigger.click();
+    activity.detectChanges();
+    await activity.whenStable();
+    const filterDialog = activity.nativeElement.querySelector(
+      'app-profile-modal dialog[open]',
+    ) as HTMLElement;
+    expect(filterDialog).not.toBeNull();
+    const audit = await axe.run(filterDialog, {
+      runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa'] },
+      rules: { 'color-contrast': { enabled: false } },
+    });
+    expect(audit.violations).toEqual([]);
+    expect(
+      activity.componentInstance.sourceFilterOptions().map((option) => option.value),
+    ).toContain('synthetic-meal');
+    activity.componentInstance.selectSourceFilter('synthetic-meal');
+    expect(activity.componentInstance.filtered().map((transaction) => transaction.cardId)).toEqual([
+      'synthetic-meal',
+      'synthetic-meal',
+    ]);
+    activity.destroy();
+  });
+  it('audits Pluxee cycle totals from local-date committed entries for that source only', () => {
+    const nativeOptions = Intl.DateTimeFormat.prototype.resolvedOptions;
+    const timezone = vi
+      .spyOn(Intl.DateTimeFormat.prototype, 'resolvedOptions')
+      .mockImplementation(function (this: Intl.DateTimeFormat) {
+        return { ...nativeOptions.call(this), timeZone: 'Asia/Kolkata' };
+      });
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] });
+    vi.setSystemTime(new Date('2026-10-31T20:30:00Z'));
+    const fixture = setup();
+    try {
+      const store = TestBed.inject(CardNestStore);
+      const first: PaymentSource = {
+        id: 'meal-first',
+        kind: 'MEAL',
+        nickname: 'Synthetic Pluxee A',
+        noLimit: false,
+        autoLoad: false,
+        archived: false,
+      };
+      const second: PaymentSource = { ...first, id: 'meal-second', nickname: 'Synthetic Pluxee B' };
+      const cash: PaymentSource = {
+        id: 'cash-date-test',
+        kind: 'CASH',
+        nickname: 'Synthetic cash',
+        noLimit: true,
+        autoLoad: false,
+        archived: false,
+      };
+      store.paymentSources.set([first, second, cash]);
+      const entry = (
+        id: string,
+        cardId: string,
+        type: CardTransaction['type'],
+        amountMinor: number,
+        transactionDate: string,
+      ): CardTransaction => ({
+        id,
+        cardId,
+        type,
+        amountMinor,
+        currencyCode: 'INR',
+        transactionDate,
+        categoryId: 'other',
+        attachmentIds: [],
+        createdAt: `${transactionDate}T12:00:00Z`,
+        updatedAt: `${transactionDate}T12:00:00Z`,
+      });
+      store.transactions.set([
+        entry('meal-a-spend', first.id, 'PURCHASE', 1200, '2026-11-02'),
+        entry('meal-a-topup', first.id, 'CREDIT', 5000, '2026-11-03'),
+        entry('meal-a-previous', first.id, 'PURCHASE', 3000, '2026-10-31'),
+        entry('meal-b-spend', second.id, 'PURCHASE', 9000, '2026-11-02'),
+        entry('meal-b-topup', second.id, 'CREDIT', 12000, '2026-11-03'),
+      ]);
+      store.balanceAdjustments.set([
+        {
+          id: 'meal-a-audit',
+          sourceId: first.id,
+          reason: 'CORRECTION',
+          previousMinor: 10000,
+          newMinor: 60000,
+          correctionMinor: 50000,
+          createdAt: '2026-11-03T12:00:00Z',
+        },
+      ]);
+      fixture.detectChanges();
+
+      const page = fixture.componentInstance;
+      expect(page.currentCycle().startIso).toBe('2026-11-01');
+      expect(page.monthlyUsed(first)).toBe(1200);
+      expect(page.monthlyRemaining(first)).toBe(3800);
+      expect(page.monthlyUsed(second)).toBe(9000);
+      expect(page.monthlyRemaining(second)).toBe(3000);
+
+      const transactions = TestBed.createComponent(TransactionsPage);
+      transactions.detectChanges();
+      expect(transactions.componentInstance.form.controls.transactionDate.value).toBe('2026-11-01');
+      transactions.destroy();
+
+      page.openMovement({ mode: 'RECEIPT', sourceId: cash.id });
+      fixture.detectChanges();
+      expect(
+        (
+          fixture.nativeElement.querySelector(
+            'app-source-movement-dialog input[type="date"]',
+          ) as HTMLInputElement
+        ).value,
+      ).toBe('2026-11-01');
+    } finally {
+      fixture.destroy();
+      timezone.mockRestore();
+      vi.useRealTimers();
+    }
   });
 });
