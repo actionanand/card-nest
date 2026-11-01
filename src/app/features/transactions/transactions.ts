@@ -323,6 +323,15 @@ export class TransactionsPage {
         }
       : null;
   });
+  readonly archivedSourceReassignment = computed(() => {
+    this.formChanges();
+    const id = this.editingId();
+    if (!id) return null;
+    const previous = this.store.transactions().find((transaction) => transaction.id === id);
+    if (!previous || previous.cardId === this.form.controls.cardId.value) return null;
+    const source = this.store.cards().find((card) => card.id === previous.cardId);
+    return source?.archived ? source : null;
+  });
   readonly visibleLimit = signal(TRANSACTION_PAGE_SIZE);
   readonly activeFilterCount = computed(
     () =>
@@ -527,6 +536,7 @@ export class TransactionsPage {
     relatedTransactionId: new FormControl('', { nonNullable: true }),
     preserveLegacy: new FormControl(false, { nonNullable: true }),
     unlinkConfirmed: new FormControl(false, { nonNullable: true }),
+    archivedSourceReassignmentConfirmed: new FormControl(false, { nonNullable: true }),
     paymentMethod: new FormControl('NONE', { nonNullable: true }),
     paymentMethodDetail: new FormControl('', { nonNullable: true }),
     paymentMethodCustom: new FormControl('', {
@@ -1210,6 +1220,7 @@ export class TransactionsPage {
       const selected = current ?? primary ?? sources[0];
       this.form.controls.cardId.setValue(selected.id);
       this.form.controls.cardId.markAsDirty();
+      this.form.controls.archivedSourceReassignmentConfirmed.setValue(false);
       this.payFromBankMode.set(true);
       this.payFromOpen.set(false);
       this.payFromSearch.set('');
@@ -1218,6 +1229,7 @@ export class TransactionsPage {
     this.payFromBankMode.set(false);
     this.form.controls.cardId.setValue(id);
     this.form.controls.cardId.markAsDirty();
+    this.form.controls.archivedSourceReassignmentConfirmed.setValue(false);
     this.payFromOpen.set(false);
     this.payFromSearch.set('');
   }
@@ -1225,6 +1237,7 @@ export class TransactionsPage {
     if (!this.bankAccountOptions().some((option) => option.value === id)) return;
     this.form.controls.cardId.setValue(id);
     this.form.controls.cardId.markAsDirty();
+    this.form.controls.archivedSourceReassignmentConfirmed.setValue(false);
   }
   openPayFrom(): void {
     this.payFromSearch.set('');
@@ -1236,14 +1249,24 @@ export class TransactionsPage {
   selectedSourceLabel(): string {
     if (this.payFromBankMode()) return 'Bank/UPI';
     const id = this.form.controls.cardId.value;
-    const card = this.store.activeCards().find((c) => c.id === id);
-    if (card) return `${card.nickname} · ${card.lastDigits}`;
+    const card = this.store.cards().find((item) => item.id === id && !item.deletedAt);
+    if (card) return `${card.nickname} · ${card.lastDigits}${card.archived ? ' · Archived' : ''}`;
     const source = this.store.activePaymentSources().find((s) => s.id === id);
     if (source)
       return source.kind === 'DEBIT'
         ? `${source.institution || 'Bank/UPI'} · ${source.nickname}${source.lastDigits ? ` · ${displayBankAccountSuffix(source.lastDigits)}` : ''}`
         : `${source.nickname}${source.lastDigits ? ` · ${source.lastDigits}` : ''}`;
     return 'Select source';
+  }
+  selectedSourceIsArchived(): boolean {
+    const previous = this.store.transactions().find((item) => item.id === this.editingId());
+    return (
+      !!previous &&
+      previous.cardId === this.form.controls.cardId.value &&
+      this.store
+        .cards()
+        .some((card) => card.id === previous.cardId && card.archived && !card.deletedAt)
+    );
   }
   transactionAccountIdentifierLabel(suffix?: string): string {
     return displayBankAccountSuffix(suffix);
@@ -1270,6 +1293,7 @@ export class TransactionsPage {
         transaction.type === 'ADJUSTMENT' &&
         (transaction.adjustmentPurpose !== 'SPLIT_PAYMENT' || !transaction.splitGroupId),
       unlinkConfirmed: false,
+      archivedSourceReassignmentConfirmed: false,
       paymentMethod: transaction.paymentMethod ?? 'NONE',
       paymentMethodDetail: transaction.paymentMethodDetail ?? '',
       paymentMethodCustom: transaction.paymentMethodCustom ?? '',
@@ -2003,6 +2027,14 @@ export class TransactionsPage {
       return;
     }
     const value = this.form.getRawValue();
+    if (this.archivedSourceReassignment() && !value.archivedSourceReassignmentConfirmed) {
+      this.form.controls.archivedSourceReassignmentConfirmed.setErrors({ required: true });
+      this.snackbar.show(
+        'Confirm moving this transaction from its archived card before saving.',
+        'WARNING',
+      );
+      return;
+    }
     if (value.type === 'ADJUSTMENT' && !value.preserveLegacy && !value.relatedTransactionId) {
       this.form.controls.relatedTransactionId.setErrors({ required: true });
       this.snackbar.show('Choose the related purchase or payment group.', 'WARNING');
@@ -2111,6 +2143,7 @@ export class TransactionsPage {
           value.type === 'ADJUSTMENT' && !value.preserveLegacy ? value.relatedTransactionId : '',
           value.unlinkConfirmed,
           persistedCardRecurrence ? recurringRule : undefined,
+          value.archivedSourceReassignmentConfirmed,
         );
       } catch (error: unknown) {
         if (error instanceof CommittedSaveRefreshError) refreshWarning = error.message;
@@ -2221,7 +2254,12 @@ export class TransactionsPage {
   }
 
   private defaultSourceId(): string {
-    if (this.requestedSourceId) return this.requestedSourceId;
+    if (this.requestedSourceId) {
+      const card = this.store.cards().find((item) => item.id === this.requestedSourceId);
+      if (card) return card.archived || card.deletedAt ? '' : card.id;
+      const source = this.store.paymentSources().find((item) => item.id === this.requestedSourceId);
+      return source && !source.archived ? source.id : '';
+    }
     const firstCardId = this.store.activeCards()[0]?.id;
     if (firstCardId) return firstCardId;
     const sources = this.store.activePaymentSources();
@@ -2245,6 +2283,7 @@ export class TransactionsPage {
       relatedTransactionId: '',
       preserveLegacy: false,
       unlinkConfirmed: false,
+      archivedSourceReassignmentConfirmed: false,
       paymentMethod: 'NONE',
       paymentMethodDetail: '',
       paymentMethodCustom: '',

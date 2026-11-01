@@ -179,6 +179,30 @@ legend {
 .full {
   grid-column: 1/-1;
 }
+.archived-source-reassignment {
+  display: flex;
+  min-width: 0;
+  min-height: 44px;
+  grid-column: 1 / -1;
+  align-items: flex-start;
+  gap: 0.6rem;
+  padding: 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 0.6rem;
+  background: var(--accent-soft);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.archived-source-reassignment input {
+  width: 1.15rem;
+  min-width: 1.15rem;
+  min-height: 1.15rem;
+  margin: 0.1rem 0 0;
+  accent-color: var(--accent);
+}
+.archived-source-reassignment span {
+  min-width: 0;
+}
 /* ── Custom Pay-From field ───────────────────────────────────────────────── */
 .pay-from-field {
   display: grid;
@@ -209,6 +233,11 @@ legend {
   white-space: nowrap;
   text-overflow: ellipsis;
   font-size: 1rem;
+}
+.pay-from-trigger__value.archived-source-value {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .pay-from-trigger app-icon {
   flex: 0 0 auto;

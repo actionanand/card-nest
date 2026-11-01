@@ -923,6 +923,7 @@ export class CardNestStore {
     targetId = '',
     unlinkConfirmed = false,
     recurringRule?: RecurringRule,
+    archivedSourceReassignmentConfirmed = false,
   ): Promise<void> {
     if (!this.database.ready()) throw new Error('Database is not ready.');
     const result = await this.database.atomic(async (tx) => {
@@ -939,6 +940,17 @@ export class CardNestStore {
         throw new Error('Enter a valid amount and transaction date.');
       const sources = await this.readStoredSources(tx);
       const card = this.cards().find((item) => item.id === transaction.cardId && !item.deletedAt);
+      const previousCard = previous
+        ? this.cards().find((item) => item.id === previous.cardId && !item.deletedAt)
+        : undefined;
+      if (card?.archived && (!previous || previous.cardId !== card.id))
+        throw new Error('Archived credit cards cannot be used for new transactions.');
+      if (
+        previousCard?.archived &&
+        previous?.cardId !== transaction.cardId &&
+        !archivedSourceReassignmentConfirmed
+      )
+        throw new Error('Confirm moving this transaction from its archived card before saving.');
       if (!card && !sources.some((item) => item.id === transaction.cardId))
         throw new Error('Choose an existing payment source.');
       if (transaction.currencyCode !== (card?.currencyCode ?? 'INR'))

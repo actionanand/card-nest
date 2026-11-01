@@ -1010,6 +1010,125 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     expect(fixture.componentInstance.form.controls.cardId.value).toBe('');
     fixture.destroy();
   });
+  it('edits archived-card transactions in place and guards new or reassigned writes', async () => {
+    const { store } = await boot();
+    store.addCard({ ...card });
+    await settle();
+    const original = purchase({
+      id: 'archived-card-edit-regression',
+      cardId: card.id,
+      amountMinor: 12500,
+      transactionDate: '2026-10-20',
+      merchant: 'Original merchant',
+      categoryId: 'other',
+    });
+    await store.saveManualTransaction(original);
+    store.archiveCard(card.id);
+    await settle();
+    const otherArchived = { ...card, id: 'second-archived-card', nickname: 'Second archived' };
+    store.addCard(otherArchived);
+    await settle();
+    store.archiveCard(otherArchived.id);
+    await settle();
+    const active = { ...card, id: 'active-reassignment-target', nickname: 'Active replacement' };
+    store.addCard(active);
+    await settle();
+
+    const beforeRejectedCreate = financialState();
+    await expect(
+      store.saveManualTransaction(
+        purchase({ id: 'new-archived-card-entry', cardId: card.id, amountMinor: 2000 }),
+      ),
+    ).rejects.toThrow('Archived credit cards cannot be used');
+    expect(financialState()).toEqual(beforeRejectedCreate);
+
+    const fixture = TestBed.createComponent(TransactionsPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const page = fixture.componentInstance;
+    page.edit(original);
+    fixture.detectChanges();
+    expect(page.form.controls.cardId.value).toBe(card.id);
+    expect(page.selectedSourceLabel()).toBe('Fiction card · 4321 · Archived');
+    const sourceLabel = fixture.nativeElement.querySelector(
+      '.archived-source-value',
+    ) as HTMLElement;
+    expect(sourceLabel.textContent).toContain('Fiction card · 4321 · Archived');
+    expect(getComputedStyle(sourceLabel).whiteSpace).toBe('normal');
+    page.form.patchValue({
+      amount: '135.00',
+      merchant: 'Edited archived merchant',
+      transactionDate: '2026-10-22',
+      categoryId: 'groceries',
+      notes: 'Edited while archived',
+    });
+    await page.save();
+    await settle();
+    const edited = store.transactions().find((transaction) => transaction.id === original.id)!;
+    expect(edited).toMatchObject({
+      id: original.id,
+      cardId: card.id,
+      amountMinor: 13500,
+      merchant: 'Edited archived merchant',
+      transactionDate: '2026-10-22',
+      categoryId: 'groceries',
+      notes: 'Edited while archived',
+    });
+    expect(count('card_transactions')).toBe(1);
+    expect(page.searchedPayFromCards().map((source) => source.id)).not.toContain(card.id);
+
+    await expect(
+      store.saveManualTransaction({ ...edited, cardId: otherArchived.id }),
+    ).rejects.toThrow('Archived credit cards cannot be used');
+    await expect(
+      store.saveManualTransaction({ ...edited, cardId: active.id, amountMinor: 14000 }),
+    ).rejects.toThrow('Confirm moving this transaction from its archived card');
+    expect(store.transactions().find((transaction) => transaction.id === original.id)?.cardId).toBe(
+      card.id,
+    );
+    page.edit(edited);
+    fixture.detectChanges();
+    expect(page.archivedSourceReassignment()).toBeNull();
+    page.selectPayFrom(active.id);
+    fixture.detectChanges();
+    expect(page.archivedSourceReassignment()?.id).toBe(card.id);
+    const confirmation = fixture.nativeElement.querySelector(
+      'input[formControlName="archivedSourceReassignmentConfirmed"]',
+    ) as HTMLInputElement;
+    expect(confirmation).not.toBeNull();
+    page.form.controls.amount.setValue('140.00');
+    await page.save();
+    await settle();
+    expect(store.transactions().find((transaction) => transaction.id === original.id)?.cardId).toBe(
+      card.id,
+    );
+    page.form.controls.archivedSourceReassignmentConfirmed.setValue(true);
+    page.form.controls.archivedSourceReassignmentConfirmed.setErrors(null);
+    await page.save();
+    await settle();
+    expect(
+      store.transactions().find((transaction) => transaction.id === original.id),
+    ).toMatchObject({
+      id: original.id,
+      cardId: active.id,
+      amountMinor: 14000,
+    });
+    expect(count('card_transactions')).toBe(1);
+    page.openAdd();
+    expect(page.form.controls.cardId.value).toBe(active.id);
+    expect(page.searchedPayFromCards().map((source) => source.id)).toEqual([active.id]);
+    store.restoreCard(card.id);
+    await settle();
+    expect(page.searchedPayFromCards().map((source) => source.id)).toContain(card.id);
+    await store.saveManualTransaction(
+      purchase({ id: 'restored-card-new-entry', cardId: card.id, amountMinor: 5000 }),
+    );
+    expect(count('card_transactions')).toBe(2);
+    expect(
+      store.transactions().filter((transaction) => transaction.id === original.id),
+    ).toHaveLength(1);
+    fixture.destroy();
+  });
   it('normalizes complete identifiers passed to the generic bank source update boundary', async () => {
     const { store } = await boot();
     const source = await store.addBankAccount({

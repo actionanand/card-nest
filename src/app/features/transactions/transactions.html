@@ -112,10 +112,27 @@
                 [attr.aria-expanded]="payFromOpen()"
                 aria-haspopup="listbox"
               >
-                <span class="pay-from-trigger__value">{{ selectedSourceLabel() }}</span>
+                <span
+                  class="pay-from-trigger__value"
+                  [class.archived-source-value]="selectedSourceIsArchived()"
+                  >{{ selectedSourceLabel() }}</span
+                >
                 <app-icon name="chevron_down" />
               </button>
             </div>
+            @if (archivedSourceReassignment(); as archivedCard) {
+              <label class="full archived-source-reassignment">
+                <input
+                  type="checkbox"
+                  formControlName="archivedSourceReassignmentConfirmed"
+                  [disabled]="saving()"
+                />
+                <span>
+                  Confirm moving this transaction from {{ archivedCard.nickname }} ·
+                  {{ archivedCard.lastDigits }} (Archived) to {{ selectedSourceLabel() }}.
+                </span>
+              </label>
+            }
             @if (payFromBankMode() && bankAccountOptions().length) {
               <app-select-picker
                 class="full"
