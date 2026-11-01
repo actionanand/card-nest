@@ -39,6 +39,9 @@ import { RemindersPage } from '../../features/reminders/reminders';
 import { SnackbarService } from '../services/snackbar.service';
 import { legacyFingerprintCompleteBankAccount } from '../services/bank-account-identifier';
 import { CATEGORY_REGISTRY } from './category-definitions';
+import { DeviceCalendarClock } from '../services/device-date';
+import { CategoriesPage } from '../../features/categories/categories';
+import { DashboardPage } from '../../features/dashboard/dashboard';
 
 const { DatabaseSync } = process.getBuiltinModule('node:sqlite') as typeof import('node:sqlite');
 
@@ -1897,6 +1900,239 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     await restarted.initialisePreferences();
     expect(restarted.cardOutstanding(card.id)).toBe(-3000);
   });
+  it('includes the local November financial month before UTC November and excludes December', async () => {
+    deviceZone('Asia/Kolkata');
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-31T19:00:00Z'));
+    const { store } = await boot();
+    store.addCard({ ...card, statementDay: 15 });
+    await settle();
+    await store.setMonthlyBudget(10000);
+    for (const [id, transactionDate, amountMinor] of [
+      ['calendar-october', '2026-10-31', 1000],
+      ['calendar-november', '2026-11-01', 2000],
+      ['calendar-december', '2026-12-01', 4000],
+    ] as const) {
+      await store.saveManualTransaction(
+        purchase({ id, cardId: card.id, transactionDate, amountMinor }),
+      );
+    }
+    expect(store.cardOutstanding(card.id)).toBe(3000);
+    expect(store.cardOutstandingTransactions(card.id).map((item) => item.id)).toContain(
+      'calendar-november',
+    );
+    expect(store.cardUnbilledTransactions(card.id).map((item) => item.id)).not.toContain(
+      'calendar-december',
+    );
+    expect(store.dashboard()).toMatchObject({
+      outstandingMinor: 3000,
+      monthlySpendMinor: 2000,
+      remainingBudgetMinor: 8000,
+    });
+    expect(
+      rows('SELECT id,transaction_date,amount_minor FROM card_transactions ORDER BY id'),
+    ).toHaveLength(3);
+  });
+  it('refreshes open-app financial projections at local midnight without rewriting the ledger', async () => {
+    deviceZone('Asia/Kolkata');
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] });
+    vi.setSystemTime(new Date('2026-10-31T18:29:00Z'));
+    const { store } = await boot();
+    store.addCard({ ...card, statementDay: 1 });
+    await settle();
+    await store.setMonthlyBudget(10000);
+    await store.saveManualTransaction(
+      purchase({
+        id: 'before-local-midnight',
+        cardId: card.id,
+        transactionDate: '2026-10-31',
+        amountMinor: 1000,
+      }),
+    );
+    await store.saveManualTransaction(
+      purchase({
+        id: 'new-local-month',
+        cardId: card.id,
+        transactionDate: '2026-11-01',
+        amountMinor: 2000,
+      }),
+    );
+    const before = rows('SELECT * FROM card_transactions ORDER BY id');
+    expect(store.dashboard()).toMatchObject({
+      outstandingMinor: 1000,
+      statementDueMinor: 0,
+      unbilledMinor: 1000,
+      monthlySpendMinor: 1000,
+      remainingBudgetMinor: 9000,
+    });
+    expect(store.currentIncomePeriod().periodKey).toBe('2026-10');
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(store.dashboard()).toMatchObject({
+      outstandingMinor: 3000,
+      statementDueMinor: 1000,
+      unbilledMinor: 2000,
+      monthlySpendMinor: 2000,
+      remainingBudgetMinor: 8000,
+    });
+    expect(store.currentIncomePeriod().periodKey).toBe('2026-11');
+    expect(store.cardStatementTransactions(card.id).map((item) => item.id)).toEqual([
+      'before-local-midnight',
+    ]);
+    expect(store.cardUnbilledTransactions(card.id).map((item) => item.id)).toEqual([
+      'new-local-month',
+    ]);
+    expect(rows('SELECT * FROM card_transactions ORDER BY id')).toEqual(before);
+    await store.saveManualTransaction(
+      purchase({
+        id: 'saved-after-midnight',
+        cardId: card.id,
+        transactionDate: '2026-11-01',
+        amountMinor: 500,
+      }),
+    );
+    expect(store.dashboard()).toMatchObject({
+      outstandingMinor: 3500,
+      statementDueMinor: 1000,
+      unbilledMinor: 2500,
+      monthlySpendMinor: 2500,
+      remainingBudgetMinor: 7500,
+    });
+  });
+  it('keeps EMI visibility, category month counts, and dashboard breakdown on the same local month', async () => {
+    deviceZone('America/Los_Angeles');
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-01T01:00:00Z'));
+    const { store } = await boot();
+    store.addCard({ ...card, statementDay: 1 });
+    await settle();
+    await store.saveManualTransaction(
+      purchase({
+        id: 'local-october-emi',
+        cardId: card.id,
+        transactionDate: '2026-10-31',
+        amountMinor: 1000,
+        categoryId: 'dining',
+        emiInstallmentNumber: 2,
+      }),
+    );
+    await store.saveManualTransaction(
+      purchase({
+        id: 'local-november-emi',
+        cardId: card.id,
+        transactionDate: '2026-11-01',
+        amountMinor: 2000,
+        categoryId: 'dining',
+        emiInstallmentNumber: 2,
+      }),
+    );
+    const transactions = TestBed.createComponent(TransactionsPage);
+    const categories = TestBed.createComponent(CategoriesPage);
+    const dashboard = TestBed.createComponent(DashboardPage);
+    dashboard.componentInstance.openBreakdown('UNBILLED');
+    expect(transactions.componentInstance.filtered().map((item) => item.id)).toEqual([
+      'local-october-emi',
+    ]);
+    expect(categories.componentInstance.usageCount('dining')).toBe(1);
+    expect(dashboard.componentInstance.breakdownTotal()).toBe(1000);
+    vi.setSystemTime(new Date('2026-11-01T07:00:00Z'));
+    TestBed.inject(DeviceCalendarClock).refresh();
+    expect(transactions.componentInstance.filtered().map((item) => item.id)).toEqual([
+      'local-november-emi',
+      'local-october-emi',
+    ]);
+    expect(categories.componentInstance.usageCount('dining')).toBe(1);
+    expect(dashboard.componentInstance.breakdownTotal()).toBe(2000);
+    expect(
+      dashboard.componentInstance.breakdownGroups()[0].transactions.map((item) => item.id),
+    ).toEqual(['local-november-emi']);
+    expect(rows('SELECT * FROM card_transactions ORDER BY id')).toHaveLength(2);
+    transactions.destroy();
+    categories.destroy();
+    dashboard.destroy();
+  });
+  it.each([
+    ['Asia/Kolkata', '2026-10-31T18:29:00Z', '2026-10-31T18:30:00Z', '2026-10', '2026-11'],
+    ['Asia/Kolkata', '2026-12-31T18:29:00Z', '2026-12-31T18:30:00Z', '2026-12', '2027-01'],
+    ['UTC', '2026-12-31T23:59:00Z', '2027-01-01T00:00:00Z', '2026-12', '2027-01'],
+    ['America/New_York', '2026-11-01T03:59:00Z', '2026-11-01T04:00:00Z', '2026-10', '2026-11'],
+    ['America/Los_Angeles', '2026-11-01T06:59:00Z', '2026-11-01T07:00:00Z', '2026-10', '2026-11'],
+    ['America/New_York', '2027-01-01T04:59:00Z', '2027-01-01T05:00:00Z', '2026-12', '2027-01'],
+    ['America/New_York', '2026-03-08T06:59:00Z', '2026-03-08T07:00:00Z', '2026-03', '2026-03'],
+    ['America/New_York', '2026-11-01T05:59:00Z', '2026-11-01T06:00:00Z', '2026-11', '2026-11'],
+    ['America/Los_Angeles', '2026-03-08T09:59:00Z', '2026-03-08T10:00:00Z', '2026-03', '2026-03'],
+    ['America/Los_Angeles', '2026-11-01T08:59:00Z', '2026-11-01T09:00:00Z', '2026-11', '2026-11'],
+  ])(
+    'keeps financial projections and future-credit exclusion consistent in %s at %s',
+    async (zone, beforeInstant, afterInstant, beforeMonth, afterMonth) => {
+      deviceZone(zone);
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date(beforeInstant));
+      const { store } = await boot();
+      store.addCard({ ...card, statementDay: 1 });
+      await settle();
+      await store.setMonthlyBudget(10000);
+      const [year, month] = afterMonth.split('-').map(Number);
+      const futureDate = new Date(Date.UTC(year, month, 1)).toISOString().slice(0, 10);
+      await store.saveManualTransaction(
+        purchase({
+          id: 'financial-before-month',
+          cardId: card.id,
+          transactionDate: `${beforeMonth}-01`,
+          amountMinor: 1000,
+        }),
+      );
+      await store.saveManualTransaction(
+        purchase({
+          id: 'financial-after-month',
+          cardId: card.id,
+          transactionDate: `${afterMonth}-01`,
+          amountMinor: 2000,
+        }),
+      );
+      await store.saveManualTransaction(
+        purchase({
+          id: 'financial-future-month',
+          cardId: card.id,
+          transactionDate: futureDate,
+          amountMinor: 4000,
+        }),
+      );
+      await store.saveManualTransaction(
+        purchase({
+          id: 'financial-future-credit',
+          cardId: card.id,
+          type: 'PAYMENT',
+          transactionDate: futureDate,
+          amountMinor: 500,
+        }),
+      );
+      const history = rows('SELECT * FROM card_transactions ORDER BY id');
+      const sameMonth = beforeMonth === afterMonth;
+      expect(store.dashboard()).toMatchObject({
+        outstandingMinor: sameMonth ? 3000 : 1000,
+        monthlySpendMinor: sameMonth ? 3000 : 1000,
+      });
+      vi.setSystemTime(new Date(afterInstant));
+      TestBed.inject(DeviceCalendarClock).refresh();
+      expect(store.dashboard()).toMatchObject({
+        outstandingMinor: 3000,
+        statementDueMinor: sameMonth ? 0 : 1000,
+        unbilledMinor: sameMonth ? 3000 : 2000,
+        monthlySpendMinor: sameMonth ? 3000 : 2000,
+        remainingBudgetMinor: sameMonth ? 7000 : 8000,
+      });
+      expect(store.cardOutstanding(card.id)).toBe(3000);
+      expect(store.cardDueAmount(card.id)).toBe(sameMonth ? 0 : 1000);
+      expect(
+        store.cardUnbilledTransactions(card.id).reduce((sum, item) => sum + item.amountMinor, 0),
+      ).toBe(sameMonth ? 3000 : 2000);
+      expect(store.cardStatementTransactions(card.id).map((item) => item.id)).not.toContain(
+        'financial-future-credit',
+      );
+      expect(store.cardOutstanding(card.id, new Date(beforeInstant))).toBe(sameMonth ? 3000 : 1000);
+      expect(rows('SELECT * FROM card_transactions ORDER BY id')).toEqual(history);
+    },
+  );
   it('rolls back every EMI conversion stage and atomically reschedules and closes without changing the schedule formula', async () => {
     const { store } = await boot();
     store.addCard(card);

@@ -7,6 +7,7 @@ import { SnackbarService } from '../../core/services/snackbar.service';
 import { AppIcon } from '../../shared/app-icon';
 import { ConfirmationDialog } from '../../shared/confirmation-dialog';
 import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
+import { currentLocalCalendar, DeviceCalendarClock } from '../../core/services/device-date';
 
 @Component({
   selector: 'app-categories-page',
@@ -15,6 +16,7 @@ import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker
   styleUrl: './categories.scss',
 })
 export class CategoriesPage {
+  private readonly calendarClock = inject(DeviceCalendarClock);
   readonly store = inject(CardNestStore);
   private readonly snackbar = inject(SnackbarService);
   readonly embedded = input(false);
@@ -128,7 +130,8 @@ export class CategoriesPage {
   }
 
   usageCount(categoryId: string): number {
-    const month = new Date().toISOString().slice(0, 7);
+    this.calendarClock.calendar();
+    const month = currentLocalCalendar().monthIso;
     return this.store
       .transactions()
       .filter((item) => item.categoryId === categoryId && item.transactionDate.startsWith(month))

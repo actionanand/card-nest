@@ -1,3 +1,5 @@
+import { DestroyRef, inject, Service, signal } from '@angular/core';
+
 const IST_TIME_ZONE = 'Asia/Kolkata';
 const IST_OFFSET_MS = 330 * 60_000;
 
@@ -61,5 +63,31 @@ export function currentLocalCalendar(instant = new Date()): LocalCalendar {
       monthIso,
       timeOfDay: `${two(shifted.getUTCHours())}:${two(shifted.getUTCMinutes())}:${two(shifted.getUTCSeconds())}`,
     };
+  }
+}
+
+@Service()
+export class DeviceCalendarClock {
+  readonly calendar = signal(currentLocalCalendar());
+  private readonly destroyRef = inject(DestroyRef);
+
+  constructor() {
+    const refresh = () => this.refresh();
+    const interval = globalThis.setInterval(refresh, 60_000);
+    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', refresh);
+    if (typeof window !== 'undefined') window.addEventListener('focus', refresh);
+    this.destroyRef.onDestroy(() => {
+      globalThis.clearInterval(interval);
+      if (typeof document !== 'undefined')
+        document.removeEventListener('visibilitychange', refresh);
+      if (typeof window !== 'undefined') window.removeEventListener('focus', refresh);
+    });
+  }
+
+  refresh(): void {
+    const next = currentLocalCalendar();
+    const previous = this.calendar();
+    if (next.dateIso !== previous.dateIso || next.timeZone !== previous.timeZone)
+      this.calendar.set(next);
   }
 }

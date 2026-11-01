@@ -68,7 +68,7 @@ import {
   readPaymentGroups,
 } from './payment-groups';
 import { indiaTimeOfDay, indiaTodayIso } from './india-date';
-import { currentLocalCalendar } from './device-date';
+import { currentLocalCalendar, DeviceCalendarClock } from './device-date';
 import { APP_ENVIRONMENT } from './app-environment';
 import { initialiseAppData } from '../data/app-initialization';
 import {
@@ -91,9 +91,6 @@ import {
   isSupportedDisplayCurrency,
 } from './currency-display';
 
-const now = new Date();
-const today = now.toISOString().slice(0, 10);
-const monthStart = `${today.slice(0, 7)}-01`;
 const FLASH_SOURCE_STORAGE_KEY = 'cardnest_flash_transaction_source_id';
 const PAYMENT_SOURCES_PREFERENCE_KEY = 'payment_sources';
 const BANK_ACCOUNT_FINGERPRINT_KEY = 'bank_account_fingerprint_key';
@@ -140,155 +137,164 @@ function normalizePrimaryBankSources(sources: readonly PaymentSource[]): Payment
   });
 }
 
-const SAMPLE_CARDS: readonly CreditCard[] = [
-  {
-    id: 'card-demo-one',
-    nickname: 'Everyday',
-    issuerName: 'Northstar Bank',
-    lastDigits: '4821',
-    network: 'VISA',
-    subtype: 'Visa Signature',
-    theme: 'indigo',
-    statementDay: 18,
-    dueDateMode: 'DAYS_AFTER_STATEMENT',
-    daysAfterStatement: 20,
-    adjustDueDateOnWeekend: true,
-    creditLimitMinor: 25000000,
-    currencyCode: 'INR',
-    openingBalanceMinor: 0,
-    remindToSettle: true,
-    annualFeeEnabled: true,
-    annualFee: {
-      amountMinor: 99900,
-      renewalMonth: 10,
-      renewalDay: 12,
-      frequencyMonths: 12,
-      waiverThresholdMinor: 10000000,
-      waiverPeriod: 'ANNIVERSARY',
+function sampleCards(today: string): readonly CreditCard[] {
+  return [
+    {
+      id: 'card-demo-one',
+      nickname: 'Everyday',
+      issuerName: 'Northstar Bank',
+      lastDigits: '4821',
+      network: 'VISA',
+      subtype: 'Visa Signature',
+      theme: 'indigo',
+      statementDay: 18,
+      dueDateMode: 'DAYS_AFTER_STATEMENT',
+      daysAfterStatement: 20,
+      adjustDueDateOnWeekend: true,
+      creditLimitMinor: 25000000,
+      currencyCode: 'INR',
+      openingBalanceMinor: 0,
+      remindToSettle: true,
+      annualFeeEnabled: true,
+      annualFee: {
+        amountMinor: 99900,
+        renewalMonth: 10,
+        renewalDay: 12,
+        frequencyMonths: 12,
+        waiverThresholdMinor: 10000000,
+        waiverPeriod: 'ANNIVERSARY',
+      },
+      emergencyPhones: [],
+      supportEmails: [],
+      archived: false,
+      createdAt: today,
+      updatedAt: today,
     },
-    emergencyPhones: [],
-    supportEmails: [],
-    archived: false,
-    createdAt: today,
-    updatedAt: today,
-  },
-  {
-    id: 'card-demo-two',
-    nickname: 'Travel',
-    issuerName: 'Atlas Credit',
-    lastDigits: '1907',
-    network: 'MASTERCARD',
-    subtype: 'World',
-    theme: 'teal',
-    statementDay: 4,
-    dueDateMode: 'DAYS_AFTER_STATEMENT',
-    daysAfterStatement: 20,
-    adjustDueDateOnWeekend: true,
-    creditLimitMinor: 40000000,
-    currencyCode: 'INR',
-    openingBalanceMinor: 0,
-    remindToSettle: true,
-    annualFeeEnabled: false,
-    emergencyPhones: [],
-    supportEmails: [],
-    archived: false,
-    createdAt: today,
-    updatedAt: today,
-  },
-];
+    {
+      id: 'card-demo-two',
+      nickname: 'Travel',
+      issuerName: 'Atlas Credit',
+      lastDigits: '1907',
+      network: 'MASTERCARD',
+      subtype: 'World',
+      theme: 'teal',
+      statementDay: 4,
+      dueDateMode: 'DAYS_AFTER_STATEMENT',
+      daysAfterStatement: 20,
+      adjustDueDateOnWeekend: true,
+      creditLimitMinor: 40000000,
+      currencyCode: 'INR',
+      openingBalanceMinor: 0,
+      remindToSettle: true,
+      annualFeeEnabled: false,
+      emergencyPhones: [],
+      supportEmails: [],
+      archived: false,
+      createdAt: today,
+      updatedAt: today,
+    },
+  ];
+}
 
 const CATEGORIES = DEFAULT_CATEGORIES;
 
-const SAMPLE_TRANSACTIONS: readonly CardTransaction[] = [
-  {
-    id: 'tx-1',
-    cardId: 'card-demo-one',
-    type: 'PURCHASE',
-    amountMinor: 284900,
-    currencyCode: 'INR',
-    transactionDate: today,
-    merchant: 'Fresh Basket',
-    categoryId: 'groceries',
-    attachmentIds: [],
-    createdAt: today,
-    updatedAt: today,
-  },
-  {
-    id: 'tx-2',
-    cardId: 'card-demo-two',
-    type: 'PURCHASE',
-    amountMinor: 1249900,
-    currencyCode: 'INR',
-    transactionDate: monthStart,
-    merchant: 'Skyline Hotels',
-    categoryId: 'travel',
-    attachmentIds: [],
-    createdAt: today,
-    updatedAt: today,
-  },
-  {
-    id: 'tx-3',
-    cardId: 'card-demo-one',
-    type: 'PURCHASE',
-    amountMinor: 89900,
-    currencyCode: 'INR',
-    transactionDate: monthStart,
-    merchant: 'Streambox',
-    categoryId: 'subscription',
-    attachmentIds: [],
-    createdAt: today,
-    updatedAt: today,
-  },
-  {
-    id: 'tx-4',
-    cardId: 'card-demo-one',
-    type: 'PAYMENT',
-    amountMinor: 500000,
-    currencyCode: 'INR',
-    transactionDate: monthStart,
-    merchant: 'Payment received',
-    categoryId: 'payment',
-    attachmentIds: [],
-    createdAt: today,
-    updatedAt: today,
-  },
-];
+function sampleTransactions(today: string): readonly CardTransaction[] {
+  const monthStart = `${today.slice(0, 7)}-01`;
+  return [
+    {
+      id: 'tx-1',
+      cardId: 'card-demo-one',
+      type: 'PURCHASE',
+      amountMinor: 284900,
+      currencyCode: 'INR',
+      transactionDate: today,
+      merchant: 'Fresh Basket',
+      categoryId: 'groceries',
+      attachmentIds: [],
+      createdAt: today,
+      updatedAt: today,
+    },
+    {
+      id: 'tx-2',
+      cardId: 'card-demo-two',
+      type: 'PURCHASE',
+      amountMinor: 1249900,
+      currencyCode: 'INR',
+      transactionDate: monthStart,
+      merchant: 'Skyline Hotels',
+      categoryId: 'travel',
+      attachmentIds: [],
+      createdAt: today,
+      updatedAt: today,
+    },
+    {
+      id: 'tx-3',
+      cardId: 'card-demo-one',
+      type: 'PURCHASE',
+      amountMinor: 89900,
+      currencyCode: 'INR',
+      transactionDate: monthStart,
+      merchant: 'Streambox',
+      categoryId: 'subscription',
+      attachmentIds: [],
+      createdAt: today,
+      updatedAt: today,
+    },
+    {
+      id: 'tx-4',
+      cardId: 'card-demo-one',
+      type: 'PAYMENT',
+      amountMinor: 500000,
+      currencyCode: 'INR',
+      transactionDate: monthStart,
+      merchant: 'Payment received',
+      categoryId: 'payment',
+      attachmentIds: [],
+      createdAt: today,
+      updatedAt: today,
+    },
+  ];
+}
 
 const TRANSACTION_CACHE_KEY = 'cardnest.transactions.cache.v1';
 
-const PAYMENT_SOURCES: readonly PaymentSource[] = [
-  {
-    id: 'source-cash',
-    nickname: 'Cash',
-    kind: 'CASH',
-    noLimit: true,
-    autoLoad: false,
-    archived: false,
-  },
-  {
-    id: 'source-debit',
-    nickname: 'Bank / UPI',
-    kind: 'DEBIT',
-    institution: 'Primary bank',
-    noLimit: true,
-    autoLoad: false,
-    archived: false,
-  },
-  {
-    id: 'source-meal',
-    nickname: 'Pluxee meal card',
-    kind: 'MEAL',
-    institution: 'Pluxee',
-    noLimit: false,
-    balanceMinor: 0,
-    autoLoad: false,
-    lastLoadedPeriod: today.slice(0, 7),
-    archived: false,
-  },
-];
+function defaultPaymentSources(): readonly PaymentSource[] {
+  return [
+    {
+      id: 'source-cash',
+      nickname: 'Cash',
+      kind: 'CASH',
+      noLimit: true,
+      autoLoad: false,
+      archived: false,
+    },
+    {
+      id: 'source-debit',
+      nickname: 'Bank / UPI',
+      kind: 'DEBIT',
+      institution: 'Primary bank',
+      noLimit: true,
+      autoLoad: false,
+      archived: false,
+    },
+    {
+      id: 'source-meal',
+      nickname: 'Pluxee meal card',
+      kind: 'MEAL',
+      institution: 'Pluxee',
+      noLimit: false,
+      balanceMinor: 0,
+      autoLoad: false,
+      lastLoadedPeriod: currentLocalCalendar().monthIso,
+      archived: false,
+    },
+  ];
+}
 
 @Service()
 export class CardNestStore {
+  private readonly calendarClock = inject(DeviceCalendarClock);
+  private readonly legacyNonCardCutoff = new Date().toISOString().slice(0, 10);
   private readonly database = inject(SqliteDatabase);
   private readonly environment = inject(APP_ENVIRONMENT);
   private dataWasCleared = false;
@@ -300,7 +306,7 @@ export class CardNestStore {
   readonly categories = signal<readonly Category[]>(CATEGORIES);
   readonly categoryCatalog = signal<readonly CategoryCatalogEntry[]>([]);
   readonly categoryMigrationRecords = signal<readonly CategoryMigrationRecord[]>([]);
-  readonly paymentSources = signal<readonly PaymentSource[]>(PAYMENT_SOURCES);
+  readonly paymentSources = signal<readonly PaymentSource[]>(defaultPaymentSources());
   readonly recurringRules = signal<readonly RecurringRule[]>([]);
   readonly loans = signal<readonly LoanCommitment[]>([]);
   readonly emiPlans = signal<readonly EmiPlan[]>([]);
@@ -368,7 +374,7 @@ export class CardNestStore {
     return name ? [this.profileTitle(), name].filter(Boolean).join(' ') : '';
   });
   readonly currentIncomePeriod = computed(() =>
-    this.incomePeriodFor(new Date(), this.budgetCycleStartDay()),
+    this.incomePeriodFor(this.localFinancialDate(new Date()), this.budgetCycleStartDay()),
   );
   readonly currentIncomePeriodLabel = computed(() => {
     const period = this.currentIncomePeriod();
@@ -389,15 +395,20 @@ export class CardNestStore {
   );
 
   readonly dashboard = computed<DashboardSnapshot>(() => {
+    const reference = new Date();
+    const calendar = this.currentFinancialCalendar(reference);
     const cards = this.activeCards();
     const transactions = this.transactions();
     const outstandingMinor = cards.reduce(
-      (sum, card) => sum + Math.max(0, this.cardOutstanding(card.id)),
+      (sum, card) => sum + Math.max(0, this.cardOutstanding(card.id, reference)),
       0,
     );
-    const statementDueMinor = cards.reduce((sum, card) => sum + this.cardDueAmount(card.id), 0);
+    const statementDueMinor = cards.reduce(
+      (sum, card) => sum + this.cardDueAmount(card.id, reference),
+      0,
+    );
     const totalCredit = cards.reduce((sum, card) => sum + (card.creditLimitMinor ?? 0), 0);
-    const month = today.slice(0, 7);
+    const month = calendar.monthIso;
     const monthlySpendMinor = calculateNetSpending(
       transactions.filter((item) => item.transactionDate.startsWith(month)),
     );
@@ -416,10 +427,11 @@ export class CardNestStore {
   async initialisePreferences(): Promise<void> {
     if (!this.database.ready()) return;
     this.initialisationWarning.set('');
+    const calendar = this.currentFinancialCalendar();
     await initialiseAppData(this.database, this.environment.seedDemoData, {
       categories: CATEGORIES,
-      cards: SAMPLE_CARDS,
-      transactions: SAMPLE_TRANSACTIONS,
+      cards: sampleCards(calendar.dateIso),
+      transactions: sampleTransactions(calendar.dateIso),
       income: {
         ...this.currentIncomePeriod(),
         amountMinor: 8000000,
@@ -491,15 +503,15 @@ export class CardNestStore {
       const sources = JSON.parse(values.get(PAYMENT_SOURCES_PREFERENCE_KEY) ?? '[]') as unknown;
       if (Array.isArray(sources) && values.has(PAYMENT_SOURCES_PREFERENCE_KEY)) {
         this.paymentSources.set(sources as PaymentSource[]);
-      } else this.paymentSources.set(PAYMENT_SOURCES);
+      } else this.paymentSources.set(defaultPaymentSources());
     } catch {
-      this.paymentSources.set(PAYMENT_SOURCES);
+      this.paymentSources.set(defaultPaymentSources());
     }
     if (!values.has(PAYMENT_SOURCES_PREFERENCE_KEY)) {
       const sources = await this.database.atomic(async (tx) => {
         await tx.run('INSERT OR IGNORE INTO app_preferences(key,encrypted_value) VALUES(?,?)', [
           PAYMENT_SOURCES_PREFERENCE_KEY,
-          JSON.stringify(PAYMENT_SOURCES),
+          JSON.stringify(defaultPaymentSources()),
         ]);
         return this.readStoredSources(tx);
       });
@@ -698,9 +710,18 @@ export class CardNestStore {
     await this.upsertPreference('snoozed_reminder_card_ids', JSON.stringify(updated));
   }
 
-  cardOutstanding(cardId: string): number {
+  private currentFinancialCalendar(reference = new Date()) {
+    this.calendarClock.calendar();
+    return currentLocalCalendar(reference);
+  }
+
+  private localFinancialDate(reference: Date): Date {
+    return new Date(`${this.currentFinancialCalendar(reference).dateIso}T12:00:00`);
+  }
+
+  cardOutstanding(cardId: string, reference = new Date()): number {
     const card = this.cards().find((item) => item.id === cardId);
-    const currentMonth = new Date().toISOString().slice(0, 7);
+    const currentMonth = this.currentFinancialCalendar(reference).monthIso;
     return card
       ? calculateOutstanding(
           card.openingBalanceMinor,
@@ -717,11 +738,8 @@ export class CardNestStore {
   cardDueAmount(cardId: string, reference = new Date()): number {
     const card = this.cards().find((item) => item.id === cardId);
     if (!card) return 0;
-    const nextStatement = statementDateFor(reference, card.statementDay);
-    const latestStatement =
-      nextStatement.getTime() > reference.getTime()
-        ? previousStatementDate(nextStatement, card.statementDay)
-        : nextStatement;
+    const latestStatement = this.latestStatementFor(card, reference);
+    const currentMonth = this.currentFinancialCalendar(reference).monthIso;
     const statementIso = toIsoDate(latestStatement);
     if (
       this.reconciledStatements().some(
@@ -734,6 +752,7 @@ export class CardNestStore {
               t.id === statement.reconciledPaymentId &&
               t.type === 'PAYMENT' &&
               t.cardId === cardId &&
+              t.transactionDate.slice(0, 7) <= currentMonth &&
               t.amountMinor === statement.reconciledPaymentAmountMinor,
           ),
       )
@@ -753,6 +772,7 @@ export class CardNestStore {
         (item) =>
           item.cardId === cardId &&
           !item.emiCancelled &&
+          item.transactionDate.slice(0, 7) <= currentMonth &&
           (excludesStatementDay
             ? item.transactionDate >= statementIso
             : item.transactionDate > statementIso) &&
@@ -763,8 +783,9 @@ export class CardNestStore {
   }
 
   private latestStatementFor(card: CreditCard, reference: Date): Date {
-    const nextStatement = statementDateFor(reference, card.statementDay);
-    return nextStatement.getTime() > reference.getTime()
+    const localReference = this.localFinancialDate(reference);
+    const nextStatement = statementDateFor(localReference, card.statementDay);
+    return nextStatement.getTime() > localReference.getTime()
       ? previousStatementDate(nextStatement, card.statementDay)
       : nextStatement;
   }
@@ -794,7 +815,7 @@ export class CardNestStore {
       this.latestStatementFor(card, reference),
       card.statementDay,
     );
-    const currentMonth = new Date().toISOString().slice(0, 7);
+    const currentMonth = this.currentFinancialCalendar(reference).monthIso;
     return this.transactions().filter(
       (item) =>
         item.cardId === cardId &&
@@ -811,10 +832,12 @@ export class CardNestStore {
     const previousStatement = previousStatementDate(latestStatement, card.statementDay);
     const statementIso = toIsoDate(latestStatement);
     const excludesStatementDay = excludesStatementDayTransactions(card);
+    const currentMonth = this.currentFinancialCalendar(reference).monthIso;
     return this.transactions().filter(
       (item) =>
         item.cardId === cardId &&
         !item.emiCancelled &&
+        item.transactionDate.slice(0, 7) <= currentMonth &&
         // Transactions billed in the latest statement cycle only.
         ((isTransactionIncludedInStatement(item.transactionDate, latestStatement, card) &&
           !isTransactionIncludedInStatement(item.transactionDate, previousStatement, card)) ||
@@ -832,7 +855,7 @@ export class CardNestStore {
     const latestStatement = this.latestStatementFor(card, reference);
     const statementIso = toIsoDate(latestStatement);
     const excludesStatementDay = excludesStatementDayTransactions(card);
-    const currentMonth = new Date().toISOString().slice(0, 7);
+    const currentMonth = this.currentFinancialCalendar(reference).monthIso;
     return this.transactions().filter(
       (item) =>
         item.cardId === cardId &&
@@ -1482,7 +1505,7 @@ export class CardNestStore {
     }
     this.recurringRules.update((rules) => [...rules, rule]);
     void this.persistRecurringRule(rule);
-    this.materializeNonCardRecurringTransactions(today);
+    this.materializeNonCardRecurringTransactions(this.legacyNonCardCutoff);
   }
   async updateRecurringRule(ruleId: string, amountMinor: number): Promise<void> {
     if (amountMinor <= 0) return;
@@ -2471,7 +2494,7 @@ export class CardNestStore {
     this.categories.set(CATEGORIES);
     this.categoryCatalog.set([]);
     this.categoryMigrationRecords.set([]);
-    this.paymentSources.set(PAYMENT_SOURCES);
+    this.paymentSources.set(defaultPaymentSources());
     this.recurringRules.set([]);
     this.loans.set([]);
     this.emiPlans.set([]);
@@ -2794,7 +2817,7 @@ export class CardNestStore {
       if (result.transactionId) await this.refreshCommittedLedger(result.transactionId);
     }
     // Non-card recurrence retains its existing transient behavior pending separate approval.
-    if (!ruleId) this.materializeNonCardRecurringTransactions(asOf ?? today);
+    if (!ruleId) this.materializeNonCardRecurringTransactions(asOf ?? this.legacyNonCardCutoff);
   }
 
   private recurringBatch(

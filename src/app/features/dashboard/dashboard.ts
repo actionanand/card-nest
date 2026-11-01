@@ -18,6 +18,7 @@ import { AppIcon } from '../../shared/app-icon';
 import { AppDatePipe } from '../../core/services/date-format.service';
 import { CardNetworkLogo } from '../../shared/card-network-logo';
 import { CardTransaction, CreditCard } from '../../core/models/domain';
+import { currentLocalCalendar, DeviceCalendarClock } from '../../core/services/device-date';
 
 type BreakdownView = 'OUTSTANDING' | 'STATEMENT' | 'UNBILLED';
 
@@ -28,6 +29,7 @@ type BreakdownView = 'OUTSTANDING' | 'STATEMENT' | 'UNBILLED';
   styleUrl: './dashboard.scss',
 })
 export class DashboardPage {
+  private readonly calendarClock = inject(DeviceCalendarClock);
   readonly transactionKind = transactionLabel;
   readonly store = inject(CardNestStore);
   readonly snapshot = this.store.dashboard;
@@ -142,7 +144,7 @@ export class DashboardPage {
   );
 
   private cardStatementDueDate(card: CreditCard): string {
-    const reference = new Date();
+    const reference = this.localCalendarReference();
     const nextStatement = statementDateFor(reference, card.statementDay);
     const latestStatement =
       nextStatement.getTime() > reference.getTime()
@@ -251,12 +253,13 @@ export class DashboardPage {
   daysUntilDue(cardId: string): number {
     const card = this.store.cards().find((item) => item.id === cardId);
     if (!card) return 0;
-    const nextStatement = statementDateFor(new Date(), card.statementDay);
+    const reference = this.localCalendarReference();
+    const nextStatement = statementDateFor(reference, card.statementDay);
     const statement =
       this.store.cardDueAmount(card.id) > 0
         ? previousStatementDate(nextStatement, card.statementDay)
         : nextStatement;
-    return daysBetween(new Date(), paymentDueDate(statement, card));
+    return daysBetween(reference, paymentDueDate(statement, card));
   }
   dueTone(days: number): 'overdue' | 'urgent' | 'soon' | 'comfortable' {
     if (days < 0) return 'overdue';
@@ -265,7 +268,11 @@ export class DashboardPage {
     return 'comfortable';
   }
   dueDays(dateIso: string): number {
-    return daysBetween(new Date(), new Date(`${dateIso}T00:00:00`));
+    return daysBetween(this.localCalendarReference(), new Date(`${dateIso}T00:00:00`));
+  }
+  private localCalendarReference(): Date {
+    this.calendarClock.calendar();
+    return new Date(`${currentLocalCalendar().dateIso}T12:00:00`);
   }
   dueDaysLabel(days: number): string {
     if (days < 0) return `${-days} ${-days === 1 ? 'day' : 'days'} overdue`;

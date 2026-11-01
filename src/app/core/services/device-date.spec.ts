@@ -1,4 +1,5 @@
-import { currentLocalCalendar, resolveDeviceTimeZone } from './device-date';
+import { TestBed } from '@angular/core/testing';
+import { currentLocalCalendar, DeviceCalendarClock, resolveDeviceTimeZone } from './device-date';
 
 describe('device-local calendar with IST fallback', () => {
   const nativeOptions = Intl.DateTimeFormat.prototype.resolvedOptions;
@@ -114,5 +115,43 @@ describe('device-local calendar with IST fallback', () => {
 
   it('does not silently replace an invalid supplied instant with the current date', () => {
     expect(() => currentLocalCalendar(new Date('invalid'))).toThrow(RangeError);
+  });
+  it('refreshes the device calendar while an app remains open across local midnight', async () => {
+    deviceZone('Asia/Kolkata');
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] });
+    vi.setSystemTime(new Date('2026-12-31T18:29:00Z'));
+    const clock = TestBed.inject(DeviceCalendarClock);
+    expect(clock.calendar()).toMatchObject({ dateIso: '2026-12-31', monthIso: '2026-12' });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(clock.calendar()).toMatchObject({ dateIso: '2027-01-01', monthIso: '2027-01' });
+  });
+  it.each(['visibilitychange', 'focus'])(
+    'resolves a changed device timezone on %s without restart',
+    (event) => {
+      const zone = deviceZone('America/New_York');
+      vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] });
+      vi.setSystemTime(new Date('2026-11-01T03:59:00Z'));
+      const clock = TestBed.inject(DeviceCalendarClock);
+      expect(clock.calendar().monthIso).toBe('2026-10');
+      zone.mockReturnValue({ ...nativeOptions.call(new Intl.DateTimeFormat()), timeZone: 'UTC' });
+      if (event === 'focus') window.dispatchEvent(new Event(event));
+      else document.dispatchEvent(new Event(event));
+      expect(clock.calendar()).toMatchObject({
+        timeZone: 'UTC',
+        dateIso: '2026-11-01',
+        monthIso: '2026-11',
+      });
+    },
+  );
+  it('does not advance the calendar date twice during a repeated DST hour', async () => {
+    deviceZone('America/New_York');
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] });
+    vi.setSystemTime(new Date('2026-11-01T05:59:00Z'));
+    const clock = TestBed.inject(DeviceCalendarClock);
+    const before = clock.calendar();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(currentLocalCalendar().timeOfDay).toBe('01:00:00');
+    expect(clock.calendar()).toBe(before);
+    expect(clock.calendar().monthIso).toBe('2026-11');
   });
 });

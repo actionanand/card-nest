@@ -56,7 +56,8 @@ import {
 import { AppDatePipe, DateFormatService } from '../../core/services/date-format.service';
 import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
 import { AppDatePicker } from '../../shared/app-date-picker';
-import { indiaCurrentMonth, indiaTodayIso } from '../../core/services/india-date';
+import { indiaTodayIso } from '../../core/services/india-date';
+import { currentLocalCalendar, DeviceCalendarClock } from '../../core/services/device-date';
 import { PlatformTools } from '../../shared/platform-tools';
 import { recordedTransactionTime } from '../../core/services/transaction-time';
 import {
@@ -113,6 +114,7 @@ function sanitizedMoneyInput(value: string): string {
   },
 })
 export class TransactionsPage {
+  private readonly calendarClock = inject(DeviceCalendarClock);
   readonly store = inject(CardNestStore);
   recordedTime(transaction: CardTransaction): string {
     return recordedTransactionTime(
@@ -715,7 +717,8 @@ export class TransactionsPage {
   readonly filtered = computed(() => {
     const term = this.search().trim().toLocaleLowerCase();
     const numericTerm = term.replace(/[^0-9.]/g, '');
-    const currentMonth = indiaCurrentMonth();
+    this.calendarClock.calendar();
+    const currentMonth = currentLocalCalendar().monthIso;
     return this.store
       .transactions()
       .filter(
