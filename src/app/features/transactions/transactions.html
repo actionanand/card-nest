@@ -525,6 +525,22 @@
           [value]="filterDraftGrouping()"
           (valueChange)="updateDraftGrouping($event)"
         />
+        <label class="filter-visibility-option">
+          <input
+            type="checkbox"
+            [checked]="filterDraft()?.hideCredits ?? false"
+            (change)="updateFilterDraft('hideCredits', $any($event.target).checked)"
+          />
+          <span>Hide payments and credits</span>
+        </label>
+        <label class="filter-visibility-option">
+          <input
+            type="checkbox"
+            [checked]="filterDraft()?.creditCardsOnly ?? false"
+            (change)="updateFilterDraft('creditCardsOnly', $any($event.target).checked)"
+          />
+          <span>Credit cards only</span>
+        </label>
       </div>
       <div class="filter-dialog-actions">
         <button class="btn clear-filter-draft" type="button" (click)="clearFilterDraft()">

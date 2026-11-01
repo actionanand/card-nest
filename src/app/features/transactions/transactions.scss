@@ -485,6 +485,23 @@ label small {
   grid-column: 1 / -1;
   justify-self: start;
 }
+.filter-visibility-option {
+  display: flex;
+  min-width: 0;
+  min-height: 2.75rem;
+  grid-column: 1 / -1;
+  align-items: center;
+  gap: 0.65rem;
+  margin: 0;
+  font-size: 0.8rem;
+}
+.filter-visibility-option input {
+  width: auto;
+  min-width: 1.15rem;
+  min-height: 1.15rem;
+  margin: 0;
+  accent-color: var(--accent);
+}
 .toolbar input,
 .toolbar select,
 .toolbar .btn {

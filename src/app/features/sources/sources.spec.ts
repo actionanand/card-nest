@@ -4,7 +4,7 @@ import { SourcesPage } from './sources';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { SqliteDatabase } from '../../core/data/sqlite-database';
 import { SnackbarService } from '../../core/services/snackbar.service';
-import { CardTransaction, PaymentSource } from '../../core/models/domain';
+import { CardTransaction, CreditCard, PaymentSource } from '../../core/models/domain';
 import { TransactionsPage } from '../transactions/transactions';
 import axe from 'axe-core';
 
@@ -461,5 +461,158 @@ describe('Explicit FASTag wallet creation and feedback', () => {
       timezone.mockRestore();
       vi.useRealTimers();
     }
+  });
+  it('drafts, clears, cancels and applies transaction visibility filters consistently', () => {
+    setup().destroy();
+    const store = TestBed.inject(CardNestStore);
+    const card: CreditCard = {
+      id: 'visibility-card',
+      nickname: 'Synthetic card',
+      issuerName: 'Fictional Bank',
+      lastDigits: '1111',
+      network: 'VISA',
+      currencyCode: 'INR',
+      theme: 'green',
+      statementDay: 1,
+      dueDateMode: 'DAYS_AFTER_STATEMENT',
+      daysAfterStatement: 20,
+      adjustDueDateOnWeekend: false,
+      openingBalanceMinor: 0,
+      remindToSettle: false,
+      annualFeeEnabled: false,
+      emergencyPhones: [],
+      supportEmails: [],
+      archived: false,
+      createdAt: '2026-10-01',
+      updatedAt: '2026-10-01',
+    };
+    const archived: PaymentSource = {
+      id: 'archived-visibility-source',
+      kind: 'CASH',
+      nickname: 'Archived cash',
+      noLimit: true,
+      autoLoad: false,
+      archived: true,
+    };
+    store.cards.set([card]);
+    store.paymentSources.set([archived]);
+    const row = (id: string, cardId: string, type: CardTransaction['type']): CardTransaction => ({
+      id,
+      cardId,
+      type,
+      amountMinor: 1000,
+      currencyCode: 'INR',
+      transactionDate: '2026-10-20',
+      categoryId: 'other',
+      attachmentIds: [],
+      createdAt: '2026-10-20T00:00:00Z',
+      updatedAt: '2026-10-20T00:00:00Z',
+    });
+    store.transactions.set([
+      row('card-purchase', card.id, 'PURCHASE'),
+      row('card-payment', card.id, 'PAYMENT'),
+      row('archived-purchase', archived.id, 'PURCHASE'),
+    ]);
+    const before = structuredClone(store.transactions());
+    const fixture = TestBed.createComponent(TransactionsPage);
+    fixture.detectChanges();
+    const page = fixture.componentInstance;
+    const ids = () =>
+      page
+        .filtered()
+        .map((item) => item.id)
+        .sort();
+
+    page.openFilterPopup();
+    page.updateFilterDraft('hideCredits', true);
+    page.applyFilterDraft();
+    expect(ids()).toEqual(['archived-purchase', 'card-purchase']);
+    expect(page.activeFilterCount()).toBe(1);
+    page.openFilterPopup();
+    page.clearFilterDraft();
+    expect(page.hideCredits()).toBe(true);
+    page.applyFilterDraft();
+    expect(ids()).toEqual(['archived-purchase', 'card-payment', 'card-purchase']);
+
+    page.openFilterPopup();
+    page.updateFilterDraft('creditCardsOnly', true);
+    page.applyFilterDraft();
+    expect(ids()).toEqual(['card-payment', 'card-purchase']);
+    page.openFilterPopup();
+    page.clearFilterDraft();
+    page.applyFilterDraft();
+    expect(ids()).toEqual(['archived-purchase', 'card-payment', 'card-purchase']);
+
+    page.openFilterPopup();
+    page.updateFilterDraft('hideCredits', true);
+    page.updateFilterDraft('creditCardsOnly', true);
+    page.updateFilterDraft('search', 'Synthetic');
+    page.updateDraftGrouping('CYCLE');
+    page.applyFilterDraft();
+    expect(page.activeFilterCount()).toBe(4);
+    page.openFilterPopup();
+    page.clearFilterDraft();
+    page.closeFilterPopup();
+    expect(page.hideCredits()).toBe(true);
+    expect(page.creditCardsOnly()).toBe(true);
+    expect(page.grouping()).toBe('CYCLE');
+    page.openFilterPopup();
+    page.clearFilterDraft();
+    page.applyFilterDraft();
+    expect(page.hideCredits()).toBe(false);
+    expect(page.creditCardsOnly()).toBe(false);
+    expect(page.grouping()).toBe('MONTH');
+    expect(page.activeFilterCount()).toBe(0);
+
+    page.openFilterPopup();
+    page.updateFilterDraftSource(archived.id);
+    expect(page.filterDraftGrouping()).toBe('CYCLE');
+    page.applyFilterDraft();
+    expect(ids()).toEqual(['archived-purchase']);
+    expect(page.effectiveGrouping()).toBe('CYCLE');
+    page.openFilterPopup();
+    page.updateFilterDraftSource(card.id);
+    expect(page.filterDraftGrouping()).toBe('STATEMENT');
+    page.applyFilterDraft();
+    expect(page.effectiveGrouping()).toBe('STATEMENT');
+
+    page.hideCredits.set(true);
+    page.creditCardsOnly.set(true);
+    page.clearFilters();
+    expect(page.sourceFilter()).toBe('ALL');
+    expect(page.grouping()).toBe('MONTH');
+    expect(page.activeFilterCount()).toBe(0);
+    expect(store.transactions()).toEqual(before);
+    fixture.destroy();
+  });
+  it.each([
+    ['unset', { balanceMinor: undefined, noLimit: false }, 'Balance not set'],
+    ['confirmed zero', { balanceMinor: 0, noLimit: false }, '₹0.00'],
+    ['positive', { balanceMinor: 580000, noLimit: false }, '₹5,800.00'],
+    ['not tracked', { balanceMinor: 580000, noLimit: true }, 'Not tracked'],
+  ])('shows one Pluxee available balance for a %s balance', (_, balance, label) => {
+    const fixture = setup();
+    fixture.componentInstance.walletOpen.set(false);
+    const store = TestBed.inject(CardNestStore);
+    store.paymentSources.set([
+      {
+        id: 'single-meal',
+        kind: 'MEAL',
+        nickname: 'Synthetic Pluxee',
+        autoLoad: false,
+        archived: false,
+        ...balance,
+      },
+    ]);
+    fixture.detectChanges();
+    const text = fixture.nativeElement.textContent as string;
+    expect(text).not.toContain('Available now');
+    expect(text.match(/Available balance/g)).toHaveLength(1);
+    expect(fixture.nativeElement.querySelector('.meal-cycle-summary')?.textContent).toContain(
+      label,
+    );
+    expect(text).toContain('Add money');
+    expect(text).toContain('Set current balance');
+    fixture.destroy();
   });
 });

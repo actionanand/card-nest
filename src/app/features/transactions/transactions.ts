@@ -83,6 +83,8 @@ interface TransactionFilterDraft {
   readonly source: string;
   readonly category: string;
   readonly grouping: GroupingMode;
+  readonly hideCredits: boolean;
+  readonly creditCardsOnly: boolean;
 }
 const TRANSACTION_PAGE_SIZE = 200;
 const MAX_RECEIPT_BYTES = 1_000_000;
@@ -328,7 +330,9 @@ export class TransactionsPage {
       Number(this.typeFilter() !== 'ALL') +
       Number(this.sourceFilter() !== 'ALL') +
       Number(this.categoryFilter() !== 'ALL') +
-      Number(this.grouping() !== 'MONTH'),
+      Number(this.grouping() !== 'MONTH') +
+      Number(this.hideCredits()) +
+      Number(this.creditCardsOnly()),
   );
   readonly repeatOptions = Array.from({ length: 36 }, (_, index) => index + 1);
   readonly types: readonly { value: TransactionType; label: string }[] = [
@@ -1730,6 +1734,8 @@ export class TransactionsPage {
       source: this.sourceFilter(),
       category: this.categoryFilter(),
       grouping: this.grouping(),
+      hideCredits: this.hideCredits(),
+      creditCardsOnly: this.creditCardsOnly(),
     });
     this.filtersOpen.set(true);
   }
@@ -1773,6 +1779,8 @@ export class TransactionsPage {
       source: 'ALL',
       category: 'ALL',
       grouping: 'MONTH',
+      hideCredits: false,
+      creditCardsOnly: false,
     });
   }
   applyFilterDraft(): void {
@@ -1783,6 +1791,8 @@ export class TransactionsPage {
     this.sourceFilter.set(draft.source);
     this.categoryFilter.set(draft.category);
     this.grouping.set(draft.grouping);
+    this.hideCredits.set(draft.hideCredits);
+    this.creditCardsOnly.set(draft.creditCardsOnly);
     this.closeFilterPopup();
     this.resetVisibleTransactions();
   }
@@ -1894,6 +1904,7 @@ export class TransactionsPage {
     this.typeFilter.set('ALL');
     this.sourceFilter.set('ALL');
     this.categoryFilter.set('ALL');
+    this.grouping.set('MONTH');
     this.hideCredits.set(false);
     this.creditCardsOnly.set(false);
     this.resetVisibleTransactions();

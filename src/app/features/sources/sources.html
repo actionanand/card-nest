@@ -247,14 +247,6 @@
               /></label>
             }
           } @else {
-            @if (!source.noLimit) {
-              <div class="balance-copy">
-                <small>Available now</small
-                ><strong class="source-balance">{{ money(source.balanceMinor) }}</strong>
-              </div>
-            } @else {
-              <span class="untracked-balance">Balance not tracked</span>
-            }
             <div class="meal-cycle-summary" aria-label="Current Pluxee cycle summary">
               <span class="meal-cycle-period"
                 ><small>Current cycle</small><strong>{{ currentCycle().label }}</strong></span
