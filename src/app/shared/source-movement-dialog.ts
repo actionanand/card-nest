@@ -16,6 +16,7 @@ import { formatMoney, parseMoneyToMinor } from '../core/services/money';
 import { DeviceCalendarClock } from '../core/services/device-date';
 import {
   bankCashTracked,
+  hasWalletBaseline,
   isBankOrCash,
   needsBaselineConfirmation,
   savedTimingAnswer,
@@ -438,8 +439,9 @@ export class SourceMovementDialog implements OnInit {
     const value = parseMoneyToMinor(this.amount());
     if (!source || value === null) return '';
     const initialized =
-      bankCashTracked(source, this.store.bankCashTracking()) ||
-      (source.kind === 'MEAL' && !source.noLimit && !!source.balanceCutoverAt);
+      bankCashTracked(source, this.store.bankCashTracking()) || hasWalletBaseline(source);
+    if (this.mode() === 'ADD_MONEY' && source.kind === 'MEAL' && !hasWalletBaseline(source))
+      return 'Set your current Pluxee balance first to enable Add money.';
     if (this.mode() === 'ADD_MONEY' && !this.replacesBalance())
       return `Current ${formatMoney(source.balanceMinor ?? 0, 'INR')} + ${formatMoney(value, 'INR')} = ${formatMoney((source.balanceMinor ?? 0) + value, 'INR')}. This is an audited balance change, not income or spending.`;
     if (this.replacesBalance())

@@ -27,6 +27,7 @@ import {
   bankCashTracked,
   bankTrackingEnabled,
   cashTrackingEnabled,
+  hasWalletBaseline,
   isBankOrCash,
   sourceBalanceTrackingEnabled,
   transferLabel,
@@ -476,6 +477,10 @@ export class SourcesPage {
   pluxeeAvailableBalance(source: PaymentSource): string {
     if (source.noLimit) return 'Not tracked';
     return source.balanceMinor === undefined ? 'Balance not set' : this.money(source.balanceMinor);
+  }
+
+  canAddMoney(source: PaymentSource): boolean {
+    return hasWalletBaseline(source);
   }
 
   private pluxeeCycleTransactions(source: PaymentSource): readonly CardTransaction[] {

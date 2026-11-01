@@ -43,6 +43,19 @@ export function sourceBalanceTrackingEnabled(
       : false;
 }
 
+/** A Pluxee balance is initialized only after a finite, confirmed balance cutover. */
+export function hasWalletBaseline(
+  source: PaymentSource | null | undefined,
+): source is PaymentSource & { balanceMinor: number; balanceCutoverAt: string } {
+  return (
+    source?.kind === 'MEAL' &&
+    !source.noLimit &&
+    Number.isSafeInteger(source.balanceMinor) &&
+    typeof source.balanceCutoverAt === 'string' &&
+    Number.isFinite(Date.parse(source.balanceCutoverAt))
+  );
+}
+
 export function isBankOrCash(source: Pick<PaymentSource, 'kind'> | null | undefined): boolean {
   return source?.kind === 'CASH' || source?.kind === 'DEBIT';
 }

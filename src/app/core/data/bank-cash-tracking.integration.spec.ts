@@ -3060,8 +3060,14 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
           archived: false,
         });
       const wallet = store.paymentSources().find((source) => source.kind === kind)!;
-      if (kind === 'MEAL') await store.setSourceBalance(wallet.id, 25000);
-      else await store.updatePaymentSource({ ...wallet, balanceMinor: 25000 });
+      if (kind === 'MEAL') {
+        const beforeWalletBaseline = financialState();
+        await expect(store.addSourceBalance(wallet.id, 1000)).rejects.toThrow(
+          'Set the current balance before adding money.',
+        );
+        expect(financialState()).toEqual(beforeWalletBaseline);
+        await store.setSourceBalance(wallet.id, 25000);
+      } else await store.updatePaymentSource({ ...wallet, balanceMinor: 25000 });
       expect(stored(wallet.id)).toBe(25000);
     }
     const beforeFailure = store.paymentSources();

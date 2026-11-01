@@ -586,11 +586,75 @@ describe('Explicit FASTag wallet creation and feedback', () => {
     fixture.destroy();
   });
   it.each([
-    ['unset', { balanceMinor: undefined, noLimit: false }, 'Balance not set'],
-    ['confirmed zero', { balanceMinor: 0, noLimit: false }, '₹0.00'],
-    ['positive', { balanceMinor: 580000, noLimit: false }, '₹5,800.00'],
-    ['not tracked', { balanceMinor: 580000, noLimit: true }, 'Not tracked'],
-  ])('shows one Pluxee available balance for a %s balance', (_, balance, label) => {
+    ['unset', { balanceMinor: undefined, noLimit: false }, 'Balance not set', false],
+    [
+      'confirmed zero',
+      { balanceMinor: 0, noLimit: false, balanceCutoverAt: '2026-10-31T12:00:00Z' },
+      '₹0.00',
+      true,
+    ],
+    [
+      'positive',
+      { balanceMinor: 580000, noLimit: false, balanceCutoverAt: '2026-10-31T12:00:00Z' },
+      '₹5,800.00',
+      true,
+    ],
+    [
+      'not tracked',
+      { balanceMinor: 580000, noLimit: true, balanceCutoverAt: '2026-10-31T12:00:00Z' },
+      'Not tracked',
+      false,
+    ],
+    ['missing cutover', { balanceMinor: 580000, noLimit: false }, '₹5,800.00', false],
+    [
+      'invalid cutover',
+      { balanceMinor: 580000, noLimit: false, balanceCutoverAt: 'invalid' },
+      '₹5,800.00',
+      false,
+    ],
+    [
+      'invalid balance',
+      { balanceMinor: 1.5, noLimit: false, balanceCutoverAt: '2026-10-31T12:00:00Z' },
+      '₹0.02',
+      false,
+    ],
+  ])(
+    'shows one Pluxee available balance and correct Add money state for a %s balance',
+    (_, balance, label, enabled) => {
+      const fixture = setup();
+      fixture.componentInstance.walletOpen.set(false);
+      const store = TestBed.inject(CardNestStore);
+      store.paymentSources.set([
+        {
+          id: 'single-meal',
+          kind: 'MEAL',
+          nickname: 'Synthetic Pluxee',
+          autoLoad: false,
+          archived: false,
+          ...balance,
+        },
+      ]);
+      fixture.detectChanges();
+      const text = fixture.nativeElement.textContent as string;
+      expect(text).not.toContain('Available now');
+      expect(text.match(/Available balance/g)).toHaveLength(1);
+      expect(fixture.nativeElement.querySelector('.meal-cycle-summary')?.textContent).toContain(
+        label,
+      );
+      const addMoney = fixture.nativeElement.querySelector(
+        '.movement-actions button',
+      ) as HTMLButtonElement;
+      expect(addMoney.textContent).toContain('Add money');
+      expect(addMoney.disabled).toBe(!enabled);
+      if (!enabled)
+        expect(fixture.nativeElement.textContent).toContain(
+          'Set your current Pluxee balance first to enable Add money.',
+        );
+      expect(text).toContain('Set current balance');
+      fixture.destroy();
+    },
+  );
+  it('enables Pluxee Add money reactively after Set current balance succeeds', async () => {
     const fixture = setup();
     fixture.componentInstance.walletOpen.set(false);
     const store = TestBed.inject(CardNestStore);
@@ -599,20 +663,64 @@ describe('Explicit FASTag wallet creation and feedback', () => {
         id: 'single-meal',
         kind: 'MEAL',
         nickname: 'Synthetic Pluxee',
+        noLimit: false,
         autoLoad: false,
         archived: false,
-        ...balance,
       },
     ]);
     fixture.detectChanges();
-    const text = fixture.nativeElement.textContent as string;
-    expect(text).not.toContain('Available now');
-    expect(text.match(/Available balance/g)).toHaveLength(1);
-    expect(fixture.nativeElement.querySelector('.meal-cycle-summary')?.textContent).toContain(
-      label,
+    const buttons = fixture.nativeElement.querySelectorAll('.movement-actions button');
+    const addMoney = buttons[0] as HTMLButtonElement;
+    const setBalance = buttons[1] as HTMLButtonElement;
+    expect(addMoney.disabled).toBe(true);
+    fixture.componentInstance.openMovement({ mode: 'ADD_MONEY', sourceId: 'single-meal' });
+    fixture.detectChanges();
+    const addMoneyDialog = fixture.nativeElement.querySelector('app-source-movement-dialog');
+    const addAmount = addMoneyDialog.querySelector(
+      'input[inputmode="decimal"]',
+    ) as HTMLInputElement;
+    addAmount.value = '100';
+    addAmount.dispatchEvent(new Event('input', { bubbles: true }));
+    fixture.detectChanges();
+    expect(addMoneyDialog.textContent).toContain(
+      'Set your current Pluxee balance first to enable Add money.',
     );
-    expect(text).toContain('Add money');
-    expect(text).toContain('Set current balance');
+    (addMoneyDialog.querySelector('button[aria-label="Close"]') as HTMLButtonElement).click();
+    fixture.detectChanges();
+    const saveBalance = vi
+      .spyOn(store, 'setSourceBalance')
+      .mockImplementation(async (sourceId, balanceMinor) => {
+        store.paymentSources.update((sources) =>
+          sources.map((source) =>
+            source.id === sourceId
+              ? {
+                  ...source,
+                  balanceMinor,
+                  balanceSnapshotMinor: balanceMinor,
+                  balanceCutoverAt: '2026-11-01T10:00:00Z',
+                  balanceCutoverReason: 'MANUAL',
+                  noLimit: false,
+                }
+              : source,
+          ),
+        );
+      });
+    setBalance.click();
+    fixture.detectChanges();
+    const dialog = fixture.nativeElement.querySelector('app-source-movement-dialog');
+    const amount = dialog.querySelector('input[inputmode="decimal"]') as HTMLInputElement;
+    amount.value = '0';
+    amount.dispatchEvent(new Event('input', { bubbles: true }));
+    fixture.detectChanges();
+    (dialog.querySelector('form') as HTMLFormElement).dispatchEvent(
+      new Event('submit', { bubbles: true, cancelable: true }),
+    );
+    await fixture.whenStable();
+    expect(saveBalance).toHaveBeenCalledWith('single-meal', 0, expect.anything());
+    expect(
+      (fixture.nativeElement.querySelector('.movement-actions button') as HTMLButtonElement)
+        .disabled,
+    ).toBe(false);
     fixture.destroy();
   });
 });

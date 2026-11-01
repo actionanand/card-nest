@@ -291,7 +291,7 @@
               <button
                 class="btn"
                 type="button"
-                [disabled]="source.noLimit"
+                [disabled]="!canAddMoney(source)"
                 (click)="openMovement({ mode: 'ADD_MONEY', sourceId: source.id })"
               >
                 <app-icon name="incoming" /> Add money
@@ -304,6 +304,11 @@
                 <app-icon name="edit" /> Set current balance
               </button>
             </div>
+            @if (!canAddMoney(source)) {
+              <p class="add-money-hint">
+                Set your current Pluxee balance first to enable Add money.
+              </p>
+            }
             <p>
               Top-ups use actual amounts and dates. Add a Credit transaction manually or approve an
               SMS top-up. Historical simulated loads are included in the preserved balance snapshot.

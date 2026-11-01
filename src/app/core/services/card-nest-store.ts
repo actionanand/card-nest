@@ -40,6 +40,7 @@ import {
   applyWalletTransaction,
   bankAccountLabel,
   bankCashTracked,
+  hasWalletBaseline,
   isBankOrCash,
   liquidTotals,
   parseBankCashTracking,
@@ -2091,7 +2092,7 @@ export class CardNestStore {
       if (isBankOrCash(source) && !sourceBalanceTrackingEnabled(source, settings))
         throw new Error('Turn on balance tracking for this source first.');
       this.assertBalanceValue(source, newMinor);
-      const tracked = bankCashTracked(source, settings) || this.hasWalletBaseline(source);
+      const tracked = bankCashTracked(source, settings) || hasWalletBaseline(source);
       const adjustment: SourceBalanceAdjustment = {
         id: crypto.randomUUID(),
         sourceId,
@@ -2130,7 +2131,7 @@ export class CardNestStore {
         throw new Error('Choose an account with a supported balance.');
       if (
         (isBankOrCash(source) && !bankCashTracked(source, settings)) ||
-        (source.kind === 'MEAL' && !this.hasWalletBaseline(source))
+        (source.kind === 'MEAL' && !hasWalletBaseline(source))
       )
         throw new Error('Set the current balance before adding money.');
       const current = source.balanceMinor ?? 0;
@@ -2360,16 +2361,6 @@ export class CardNestStore {
             ? 'Wallet balance cannot be negative.'
             : 'Enter a valid balance.',
       );
-  }
-
-  private hasWalletBaseline(source: PaymentSource): boolean {
-    return (
-      source.kind === 'MEAL' &&
-      !source.noLimit &&
-      Number.isSafeInteger(source.balanceMinor) &&
-      !!source.balanceCutoverAt &&
-      Number.isFinite(Date.parse(source.balanceCutoverAt))
-    );
   }
 
   private async loadBankCashTracking(raw: string | undefined): Promise<void> {
