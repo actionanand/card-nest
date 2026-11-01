@@ -9,7 +9,7 @@ import { APP_ENVIRONMENT } from '../services/app-environment';
 import { NATIVE_EXPORT } from '../services/native-export';
 import { AppLockService } from '../services/app-lock.service';
 import { indiaTodayIso } from '../services/india-date';
-import { calculateNetSpending } from '../services/money';
+import { calculateNetSpending, calculateOutstanding } from '../services/money';
 import {
   CardTransaction,
   CreditCard,
@@ -1030,8 +1030,27 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     await settle();
     store.archiveCard(otherArchived.id);
     await settle();
-    const active = { ...card, id: 'active-reassignment-target', nickname: 'Active replacement' };
+    const active = {
+      ...card,
+      id: 'active-reassignment-target',
+      nickname: 'Active replacement',
+      lastDigits: '9876',
+    };
+    const secondActive = {
+      ...active,
+      id: 'second-active-target',
+      nickname: 'Second active',
+      lastDigits: '2468',
+    };
+    const thirdActive = {
+      ...active,
+      id: 'third-active-target',
+      nickname: 'Third active',
+      lastDigits: '1357',
+    };
     store.addCard(active);
+    store.addCard(secondActive);
+    store.addCard(thirdActive);
     await settle();
 
     const beforeRejectedCreate = financialState();
@@ -1055,6 +1074,17 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     ) as HTMLElement;
     expect(sourceLabel.textContent).toContain('Fiction card · 4321 · Archived');
     expect(getComputedStyle(sourceLabel).whiteSpace).toBe('normal');
+    expect(page.searchedPayFromCards().map((source) => source.id)).toEqual([
+      active.id,
+      secondActive.id,
+      thirdActive.id,
+    ]);
+    expect(
+      calculateOutstanding(
+        card.openingBalanceMinor,
+        store.transactions().filter((transaction) => transaction.cardId === card.id),
+      ),
+    ).toBe(12500);
     page.form.patchValue({
       amount: '135.00',
       merchant: 'Edited archived merchant',
@@ -1081,8 +1111,16 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
       store.saveManualTransaction({ ...edited, cardId: otherArchived.id }),
     ).rejects.toThrow('Archived credit cards cannot be used');
     await expect(
-      store.saveManualTransaction({ ...edited, cardId: active.id, amountMinor: 14000 }),
-    ).rejects.toThrow('Confirm moving this transaction from its archived card');
+      store.saveManualTransaction(
+        { ...edited, cardId: active.id, amountMinor: 14000 },
+        '',
+        false,
+        undefined,
+        secondActive.id,
+      ),
+    ).rejects.toThrow(
+      'Confirm moving this transaction from its archived card to Active replacement',
+    );
     expect(store.transactions().find((transaction) => transaction.id === original.id)?.cardId).toBe(
       card.id,
     );
@@ -1093,30 +1131,66 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     fixture.detectChanges();
     expect(page.archivedSourceReassignment()?.id).toBe(card.id);
     const confirmation = fixture.nativeElement.querySelector(
-      'input[formControlName="archivedSourceReassignmentConfirmed"]',
+      '.archived-source-reassignment input',
     ) as HTMLInputElement;
     expect(confirmation).not.toBeNull();
+    expect(confirmation.checked).toBe(false);
+    expect(fixture.nativeElement.textContent).toContain(
+      '4321 (Archived) to Active replacement · 9876',
+    );
+    const destinations = [active, secondActive, thirdActive];
+    for (const destination of destinations) {
+      page.selectPayFrom(destination.id);
+      fixture.detectChanges();
+      expect(page.form.controls.archivedSourceReassignmentConfirmedFor.value).toBe('');
+      expect(confirmation.checked).toBe(false);
+      expect(fixture.nativeElement.textContent).toContain(
+        `4321 (Archived) to ${destination.nickname} · ${destination.lastDigits}`,
+      );
+    }
+    page.selectPayFrom('BANK_SOURCE');
+    expect(page.form.controls.cardId.value).toBe(thirdActive.id);
+    expect(page.payFromBankMode()).toBe(false);
+    page.selectPayFrom(secondActive.id);
+    fixture.detectChanges();
     page.form.controls.amount.setValue('140.00');
     await page.save();
     await settle();
     expect(store.transactions().find((transaction) => transaction.id === original.id)?.cardId).toBe(
       card.id,
     );
-    page.form.controls.archivedSourceReassignmentConfirmed.setValue(true);
-    page.form.controls.archivedSourceReassignmentConfirmed.setErrors(null);
+    confirmation.click();
+    fixture.detectChanges();
+    expect(page.form.controls.archivedSourceReassignmentConfirmedFor.value).toBe(secondActive.id);
     await page.save();
     await settle();
     expect(
       store.transactions().find((transaction) => transaction.id === original.id),
     ).toMatchObject({
       id: original.id,
-      cardId: active.id,
+      cardId: secondActive.id,
       amountMinor: 14000,
     });
+    expect(
+      calculateOutstanding(
+        card.openingBalanceMinor,
+        store.transactions().filter((transaction) => transaction.cardId === card.id),
+      ),
+    ).toBe(0);
+    expect(
+      calculateOutstanding(
+        secondActive.openingBalanceMinor,
+        store.transactions().filter((transaction) => transaction.cardId === secondActive.id),
+      ),
+    ).toBe(14000);
     expect(count('card_transactions')).toBe(1);
     page.openAdd();
     expect(page.form.controls.cardId.value).toBe(active.id);
-    expect(page.searchedPayFromCards().map((source) => source.id)).toEqual([active.id]);
+    expect(page.searchedPayFromCards().map((source) => source.id)).toEqual([
+      active.id,
+      secondActive.id,
+      thirdActive.id,
+    ]);
     store.restoreCard(card.id);
     await settle();
     expect(page.searchedPayFromCards().map((source) => source.id)).toContain(card.id);
@@ -1129,6 +1203,120 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     ).toHaveLength(1);
     fixture.destroy();
   });
+  it.each(['split', 'refund', 'related-refund', 'emi', 'recurring', 'payment'] as const)(
+    'preserves archived transaction identity when reassignment has %s history',
+    async (history) => {
+      const { store } = await boot();
+      const archived = { ...card, id: 'linked-archived-card' };
+      const active = { ...card, id: 'linked-active-card', nickname: 'Active destination' };
+      store.addCard(archived);
+      store.addCard(active);
+      await settle();
+      const anchor = purchase({ id: 'linked-anchor', cardId: archived.id });
+      const original = purchase({ id: 'linked-original', cardId: archived.id });
+      await store.saveManualTransaction(anchor);
+      await store.saveManualTransaction(original);
+      if (history === 'related-refund')
+        await store.saveManualTransaction({
+          ...purchase({ id: 'linked-refund', cardId: archived.id }),
+          type: 'REFUND',
+          relatedTransactionId: original.id,
+        });
+      store.archiveCard(archived.id);
+      await settle();
+
+      const linked: CardTransaction =
+        history === 'split'
+          ? { ...original, splitGroupId: 'linked-split-group' }
+          : history === 'refund'
+            ? { ...original, type: 'REFUND', relatedTransactionId: anchor.id }
+            : history === 'emi'
+              ? { ...original, emiPlanId: 'linked-emi-plan' }
+              : history === 'recurring'
+                ? { ...original, recurringRuleId: 'linked-recurring-rule' }
+                : history === 'payment'
+                  ? { ...original, type: 'PAYMENT' }
+                  : original;
+      if (history !== 'related-refund')
+        sql
+          .prepare('UPDATE card_transactions SET type=?,payload=? WHERE id=?')
+          .run(linked.type, JSON.stringify(linked), linked.id);
+      const before = financialState();
+      await expect(
+        store.saveManualTransaction(
+          { ...linked, cardId: active.id },
+          '',
+          false,
+          undefined,
+          active.id,
+        ),
+      ).rejects.toThrow('linked financial history and cannot be reassigned safely');
+      expect(financialState()).toEqual(before);
+    },
+  );
+  it.each(['emi-plan', 'statement', 'bank-funding'] as const)(
+    'preserves archived transactions with linked %s records',
+    async (history) => {
+      const { store } = await boot();
+      const archived = { ...card, id: 'record-linked-archived-card' };
+      const active = { ...card, id: 'record-linked-active-card', nickname: 'Active destination' };
+      store.addCard(archived);
+      store.addCard(active);
+      await settle();
+      const original = purchase({ id: 'record-linked-original', cardId: archived.id });
+      await store.saveManualTransaction(original);
+      store.archiveCard(archived.id);
+      await settle();
+      if (history === 'emi-plan')
+        sql
+          .prepare(
+            'INSERT INTO emi_plans(id,transaction_id,card_id,status,payload) VALUES(?,?,?,?,?)',
+          )
+          .run('linked-emi-plan', original.id, archived.id, 'ACTIVE', '{}');
+      else if (history === 'statement')
+        sql
+          .prepare(
+            'INSERT INTO statements(id,card_id,cycle_start_date,cycle_end_date,statement_date,due_date,payload) VALUES(?,?,?,?,?,?,?)',
+          )
+          .run(
+            'linked-statement',
+            archived.id,
+            '2026-09-01',
+            '2026-09-30',
+            '2026-10-01',
+            '2026-10-20',
+            JSON.stringify({ reconciledPaymentId: original.id }),
+          );
+      else
+        sql
+          .prepare(
+            'INSERT INTO source_transfers(id,kind,from_source_id,to_source_id,payment_transaction_id,amount_minor,transfer_date,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)',
+          )
+          .run(
+            'linked-bank-funding',
+            'CARD_SETTLEMENT',
+            'fiction-bank-source',
+            null,
+            original.id,
+            original.amountMinor,
+            original.transactionDate,
+            '{}',
+            original.createdAt,
+            original.updatedAt,
+          );
+      const before = financialState();
+      await expect(
+        store.saveManualTransaction(
+          { ...original, cardId: active.id },
+          '',
+          false,
+          undefined,
+          active.id,
+        ),
+      ).rejects.toThrow('linked financial history and cannot be reassigned safely');
+      expect(financialState()).toEqual(before);
+    },
+  );
   it('normalizes complete identifiers passed to the generic bank source update boundary', async () => {
     const { store } = await boot();
     const source = await store.addBankAccount({

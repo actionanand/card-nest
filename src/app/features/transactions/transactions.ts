@@ -323,14 +323,18 @@ export class TransactionsPage {
         }
       : null;
   });
-  readonly archivedSourceReassignment = computed(() => {
+  readonly editingArchivedCard = computed(() => {
     this.formChanges();
     const id = this.editingId();
     if (!id) return null;
     const previous = this.store.transactions().find((transaction) => transaction.id === id);
-    if (!previous || previous.cardId === this.form.controls.cardId.value) return null;
-    const source = this.store.cards().find((card) => card.id === previous.cardId);
-    return source?.archived ? source : null;
+    if (!previous) return null;
+    return this.store.cards().find((card) => card.id === previous.cardId && card.archived) ?? null;
+  });
+  readonly archivedSourceReassignment = computed(() => {
+    this.formChanges();
+    const original = this.editingArchivedCard();
+    return original && original.id !== this.form.controls.cardId.value ? original : null;
   });
   readonly visibleLimit = signal(TRANSACTION_PAGE_SIZE);
   readonly activeFilterCount = computed(
@@ -481,6 +485,7 @@ export class TransactionsPage {
     });
   });
   readonly searchedPayFromSources = computed(() => {
+    if (this.editingArchivedCard()) return [];
     const terms = this.payFromSearch().trim().toLowerCase().split(/\s+/).filter(Boolean);
     return this.store.activePaymentSources().filter((source) => {
       if (source.kind === 'DEBIT') return false;
@@ -490,6 +495,7 @@ export class TransactionsPage {
     });
   });
   readonly searchedPayFromBanks = computed(() => {
+    if (this.editingArchivedCard()) return [];
     const terms = this.payFromSearch().trim().toLowerCase().split(/\s+/).filter(Boolean);
     return this.store.activePaymentSources().filter((source) => {
       if (source.kind !== 'DEBIT') return false;
@@ -536,7 +542,7 @@ export class TransactionsPage {
     relatedTransactionId: new FormControl('', { nonNullable: true }),
     preserveLegacy: new FormControl(false, { nonNullable: true }),
     unlinkConfirmed: new FormControl(false, { nonNullable: true }),
-    archivedSourceReassignmentConfirmed: new FormControl(false, { nonNullable: true }),
+    archivedSourceReassignmentConfirmedFor: new FormControl('', { nonNullable: true }),
     paymentMethod: new FormControl('NONE', { nonNullable: true }),
     paymentMethodDetail: new FormControl('', { nonNullable: true }),
     paymentMethodCustom: new FormControl('', {
@@ -1211,6 +1217,11 @@ export class TransactionsPage {
     }
   }
   selectPayFrom(id: string): void {
+    if (
+      this.editingArchivedCard() &&
+      (id === 'BANK_SOURCE' || !this.store.activeCards().some((card) => card.id === id))
+    )
+      return;
     if (id === 'BANK_SOURCE') {
       const currentId = this.form.controls.cardId.value;
       const sources = this.store.activePaymentSources().filter((source) => source.kind === 'DEBIT');
@@ -1220,7 +1231,7 @@ export class TransactionsPage {
       const selected = current ?? primary ?? sources[0];
       this.form.controls.cardId.setValue(selected.id);
       this.form.controls.cardId.markAsDirty();
-      this.form.controls.archivedSourceReassignmentConfirmed.setValue(false);
+      this.form.controls.archivedSourceReassignmentConfirmedFor.setValue('');
       this.payFromBankMode.set(true);
       this.payFromOpen.set(false);
       this.payFromSearch.set('');
@@ -1229,15 +1240,22 @@ export class TransactionsPage {
     this.payFromBankMode.set(false);
     this.form.controls.cardId.setValue(id);
     this.form.controls.cardId.markAsDirty();
-    this.form.controls.archivedSourceReassignmentConfirmed.setValue(false);
+    this.form.controls.archivedSourceReassignmentConfirmedFor.setValue('');
     this.payFromOpen.set(false);
     this.payFromSearch.set('');
   }
   selectBankAccount(id: string): void {
+    if (this.editingArchivedCard()) return;
     if (!this.bankAccountOptions().some((option) => option.value === id)) return;
     this.form.controls.cardId.setValue(id);
     this.form.controls.cardId.markAsDirty();
-    this.form.controls.archivedSourceReassignmentConfirmed.setValue(false);
+    this.form.controls.archivedSourceReassignmentConfirmedFor.setValue('');
+  }
+  confirmArchivedSourceReassignment(event: Event): void {
+    const confirmed = (event.target as HTMLInputElement).checked;
+    this.form.controls.archivedSourceReassignmentConfirmedFor.setValue(
+      confirmed ? this.form.controls.cardId.value : '',
+    );
   }
   openPayFrom(): void {
     this.payFromSearch.set('');
@@ -1293,7 +1311,7 @@ export class TransactionsPage {
         transaction.type === 'ADJUSTMENT' &&
         (transaction.adjustmentPurpose !== 'SPLIT_PAYMENT' || !transaction.splitGroupId),
       unlinkConfirmed: false,
-      archivedSourceReassignmentConfirmed: false,
+      archivedSourceReassignmentConfirmedFor: '',
       paymentMethod: transaction.paymentMethod ?? 'NONE',
       paymentMethodDetail: transaction.paymentMethodDetail ?? '',
       paymentMethodCustom: transaction.paymentMethodCustom ?? '',
@@ -2027,8 +2045,11 @@ export class TransactionsPage {
       return;
     }
     const value = this.form.getRawValue();
-    if (this.archivedSourceReassignment() && !value.archivedSourceReassignmentConfirmed) {
-      this.form.controls.archivedSourceReassignmentConfirmed.setErrors({ required: true });
+    if (
+      this.archivedSourceReassignment() &&
+      value.archivedSourceReassignmentConfirmedFor !== value.cardId
+    ) {
+      this.form.controls.archivedSourceReassignmentConfirmedFor.setErrors({ required: true });
       this.snackbar.show(
         'Confirm moving this transaction from its archived card before saving.',
         'WARNING',
@@ -2143,7 +2164,7 @@ export class TransactionsPage {
           value.type === 'ADJUSTMENT' && !value.preserveLegacy ? value.relatedTransactionId : '',
           value.unlinkConfirmed,
           persistedCardRecurrence ? recurringRule : undefined,
-          value.archivedSourceReassignmentConfirmed,
+          value.archivedSourceReassignmentConfirmedFor,
         );
       } catch (error: unknown) {
         if (error instanceof CommittedSaveRefreshError) refreshWarning = error.message;
@@ -2283,7 +2304,7 @@ export class TransactionsPage {
       relatedTransactionId: '',
       preserveLegacy: false,
       unlinkConfirmed: false,
-      archivedSourceReassignmentConfirmed: false,
+      archivedSourceReassignmentConfirmedFor: '',
       paymentMethod: 'NONE',
       paymentMethodDetail: '',
       paymentMethodCustom: '',

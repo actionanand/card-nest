@@ -923,7 +923,7 @@ export class CardNestStore {
     targetId = '',
     unlinkConfirmed = false,
     recurringRule?: RecurringRule,
-    archivedSourceReassignmentConfirmed = false,
+    archivedSourceReassignmentConfirmedFor = '',
   ): Promise<void> {
     if (!this.database.ready()) throw new Error('Database is not ready.');
     const result = await this.database.atomic(async (tx) => {
@@ -943,14 +943,58 @@ export class CardNestStore {
       const previousCard = previous
         ? this.cards().find((item) => item.id === previous.cardId && !item.deletedAt)
         : undefined;
+      const archivedCardReassignment =
+        !!previous && !!previousCard?.archived && previous.cardId !== transaction.cardId;
       if (card?.archived && (!previous || previous.cardId !== card.id))
         throw new Error('Archived credit cards cannot be used for new transactions.');
-      if (
-        previousCard?.archived &&
-        previous?.cardId !== transaction.cardId &&
-        !archivedSourceReassignmentConfirmed
-      )
-        throw new Error('Confirm moving this transaction from its archived card before saving.');
+      const previousGroup = (await readPaymentGroups(tx)).find((group) =>
+        group.memberIds.includes(transaction.id),
+      );
+      if (archivedCardReassignment) {
+        if (!card || card.archived)
+          throw new Error('Archived transactions can only be reassigned to an active credit card.');
+        if (archivedSourceReassignmentConfirmedFor !== card.id)
+          throw new Error(
+            `Confirm moving this transaction from its archived card to ${card.nickname} · ${card.lastDigits}.`,
+          );
+        const [funding] = await tx.query<{ id: string }>(
+          'SELECT id FROM source_transfers WHERE payment_transaction_id=?',
+          [transaction.id],
+        );
+        const [emiPlan] = await tx.query<{ id: string }>(
+          'SELECT id FROM emi_plans WHERE transaction_id=?',
+          [transaction.id],
+        );
+        const statements = await tx.query<{ payload: string }>('SELECT payload FROM statements');
+        const hasReconciledStatement = statements.some((row) => {
+          const statement = JSON.parse(row.payload) as { reconciledPaymentId?: string };
+          return statement.reconciledPaymentId === transaction.id;
+        });
+        const linkedRows = await tx.query<{ payload: string }>(
+          'SELECT payload FROM card_transactions WHERE id<>?',
+          [transaction.id],
+        );
+        const hasRelatedTransaction = linkedRows.some((row) => {
+          const linked = JSON.parse(row.payload) as CardTransaction;
+          return linked.relatedTransactionId === transaction.id;
+        });
+        if (
+          previousGroup ||
+          previous?.splitGroupId ||
+          previous?.relatedTransactionId ||
+          transaction.relatedTransactionId ||
+          previous?.emiPlanId ||
+          emiPlan ||
+          previous?.recurringRuleId ||
+          previous?.type === 'PAYMENT' ||
+          funding ||
+          hasReconciledStatement ||
+          hasRelatedTransaction
+        )
+          throw new Error(
+            'This transaction has linked financial history and cannot be reassigned safely. Edit it on its original card or resolve its links first.',
+          );
+      }
       if (!card && !sources.some((item) => item.id === transaction.cardId))
         throw new Error('Choose an existing payment source.');
       if (transaction.currencyCode !== (card?.currencyCode ?? 'INR'))
@@ -959,9 +1003,6 @@ export class CardNestStore {
       const next = { ...transaction };
       if (previous?.sourceBalanceApplied === false && previous.cardId !== next.cardId)
         next.sourceBalanceApplied = true;
-      const previousGroup = (await readPaymentGroups(tx)).find((group) =>
-        group.memberIds.includes(next.id),
-      );
       if (previousGroup) next.splitGroupId = previousGroup.id;
       if (
         previousGroup &&

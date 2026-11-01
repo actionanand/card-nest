@@ -124,8 +124,12 @@
               <label class="full archived-source-reassignment">
                 <input
                   type="checkbox"
-                  formControlName="archivedSourceReassignmentConfirmed"
+                  [checked]="
+                    form.controls.archivedSourceReassignmentConfirmedFor.value ===
+                    form.controls.cardId.value
+                  "
                   [disabled]="saving()"
+                  (change)="confirmArchivedSourceReassignment($event)"
                 />
                 <span>
                   Confirm moving this transaction from {{ archivedCard.nickname }} ·
@@ -194,7 +198,7 @@
                       </button>
                     }
                   }
-                  @if (searchedPayFromBanks().length) {
+                  @if (!editingArchivedCard() && searchedPayFromBanks().length) {
                     <p class="pay-from-group">Bank/UPI</p>
                     <button
                       type="button"
@@ -215,7 +219,7 @@
                       }
                     </button>
                   }
-                  @if (searchedPayFromSources().length) {
+                  @if (!editingArchivedCard() && searchedPayFromSources().length) {
                     <p class="pay-from-group">Cash &amp; meal wallets</p>
                     @for (source of searchedPayFromSources(); track source.id) {
                       <button
