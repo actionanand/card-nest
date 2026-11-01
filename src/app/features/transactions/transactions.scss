@@ -444,36 +444,46 @@ label small {
   padding: 0.85rem;
 }
 .filter-panel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
   margin-bottom: 0.75rem;
 }
 .filter-panel__toggle {
-  display: flex;
-  width: 100%;
-  min-height: 4rem;
+  display: inline-flex;
+  min-height: 2.75rem;
   align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  padding: 0.75rem 0.9rem;
-  border: 0;
+  gap: 0.45rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 0.6rem;
   color: var(--ink);
   background: var(--surface);
-  text-align: left;
 }
-.filter-panel__toggle > span {
-  display: grid;
-  gap: 0.15rem;
-}
-.filter-panel__toggle strong {
-  font-size: 0.85rem;
-}
-.filter-panel__toggle small {
-  color: var(--muted);
-  font-size: 0.65rem;
-}
-.filter-panel__toggle app-icon {
-  width: 1.1rem;
-  height: 1.1rem;
+.filter-count {
+  display: inline-grid;
+  min-width: 1.25rem;
+  min-height: 1.25rem;
+  box-sizing: border-box;
+  place-items: center;
+  padding-inline: 0.25rem;
+  border-radius: 999px;
   color: var(--accent);
+  background: var(--accent-soft);
+  font-size: 0.7rem;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+}
+.filter-dialog-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+.filter-dialog-actions .clear-filter-draft {
+  grid-column: 1 / -1;
+  justify-self: start;
 }
 .toolbar input,
 .toolbar select,
@@ -1214,8 +1224,7 @@ label small {
     padding: 0.9rem;
   }
   .filter-panel {
-    overflow: hidden;
-    border-radius: 0.85rem;
+    overflow: visible;
   }
   .toolbar {
     display: grid;

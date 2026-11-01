@@ -1011,13 +1011,13 @@ describe('SMS review privacy and explicit approval UI', () => {
     page.updateFilterDraft('source', '54321');
     page.updateFilterDraft('from', '2026-03-02');
     page.updateFilterDraft('to', '2026-03-01');
-    page.applyFilterDraft();
+    await page.applyFilterDraft();
     expect(page.filterDateError()).toBe('The start date must be on or before the through date.');
     expect(page.state()).toBe('PENDING');
     expect(sync.filterReview).not.toHaveBeenCalled();
 
     page.updateFilterDraft('to', '2026-03-03');
-    page.applyFilterDraft();
+    await page.applyFilterDraft();
     await fixture.whenStable();
     expect(page.filterDraft()).toBeNull();
     expect(page.state()).toBe('DEFERRED');
@@ -1030,6 +1030,77 @@ describe('SMS review privacy and explicit approval UI', () => {
         to: '2026-03-03',
       }),
     );
+    fixture.destroy();
+  });
+  it('keeps unapplied SMS filters visible and retryable when saving preferences fails', async () => {
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const page = fixture.componentInstance;
+    sync.filterReview
+      .mockClear()
+      .mockRejectedValueOnce(new Error('Synthetic preference write failure'));
+
+    page.openFilterDialog();
+    page.updateFilterDraft('state', 'DEFERRED');
+    await page.applyFilterDraft();
+
+    expect(sync.filterReview).toHaveBeenCalledOnce();
+    expect(page.state()).toBe('PENDING');
+    expect(page.filterDraft()?.state).toBe('DEFERRED');
+    expect(page.filterDialogOpen()).toBe(true);
+    expect(page.filterSaving()).toBe(false);
+    expect(page.filterPersistenceError()).toBe('Synthetic preference write failure');
+    fixture.destroy();
+  });
+  it('applies saved SMS filters and offers retry when the inbox refresh fails afterward', async () => {
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const page = fixture.componentInstance;
+    sync.filterReview
+      .mockClear()
+      .mockRejectedValueOnce(
+        new SmsReviewFilterRefreshError(new Error('Synthetic inbox query failure')),
+      );
+    sync.refresh.mockClear().mockResolvedValue(undefined);
+
+    page.openFilterDialog();
+    page.updateFilterDraft('state', 'DEFERRED');
+    await page.applyFilterDraft();
+
+    expect(page.state()).toBe('DEFERRED');
+    expect(page.filterDialogOpen()).toBe(false);
+    expect(page.retryFilterRefresh()).toBe(true);
+    expect(page.notice()).toContain('filters were saved');
+    await page.retryReviewInboxRefresh();
+    expect(sync.refresh).toHaveBeenCalledOnce();
+    expect(page.retryFilterRefresh()).toBe(false);
+    fixture.destroy();
+  });
+  it('prevents duplicate SMS filter Apply while the preference write is pending', async () => {
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const page = fixture.componentInstance;
+    let finish!: () => void;
+    sync.filterReview
+      .mockClear()
+      .mockReturnValueOnce(new Promise<void>((resolve) => (finish = resolve)));
+
+    page.openFilterDialog();
+    page.updateFilterDraft('state', 'DEFERRED');
+    const applying = page.applyFilterDraft();
+    await page.applyFilterDraft();
+    page.closeFilterDialog();
+    expect(sync.filterReview).toHaveBeenCalledOnce();
+    expect(page.filterSaving()).toBe(true);
+    expect(page.filterDialogOpen()).toBe(true);
+    finish();
+    await applying;
+    expect(page.filterSaving()).toBe(false);
+    expect(page.state()).toBe('DEFERRED');
+    expect(page.filterDialogOpen()).toBe(false);
     fixture.destroy();
   });
   it('distinguishes transaction time, SMS receipt time, receipt-date fallback, and paste processing time', async () => {

@@ -308,12 +308,27 @@
   border-radius: 0.6rem;
   background: var(--canvas);
 }
+.meal-cycle-summary .meal-cycle-period {
+  grid-column: 1 / -1;
+}
+.meal-cycle-summary .meal-cycle-flow {
+  grid-column: 1 / -1;
+  border-top: 1px solid var(--line);
+}
 .meal-cycle-summary small {
   color: var(--muted);
   font-size: 0.62rem;
 }
 .meal-cycle-summary strong {
   font-size: 0.82rem;
+  overflow-wrap: anywhere;
+}
+.meal-cycle-explanation {
+  margin: -0.25rem 0 0;
+  color: var(--muted);
+  font-size: 0.68rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 .source-actions .btn {
   min-height: 2.4rem;

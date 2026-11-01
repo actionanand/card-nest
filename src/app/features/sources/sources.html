@@ -256,15 +256,33 @@
               <span class="untracked-balance">Balance not tracked</span>
             }
             <div class="meal-cycle-summary" aria-label="Current Pluxee cycle summary">
-              <span
-                ><small>Used this cycle</small
-                ><strong>{{ money(monthlyUsed(source)) }}</strong></span
+              <span class="meal-cycle-period"
+                ><small>Current cycle</small><strong>{{ currentCycle().label }}</strong></span
               >
               <span
-                ><small>Net top-ups less spending this cycle</small
+                ><small>Available balance</small
+                ><strong>{{ pluxeeAvailableBalance(source) }}</strong></span
+              >
+              <span
+                ><small>Top-ups recorded</small
+                ><strong>{{ money(topupsThisCycle(source)) }}</strong></span
+              >
+              <span
+                ><small>Spending</small><strong>{{ money(monthlyUsed(source)) }}</strong></span
+              >
+              <span class="meal-cycle-flow"
+                ><small>Net transaction flow</small
                 ><strong>{{ money(monthlyRemaining(source)) }}</strong></span
               >
             </div>
+            @if (
+              !source.noLimit && (source.balanceMinor ?? 0) > 0 && monthlyRemaining(source) < 0
+            ) {
+              <p class="meal-cycle-explanation">
+                Net flow can be negative while the available balance remains positive; unspent funds
+                carry forward from earlier cycles.
+              </p>
+            }
             <label
               >Last four digits (optional)<input
                 inputmode="numeric"

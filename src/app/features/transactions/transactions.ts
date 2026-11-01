@@ -77,6 +77,13 @@ interface SelectedFilterSource {
   readonly label: string;
   readonly kind: 'CARD' | 'PAYMENT_SOURCE';
 }
+interface TransactionFilterDraft {
+  readonly search: string;
+  readonly type: TransactionTypeFilter;
+  readonly source: string;
+  readonly category: string;
+  readonly grouping: GroupingMode;
+}
 const TRANSACTION_PAGE_SIZE = 200;
 const MAX_RECEIPT_BYTES = 1_000_000;
 
@@ -193,7 +200,13 @@ export class TransactionsPage {
   }
   androidBack(event: Event): void {
     if (document.querySelector('app-select-picker dialog[open]')) return;
-    if (this.combineOpen() || this.showForm() || this.showSplitForm() || this.detailTransaction()) {
+    if (
+      this.filtersOpen() ||
+      this.combineOpen() ||
+      this.showForm() ||
+      this.showSplitForm() ||
+      this.detailTransaction()
+    ) {
       event.preventDefault();
       this.closeOverlays();
     }
@@ -269,6 +282,7 @@ export class TransactionsPage {
   readonly payFromSearch = signal('');
   readonly payFromBankMode = signal(false);
   readonly filtersOpen = signal(false);
+  readonly filterDraft = signal<TransactionFilterDraft | null>(null);
   readonly actionMenuId = signal<string | null>(null);
   readonly actionMenuOpensUp = signal(false);
   readonly summaryMenuOpen = signal(false);
@@ -348,18 +362,51 @@ export class TransactionsPage {
     {
       value: 'MONTH',
       label: 'Calendar month',
-      disabled: this.sourceFilter() !== 'ALL',
+      disabled: (this.filterDraft()?.source ?? this.sourceFilter()) !== 'ALL',
     },
     {
       value: 'CYCLE',
       label: `Budget cycle (day ${this.store.budgetCycleStartDay()})`,
-      disabled: this.isCreditCardSelected(),
+      disabled: this.store
+        .cards()
+        .some((card) => card.id === (this.filterDraft()?.source ?? this.sourceFilter())),
     },
     {
       value: 'STATEMENT',
       label: 'Selected card statement cycle',
-      disabled: !this.isCreditCardSelected(),
+      disabled: !this.store
+        .cards()
+        .some((card) => card.id === (this.filterDraft()?.source ?? this.sourceFilter())),
     },
+  ]);
+  readonly filterDraftGrouping = computed<GroupingMode>(() => {
+    const draft = this.filterDraft();
+    if (!draft) return this.effectiveGrouping();
+    if (this.store.cards().some((card) => card.id === draft.source)) return 'STATEMENT';
+    if (
+      draft.source !== 'ALL' &&
+      this.store.paymentSources().some((source) => source.id === draft.source)
+    )
+      return 'CYCLE';
+    return draft.grouping;
+  });
+  readonly sourceFilterOptions = computed<readonly AppSelectOption[]>(() => [
+    { value: 'ALL', label: 'All cards and sources' },
+    ...this.store.cards().map((card) => ({
+      value: card.id,
+      label: `${card.nickname}${card.archived || card.deletedAt ? ' · Archived' : ''}`,
+      detail: `${card.lastDigits} · ${card.issuerName}`,
+    })),
+    ...this.store.paymentSources().map((source) => ({
+      value: source.id,
+      label: `${source.nickname}${source.archived ? ' · Archived' : ''}`,
+      detail:
+        source.kind === 'DEBIT'
+          ? source.lastDigits
+            ? `•••${source.lastDigits.slice(-3)} · ${source.institution || 'Bank/UPI'}`
+            : source.institution || 'Bank/UPI'
+          : [source.lastDigits, source.institution || source.kind].filter(Boolean).join(' · '),
+    })),
   ]);
   readonly alphabeticalPaymentSources = computed(() =>
     [...this.store.activePaymentSources()].sort((left, right) =>
@@ -412,10 +459,6 @@ export class TransactionsPage {
             : 'Bank account'
           : [source.lastDigits, source.institution || source.kind].filter(Boolean).join(' · '),
     })),
-  ]);
-  readonly sourceFilterOptions = computed<readonly AppSelectOption[]>(() => [
-    { value: 'ALL', label: 'All cards and sources' },
-    ...this.paymentSourceOptions(),
   ]);
   readonly searchedPayFromCards = computed(() => {
     const terms = this.payFromSearch().trim().toLowerCase().split(/\s+/).filter(Boolean);
@@ -1606,6 +1649,10 @@ export class TransactionsPage {
   closeOverlays(): void {
     if (document.querySelector('app-select-picker dialog[open]')) return;
     if (this.saving()) return;
+    if (this.filtersOpen()) {
+      this.closeFilterPopup();
+      return;
+    }
     if (this.deleteTransferCandidate()) {
       this.deleteTransferCandidate.set(null);
       return;
@@ -1676,6 +1723,69 @@ export class TransactionsPage {
           (!term || this.transferTitle(transfer).toLocaleLowerCase().includes(term)),
       );
   });
+  openFilterPopup(): void {
+    this.filterDraft.set({
+      search: this.search(),
+      type: this.typeFilter(),
+      source: this.sourceFilter(),
+      category: this.categoryFilter(),
+      grouping: this.grouping(),
+    });
+    this.filtersOpen.set(true);
+  }
+  closeFilterPopup(): void {
+    this.filtersOpen.set(false);
+    this.filterDraft.set(null);
+  }
+  updateFilterDraft<K extends keyof TransactionFilterDraft>(
+    key: K,
+    value: TransactionFilterDraft[K],
+  ): void {
+    this.filterDraft.update((draft) => (draft ? { ...draft, [key]: value } : draft));
+  }
+  updateDraftType(value: string): void {
+    if (
+      value === 'ALL' ||
+      value === 'WITH_IMAGE' ||
+      this.types.some((item) => item.value === value)
+    )
+      this.updateFilterDraft('type', value as TransactionTypeFilter);
+  }
+  updateFilterDraftSource(source: string): void {
+    this.filterDraft.update((draft) => {
+      if (!draft) return draft;
+      const grouping = this.store.cards().some((card) => card.id === source)
+        ? 'STATEMENT'
+        : this.store.paymentSources().some((item) => item.id === source)
+          ? 'CYCLE'
+          : draft.grouping;
+      return { ...draft, source, grouping };
+    });
+  }
+  updateDraftGrouping(value: string): void {
+    if (value !== 'MONTH' && value !== 'CYCLE' && value !== 'STATEMENT') return;
+    this.updateFilterDraft('grouping', value);
+  }
+  clearFilterDraft(): void {
+    this.filterDraft.set({
+      search: '',
+      type: 'ALL',
+      source: 'ALL',
+      category: 'ALL',
+      grouping: 'MONTH',
+    });
+  }
+  applyFilterDraft(): void {
+    const draft = this.filterDraft();
+    if (!draft) return;
+    this.search.set(draft.search);
+    this.typeFilter.set(draft.type);
+    this.sourceFilter.set(draft.source);
+    this.categoryFilter.set(draft.category);
+    this.grouping.set(draft.grouping);
+    this.closeFilterPopup();
+    this.resetVisibleTransactions();
+  }
   transferTitle(transfer: SourceTransfer): string {
     const to = transfer.toSourceId
       ? this.store.sourceDetail(transfer.toSourceId)

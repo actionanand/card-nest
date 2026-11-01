@@ -9,7 +9,12 @@ import {
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { DeviceCalendarClock } from '../../core/services/device-date';
 import { displayBankAccountSuffix } from '../../core/services/bank-account-identifier';
-import { formatMoney, parseMoneyToMinor } from '../../core/services/money';
+import {
+  formatMoney,
+  parseMoneyToMinor,
+  spendingContribution,
+  transactionEffect,
+} from '../../core/services/money';
 import { SnackbarService } from '../../core/services/snackbar.service';
 import { AppIcon } from '../../shared/app-icon';
 import { ProfileModal } from '../../shared/profile-modal';
@@ -449,27 +454,44 @@ export class SourcesPage {
   }
 
   monthlyUsed(source: PaymentSource): number {
-    return this.currentCycleTransactionsFor(source.id)
-      .filter((transaction) => !this.isCredit(transaction.type))
-      .reduce((sum, transaction) => sum + transaction.amountMinor, 0);
+    return this.pluxeeCycleTransactions(source).reduce(
+      (sum, transaction) => sum + spendingContribution(transaction),
+      0,
+    );
   }
 
   monthlyRemaining(source: PaymentSource): number {
-    const loads = this.currentCycleTransactionsFor(source.id)
-      .filter((transaction) => this.isCredit(transaction.type))
-      .reduce((sum, transaction) => sum + transaction.amountMinor, 0);
-    return loads - this.monthlyUsed(source);
+    return this.pluxeeCycleTransactions(source).reduce(
+      (sum, transaction) => sum - transactionEffect(transaction),
+      0,
+    );
   }
 
-  private currentCycleTransactionsFor(sourceId: string): readonly CardTransaction[] {
+  topupsThisCycle(source: PaymentSource): number {
+    return this.pluxeeCycleTransactions(source)
+      .filter((transaction) => transaction.type === 'CREDIT')
+      .reduce((sum, transaction) => sum - transactionEffect(transaction), 0);
+  }
+
+  pluxeeAvailableBalance(source: PaymentSource): string {
+    if (source.noLimit) return 'Not tracked';
+    return source.balanceMinor === undefined ? 'Balance not set' : this.money(source.balanceMinor);
+  }
+
+  private pluxeeCycleTransactions(source: PaymentSource): readonly CardTransaction[] {
+    if (source.kind !== 'MEAL') return [];
     const period = this.currentCycle();
     return this.store
       .transactions()
       .filter(
         (transaction) =>
-          transaction.cardId === sourceId &&
+          transaction.cardId === source.id &&
           transaction.transactionDate >= period.startIso &&
-          transaction.transactionDate <= period.endIso,
+          transaction.transactionDate <= period.endIso &&
+          !(
+            transaction.type === 'ADJUSTMENT' &&
+            transaction.adjustmentPurpose === 'BALANCE_RECONCILIATION'
+          ),
       );
   }
 

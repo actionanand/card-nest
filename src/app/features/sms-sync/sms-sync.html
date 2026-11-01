@@ -164,7 +164,7 @@
     @if (notice()) {
       <p class="feedback" role="status">{{ notice() }}</p>
     }
-    @if (retryRestoredFilterRefresh()) {
+    @if (retryRestoredFilterRefresh() || retryFilterRefresh()) {
       <button class="btn" type="button" [disabled]="loading()" (click)="retryReviewInboxRefresh()">
         Retry inbox refresh
       </button>
@@ -279,7 +279,11 @@
         </button>
       </div>
       @if (filterDialogOpen()) {
-        <app-profile-modal title="SMS filters" (closed)="closeFilterDialog()">
+        <app-profile-modal
+          title="SMS filters"
+          [busy]="filterSaving()"
+          (closed)="closeFilterDialog()"
+        >
           <div id="sms-filters">
             <div class="filters">
               <label
@@ -366,10 +370,25 @@
             @if (filterDateError()) {
               <p role="alert" class="filter-date-error">{{ filterDateError() }}</p>
             }
+            @if (filterPersistenceError()) {
+              <p role="alert" class="filter-date-error">{{ filterPersistenceError() }}</p>
+            }
             <div class="filter-dialog-actions">
-              <button class="btn" type="button" (click)="closeFilterDialog()">Cancel</button>
-              <button class="btn btn-primary" type="button" (click)="applyFilterDraft()">
-                Apply filters
+              <button
+                class="btn"
+                type="button"
+                [disabled]="filterSaving()"
+                (click)="closeFilterDialog()"
+              >
+                Cancel
+              </button>
+              <button
+                class="btn btn-primary"
+                type="button"
+                [disabled]="filterSaving()"
+                (click)="applyFilterDraft()"
+              >
+                {{ filterSaving() ? 'Saving…' : 'Apply filters' }}
               </button>
             </div>
           </div>

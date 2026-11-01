@@ -467,19 +467,22 @@
 
   <section class="filter-panel panel" aria-label="Transaction filters">
     <button
+      id="transaction-filter-trigger"
       class="filter-panel__toggle"
       type="button"
-      (click)="filtersOpen.set(true)"
+      (click)="openFilterPopup()"
       [attr.aria-expanded]="filtersOpen()"
       aria-controls="transaction-filter-fields"
+      [attr.aria-label]="
+        activeFilterCount()
+          ? 'Filter transactions, ' + activeFilterCount() + ' active'
+          : 'Filter transactions'
+      "
     >
-      <span>
-        <strong>Filter transactions</strong>
-        <small>
-          {{ activeFilterCount() ? activeFilterCount() + ' active' : 'Search and narrow activity' }}
-        </small>
-      </span>
-      <app-icon name="chevron_down" />
+      <span class="filter-trigger-label">Filter</span>
+      @if (activeFilterCount()) {
+        <span class="filter-count" aria-hidden="true">{{ activeFilterCount() }}</span>
+      }
     </button>
     <button class="btn manage-categories" type="button" (click)="manageCategoriesOpen.set(true)">
       <app-icon name="categories" /> Manage categories
@@ -487,41 +490,51 @@
   </section>
 
   @if (filtersOpen()) {
-    <app-profile-modal title="Filter transactions" (closed)="filtersOpen.set(false)">
+    <app-profile-modal title="Filter transactions" (closed)="closeFilterPopup()">
       <div id="transaction-filter-fields" class="toolbar">
         <label
           ><span>Search</span
           ><input
             type="search"
             placeholder="Merchant, category or source"
-            [value]="search()"
-            (input)="updateSearch($event)"
+            [value]="filterDraft()?.search ?? ''"
+            (input)="updateFilterDraft('search', $any($event.target).value)"
         /></label>
         <app-select-picker
           label="Transaction type"
           [options]="typeFilterOptions"
-          [value]="typeFilter()"
-          (valueChange)="updateType($event)"
+          [value]="filterDraft()?.type ?? 'ALL'"
+          (valueChange)="updateDraftType($event)"
         />
         <app-select-picker
           label="Payment source"
           [options]="sourceFilterOptions()"
-          [value]="sourceFilter()"
+          [value]="filterDraft()?.source ?? 'ALL'"
           [searchable]="true"
-          (valueChange)="selectSourceFilter($event)"
+          (valueChange)="updateFilterDraftSource($event)"
         />
         <app-select-picker
           label="Transaction category"
           [options]="categoryFilterOptions()"
-          [value]="categoryFilter()"
-          (valueChange)="updateCategory($event)"
+          [value]="filterDraft()?.category ?? 'ALL'"
+          (valueChange)="updateFilterDraft('category', $event)"
         />
         <app-select-picker
           label="Grouping cycle"
           [options]="groupingOptions()"
-          [value]="effectiveGrouping()"
-          (valueChange)="updateGrouping($event)"
+          [value]="filterDraftGrouping()"
+          (valueChange)="updateDraftGrouping($event)"
         />
+      </div>
+      <div class="filter-dialog-actions">
+        <button class="btn clear-filter-draft" type="button" (click)="clearFilterDraft()">
+          Clear filters
+        </button>
+        <span></span>
+        <button class="btn" type="button" (click)="closeFilterPopup()">Cancel</button>
+        <button class="btn btn-primary" type="button" (click)="applyFilterDraft()">
+          Apply filters
+        </button>
       </div>
     </app-profile-modal>
   }

@@ -168,7 +168,7 @@ describe('Explicit FASTag wallet creation and feedback', () => {
     expect(details.textContent).toContain('Total · ₹3,500.00');
     fixture.destroy();
   });
-  it('orders wallet activity by event time and shows recorded time without using scan time', async () => {
+  it('orders wallet activity by event time and verifies the transaction filter popup workflow', async () => {
     const fixture = setup();
     const store = TestBed.inject(CardNestStore);
     store.paymentSources.set([
@@ -180,6 +180,14 @@ describe('Explicit FASTag wallet creation and feedback', () => {
         autoLoad: false,
         archived: false,
         balanceMinor: 93724,
+      },
+      {
+        id: 'archived-cash-filter',
+        kind: 'CASH',
+        nickname: 'Archived cash',
+        noLimit: true,
+        autoLoad: false,
+        archived: true,
       },
     ]);
     const entry: CardTransaction = {
@@ -226,8 +234,9 @@ describe('Explicit FASTag wallet creation and feedback', () => {
     );
     activity.detectChanges();
     const filterTrigger = activity.nativeElement.querySelector(
-      '.filter-panel__toggle',
+      '#transaction-filter-trigger',
     ) as HTMLButtonElement;
+    expect(filterTrigger.textContent?.trim()).toBe('Filter');
     filterTrigger.click();
     activity.detectChanges();
     await activity.whenStable();
@@ -240,17 +249,84 @@ describe('Explicit FASTag wallet creation and feedback', () => {
       rules: { 'color-contrast': { enabled: false } },
     });
     expect(audit.violations).toEqual([]);
+    expect(getComputedStyle(filterDialog).position).toBe('fixed');
     expect(
-      activity.componentInstance.sourceFilterOptions().map((option) => option.value),
-    ).toContain('synthetic-meal');
-    activity.componentInstance.selectSourceFilter('synthetic-meal');
+      activity.componentInstance
+        .sourceFilterOptions()
+        .find((option) => option.value === 'archived-cash-filter')?.label,
+    ).toContain('Archived');
+    const sourcePicker = filterDialog.querySelectorAll('app-select-picker')[1];
+    (sourcePicker.querySelector('button') as HTMLButtonElement).click();
+    activity.detectChanges();
+    const sourceOptions = sourcePicker.querySelector('dialog[open]') as HTMLDialogElement;
+    expect(sourceOptions.getAttribute('aria-label')).toBe('Payment source');
+    const sourceSearch = sourceOptions.querySelector('input[type="search"]') as HTMLInputElement;
+    sourceSearch.value = 'Synthetic Pluxee';
+    sourceSearch.dispatchEvent(new Event('input', { bubbles: true }));
+    activity.detectChanges();
+    const mealOption = [
+      ...sourceOptions.querySelectorAll<HTMLButtonElement>('[role="option"]'),
+    ].find((option) => option.textContent?.includes('Synthetic Pluxee'));
+    expect(mealOption).toBeDefined();
+    mealOption!.click();
+    activity.detectChanges();
+    expect(activity.componentInstance.sourceFilter()).toBe('ALL');
+    expect(activity.componentInstance.filtered()).toHaveLength(2);
+    const apply = [...filterDialog.querySelectorAll('button')].find(
+      (button) => button.textContent?.trim() === 'Apply filters',
+    ) as HTMLButtonElement;
+    apply.click();
+    activity.detectChanges();
+    expect(activity.componentInstance.sourceFilter()).toBe('synthetic-meal');
     expect(activity.componentInstance.filtered().map((transaction) => transaction.cardId)).toEqual([
       'synthetic-meal',
       'synthetic-meal',
     ]);
+
+    filterTrigger.click();
+    activity.detectChanges();
+    activity.componentInstance.updateFilterDraft('search', 'no matching transaction');
+    activity.componentInstance.closeFilterPopup();
+    expect(activity.componentInstance.search()).toBe('');
+    expect(activity.componentInstance.sourceFilter()).toBe('synthetic-meal');
+    expect(activity.componentInstance.filtered()).toHaveLength(2);
+
+    filterTrigger.click();
+    activity.detectChanges();
+    const clear = [...activity.nativeElement.querySelectorAll('button')].find(
+      (button: HTMLButtonElement) => button.textContent?.trim() === 'Clear filters',
+    ) as HTMLButtonElement;
+    clear.click();
+    activity.detectChanges();
+    activity.componentInstance.applyFilterDraft();
+    expect(activity.componentInstance.sourceFilter()).toBe('ALL');
+    expect(activity.componentInstance.activeFilterCount()).toBe(0);
+
+    filterTrigger.focus();
+    filterTrigger.click();
+    activity.detectChanges();
+    const escapeDialog = activity.nativeElement.querySelector(
+      'app-profile-modal dialog[open]',
+    ) as HTMLDialogElement;
+    escapeDialog.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
+    );
+    activity.detectChanges();
+    await activity.whenStable();
+    expect(activity.nativeElement.querySelector('app-profile-modal dialog[open]')).toBeNull();
+    expect(document.activeElement).toBe(filterTrigger);
+
+    filterTrigger.click();
+    activity.detectChanges();
+    const back = new Event('cardnest:back', { cancelable: true });
+    window.dispatchEvent(back);
+    activity.detectChanges();
+    await activity.whenStable();
+    expect(back.defaultPrevented).toBe(true);
+    expect(activity.nativeElement.querySelector('app-profile-modal dialog[open]')).toBeNull();
     activity.destroy();
   });
-  it('audits Pluxee cycle totals from local-date committed entries for that source only', () => {
+  it('keeps the continuous Pluxee balance separate from local-cycle transaction flow', () => {
     const nativeOptions = Intl.DateTimeFormat.prototype.resolvedOptions;
     const timezone = vi
       .spyOn(Intl.DateTimeFormat.prototype, 'resolvedOptions')
@@ -262,15 +338,15 @@ describe('Explicit FASTag wallet creation and feedback', () => {
     const fixture = setup();
     try {
       const store = TestBed.inject(CardNestStore);
-      const first: PaymentSource = {
-        id: 'meal-first',
+      const meal: PaymentSource = {
+        id: 'meal-only',
         kind: 'MEAL',
-        nickname: 'Synthetic Pluxee A',
+        nickname: 'Synthetic Pluxee',
         noLimit: false,
         autoLoad: false,
         archived: false,
+        balanceMinor: 171424,
       };
-      const second: PaymentSource = { ...first, id: 'meal-second', nickname: 'Synthetic Pluxee B' };
       const cash: PaymentSource = {
         id: 'cash-date-test',
         kind: 'CASH',
@@ -279,7 +355,8 @@ describe('Explicit FASTag wallet creation and feedback', () => {
         autoLoad: false,
         archived: false,
       };
-      store.paymentSources.set([first, second, cash]);
+      store.budgetCycleStartDay.set(25);
+      store.paymentSources.set([meal, cash]);
       const entry = (
         id: string,
         cardId: string,
@@ -299,16 +376,14 @@ describe('Explicit FASTag wallet creation and feedback', () => {
         updatedAt: `${transactionDate}T12:00:00Z`,
       });
       store.transactions.set([
-        entry('meal-a-spend', first.id, 'PURCHASE', 1200, '2026-11-02'),
-        entry('meal-a-topup', first.id, 'CREDIT', 5000, '2026-11-03'),
-        entry('meal-a-previous', first.id, 'PURCHASE', 3000, '2026-10-31'),
-        entry('meal-b-spend', second.id, 'PURCHASE', 9000, '2026-11-02'),
-        entry('meal-b-topup', second.id, 'CREDIT', 12000, '2026-11-03'),
+        entry('meal-early-topup', meal.id, 'CREDIT', 500000, '2026-10-23'),
+        entry('meal-cycle-spend', meal.id, 'PURCHASE', 401900, '2026-10-25'),
+        entry('cash-spend', cash.id, 'PURCHASE', 999999, '2026-10-26'),
       ]);
       store.balanceAdjustments.set([
         {
-          id: 'meal-a-audit',
-          sourceId: first.id,
+          id: 'meal-audit-only',
+          sourceId: meal.id,
           reason: 'CORRECTION',
           previousMinor: 10000,
           newMinor: 60000,
@@ -319,11 +394,53 @@ describe('Explicit FASTag wallet creation and feedback', () => {
       fixture.detectChanges();
 
       const page = fixture.componentInstance;
-      expect(page.currentCycle().startIso).toBe('2026-11-01');
-      expect(page.monthlyUsed(first)).toBe(1200);
-      expect(page.monthlyRemaining(first)).toBe(3800);
-      expect(page.monthlyUsed(second)).toBe(9000);
-      expect(page.monthlyRemaining(second)).toBe(3000);
+      expect(page.currentCycle()).toMatchObject({
+        startIso: '2026-10-25',
+        endIso: '2026-11-24',
+      });
+      expect(
+        store.transactions().find((transaction) => transaction.id === 'meal-early-topup')
+          ?.transactionDate,
+      ).toBe('2026-10-23');
+      expect(page.topupsThisCycle(meal)).toBe(0);
+      expect(page.monthlyUsed(meal)).toBe(401900);
+      expect(page.monthlyRemaining(meal)).toBe(-401900);
+      expect(meal.balanceMinor).toBe(171424);
+      expect(page.pluxeeAvailableBalance(meal)).toBe(page.money(meal.balanceMinor));
+      fixture.detectChanges();
+      expect(fixture.nativeElement.textContent).toContain('Current cycle');
+      expect(fixture.nativeElement.textContent).toContain('Top-ups recorded');
+      expect(fixture.nativeElement.textContent).toContain('Net transaction flow');
+      expect(fixture.nativeElement.querySelector('.meal-cycle-explanation')?.textContent).toContain(
+        'unspent funds carry forward',
+      );
+      page.updateSourceFilter(cash.id);
+      expect(page.monthlyUsed(meal)).toBe(401900);
+      expect(page.monthlyRemaining(meal)).toBe(-401900);
+
+      store.transactions.update((items) => [
+        ...items,
+        {
+          ...entry('meal-topup-in-cycle', meal.id, 'CREDIT', 10000, '2026-10-27'),
+          createdAt: '2026-10-27T12:00:00Z',
+          updatedAt: '2026-10-27T12:00:00Z',
+        },
+        {
+          ...entry('meal-split', meal.id, 'ADJUSTMENT', 20000, '2026-10-28'),
+          adjustmentDirection: 'INCREASE',
+          adjustmentPurpose: 'SPLIT_PAYMENT',
+        },
+        entry('meal-refund', meal.id, 'REFUND', 5000, '2026-10-29'),
+        entry('meal-cashback', meal.id, 'CASHBACK', 1000, '2026-10-30'),
+        {
+          ...entry('meal-balance-correction', meal.id, 'ADJUSTMENT', 8500, '2026-10-30'),
+          adjustmentDirection: 'INCREASE',
+          adjustmentPurpose: 'BALANCE_RECONCILIATION',
+        },
+      ]);
+      expect(page.topupsThisCycle(meal)).toBe(10000);
+      expect(page.monthlyUsed(meal)).toBe(415900);
+      expect(page.monthlyRemaining(meal)).toBe(-405900);
 
       const transactions = TestBed.createComponent(TransactionsPage);
       transactions.detectChanges();

@@ -287,6 +287,8 @@ export class SmsSyncPage {
   readonly filterDialogOpen = signal(false);
   readonly filterDraft = signal<SmsReviewFilters | null>(null);
   readonly filterDateError = signal('');
+  readonly filterPersistenceError = signal('');
+  readonly filterSaving = signal(false);
   readonly loading = signal(false);
   readonly notice = signal('');
   readonly pageCount = computed(() => Math.max(1, Math.ceil(this.sync.total() / 200)));
@@ -400,8 +402,9 @@ export class SmsSyncPage {
   readonly restoreFiltersConfirmation = signal(false);
   readonly restoringFilters = signal(false);
   readonly retryRestoredFilterRefresh = signal(false);
+  readonly retryFilterRefresh = signal(false);
   requestRestoreFilters(): void {
-    if (!this.restoringFilters()) this.restoreFiltersConfirmation.set(true);
+    if (!this.restoringFilters() && !this.filterSaving()) this.restoreFiltersConfirmation.set(true);
   }
   cancelRestoreFilters(): void {
     this.restoreFiltersConfirmation.set(false);
@@ -424,18 +427,23 @@ export class SmsSyncPage {
     };
   }
   openFilterDialog(): void {
+    if (this.filterSaving() || this.restoringFilters()) return;
     this.filterDraft.set(this.currentReviewFilters());
     this.filterDateError.set('');
+    this.filterPersistenceError.set('');
     this.filterDialogOpen.set(true);
   }
-  closeFilterDialog(): void {
+  closeFilterDialog(persisted = false): void {
+    if (this.filterSaving() && !persisted) return;
     this.filterDialogOpen.set(false);
     this.filterDraft.set(null);
     this.filterDateError.set('');
+    this.filterPersistenceError.set('');
   }
   updateFilterDraft<K extends keyof SmsReviewFilters>(key: K, value: SmsReviewFilters[K]): void {
     this.filterDraft.update((draft) => (draft ? { ...draft, [key]: value } : draft));
     this.filterDateError.set('');
+    this.filterPersistenceError.set('');
   }
   changeFilterDraftMode(mode: 'SINGLE' | 'MULTIPLE'): void {
     this.filterDraft.update((draft) => {
@@ -445,22 +453,45 @@ export class SmsSyncPage {
         : { ...draft, mode };
     });
     this.filterDateError.set('');
+    this.filterPersistenceError.set('');
   }
   updateDraftSortOrder(value: string): void {
     if (SMS_REVIEW_SORT_ORDERS.includes(value as SmsReviewSortOrder)) {
       this.updateFilterDraft('sortOrder', value as SmsReviewSortOrder);
     }
   }
-  applyFilterDraft(): void {
+  async applyFilterDraft(): Promise<void> {
     const draft = this.filterDraft();
-    if (!draft) return;
+    if (!draft || this.filterSaving() || this.restoringFilters()) return;
     if (draft.from && draft.to && draft.from > draft.to) {
       this.filterDateError.set('The start date must be on or before the through date.');
       return;
     }
-    this.setFilterSignals(draft);
-    this.closeFilterDialog();
-    this.applyFilters();
+    this.filterSaving.set(true);
+    this.filterPersistenceError.set('');
+    this.retryFilterRefresh.set(false);
+    try {
+      await this.sync.filterReview(draft);
+      this.setFilterSignals(draft);
+      this.closeFilterDialog(true);
+    } catch (error: unknown) {
+      if (error instanceof SmsReviewFilterRefreshError && error.preferencesSaved) {
+        this.setFilterSignals(draft);
+        this.closeFilterDialog(true);
+        this.retryFilterRefresh.set(true);
+        this.notice.set('SMS Review filters were saved, but the inbox could not refresh.');
+        this.snackbar.show(
+          'Filter preferences saved. SMS Review could not refresh; retry the inbox refresh.',
+          'WARNING',
+        );
+      } else {
+        this.filterPersistenceError.set(
+          error instanceof Error ? error.message : 'Filter preferences could not be saved.',
+        );
+      }
+    } finally {
+      this.filterSaving.set(false);
+    }
   }
   private setFilterSignals(filters: SmsReviewFilters): void {
     this.search.set(filters.search);
@@ -477,10 +508,12 @@ export class SmsSyncPage {
     this.sortOrder.set(filters.sortOrder);
   }
   async confirmRestoreFilters(): Promise<void> {
-    if (!this.restoreFiltersConfirmation() || this.restoringFilters()) return;
+    if (!this.restoreFiltersConfirmation() || this.restoringFilters() || this.filterSaving())
+      return;
     this.restoringFilters.set(true);
     this.restoreFiltersConfirmation.set(false);
     this.retryRestoredFilterRefresh.set(false);
+    this.retryFilterRefresh.set(false);
     const defaults = defaultReviewFilters();
     try {
       await this.sync.filterReview(defaults);
@@ -504,11 +537,12 @@ export class SmsSyncPage {
     }
   }
   async retryReviewInboxRefresh(): Promise<void> {
-    if (!this.retryRestoredFilterRefresh() || this.loading()) return;
+    if (!(this.retryRestoredFilterRefresh() || this.retryFilterRefresh()) || this.loading()) return;
     try {
       await this.run(() => this.sync.refresh());
       if (!this.error()) {
         this.retryRestoredFilterRefresh.set(false);
+        this.retryFilterRefresh.set(false);
         this.notice.set('SMS Review inbox refreshed.');
       }
     } catch {
