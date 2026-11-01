@@ -35,6 +35,9 @@ export interface BankActivityEvent {
 }
 
 export interface BankActivityCandidate {
+  readonly amountMinor?: number;
+  readonly currencyCode?: string;
+  readonly activityTime?: string;
   readonly kind?: string;
   readonly resolvedAt?: string;
   readonly resolvedProfileId?: string;

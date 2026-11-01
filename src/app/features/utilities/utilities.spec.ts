@@ -821,6 +821,32 @@ describe('Indian Utilities page', () => {
     expect(page.lpgForm.controls.distributorWhatsApp.valid).toBe(true);
     expect(page.hasWhatsAppNumber('+44 20 7946 0958')).toBe(true);
     expect(page.hasWhatsAppNumber('Call 1800-123-4567')).toBe(false);
+    const longContact = '1800-1234-5678-9012-3456';
+    page.editLpg({
+      id: 'long-contact',
+      kind: 'LPG',
+      connectionName: 'Fictional contact',
+      provider: 'INDANE',
+      commercial: false,
+      cylinderSize: 'NORMAL',
+      estimatedUsageDays: 25,
+      archived: false,
+      distributorContact: longContact,
+      distributorWhatsApp: longContact,
+      createdAt: 'before',
+      updatedAt: 'before',
+    });
+    fixture.detectChanges();
+    const contact = fixture.nativeElement.querySelector(
+      'input[formControlName="distributorContact"]',
+    ) as HTMLInputElement;
+    expect(contact.maxLength).toBe(80);
+    expect(contact.value).toBe(longContact);
+    contact.value = '+44 (20) 7946-0958';
+    contact.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(page.lpgForm.controls.distributorContact.value).toBe('+44 (20) 7946-0958');
+    expect(page.hasWhatsAppNumber(longContact)).toBe(false);
+    expect(page.lpgForm.controls.distributorWhatsApp.valid).toBe(true);
     fixture.destroy();
   });
 

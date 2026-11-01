@@ -356,54 +356,53 @@
     aria-labelledby="bank-tab-2"
     [hidden]="activeTab() !== 2"
   >
-    @if (eventProfileId()) {
-      <app-profile-modal
-        [title]="editingEventId() ? 'Correct Bank Activity' : 'Record Bank Activity'"
-        [busy]="saving()"
-        (closed)="closeEvent()"
-        ><form class="activity-form" [formGroup]="eventForm" (submit)="saveEvent($event)">
-          <p class="form-note"><strong>Account:</strong> {{ eventProfileLabel() }}</p>
-          <p class="form-note">
-            This records monitoring evidence, not a financial transaction. It retains only the
-            latest activity in each direction and does not change balances, purchases, or imports.
-          </p>
-          <div class="form-grid">
-            <label
-              >Activity date<input type="date" formControlName="activityDate" required
-            /></label>
-            <app-select-picker
-              label="Direction"
-              formControlName="direction"
-              [options]="directionOptions"
-            />
-            <label
-              >Reference (optional)<input
-                formControlName="reference"
-                maxlength="80"
-                autocomplete="off"
-            /></label>
-          </div>
-          @if (error(); as message) {
-            <p class="form-error" role="alert">{{ message }}</p>
-          }
-          <div class="modal-actions">
-            <button class="btn" type="button" [disabled]="saving()" (click)="closeEvent()">
-              Cancel
-            </button>
-            <button
-              class="btn btn-primary"
-              type="submit"
-              [disabled]="saving() || eventForm.invalid"
+    <section class="review-section" aria-labelledby="bank-activity-review-title">
+      <h2 id="bank-activity-review-title">Debit and Credit evidence</h2>
+      @for (
+        candidate of activityEvidence().slice(0, activityEvidenceLimit());
+        track candidate.fingerprint
+      ) {
+        <article class="review-candidate">
+          <header>
+            <strong>{{ evidenceAccount(candidate) }}</strong>
+            <small
+              >{{ candidate.activityDate }} {{ candidate.activityTime || '' }} ·
+              {{ candidate.direction }} · {{ evidenceAmount(candidate) }}</small
             >
-              {{ saving() ? 'Saving…' : editingEventId() ? 'Save correction' : 'Save activity' }}
+            <small>Ref {{ maskedReference(candidate.reference) || 'unavailable' }}</small>
+            <span class="status-badge attention">{{ evidenceStatusLabel(candidate) }}</span>
+          </header>
+          <p class="form-note">Monitoring confirmation pending · Financial approval is separate.</p>
+          @if (hasTrustedIdentityAssociation(candidate)) {
+            <button
+              class="btn"
+              type="button"
+              [disabled]="saving()"
+              (click)="approveCandidate(candidate.fingerprint)"
+            >
+              Review {{ candidate.direction === 'DEBIT' ? 'Debit' : 'Credit' }} activity
             </button>
-          </div>
-        </form></app-profile-modal
-      >
-    }
-
+          } @else {
+            <button class="btn" type="button" (click)="activeTab.set(1)">
+              Identify bank account
+            </button>
+          }
+        </article>
+      } @empty {
+        <p class="form-note">No pending bank activity evidence.</p>
+      }
+      @if (activityEvidenceLimit() < activityEvidence().length) {
+        <button
+          class="btn"
+          type="button"
+          (click)="activityEvidenceLimit.set(activityEvidenceLimit() + 20)"
+        >
+          Show more activity
+        </button>
+      }
+    </section>
     @for (profile of activeProfiles(); track profile.id) {
-      <article class="panel activity-profile">
+      <article class="activity-history">
         <header class="profile-heading">
           <div>
             <p class="eyebrow">
@@ -416,11 +415,7 @@
         </header>
         <p class="linked-account">Linked bank account: {{ linkedBankAccount(profile) }}</p>
         <div class="latest-activity">
-          <h3>Latest recorded debit and credit</h3>
-          <p class="form-note">
-            Latest debit: {{ latestDate(profile, 'DEBIT') }} · Latest credit:
-            {{ latestDate(profile, 'CREDIT') }}
-          </p>
+          <h3>Confirmed monitoring activity</h3>
           @if (events(profile).length) {
             <ol class="history-list">
               @for (event of events(profile); track event.id) {
@@ -460,7 +455,7 @@
               }
             </ol>
           } @else {
-            <p class="empty-state">No qualifying activity has been recorded. Status is Unknown.</p>
+            <p class="form-note">No separately confirmed monitoring evidence.</p>
           }
         </div>
         <section class="bank-transaction-history" aria-label="Recent bank transactions">
@@ -485,6 +480,28 @@
             <p class="form-note">No qualifying bank transactions are linked to this account.</p>
           }
         </section>
+        @if (bankTransfers(profile).length) {
+          <section class="bank-transaction-history" aria-label="Confirmed bank movements">
+            <h3>Confirmed transfers and cash movements</h3>
+            @for (transfer of bankTransfers(profile); track transfer.id) {
+              <div class="bank-transaction-row">
+                <div>
+                  <strong
+                    >{{ transfer.transferDate }} {{ transfer.transferTime || '' }} ·
+                    {{
+                      transfer.fromSourceId === profile.paymentSourceId ? 'DEBIT' : 'CREDIT'
+                    }}</strong
+                  >
+                  <small
+                    >{{ transfer.description || transfer.kind }} · Confirmed · Ref
+                    {{ maskedReference(transfer.reference) || 'unavailable' }}</small
+                  >
+                </div>
+                <strong>{{ movementAmount(transfer.amountMinor) }}</strong>
+              </div>
+            }
+          </section>
+        }
       </article>
     } @empty {
       <section class="panel empty-state">
@@ -498,6 +515,44 @@
     }
   </section>
 </div>
+
+@if (eventProfileId()) {
+  <app-profile-modal
+    [title]="editingEventId() ? 'Correct Bank Activity' : 'Record Bank Activity'"
+    [busy]="saving()"
+    (closed)="closeEvent()"
+  >
+    <form class="activity-form" [formGroup]="eventForm" (submit)="saveEvent($event)">
+      <p class="form-note"><strong>Account:</strong> {{ eventProfileLabel() }}</p>
+      <p class="form-note">
+        This records monitoring evidence, not a financial transaction. It retains only the latest
+        activity in each direction and does not change balances, purchases, or imports.
+      </p>
+      <div class="form-grid">
+        <label>Activity date<input type="date" formControlName="activityDate" required /></label>
+        <app-select-picker
+          label="Direction"
+          formControlName="direction"
+          [options]="directionOptions"
+        />
+        <label
+          >Reference (optional)<input formControlName="reference" maxlength="80" autocomplete="off"
+        /></label>
+      </div>
+      @if (error(); as message) {
+        <p class="form-error" role="alert">{{ message }}</p>
+      }
+      <div class="modal-actions">
+        <button class="btn" type="button" [disabled]="saving()" (click)="closeEvent()">
+          Cancel
+        </button>
+        <button class="btn btn-primary" type="submit" [disabled]="saving() || eventForm.invalid">
+          {{ saving() ? 'Saving…' : editingEventId() ? 'Save correction' : 'Save activity' }}
+        </button>
+      </div>
+    </form>
+  </app-profile-modal>
+}
 
 @if (balanceMovement(); as movement) {
   <app-source-movement-dialog
@@ -527,7 +582,17 @@
             required
         /></label>
       } @empty {
-        <p class="form-note">No eligible saved bank accounts need a starting balance.</p>
+        <p class="form-note">
+          Add a bank account first. Bank/UPI tracking stays off until its current balance is
+          confirmed.
+        </p>
+        <button
+          class="btn"
+          type="button"
+          (click)="startProfile(); bankTrackingSetupOpen.set(false)"
+        >
+          <app-icon name="plus" /> Add bank account
+        </button>
       }
       @if (bankTrackingError(); as message) {
         <p class="form-error" role="alert">{{ message }}</p>
@@ -541,7 +606,11 @@
         >
           Cancel
         </button>
-        <button class="btn btn-primary" type="submit" [disabled]="bankTrackingSaving()">
+        <button
+          class="btn btn-primary"
+          type="submit"
+          [disabled]="bankTrackingSaving() || !bankTrackingSources().length"
+        >
           Confirm balances
         </button>
       </div>

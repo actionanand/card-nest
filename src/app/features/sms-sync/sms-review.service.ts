@@ -1056,6 +1056,9 @@ export class SmsReviewService {
             counterpartyAccountMask: item.counterpartyAccountMask,
             issuer: item.issuer,
             reference: item.reference,
+            amountMinor: item.amountMinor,
+            currencyCode: item.currency,
+            activityTime: item.eventTimeExplicit ? item.eventTime : undefined,
             dateFallback: item.dateFallback,
             merchant: item.merchant,
           });

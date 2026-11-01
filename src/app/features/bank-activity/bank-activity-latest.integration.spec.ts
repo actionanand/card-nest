@@ -7,7 +7,7 @@ import { DatabaseSession, SqliteDatabase } from '../../core/data/sqlite-database
 import { DATABASE_MIGRATIONS } from '../../core/data/migrations';
 import { RECONCILE_BANK_ACTIVITY_LATEST } from '../../core/data/bank-activity-latest';
 import { CardNestStore } from '../../core/services/card-nest-store';
-import { CardTransaction, PaymentSource } from '../../core/models/domain';
+import { CardTransaction, PaymentSource, SourceTransfer } from '../../core/models/domain';
 import { fingerprintCompleteBankAccount } from '../../core/services/bank-account-identifier';
 import { BankActivityService } from './bank-activity.service';
 import { BankAccountSyncService } from './bank-account-sync.service';
@@ -20,6 +20,7 @@ describe('Latest activity and identity reconciliation with real SQLite', () => {
   let sync: BankAccountSyncService;
   const sources = signal<readonly PaymentSource[]>([]);
   const transactions = signal<readonly CardTransaction[]>([]);
+  const transfers = signal<readonly SourceTransfer[]>([]);
   const testFingerprintKey = new Uint8Array(32).fill(11);
   const finance = () =>
     [
@@ -67,6 +68,7 @@ describe('Latest activity and identity reconciliation with real SQLite', () => {
       for (const statement of migration.statements) sql.exec(statement);
     sources.set([]);
     transactions.set([]);
+    transfers.set([]);
     let tail: Promise<unknown> = Promise.resolve();
     const database = {
       ready: () => true,
@@ -98,6 +100,7 @@ describe('Latest activity and identity reconciliation with real SQLite', () => {
           useValue: {
             paymentSources: sources,
             transactions,
+            transfers,
             fingerprintBankAccount: (value: string) =>
               fingerprintCompleteBankAccount(value, testFingerprintKey),
           },
@@ -110,6 +113,34 @@ describe('Latest activity and identity reconciliation with real SQLite', () => {
   afterEach(() => {
     sql.close();
     vi.restoreAllMocks();
+  });
+  it('does not enroll monitoring from Cash-only tracking and preserves explicit monitoring', async () => {
+    const bank: PaymentSource = {
+      id: 'cash-only-bank',
+      kind: 'DEBIT',
+      institution: 'ICICI Bank',
+      nickname: 'Saved bank',
+      lastDigits: '123',
+      noLimit: true,
+      autoLoad: false,
+      archived: false,
+    };
+    await run("INSERT INTO app_preferences VALUES('payment_sources',?)", [JSON.stringify([bank])]);
+    sources.set([bank]);
+    await run("INSERT INTO app_preferences VALUES('bank_cash_tracking',?)", [
+      JSON.stringify({ enabled: true, bankEnabled: false, cashEnabled: true }),
+    ]);
+    await sync.reconcile();
+    await activity.reload();
+    expect(activity.profiles()).toEqual([]);
+    const explicit = await activity.saveProfile({
+      bankName: 'ICICI Bank',
+      paymentSourceId: bank.id,
+      owner: 'OWN',
+    });
+    await activity.reload();
+    expect(activity.profiles()).toMatchObject([{ id: explicit.id, paymentSourceId: bank.id }]);
+    expect(sources()[0].balanceMinor).toBeUndefined();
   });
   it('retains a completed discovery cursor, reads only new alerts and resumes after interruption', async () => {
     const stage = async (id: string) =>
@@ -303,6 +334,87 @@ describe('Latest activity and identity reconciliation with real SQLite', () => {
     expect(activity.transactionsFor(profile.id)).toEqual([]);
     expect(activity.summaryFor(profile.id, '2026-10-27').lastActivityDate).toBeUndefined();
     expect(await query('SELECT * FROM bank_activity_events')).toHaveLength(0);
+  });
+  it('associates multiple messages only on explicit unique account save, never confirming activity or finance', async () => {
+    const profile = await activity.saveProfile({
+      bankName: 'ICICI',
+      accountSuffix: '123',
+      owner: 'OWN',
+    });
+    await activity.ingestAndroidSms(evidence('identify-a', '2026-10-25'));
+    await activity.ingestAndroidSms(evidence('identify-b', '2026-10-26', 'CREDIT'));
+    const before = finance();
+    await activity.saveProfile({ ...profile, nickname: 'Confirmed account' });
+    expect(activity.candidates()).toHaveLength(2);
+    expect(
+      activity.candidates().every((candidate) => candidate.resolvedProfileId === profile.id),
+    ).toBe(true);
+    expect(activity.events()).toEqual([]);
+    expect(finance()).toEqual(before);
+    const originalSource = sources()[0];
+    const ambiguousSources = [originalSource, { ...originalSource, id: 'same-suffix-other' }];
+    await run("UPDATE app_preferences SET encrypted_value=? WHERE key='payment_sources'", [
+      JSON.stringify(ambiguousSources),
+    ]);
+    sources.set(ambiguousSources);
+    await activity.ingestAndroidSms(evidence('ambiguous-identity', '2026-10-27'));
+    await activity.saveProfile({ ...activity.profiles()[0], nickname: 'Still ambiguous' });
+    expect(
+      activity.candidates().find((candidate) => candidate.fingerprint === 'ambiguous-identity')
+        ?.resolvedAt,
+    ).toBeUndefined();
+    expect(activity.events()).toEqual([]);
+  });
+  it('derives both bank sides of transfers and cash movements without duplicate monitoring events', async () => {
+    const first = await activity.saveProfile({
+      bankName: 'ICICI',
+      accountSuffix: '123',
+      owner: 'OWN',
+    });
+    const second = await activity.saveProfile({
+      bankName: 'HDFC',
+      accountSuffix: '456',
+      owner: 'OWN',
+    });
+    const movement: SourceTransfer = {
+      id: 'own-transfer',
+      kind: 'TRANSFER',
+      fromSourceId: first.paymentSourceId!,
+      toSourceId: second.paymentSourceId!,
+      amountMinor: 1000,
+      currencyCode: 'INR',
+      transferDate: '2026-10-25',
+      origin: 'MANUAL',
+      createdAt: 'before',
+      updatedAt: 'before',
+    };
+    transfers.set([movement, movement]);
+    expect(activity.transfersFor(first.id)).toHaveLength(1);
+    expect(activity.summaryFor(first.id, '2026-10-31').lastActivityDate).toBe('2026-10-25');
+    expect(activity.summaryFor(second.id, '2026-10-31').lastActivityDate).toBe('2026-10-25');
+    transfers.set([
+      {
+        ...movement,
+        id: 'withdraw',
+        kind: 'CASH_WITHDRAWAL',
+        toSourceId: 'source-cash',
+        transferDate: '2026-10-26',
+      },
+      {
+        ...movement,
+        id: 'deposit',
+        kind: 'CASH_DEPOSIT',
+        fromSourceId: 'source-cash',
+        toSourceId: second.paymentSourceId,
+        transferDate: '2026-10-27',
+      },
+    ]);
+    expect(activity.summaryFor(first.id, '2026-10-31').lastActivityDate).toBe('2026-10-26');
+    expect(activity.summaryFor(second.id, '2026-10-31').lastActivityDate).toBe('2026-10-27');
+    transfers.set([{ ...movement, kind: 'LOAN_REPAYMENT' }]);
+    expect(activity.transfersFor(first.id)).toEqual([]);
+    expect(activity.summaryFor(first.id, '2026-10-31').lastActivityDate).toBeUndefined();
+    expect(await query('SELECT * FROM bank_activity_events')).toEqual([]);
   });
 
   it('allows an explicit date correction and rolls back both replacement and dismissal on failure', async () => {

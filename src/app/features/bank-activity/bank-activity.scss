@@ -475,6 +475,11 @@ app-profile-modal .activity-form {
 .latest-activity {
   margin-top: 0.8rem;
 }
+.activity-history {
+  min-width: 0;
+  padding-block: 0.8rem;
+  border-bottom: 1px solid var(--line);
+}
 .latest-activity h3 {
   font-size: 0.9rem;
 }

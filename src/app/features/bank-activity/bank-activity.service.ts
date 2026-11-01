@@ -10,7 +10,7 @@ import {
 import { Service, inject, signal } from '@angular/core';
 import { Capacitor } from '@capacitor/core';
 import { DatabaseSession, SqliteDatabase } from '../../core/data/sqlite-database';
-import { CardTransaction, PaymentSource } from '../../core/models/domain';
+import { CardTransaction, PaymentSource, SourceTransfer } from '../../core/models/domain';
 import { RECONCILE_BANK_ACTIVITY_LATEST } from '../../core/data/bank-activity-latest';
 import { indiaTodayIso } from '../../core/services/india-date';
 import {
@@ -33,6 +33,9 @@ import {
 } from './bank-activity-model';
 
 export interface AndroidBankActivityEvidence {
+  readonly amountMinor?: number;
+  readonly currencyCode?: string;
+  readonly activityTime?: string;
   readonly fingerprint: string;
   readonly activityDate: string;
   readonly kind: string;
@@ -184,7 +187,46 @@ export class BankActivityService {
       createdAt: transaction.createdAt,
       updatedAt: transaction.updatedAt,
     }));
-    return bankActivitySummary([...this.eventsFor(profileId), ...ledgerEvents], today);
+    const sourceId = this.profiles().find((profile) => profile.id === profileId)?.paymentSourceId;
+    const transferEvents = this.transfersFor(profileId).map((transfer) => ({
+      id: `transfer:${transfer.id}`,
+      profileId,
+      activityDate: transfer.transferDate,
+      direction: transfer.fromSourceId === sourceId ? ('DEBIT' as const) : ('CREDIT' as const),
+      origin: 'MANUAL' as const,
+      verification: 'USER_CONFIRMED' as const,
+      createdAt: transfer.createdAt,
+      updatedAt: transfer.updatedAt,
+    }));
+    return bankActivitySummary(
+      [...this.eventsFor(profileId), ...ledgerEvents, ...transferEvents],
+      today,
+    );
+  }
+
+  transfersFor(profileId: string): readonly SourceTransfer[] {
+    const profile = this.profiles().find((item) => item.id === profileId && item.owner === 'OWN');
+    if (!profile?.paymentSourceId) return [];
+    return [
+      ...new Map(
+        (this.store.transfers?.() ?? [])
+          .filter(
+            (transfer) =>
+              ['TRANSFER', 'CASH_WITHDRAWAL', 'CASH_DEPOSIT', 'CARD_SETTLEMENT'].includes(
+                transfer.kind,
+              ) &&
+              validDate(transfer.transferDate) &&
+              (transfer.fromSourceId === profile.paymentSourceId ||
+                transfer.toSourceId === profile.paymentSourceId),
+          )
+          .map((transfer) => [transfer.id, transfer] as const),
+      ).values(),
+    ].sort(
+      (left, right) =>
+        right.transferDate.localeCompare(left.transferDate) ||
+        (right.transferTime ?? '').localeCompare(left.transferTime ?? '') ||
+        left.id.localeCompare(right.id),
+    );
   }
 
   transactionDirection(transaction: CardTransaction): BankActivityDirection | undefined {
@@ -400,6 +442,27 @@ export class BankActivityService {
           timestamp,
         ],
       );
+      if (!profile.archived && !profile.manualOnly) {
+        const currentProfiles = [...records.filter((row) => row.id !== profile.id), profile];
+        const evidenceRows = await tx.query<{ payload: string }>(
+          'SELECT payload FROM bank_activity_candidates',
+        );
+        for (const row of evidenceRows) {
+          const candidate = JSON.parse(row.payload) as BankActivityCandidate;
+          if (
+            candidate.dismissed ||
+            candidate.resolvedAt ||
+            !matchesBank(candidate.bankName, profile.bankName)
+          )
+            continue;
+          const match = activityMatch(candidate, currentProfiles, sources);
+          if (match.state !== 'UNIQUE' || match.suggestedId !== profile.id) continue;
+          await tx.run('UPDATE bank_activity_candidates SET payload=? WHERE fingerprint=?', [
+            JSON.stringify({ ...candidate, resolvedAt: timestamp, resolvedProfileId: profile.id }),
+            candidate.fingerprint,
+          ]);
+        }
+      }
     });
     this.profiles.update((items) => [profile, ...items.filter((item) => item.id !== profile.id)]);
     await this.reload();
@@ -688,6 +751,10 @@ export class BankActivityService {
                 counterpartyAccountDigits: text('counterpartyAccountDigits'),
                 counterpartyAccountMask: text('counterpartyAccountMask'),
                 reference: text('reference'),
+                amountMinor:
+                  typeof item['amountMinor'] === 'number' ? item['amountMinor'] : undefined,
+                currencyCode: text('currency'),
+                activityTime: item['eventTimeExplicit'] === true ? text('eventTime') : undefined,
                 merchant: text('merchant'),
                 dateFallback: false,
                 parserVersion: item['parserVersion'],
@@ -1065,6 +1132,18 @@ export class BankActivityService {
       : undefined;
     const candidate: BankActivityCandidate = {
       fingerprint: input.fingerprint,
+      amountMinor:
+        Number.isSafeInteger(input.amountMinor) && input.amountMinor! > 0
+          ? input.amountMinor
+          : undefined,
+      currencyCode:
+        input.currencyCode && /^[A-Z]{3}$/.test(input.currencyCode)
+          ? input.currencyCode
+          : undefined,
+      activityTime:
+        input.activityTime && /^(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/.test(input.activityTime)
+          ? input.activityTime
+          : undefined,
       activityDate: input.activityDate,
       direction: input.direction,
       bankName: bankDisplayName(input.issuer),
@@ -1135,11 +1214,14 @@ export class BankActivityService {
     const kept = new Set<string>();
     const result: BankActivityCandidate[] = [];
     for (const candidate of pending) {
-      if (candidate.resolvedAt && !recordedFingerprints.has(candidate.fingerprint)) {
+      const match = activityMatch(candidate, profiles, this.store.paymentSources());
+      if (
+        candidate.resolvedAt &&
+        (match.state !== 'UNIQUE' || match.suggestedId !== candidate.resolvedProfileId)
+      ) {
         result.push(candidate);
         continue;
       }
-      const match = activityMatch(candidate, profiles, this.store.paymentSources());
       if (match.state !== 'UNIQUE' || !match.suggestedId) {
         result.push(candidate);
         continue;

@@ -64,6 +64,8 @@ test('WhatsApp integration exposes only the two supported packages and validates
   assert.match(activity, /openWhatsAppIn\(String number, String message, String packageName\)/);
   assert.match(activity, /openWhatsAppFallback\(String number, String message\)/);
   assert.match(activity, /91\[6-9\]\[0-9\]\{9\}/);
+  assert.match(activity, /\[1-9\]\[0-9\]\{6,14\}/);
+  assert.match(activity, /String digits = number == null \? "" : number;/);
   assert.ok(activity.includes('com.whatsapp.w4b'));
 });
 

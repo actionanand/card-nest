@@ -41,6 +41,7 @@ describe('Bank Activity date refresh', () => {
             candidates: signal([]),
             summaryFor: (_profileId: string, today: string) => bankActivitySummary([event], today),
             eventsFor: () => [event],
+            transfersFor: () => [],
             transactionsFor: () => [],
             transactionDirection: () => undefined,
           },

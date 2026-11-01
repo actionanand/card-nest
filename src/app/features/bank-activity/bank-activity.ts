@@ -120,6 +120,17 @@ export class BankActivityPage {
     }));
   });
   readonly reviewCandidates = computed(() => this.activity.candidates());
+  readonly activityEvidenceLimit = signal(20);
+  readonly activityEvidence = computed(() =>
+    this.reviewCandidates()
+      .slice()
+      .sort(
+        (left, right) =>
+          right.activityDate.localeCompare(left.activityDate) ||
+          (right.activityTime ?? '').localeCompare(left.activityTime ?? '') ||
+          left.fingerprint.localeCompare(right.fingerprint),
+      ),
+  );
   readonly evidenceQuery = signal('');
   readonly evidenceFilter = signal('UNRESOLVED');
   readonly evidenceFilterOptions: readonly AppSelectOption[] = [
@@ -613,6 +624,24 @@ export class BankActivityPage {
   bankTransactions(profile: BankActivityProfile): readonly CardTransaction[] {
     return this.activity.transactionsFor(profile.id).slice(0, 5);
   }
+  bankTransfers(profile: BankActivityProfile) {
+    return this.activity.transfersFor(profile.id).slice(0, 5);
+  }
+  movementAmount(amountMinor: number): string {
+    return formatMoney(amountMinor, 'INR');
+  }
+
+  evidenceAmount(candidate: BankActivityCandidate): string {
+    return candidate.amountMinor === undefined
+      ? 'Amount unavailable'
+      : formatMoney(candidate.amountMinor, candidate.currencyCode ?? 'INR');
+  }
+
+  evidenceAccount(candidate: BankActivityCandidate): string {
+    const profileId = candidate.resolvedProfileId ?? this.reviewSelection()[candidate.fingerprint];
+    const profile = this.activity.profiles().find((item) => item.id === profileId);
+    return profile ? this.profileLabel(profile) : 'Account identification pending';
+  }
 
   transactionDirection(transaction: CardTransaction): string {
     return this.activity.transactionDirection(transaction) ?? 'Activity';
@@ -654,6 +683,10 @@ export class BankActivityPage {
   async confirmBankTrackingSetup(event: Event): Promise<void> {
     event.preventDefault();
     if (this.bankTrackingSaving()) return;
+    if (!this.bankTrackingSources().length) {
+      this.bankTrackingError.set('Add a bank account before initializing Bank/UPI tracking.');
+      return;
+    }
     const balances: Record<string, number> = {};
     for (const source of this.bankTrackingSources()) {
       const value = parseMoneyToMinor((this.bankTrackingBalances()[source.id] ?? '').trim());
@@ -892,6 +925,11 @@ export class BankActivityPage {
       });
       this.profileFormOpen.set(false);
       this.activeTab.set(returnToEvidence ? 1 : 0);
+      if (
+        this.route.snapshot.queryParamMap.get('initializeBankTracking') === '1' &&
+        !bankTrackingEnabled(this.store.bankCashTracking())
+      )
+        this.openBankTrackingSetup();
       this.discoveryNotice.set(
         'Monitoring profile saved. Related message suggestions still need individual review and confirmation.',
       );
@@ -1070,6 +1108,13 @@ export class BankActivityPage {
       .find(
         (transaction) => this.activity.transactionDirection(transaction) === direction,
       )?.transactionDate;
-    return [eventDate, transactionDate].filter(Boolean).sort().at(-1) ?? 'Unknown';
+    const transferDate = this.activity
+      .transfersFor(profile.id)
+      .find((transfer) =>
+        direction === 'DEBIT'
+          ? transfer.fromSourceId === profile.paymentSourceId
+          : transfer.toSourceId === profile.paymentSourceId,
+      )?.transferDate;
+    return [eventDate, transactionDate, transferDate].filter(Boolean).sort().at(-1) ?? 'Unknown';
   }
 }

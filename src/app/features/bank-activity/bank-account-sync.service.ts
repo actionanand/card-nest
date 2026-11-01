@@ -1,7 +1,7 @@
 import { Service, inject, signal } from '@angular/core';
 import { SqliteDatabase } from '../../core/data/sqlite-database';
 import { PaymentSource } from '../../core/models/domain';
-import { parseBankCashTracking } from '../../core/services/source-balance';
+import { bankTrackingEnabled, parseBankCashTracking } from '../../core/services/source-balance';
 import { fingerprintsProveDistinct } from '../../core/services/bank-account-identifier';
 import { BankActivityProfile } from './bank-activity-model';
 import { bankDisplayName, finalThree, matchesBank } from './bank-activity-matching';
@@ -20,7 +20,9 @@ export class BankAccountSyncService {
         "SELECT key,encrypted_value FROM app_preferences WHERE key IN ('payment_sources','bank_cash_tracking')",
       );
       const values = new Map(preferences.map((row) => [row.key, row.encrypted_value]));
-      const trackingEnabled = parseBankCashTracking(values.get('bank_cash_tracking')).enabled;
+      const trackingEnabled = bankTrackingEnabled(
+        parseBankCashTracking(values.get('bank_cash_tracking')),
+      );
       const raw: unknown = JSON.parse(values.get('payment_sources') ?? '[]');
       if (!Array.isArray(raw)) throw new Error('Saved Money Sources are invalid.');
       const sources = raw as PaymentSource[];

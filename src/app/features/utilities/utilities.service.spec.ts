@@ -238,6 +238,14 @@ describe('Indian Utilities service', () => {
       distributorContact: '1800-123-4567',
     });
     expect(tollFree.distributorContact).toBe('1800-123-4567');
+    const longContact = '1800-1234-5678-9012-3456';
+    const longProfile = await utilities.saveLpgProfile({
+      ...tollFree,
+      distributorContact: longContact,
+      distributorWhatsApp: longContact,
+    });
+    expect(longProfile.distributorContact).toBe(longContact);
+    expect(longProfile.distributorWhatsApp).toBe(longContact);
     await expect(
       utilities.saveLpgProfile({
         connectionName: 'Another home',

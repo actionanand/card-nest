@@ -137,6 +137,7 @@ describe('Bank profile popup and confirmation-only discovery UI', () => {
     },
     summaryFor: () => bankActivitySummary([], '2026-10-27'),
     eventsFor: () => [],
+    transfersFor: () => [],
     transactionsFor: () => bankTransactions(),
     transactionDirection: (transaction: CardTransaction) =>
       transaction.type === 'PURCHASE' ? 'DEBIT' : 'CREDIT',
@@ -146,6 +147,7 @@ describe('Bank profile popup and confirmation-only discovery UI', () => {
     requestedSourceId.set('');
     requestedDiscoveryFingerprint.set('');
     initializeBankTracking.set('');
+    bankCashTracking.set({ enabled: false, askCardSettlementFunding: false });
     profiles.set([]);
     candidates.set([]);
     bankTransactions.set([]);
@@ -276,6 +278,34 @@ describe('Bank profile popup and confirmation-only discovery UI', () => {
     expect(fixture.nativeElement.textContent).toContain('Review & confirm activity');
     expect(fixture.nativeElement.textContent).not.toContain('Confirm account identity');
     expect(fixture.nativeElement.textContent).toContain('Reference ••••1234');
+    fixture.destroy();
+  });
+  it('shows identified Debit/Credit evidence for explicit monitoring review without financial approval', async () => {
+    profiles.set([profile]);
+    candidates.set([
+      {
+        ...candidate,
+        resolvedAt: 'identified',
+        resolvedProfileId: profile.id,
+        amountMinor: 45000,
+        reference: 'REF1234',
+      },
+    ]);
+    const fixture = TestBed.createComponent(BankActivityPage);
+    fixture.componentInstance.activeTab.set(2);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const panel = fixture.nativeElement.querySelector('#bank-panel-2') as HTMLElement;
+    expect(panel.textContent).toContain('450.00');
+    expect(panel.textContent).toContain('••••1234');
+    expect(panel.textContent).toContain('Financial approval is separate');
+    const review = [...panel.querySelectorAll('button')].find((button) =>
+      button.textContent?.includes('Review Debit'),
+    )!;
+    review.click();
+    fixture.detectChanges();
+    expect(fixture.componentInstance.confirmation()).not.toBeNull();
+    expect(activity.approveCandidate).not.toHaveBeenCalled();
     fixture.destroy();
   });
   it('requires explicit confirmation before setting another bank as primary', async () => {
@@ -668,7 +698,7 @@ describe('Bank profile popup and confirmation-only discovery UI', () => {
     profiles.set([profile]);
     const fixture = TestBed.createComponent(BankActivityPage);
     const page = fixture.componentInstance;
-    page.activeTab.set(2);
+    page.activeTab.set(0);
     fixture.detectChanges();
     await fixture.whenStable();
     const trigger = [
@@ -684,6 +714,8 @@ describe('Bank profile popup and confirmation-only discovery UI', () => {
       'app-profile-modal dialog[open]',
     ) as HTMLElement;
     expect(dialog).not.toBeNull();
+    expect(dialog.closest('[hidden]')).toBeNull();
+    expect(dialog.contains(document.activeElement)).toBe(true);
     expect(dialog.textContent).toContain('ICICI Bank · •••123');
     expect(dialog.textContent).toContain('monitoring evidence, not a financial transaction');
     expect(dialog.textContent).toContain('does not change balances, purchases, or imports');
@@ -699,7 +731,7 @@ describe('Bank profile popup and confirmation-only discovery UI', () => {
     activity.saveManualEvent.mockRejectedValueOnce(new Error('Synthetic activity write failure'));
     const fixture = TestBed.createComponent(BankActivityPage);
     const page = fixture.componentInstance;
-    page.activeTab.set(2);
+    page.activeTab.set(0);
     fixture.detectChanges();
     await fixture.whenStable();
     const trigger = [
@@ -717,6 +749,101 @@ describe('Bank profile popup and confirmation-only discovery UI', () => {
     ).toContain('Synthetic activity write failure');
     expect(fixture.nativeElement.querySelector('.bank-activity-page > p[role="alert"]')).toBeNull();
     fixture.destroy();
+  });
+  it.each(['DEBIT', 'CREDIT'] as const)(
+    'saves %s monitoring from a saved bank on Discovered Accounts only',
+    async (direction) => {
+      sources.set([
+        {
+          id: 'saved-bank',
+          kind: 'DEBIT',
+          institution: 'ICICI Bank',
+          nickname: 'Saved bank',
+          lastDigits: '123',
+          balanceMinor: 12000,
+          noLimit: true,
+          autoLoad: false,
+          archived: false,
+        },
+      ]);
+      profiles.set([{ ...profile, paymentSourceId: 'saved-bank' }]);
+      const before = structuredClone(sources());
+      const fixture = TestBed.createComponent(BankActivityPage);
+      fixture.detectChanges();
+      const trigger = [...fixture.nativeElement.querySelectorAll('#bank-panel-0 button')].find(
+        (button: HTMLButtonElement) => button.textContent?.includes('Record activity'),
+      ) as HTMLButtonElement;
+      trigger.focus();
+      trigger.click();
+      fixture.detectChanges();
+      await fixture.whenStable();
+      const dialog = fixture.nativeElement.querySelector(
+        'app-profile-modal dialog[open]',
+      ) as HTMLElement;
+      expect(dialog.closest('[hidden]')).toBeNull();
+      expect(dialog.contains(document.activeElement)).toBe(true);
+      fixture.componentInstance.eventForm.controls.direction.setValue(direction);
+      dialog
+        .querySelector('form')!
+        .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+      await fixture.whenStable();
+      fixture.detectChanges();
+      expect(activity.saveManualEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ direction, profileId: profile.id }),
+      );
+      expect(sources()).toEqual(before);
+      expect(bankTransactions()).toEqual([]);
+      expect(activity.approveCandidate).not.toHaveBeenCalled();
+      fixture.destroy();
+    },
+  );
+  it.each(['Cancel', 'Escape', 'Back'])(
+    'closes tab-0 monitoring using %s without saving',
+    async (method) => {
+      profiles.set([profile]);
+      const fixture = TestBed.createComponent(BankActivityPage);
+      fixture.detectChanges();
+      const trigger = [...fixture.nativeElement.querySelectorAll('#bank-panel-0 button')].find(
+        (button: HTMLButtonElement) => button.textContent?.includes('Record activity'),
+      ) as HTMLButtonElement;
+      trigger.focus();
+      trigger.click();
+      fixture.detectChanges();
+      await fixture.whenStable();
+      const dialog = fixture.nativeElement.querySelector(
+        'app-profile-modal dialog[open]',
+      ) as HTMLElement;
+      if (method === 'Cancel')
+        (dialog.querySelector('.modal-actions button') as HTMLButtonElement).click();
+      else if (method === 'Escape')
+        dialog.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
+        );
+      else window.dispatchEvent(new Event('cardnest:back', { cancelable: true }));
+      fixture.detectChanges();
+      await fixture.whenStable();
+      expect(fixture.componentInstance.eventProfileId()).toBeNull();
+      expect(activity.saveManualEvent).not.toHaveBeenCalled();
+      expect(document.activeElement).toBe(trigger);
+      fixture.destroy();
+    },
+  );
+  it('keeps empty bank initialization disabled through Cancel and route re-entry', async () => {
+    initializeBankTracking.set('1');
+    for (let entry = 0; entry < 2; entry++) {
+      const fixture = TestBed.createComponent(BankActivityPage);
+      fixture.detectChanges();
+      await fixture.whenStable();
+      const page = fixture.componentInstance;
+      await page.confirmBankTrackingSetup(new Event('submit'));
+      expect(enableBankTracking).not.toHaveBeenCalled();
+      expect(page.bankTrackingError()).toContain('Add a bank account');
+      expect(fixture.nativeElement.textContent).toContain('tracking stays off');
+      page.bankTrackingSetupOpen.set(false);
+      expect(bankCashTracking().enabled).toBe(false);
+      expect(sources()).toEqual([]);
+      fixture.destroy();
+    }
   });
   it('opens one provisional discovery for related evidence, prefills only identity and preserves it on Cancel', async () => {
     candidates.set([candidate, { ...candidate, fingerprint: 'second' }]);

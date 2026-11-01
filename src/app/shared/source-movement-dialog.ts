@@ -1,4 +1,15 @@
-import { Component, OnInit, computed, effect, inject, input, output, signal } from '@angular/core';
+import {
+  Component,
+  ElementRef,
+  OnInit,
+  computed,
+  effect,
+  inject,
+  input,
+  output,
+  signal,
+  viewChild,
+} from '@angular/core';
 import { BalanceTiming, SourceTransfer } from '../core/models/domain';
 import { CardNestStore } from '../core/services/card-nest-store';
 import { formatMoney, parseMoneyToMinor } from '../core/services/money';
@@ -12,6 +23,7 @@ import {
 import { SnackbarService } from '../core/services/snackbar.service';
 import { AppIcon } from './app-icon';
 import { AppSelectOption, AppSelectPicker } from './app-select-picker';
+import { lockDocumentScroll } from './document-scroll-lock';
 
 export type SourceMovementMode = 'RECEIPT' | 'TRANSFER' | 'BALANCE' | 'ADD_MONEY';
 
@@ -19,6 +31,7 @@ export type SourceMovementMode = 'RECEIPT' | 'TRANSFER' | 'BALANCE' | 'ADD_MONEY
 @Component({
   selector: 'app-source-movement-dialog',
   imports: [AppIcon, AppSelectPicker],
+  host: { '(window:cardnest:back)': 'back($event)' },
   template: `
     <div
       class="movement-backdrop"
@@ -27,13 +40,14 @@ export type SourceMovementMode = 'RECEIPT' | 'TRANSFER' | 'BALANCE' | 'ADD_MONEY
       (keydown.escape)="$event.stopPropagation(); close()"
     >
       <section
+        #movementDialog
         class="panel movement-dialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby="movement-title"
         tabindex="-1"
         (click)="$event.stopPropagation()"
-        (keydown)="$event.stopPropagation()"
+        (keydown)="key($event)"
       >
         <header class="movement-heading">
           <div>
@@ -71,7 +85,9 @@ export type SourceMovementMode = 'RECEIPT' | 'TRANSFER' | 'BALANCE' | 'ADD_MONEY
               mode() === 'BALANCE'
                 ? 'Actual current balance (INR)'
                 : mode() === 'ADD_MONEY'
-                  ? 'Amount to add (INR)'
+                  ? source()?.kind === 'CASH'
+                    ? 'Amount: ₹'
+                    : 'Amount to add (INR)'
                   : 'Amount (INR)'
             }}<input
               inputmode="decimal"
@@ -79,6 +95,16 @@ export type SourceMovementMode = 'RECEIPT' | 'TRANSFER' | 'BALANCE' | 'ADD_MONEY
               (input)="amount.set(value($event))"
               required
           /></label>
+          @if (mode() === 'ADD_MONEY' && source()?.kind === 'CASH') {
+            <label class="timing-review">
+              <input
+                type="checkbox"
+                [checked]="replaceCashBalance()"
+                (change)="replaceCashBalance.set($any($event.target).checked)"
+              />
+              Set available balance to this amount
+            </label>
+          }
           @if (mode() === 'RECEIPT' || mode() === 'TRANSFER') {
             <label
               >Date<input type="date" [value]="date()" (input)="date.set(value($event))" required
@@ -276,6 +302,7 @@ export type SourceMovementMode = 'RECEIPT' | 'TRANSFER' | 'BALANCE' | 'ADD_MONEY
   `,
 })
 export class SourceMovementDialog implements OnInit {
+  private readonly dialog = viewChild<ElementRef<HTMLElement>>('movementDialog');
   readonly store = inject(CardNestStore);
   private readonly snackbar = inject(SnackbarService);
   readonly mode = input.required<SourceMovementMode>();
@@ -287,6 +314,12 @@ export class SourceMovementDialog implements OnInit {
   readonly fromId = signal('');
   readonly toId = signal('');
   readonly amount = signal('');
+  readonly replaceCashBalance = signal(false);
+  readonly replacesBalance = computed(
+    () =>
+      this.mode() === 'BALANCE' ||
+      (this.mode() === 'ADD_MONEY' && this.source()?.kind === 'CASH' && this.replaceCashBalance()),
+  );
   readonly date = signal(indiaTodayIso());
   readonly time = signal('');
   readonly description = signal('');
@@ -301,6 +334,17 @@ export class SourceMovementDialog implements OnInit {
   private draftId: string = crypto.randomUUID();
   private initialized = false;
   constructor() {
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    effect((cleanup) => {
+      const dialog = this.dialog()?.nativeElement;
+      if (!dialog) return;
+      const unlock = lockDocumentScroll();
+      queueMicrotask(() => dialog.querySelector<HTMLInputElement>('input')?.focus());
+      cleanup(() => {
+        unlock();
+        if (previous?.isConnected) previous.focus();
+      });
+    });
     effect(() => {
       this.fromId();
       this.toId();
@@ -395,8 +439,10 @@ export class SourceMovementDialog implements OnInit {
     const initialized =
       bankCashTracked(source, this.store.bankCashTracking()) ||
       (source.kind === 'MEAL' && !source.noLimit && !!source.balanceCutoverAt);
-    if (this.mode() === 'ADD_MONEY')
+    if (this.mode() === 'ADD_MONEY' && !this.replacesBalance())
       return `Current ${formatMoney(source.balanceMinor ?? 0, 'INR')} + ${formatMoney(value, 'INR')} = ${formatMoney((source.balanceMinor ?? 0) + value, 'INR')}. This is an audited balance change, not income or spending.`;
+    if (this.replacesBalance())
+      return `Available balance will be set to ${formatMoney(value, 'INR')} instead of adding to ${formatMoney(source.balanceMinor ?? 0, 'INR')}. This is an audited correction, not income or spending.`;
     if (!initialized) return 'This sets the starting balance. Older entries are not replayed.';
     const correction = value - (source.balanceMinor ?? 0);
     return `Calculated ${formatMoney(source.balanceMinor ?? 0, 'INR')}. A ${correction < 0 ? '−' : '+'}${formatMoney(Math.abs(correction), 'INR')} correction is saved for audit; it is not income or spending.`;
@@ -450,6 +496,35 @@ export class SourceMovementDialog implements OnInit {
   close(): void {
     if (!this.saving()) this.closed.emit();
   }
+  back(event: Event): void {
+    if (event.defaultPrevented || document.querySelector('app-select-picker dialog[open]')) return;
+    event.preventDefault();
+    this.close();
+  }
+  key(event: KeyboardEvent): void {
+    event.stopPropagation();
+    if (document.querySelector('app-select-picker dialog[open]')) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      this.close();
+      return;
+    }
+    if (event.key !== 'Tab') return;
+    const controls = [
+      ...this.dialog()!.nativeElement.querySelectorAll<HTMLElement>(
+        'button:not([disabled]),input:not([disabled]),textarea:not([disabled]),[tabindex="0"]',
+      ),
+    ].filter((control) => !control.closest('[hidden]'));
+    const first = controls[0],
+      last = controls.at(-1);
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last?.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first?.focus();
+    }
+  }
 
   async submit(event: Event): Promise<void> {
     event.preventDefault();
@@ -462,7 +537,7 @@ export class SourceMovementDialog implements OnInit {
       return;
     }
     const amount = parseMoneyToMinor(this.amount().trim());
-    if (amount === null || (this.mode() !== 'BALANCE' && amount <= 0)) {
+    if (amount === null || (!this.replacesBalance() && amount <= 0)) {
       this.error.set('Enter a valid amount.');
       return;
     }
@@ -470,7 +545,7 @@ export class SourceMovementDialog implements OnInit {
     this.saving.set(true);
     const timing = this.timingNeeded() ? this.timing() || undefined : undefined;
     try {
-      if (this.mode() === 'BALANCE') {
+      if (this.replacesBalance()) {
         await this.store.setSourceBalance(this.sourceId(), amount, this.description());
         this.snackbar.show('Balance saved. The correction is recorded for audit.');
       } else if (this.mode() === 'ADD_MONEY') {

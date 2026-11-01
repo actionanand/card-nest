@@ -109,6 +109,34 @@ describe('Bank/UPI review model', () => {
     expect(bankSourceConflict(unknownIssuer, sources[2])).toBe('');
     expect(bankSourceConflict(evidence(), sources[2])).toContain('bank differs');
   });
+  it.each([
+    ['Canara', 'Citibank'],
+    ['Citi', 'City Union Bank'],
+    ['Indian Bank', 'Indian Overseas Bank'],
+    ['IOB', 'Indian Bank'],
+  ])('rejects shared-suffix cross-bank matches for %s versus %s', (issuer, institution) => {
+    const saved = account({ institution, lastDigits: '417' });
+    expect(matchingBankAccounts(evidence({ issuer }), [saved])).toEqual([]);
+    expect(bankSourceConflict(evidence({ issuer }), saved)).toContain('bank differs');
+  });
+  it('uses registry abbreviations while keeping missing and ambiguous identities unproven', () => {
+    const saved = account({ institution: 'State Bank of India', lastDigits: '417' });
+    expect(suggestedBankSources(evidence({ issuer: 'SBI' }), [saved], on)).toEqual([saved.id]);
+    expect(
+      matchingBankAccounts(evidence({ issuer: 'SBI', accountDigits: undefined }), [saved]),
+    ).toEqual([]);
+    expect(
+      suggestedBankSources(evidence({ issuer: 'SBI' }), [saved, { ...saved, id: 'second' }], on),
+    ).toEqual([]);
+    expect(
+      suggestedBankSources(
+        evidence({ issuer: 'SBI' }),
+        [saved, { ...saved, id: 'archived', archived: true }],
+        on,
+      ),
+    ).toEqual([]);
+    expect(ledgerType(evidence({ issuer: 'SBI' }))).toBeUndefined();
+  });
   it('rejects shared-suffix suggestions for Yes Bank, IndusInd and explicit regional bank conflicts', () => {
     const hdfc = account({ id: 'hdfc', institution: 'HDFC Bank', lastDigits: '417' });
     const icici = account({ id: 'icici', institution: 'ICICI Bank', lastDigits: '417' });

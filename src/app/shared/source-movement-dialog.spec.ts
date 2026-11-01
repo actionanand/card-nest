@@ -46,9 +46,11 @@ describe('Movement timing selection', () => {
   };
   const saveTransfer = vi.fn().mockResolvedValue(saved);
   const addSourceBalance = vi.fn().mockResolvedValue(undefined);
+  const setSourceBalance = vi.fn().mockResolvedValue(undefined);
   beforeEach(() => {
     saveTransfer.mockReset().mockResolvedValue(saved);
     addSourceBalance.mockReset().mockResolvedValue(undefined);
+    setSourceBalance.mockReset().mockResolvedValue(undefined);
     TestBed.configureTestingModule({
       providers: [
         {
@@ -61,6 +63,7 @@ describe('Movement timing selection', () => {
             sourceDetail: (id: string) => id,
             saveTransfer,
             addSourceBalance,
+            setSourceBalance,
           },
         },
       ],
@@ -136,4 +139,47 @@ describe('Movement timing selection', () => {
     expect(saveTransfer).not.toHaveBeenCalled();
     fixture.destroy();
   });
+  it('replaces Cash with the checked amount including zero without calling additive posting', async () => {
+    const fixture = TestBed.createComponent(SourceMovementDialog);
+    fixture.componentRef.setInput('mode', 'ADD_MONEY');
+    fixture.componentRef.setInput('sourceId', 'cash');
+    fixture.detectChanges();
+    const page = fixture.componentInstance;
+    expect(page.replaceCashBalance()).toBe(false);
+    const checkbox = fixture.nativeElement.querySelector(
+      'input[type="checkbox"]',
+    ) as HTMLInputElement;
+    checkbox.click();
+    page.amount.set('0');
+    fixture.detectChanges();
+    expect(page.balancePreview()).toContain('instead of adding');
+    await page.submit(new Event('submit'));
+    expect(setSourceBalance).toHaveBeenCalledWith('cash', 0, '');
+    expect(addSourceBalance).not.toHaveBeenCalled();
+    expect(saveTransfer).not.toHaveBeenCalled();
+    fixture.destroy();
+  });
+  it.each(['Escape', 'Back'])(
+    'focuses the Cash amount and supports %s dismissal without posting',
+    async (method) => {
+      const fixture = TestBed.createComponent(SourceMovementDialog);
+      fixture.componentRef.setInput('mode', 'ADD_MONEY');
+      fixture.componentRef.setInput('sourceId', 'cash');
+      const closed = vi.fn();
+      fixture.componentInstance.closed.subscribe(closed);
+      fixture.detectChanges();
+      await fixture.whenStable();
+      const input = fixture.nativeElement.querySelector('input') as HTMLInputElement;
+      expect(document.activeElement).toBe(input);
+      if (method === 'Escape')
+        input.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
+        );
+      else window.dispatchEvent(new Event('cardnest:back', { cancelable: true }));
+      expect(closed).toHaveBeenCalledOnce();
+      expect(addSourceBalance).not.toHaveBeenCalled();
+      expect(setSourceBalance).not.toHaveBeenCalled();
+      fixture.destroy();
+    },
+  );
 });

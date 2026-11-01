@@ -12,6 +12,8 @@ import {
 } from '../../core/models/domain';
 import { purchaseCompatible } from './sms-purchase-matching';
 import { matchesTransactionType } from '../../core/services/money';
+import { normalizedBank, recognizedBank } from '../../core/services/bank-account-identifier';
+export { bankDisplayName } from '../../core/services/bank-account-identifier';
 import { bankTrackingEnabled } from '../../core/services/source-balance';
 
 export type SmsKind =
@@ -363,28 +365,6 @@ export function defaultBankPurpose(
   return '';
 }
 
-export function bankDisplayName(issuer: string | undefined): string | undefined {
-  if (!issuer) return undefined;
-  const names: Record<string, string> = {
-    hsbc: 'HSBC',
-    icici: 'ICICI Bank',
-    hdfc: 'HDFC Bank',
-    axis: 'Axis Bank',
-    pnb: 'Punjab National Bank',
-    scb: 'Standard Chartered',
-    federal: 'Federal Bank',
-    idfc: 'IDFC FIRST Bank',
-    au: 'AU Small Finance Bank',
-    kotak: 'Kotak Mahindra Bank',
-    sbi: 'State Bank of India',
-    bob: 'Bank of Baroda',
-    slice: 'Slice',
-    yes: 'Yes Bank',
-    indusind: 'IndusInd Bank',
-  };
-  return names[normalizedIssuer(issuer)] ?? issuer;
-}
-
 /** Masks expose 3–5 trailing digits; the shorter value must be the tail of the longer one. */
 export function accountSuffixMatches(left: string | undefined, right: string | undefined): boolean {
   if (!left || !right) return false;
@@ -395,30 +375,12 @@ export function accountSuffixMatches(left: string | undefined, right: string | u
 function bankConflicts(source: PaymentSource, issuer: string | undefined): boolean {
   const institution = source.institution?.trim();
   if (!issuer || !institution || institution === 'Primary bank') return false;
-  const left = normalizedIssuer(institution);
-  const right = normalizedIssuer(issuer);
-  const knownBanks = new Set([
-    'hsbc',
-    'icici',
-    'hdfc',
-    'axis',
-    'pnb',
-    'scb',
-    'federal',
-    'idfc',
-    'au',
-    'kotak',
-    'rbl',
-    'sbi',
-    'bob',
-    'slice',
-    'yes',
-    'indusind',
-  ]);
+  const left = normalizedBank(institution);
+  const right = normalizedBank(issuer);
   const explicitBankName = /\b(bank|banc|credit union|small finance|financial institution)\b/i.test(
     issuer,
   );
-  const trustworthyIssuer = knownBanks.has(right) || explicitBankName;
+  const trustworthyIssuer = recognizedBank(issuer) || explicitBankName;
   return trustworthyIssuer && !!left && !!right && left !== right;
 }
 

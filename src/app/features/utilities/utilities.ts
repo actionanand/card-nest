@@ -187,11 +187,11 @@ export class UtilitiesPage {
     }),
     distributorContact: new FormControl('', {
       nonNullable: true,
-      validators: [Validators.maxLength(40), Validators.pattern(/^(?:|\+?[0-9][0-9\s()-]*)$/)],
+      validators: [Validators.maxLength(80), Validators.pattern(/^(?:|\+?[0-9\s()-]+)$/)],
     }),
     distributorWhatsApp: new FormControl('', {
       nonNullable: true,
-      validators: [Validators.maxLength(40), Validators.pattern(/^(?:|\+?[0-9][0-9\s()-]*)$/)],
+      validators: [Validators.maxLength(80), Validators.pattern(/^(?:|\+?[0-9\s()-]+)$/)],
     }),
     cylinderSize: new FormControl<LpgProfile['cylinderSize']>('NORMAL', { nonNullable: true }),
     estimatedUsageDays: new FormControl('25', {

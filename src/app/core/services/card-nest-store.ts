@@ -1970,6 +1970,8 @@ export class CardNestStore {
               source.institution !== 'Primary bank'
             : source.kind === 'CASH' && !source.archived,
       );
+      if (scope === 'BANK' && !selected.length)
+        throw new Error('Add a bank account before initializing Bank/UPI tracking.');
       for (const source of selected) {
         const value = balances[source.id];
         // Unconfirmed balances stay unknown; the previous value is kept for reference only.

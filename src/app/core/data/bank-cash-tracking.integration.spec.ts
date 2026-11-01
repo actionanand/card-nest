@@ -1852,6 +1852,8 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
   });
 
   it('retries an unfunded payment after commit failure once and identifies committed refresh failures', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(`${today}T06:30:00Z`));
     const { store } = await boot();
     store.addCard(card);
     await settle();
@@ -2665,6 +2667,8 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
   });
 
   it('retries only the failed card after a partially completed linked reminder payment', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(`${today}T06:30:00Z`));
     const { store } = await boot();
     const second = { ...card, id: 'fiction-second', nickname: 'Second' };
     store.addCard(card);
@@ -3378,6 +3382,18 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     expect(activity.summaryFor(profile.id, '2026-10-31').lastActivityDate).toBe('2026-10-27');
     expect(rows('SELECT * FROM bank_activity_events')).toHaveLength(0);
   });
+  it('rejects bank initialization with no real accounts across restart without financial writes', async () => {
+    const { store } = await boot();
+    const before = financialState();
+    const sourcesBefore = store.paymentSources();
+    await expect(store.enableBankTracking({})).rejects.toThrow('Add a bank account');
+    const restarted = TestBed.runInInjectionContext(() => new CardNestStore());
+    await restarted.initialisePreferences();
+    await expect(restarted.enableBankTracking({})).rejects.toThrow('Add a bank account');
+    expect(restarted.bankCashTracking().bankEnabled).toBe(false);
+    expect(restarted.paymentSources()).toEqual(sourcesBefore);
+    expect(financialState()).toEqual(before);
+  });
 
   it('confirms primary switches, replaces an archived primary and normalizes restored flags', async () => {
     const { store } = await boot();
@@ -3770,6 +3786,8 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
   });
 
   it('funds a card payment from a bank once, without spending, and reverses it on edit/delete', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(`${today}T06:30:00Z`));
     const { store, review, balance } = await boot();
     store.addCard(card);
     await settle();

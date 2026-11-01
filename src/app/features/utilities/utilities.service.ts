@@ -71,8 +71,8 @@ export function normalizeInternationalPhoneNumber(value: string): string | undef
 function preserveInternationalPhoneDisplay(value: string): string | undefined {
   const trimmed = value.trim();
   if (!trimmed) return undefined;
-  if (!normalizeInternationalPhoneNumber(trimmed))
-    throw new Error('Enter a valid contact number with 7 to 15 digits.');
+  if (trimmed.length > 80 || !/^\+?[0-9\s()-]+$/.test(trimmed) || !/\d/.test(trimmed))
+    throw new Error('Enter a valid contact number of up to 80 characters.');
   return trimmed;
 }
 
