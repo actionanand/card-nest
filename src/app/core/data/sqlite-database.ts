@@ -123,6 +123,7 @@ export class SqliteDatabase {
   private writeQueue: Promise<void> = Promise.resolve();
   readonly ready = signal(false);
   readonly unavailableReason = signal<string | null>(null);
+  readonly discoveryCleanupWarning = signal<string | null>(null);
 
   async initialise(): Promise<void> {
     try {
@@ -300,6 +301,7 @@ export class SqliteDatabase {
   }
 
   async restoreBackupJson(json: string): Promise<void> {
+    this.discoveryCleanupWarning.set(null);
     await this.exclusive(async () => {
       await this.restoreBackupJsonUnqueued(json);
     });
@@ -339,7 +341,6 @@ export class SqliteDatabase {
       await this.initialise();
       if (!this.ready()) throw new Error('The restored database could not be opened.');
       await this.assertConsumerWalletLimit();
-      await clearPlatformDiscovery();
       await CapacitorSQLite.run({
         database: this.databaseName,
         statement: `INSERT INTO app_preferences(key,encrypted_value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET encrypted_value=excluded.encrypted_value`,
@@ -359,6 +360,7 @@ export class SqliteDatabase {
       }
       throw error;
     }
+    await this.clearPlatformDiscoveryAfterCommit();
   }
 
   private async closeCurrentDatabase(): Promise<void> {
@@ -532,7 +534,8 @@ export class SqliteDatabase {
     const attachmentIds = await Promise.all(
       storedAttachmentIds.map(async (attachment: unknown, index: number) => {
         if (typeof attachment !== 'string' || attachment.startsWith('data:')) return attachment;
-        if (!/^(?:[a-z][a-z0-9+.-]*:\/\/|\/)/i.test(attachment)) return attachment;
+        if (!attachment.startsWith('blob:') && !/^(?:[a-z][a-z0-9+.-]*:\/\/|\/)/i.test(attachment))
+          return attachment;
         try {
           const response = await fetch(attachment);
           if (!response.ok) throw new Error(`Receipt request returned ${response.status}.`);
@@ -588,7 +591,6 @@ export class SqliteDatabase {
         `This backup exceeds the configured limit of ${this.environment.maxWallets} active consumer wallets.`,
       );
 
-    if (options.clearDiscovery !== false) await clearPlatformDiscovery();
     await CapacitorSQLite.beginTransaction({ database: this.databaseName });
     try {
       await CapacitorSQLite.execute({
@@ -690,6 +692,7 @@ export class SqliteDatabase {
       throw error;
     }
     if (this.isWeb) await CapacitorSQLite.saveToStore({ database: this.databaseName });
+    if (options.clearDiscovery !== false) await this.clearPlatformDiscoveryAfterCommit();
   }
 
   private isRecord(value: unknown): value is Record<string, unknown> {
@@ -707,6 +710,18 @@ export class SqliteDatabase {
       throw new Error(
         `This backup exceeds the configured limit of ${this.environment.maxWallets} active consumer wallets.`,
       );
+  }
+
+  private async clearPlatformDiscoveryAfterCommit(): Promise<void> {
+    try {
+      await clearPlatformDiscovery();
+      this.discoveryCleanupWarning.set(null);
+    } catch (error: unknown) {
+      const detail = error instanceof Error ? ` (${error.message})` : '';
+      this.discoveryCleanupWarning.set(
+        `Backup data was restored, but pending Android SMS discovery evidence could not be cleared and remains available.${detail}`,
+      );
+    }
   }
 
   private async initialiseWebStore(): Promise<void> {

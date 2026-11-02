@@ -1,5 +1,5 @@
 import { TestBed } from '@angular/core/testing';
-import { provideRouter } from '@angular/router';
+import { provideRouter, Router } from '@angular/router';
 import { SourcesPage } from './sources';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { SqliteDatabase } from '../../core/data/sqlite-database';
@@ -54,6 +54,138 @@ describe('FASTag source visibility and management relocation', () => {
     fixture.componentInstance.showSourceActivity(fastag.id);
     fixture.detectChanges();
     expect(fixture.componentInstance.visibleTransactions()).toEqual([toll]);
+    fixture.destroy();
+  });
+  it('navigates FASTag transactions to their wallet without changing other source routes', () => {
+    const fixture = setup();
+    const store = TestBed.inject(CardNestStore);
+    const fastag: PaymentSource = {
+      id: 'preserved-fastag-source',
+      kind: 'FASTAG',
+      nickname: 'Synthetic vehicle',
+      vehicleNumber: 'FICT001',
+      noLimit: false,
+      balanceMinor: 12000,
+      autoLoad: false,
+      archived: true,
+    };
+    store.paymentSources.set([
+      fastag,
+      {
+        id: 'synthetic-bank',
+        kind: 'DEBIT',
+        nickname: 'Synthetic bank',
+        noLimit: true,
+        autoLoad: false,
+        archived: false,
+      },
+      {
+        id: 'synthetic-meal',
+        kind: 'MEAL',
+        nickname: 'Synthetic Pluxee',
+        noLimit: false,
+        autoLoad: false,
+        archived: false,
+      },
+    ]);
+    const card = { id: 'synthetic-card' } as CreditCard;
+    store.cards.set([card]);
+    const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+    const transactions = TestBed.createComponent(TransactionsPage);
+    const transaction = (id: string, cardId: string): CardTransaction => ({
+      id,
+      cardId,
+      type: 'PURCHASE',
+      amountMinor: 1200,
+      currencyCode: 'INR',
+      transactionDate: '2026-10-25',
+      categoryId: 'other',
+      attachmentIds: [],
+      createdAt: '2026-10-25T10:00:00Z',
+      updatedAt: '2026-10-25T10:00:00Z',
+    });
+
+    const toll = transaction('archived-fastag-toll-record', fastag.id);
+    transactions.componentInstance.goToSource(toll);
+    expect(navigate).toHaveBeenLastCalledWith(['/wallets'], {
+      queryParams: { source: fastag.id, transaction: toll.id },
+    });
+    navigate.mockClear();
+    transactions.componentInstance.goToSource(transaction('bank-transaction', 'synthetic-bank'));
+    expect(navigate).toHaveBeenLastCalledWith(['/sources'], { fragment: 'synthetic-bank' });
+    navigate.mockClear();
+    transactions.componentInstance.goToSource(transaction('meal-transaction', 'synthetic-meal'));
+    expect(navigate).toHaveBeenLastCalledWith(['/sources'], { fragment: 'synthetic-meal' });
+    navigate.mockClear();
+    transactions.componentInstance.goToSource(transaction('card-transaction', card.id));
+    expect(navigate).toHaveBeenLastCalledWith(['/cards'], { queryParams: { open: card.id } });
+    transactions.destroy();
+    fixture.destroy();
+  });
+  it('routes FASTag transactions to their Wallets record and preserves other source routes', () => {
+    const fixture = setup();
+    const store = TestBed.inject(CardNestStore);
+    const fastag: PaymentSource = {
+      id: 'preserved-fastag-source',
+      kind: 'FASTAG',
+      nickname: 'Synthetic vehicle',
+      vehicleNumber: 'FICT001',
+      noLimit: false,
+      balanceMinor: 12000,
+      autoLoad: false,
+      archived: true,
+    };
+    store.paymentSources.set([
+      fastag,
+      {
+        id: 'synthetic-bank',
+        kind: 'DEBIT',
+        nickname: 'Synthetic bank',
+        noLimit: true,
+        autoLoad: false,
+        archived: false,
+      },
+      {
+        id: 'synthetic-meal',
+        kind: 'MEAL',
+        nickname: 'Synthetic Pluxee',
+        noLimit: false,
+        autoLoad: false,
+        archived: false,
+      },
+    ]);
+    const card = { id: 'synthetic-card' } as CreditCard;
+    store.cards.set([card]);
+    const router = TestBed.inject(Router);
+    const navigate = vi.spyOn(router, 'navigate').mockResolvedValue(true);
+    const page = TestBed.createComponent(TransactionsPage).componentInstance;
+    const transaction = (id: string, cardId: string): CardTransaction => ({
+      id,
+      cardId,
+      type: 'PURCHASE',
+      amountMinor: 1200,
+      currencyCode: 'INR',
+      transactionDate: '2026-10-25',
+      categoryId: 'other',
+      attachmentIds: [],
+      createdAt: '2026-10-25T10:00:00Z',
+      updatedAt: '2026-10-25T10:00:00Z',
+    });
+
+    const toll = transaction('archived-fastag-toll-record', fastag.id);
+    page.goToSource(toll);
+    expect(navigate).toHaveBeenLastCalledWith(['/wallets'], {
+      queryParams: { source: fastag.id, transaction: toll.id },
+    });
+    navigate.mockClear();
+    page.goToSource(transaction('bank-transaction', 'synthetic-bank'));
+    expect(navigate).toHaveBeenLastCalledWith(['/sources'], { fragment: 'synthetic-bank' });
+    navigate.mockClear();
+    page.goToSource(transaction('meal-transaction', 'synthetic-meal'));
+    expect(navigate).toHaveBeenLastCalledWith(['/sources'], { fragment: 'synthetic-meal' });
+    navigate.mockClear();
+    page.goToSource(transaction('card-transaction', card.id));
+    expect(navigate).toHaveBeenLastCalledWith(['/cards'], { queryParams: { open: card.id } });
     fixture.destroy();
   });
   it('routes bank enrollment and identity editing to Discovered Accounts', () => {

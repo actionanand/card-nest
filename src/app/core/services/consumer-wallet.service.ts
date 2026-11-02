@@ -55,6 +55,8 @@ export class ConsumerWalletService {
   readonly events = signal<readonly ConsumerWalletEvent[]>([]);
   readonly allocations = signal<readonly ConsumerWalletEventAllocation[]>([]);
   readonly featureState = signal<WalletsFeatureState>('NEVER_CONFIGURED');
+  readonly loading = signal(false);
+  readonly loadError = signal<string | null>(null);
   readonly enabled = computed(() => this.featureState() === 'ENABLED');
   readonly setupIntent = signal<WalletSetupIntent | null>(null);
   readonly activeWallets = computed(() => this.wallets().filter((wallet) => !wallet.archived));
@@ -68,6 +70,7 @@ export class ConsumerWalletService {
     () =>
       this.enabled() ||
       this.wallets().length > 0 ||
+      !!this.loadError() ||
       this.store.paymentSources().some((source) => source.kind === 'FASTAG'),
   );
   readonly activeWalletLimit = this.environment.maxWallets;
@@ -79,69 +82,84 @@ export class ConsumerWalletService {
   });
 
   async initialise(): Promise<void> {
-    if (!this.database.ready()) return;
-    const state = await this.database.atomic(async (tx) => {
-      const preferences = await tx.query<{ key: string; encrypted_value: string }>(
-        'SELECT key,encrypted_value FROM app_preferences WHERE key IN (?,?,?)',
-        [WALLETS_FEATURE_STATE_KEY, WALLETS_SETUP_INTENT_KEY, 'payment_sources'],
+    if (!this.database.ready()) {
+      this.loadError.set('Wallet storage is unavailable. Wallet data has not been changed.');
+      return;
+    }
+    this.loading.set(true);
+    this.loadError.set(null);
+    try {
+      const state = await this.database.atomic(async (tx) => {
+        const preferences = await tx.query<{ key: string; encrypted_value: string }>(
+          'SELECT key,encrypted_value FROM app_preferences WHERE key IN (?,?,?)',
+          [WALLETS_FEATURE_STATE_KEY, WALLETS_SETUP_INTENT_KEY, 'payment_sources'],
+        );
+        const values = new Map(preferences.map((row) => [row.key, row.encrypted_value]));
+        const wallets = await tx.query<{ payload: string }>(
+          'SELECT payload FROM consumer_wallets ORDER BY created_at,id',
+        );
+        const savedState = values.get(WALLETS_FEATURE_STATE_KEY);
+        let featureState: WalletsFeatureState =
+          savedState === 'ENABLED' || savedState === 'DISABLED' || savedState === 'NEVER_CONFIGURED'
+            ? savedState
+            : 'NEVER_CONFIGURED';
+        if (
+          savedState !== 'ENABLED' &&
+          savedState !== 'DISABLED' &&
+          savedState !== 'NEVER_CONFIGURED'
+        ) {
+          const hasFastag = (() => {
+            try {
+              const sources = JSON.parse(values.get('payment_sources') ?? '[]') as PaymentSource[];
+              return sources.some((source) => source.kind === 'FASTAG');
+            } catch {
+              return false;
+            }
+          })();
+          featureState = wallets.length || hasFastag ? 'ENABLED' : 'NEVER_CONFIGURED';
+          await this.writePreference(tx, WALLETS_FEATURE_STATE_KEY, featureState);
+        }
+        // A setup form interrupted by process death is never allowed to enable the feature later.
+        await tx.run('DELETE FROM app_preferences WHERE key=?', [WALLETS_SETUP_INTENT_KEY]);
+        const events = await tx.query<{ payload: string }>(
+          'SELECT payload FROM consumer_wallet_events ORDER BY event_date DESC,created_at DESC',
+        );
+        const allocations = await tx.query<{
+          id: string;
+          debit_event_id: string;
+          credit_event_id: string;
+          allocated_minor: number;
+          expense_reversal_minor: number;
+          created_at: string;
+        }>('SELECT * FROM consumer_wallet_event_allocations ORDER BY created_at,id');
+        return {
+          featureState,
+          wallets: wallets.map((row) => JSON.parse(row.payload) as ConsumerWallet),
+          events: events.map((row) => JSON.parse(row.payload) as ConsumerWalletEvent),
+          allocations: allocations.map((row) => ({
+            id: row.id,
+            debitEventId: row.debit_event_id,
+            creditEventId: row.credit_event_id,
+            allocatedMinor: row.allocated_minor,
+            expenseReversalMinor: row.expense_reversal_minor,
+            createdAt: row.created_at,
+          })),
+        };
+      });
+      this.featureState.set(state.featureState);
+      this.wallets.set(state.wallets);
+      this.events.set(state.events);
+      this.allocations.set(state.allocations);
+      this.setupIntent.set(null);
+    } catch (error: unknown) {
+      this.loadError.set(
+        error instanceof Error
+          ? `Wallet data could not be loaded. Existing data was preserved. (${error.message})`
+          : 'Wallet data could not be loaded. Existing data was preserved.',
       );
-      const values = new Map(preferences.map((row) => [row.key, row.encrypted_value]));
-      const wallets = await tx.query<{ payload: string }>(
-        'SELECT payload FROM consumer_wallets ORDER BY created_at,id',
-      );
-      const savedState = values.get(WALLETS_FEATURE_STATE_KEY);
-      let featureState: WalletsFeatureState =
-        savedState === 'ENABLED' || savedState === 'DISABLED' || savedState === 'NEVER_CONFIGURED'
-          ? savedState
-          : 'NEVER_CONFIGURED';
-      if (
-        savedState !== 'ENABLED' &&
-        savedState !== 'DISABLED' &&
-        savedState !== 'NEVER_CONFIGURED'
-      ) {
-        const hasFastag = (() => {
-          try {
-            const sources = JSON.parse(values.get('payment_sources') ?? '[]') as PaymentSource[];
-            return sources.some((source) => source.kind === 'FASTAG');
-          } catch {
-            return false;
-          }
-        })();
-        featureState = wallets.length || hasFastag ? 'ENABLED' : 'NEVER_CONFIGURED';
-        await this.writePreference(tx, WALLETS_FEATURE_STATE_KEY, featureState);
-      }
-      // A setup form interrupted by process death is never allowed to enable the feature later.
-      await tx.run('DELETE FROM app_preferences WHERE key=?', [WALLETS_SETUP_INTENT_KEY]);
-      const events = await tx.query<{ payload: string }>(
-        'SELECT payload FROM consumer_wallet_events ORDER BY event_date DESC,created_at DESC',
-      );
-      const allocations = await tx.query<{
-        id: string;
-        debit_event_id: string;
-        credit_event_id: string;
-        allocated_minor: number;
-        expense_reversal_minor: number;
-        created_at: string;
-      }>('SELECT * FROM consumer_wallet_event_allocations ORDER BY created_at,id');
-      return {
-        featureState,
-        wallets: wallets.map((row) => JSON.parse(row.payload) as ConsumerWallet),
-        events: events.map((row) => JSON.parse(row.payload) as ConsumerWalletEvent),
-        allocations: allocations.map((row) => ({
-          id: row.id,
-          debitEventId: row.debit_event_id,
-          creditEventId: row.credit_event_id,
-          allocatedMinor: row.allocated_minor,
-          expenseReversalMinor: row.expense_reversal_minor,
-          createdAt: row.created_at,
-        })),
-      };
-    });
-    this.featureState.set(state.featureState);
-    this.wallets.set(state.wallets);
-    this.events.set(state.events);
-    this.allocations.set(state.allocations);
-    this.setupIntent.set(null);
+    } finally {
+      this.loading.set(false);
+    }
   }
 
   async setEnabled(enabled: boolean): Promise<void> {
@@ -262,8 +280,9 @@ export class ConsumerWalletService {
       !/^[A-Z0-9]{5,16}$/.test(source.vehicleNumber ?? '')
     )
       throw new Error('Enter a wallet name and vehicle registration.');
-    const sources = await this.database.atomic(async (tx) => {
+    const result = await this.database.atomic(async (tx) => {
       await this.assertSetupIntent(tx, setupIntentId, 'FASTAG');
+      const featureState = await this.readFeatureState(tx);
       const [row] = await tx.query<{ encrypted_value: string }>(
         "SELECT encrypted_value FROM app_preferences WHERE key='payment_sources'",
       );
@@ -273,16 +292,20 @@ export class ConsumerWalletService {
       if (stored.some((item) => item.id === source.id)) throw new Error('Wallet already exists.');
       const next = [...stored, source];
       await this.writePreference(tx, 'payment_sources', JSON.stringify(next));
-      await this.completeSetup(tx, setupIntentId);
-      return next;
+      if (setupIntentId || featureState !== 'DISABLED') await this.completeSetup(tx, setupIntentId);
+      return {
+        sources: next,
+        featureState: setupIntentId || featureState !== 'DISABLED' ? 'ENABLED' : 'DISABLED',
+      } as const;
     });
-    this.store.paymentSources.set(sources);
-    this.featureState.set('ENABLED');
-    this.setupIntent.set(null);
+    this.store.paymentSources.set(result.sources);
+    this.featureState.set(result.featureState);
+    if (setupIntentId) this.setupIntent.set(null);
   }
 
   async archiveWallet(walletId: string): Promise<void> {
     const next = await this.database.atomic(async (tx) => {
+      await this.assertWalletsEnabled(tx);
       const wallets = await this.readWallets(tx);
       const wallet = wallets.find((item) => item.id === walletId && !item.archived);
       if (!wallet) throw new Error('Active wallet not found.');
@@ -295,6 +318,7 @@ export class ConsumerWalletService {
 
   async restoreWallet(walletId: string, replaceWalletId?: string): Promise<void> {
     const next = await this.database.atomic(async (tx) => {
+      await this.assertWalletsEnabled(tx);
       const wallets = await this.readWallets(tx);
       const target = wallets.find((item) => item.id === walletId && item.archived);
       if (!target) throw new Error('Archived wallet not found.');
@@ -327,6 +351,7 @@ export class ConsumerWalletService {
 
   async deleteWalletIfEmpty(walletId: string): Promise<void> {
     await this.database.atomic(async (tx) => {
+      await this.assertWalletsEnabled(tx);
       const [events] = await tx.query<{ count: number }>(
         'SELECT COUNT(*) AS count FROM consumer_wallet_events WHERE wallet_id=?',
         [walletId],
@@ -344,14 +369,44 @@ export class ConsumerWalletService {
     intentId: string | undefined,
     kind: WalletSetupKind,
   ): Promise<void> {
-    if (!intentId) return;
-    const [row] = await tx.query<{ encrypted_value: string }>(
+    const [featureRow] = await tx.query<{ encrypted_value: string }>(
+      'SELECT encrypted_value FROM app_preferences WHERE key=?',
+      [WALLETS_FEATURE_STATE_KEY],
+    );
+    const [intentRow] = await tx.query<{ encrypted_value: string }>(
       'SELECT encrypted_value FROM app_preferences WHERE key=?',
       [WALLETS_SETUP_INTENT_KEY],
     );
-    const intent = parseSetupIntent(row?.encrypted_value);
-    if (!intent || intent.id !== intentId || intent.kind !== kind)
+    const featureState = featureRow?.encrypted_value;
+    const intent = parseSetupIntent(intentRow?.encrypted_value);
+    if (intentId && (!intent || intent.id !== intentId || intent.kind !== kind))
       throw new Error('This Wallets setup request has expired. Start setup again from Settings.');
+    if (
+      featureState === 'DISABLED' &&
+      (kind === 'CONSUMER' || intentId !== undefined) &&
+      (!intentId || !intent || intent.id !== intentId || intent.kind !== kind)
+    )
+      throw new Error(
+        'Wallets is explicitly off. Start a valid setup from Settings before registering a consumer wallet.',
+      );
+  }
+
+  private async readFeatureState(tx: DatabaseSession): Promise<WalletsFeatureState> {
+    const [row] = await tx.query<{ encrypted_value: string }>(
+      'SELECT encrypted_value FROM app_preferences WHERE key=?',
+      [WALLETS_FEATURE_STATE_KEY],
+    );
+    const value = row?.encrypted_value;
+    return value === 'ENABLED' || value === 'DISABLED' || value === 'NEVER_CONFIGURED'
+      ? value
+      : 'NEVER_CONFIGURED';
+  }
+
+  private async assertWalletsEnabled(tx: DatabaseSession): Promise<void> {
+    if ((await this.readFeatureState(tx)) !== 'ENABLED')
+      throw new Error(
+        'Wallets is off. Enable Wallets in Settings before changing consumer wallets.',
+      );
   }
 
   private async completeSetup(tx: DatabaseSession, intentId: string | undefined): Promise<void> {

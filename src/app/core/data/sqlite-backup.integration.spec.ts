@@ -96,6 +96,29 @@ describe('Durable first-run data, additive read migration and private portable b
     });
   });
 
+  it('surfaces wallet load failures without clearing records and recovers on retry', async () => {
+    await database.initialise();
+    const store = TestBed.inject(CardNestStore);
+    await store.initialisePreferences();
+    const wallets = TestBed.inject(ConsumerWalletService);
+    await wallets.initialise();
+    const wallet = await wallets.registerWallet({
+      providerId: 'amazon-pay',
+      nickname: 'Retained wallet',
+    });
+    const before = wallets.wallets();
+    vi.spyOn(database, 'atomic').mockRejectedValueOnce(new Error('synthetic wallet load failure'));
+
+    await wallets.initialise();
+    expect(wallets.loadError()).toContain('Existing data was preserved');
+    expect(wallets.wallets()).toEqual(before);
+    expect(wallets.wallets().find((item) => item.id === wallet.id)).toBeDefined();
+
+    await wallets.initialise();
+    expect(wallets.loadError()).toBeNull();
+    expect(wallets.wallets()).toEqual(before);
+  });
+
   it('cancels setup without enabling and commits a consumer wallet with activation atomically', async () => {
     await database.initialise();
     const store = TestBed.inject(CardNestStore);
@@ -176,6 +199,54 @@ describe('Durable first-run data, additive read migration and private portable b
         'encrypted_value'
       ],
     ).toContain(source.id);
+  });
+
+  it('enforces explicit Wallets OFF at persistence boundaries while preserving FASTag operations', async () => {
+    await database.initialise();
+    const store = TestBed.inject(CardNestStore);
+    await store.initialisePreferences();
+    const wallets = TestBed.inject(ConsumerWalletService);
+    await wallets.initialise();
+    const active = await wallets.registerWallet({
+      providerId: 'amazon-pay',
+      nickname: 'Existing active',
+    });
+    const archived = await wallets.registerWallet({
+      providerId: 'paytm-wallet',
+      nickname: 'Existing archived',
+    });
+    await wallets.archiveWallet(archived.id);
+    await wallets.setEnabled(false);
+
+    await expect(
+      wallets.registerWallet({ providerId: 'phonepe-wallet', nickname: 'Direct while off' }),
+    ).rejects.toThrow('explicitly off');
+    await expect(wallets.archiveWallet(active.id)).rejects.toThrow('Wallets is off');
+    await expect(wallets.restoreWallet(archived.id)).rejects.toThrow('Wallets is off');
+    await expect(wallets.deleteWalletIfEmpty(active.id)).rejects.toThrow('Wallets is off');
+
+    const fastag: PaymentSource = {
+      id: 'fastag-while-consumer-wallets-off',
+      kind: 'FASTAG',
+      nickname: 'FASTag remains separate',
+      vehicleNumber: 'FICT007',
+      noLimit: false,
+      balanceMinor: 5000,
+      autoLoad: false,
+      archived: false,
+    };
+    await wallets.saveFastagWallet(fastag);
+    expect(wallets.featureState()).toBe('DISABLED');
+    expect(store.paymentSources().find((source) => source.id === fastag.id)).toEqual(fastag);
+
+    const setup = await wallets.beginSetup('CONSUMER');
+    const restoredActivation = await wallets.registerWallet({
+      providerId: 'swiggy-money',
+      nickname: 'Explicit setup reactivation',
+      setupIntentId: setup.id,
+    });
+    expect(wallets.featureState()).toBe('ENABLED');
+    expect(wallets.wallets()).toContainEqual(restoredActivation);
   });
 
   it('limits active consumer wallets and atomically replaces one when restoring at capacity', async () => {
@@ -898,11 +969,17 @@ describe('Durable first-run data, additive read migration and private portable b
     ).toBe(balanceBeforeRetention);
   });
 
-  it('embeds legacy receipt file paths into encrypted backups and restores their media bytes', async () => {
+  it('embeds supported receipt URL schemes into encrypted backups and restores media bytes', async () => {
     await database.initialise();
     const store = TestBed.inject(CardNestStore);
     await store.initialisePreferences();
-    const receiptPath = 'file:///synthetic/receipt-image.jpg';
+    const dataUrl = 'data:image/jpeg;base64,Q2FyZE5lc3Q=';
+    const receiptPaths = [
+      'file:///synthetic/receipt-image.jpg',
+      'content://synthetic.provider/receipt-image.jpg',
+      'blob:http://localhost/synthetic-receipt-id',
+      dataUrl,
+    ];
     const receiptBytes = new Uint8Array([0x43, 0x61, 0x72, 0x64, 0x4e, 0x65, 0x73, 0x74]);
     const transaction = {
       id: 'legacy-file-receipt-transaction',
@@ -912,7 +989,7 @@ describe('Durable first-run data, additive read migration and private portable b
       currencyCode: 'INR',
       transactionDate: '2026-10-25',
       categoryId: 'other',
-      attachmentIds: [receiptPath],
+      attachmentIds: receiptPaths,
       createdAt: '2026-10-25T10:00:00Z',
       updatedAt: '2026-10-25T10:00:00Z',
     };
@@ -935,8 +1012,8 @@ describe('Durable first-run data, additive read migration and private portable b
     vi.stubGlobal('Blob', NodeBlob);
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (path: string) => {
-        expect(path).toBe(receiptPath);
+      vi.fn(async (input: string | URL | Request) => {
+        expect(receiptPaths.slice(0, 3)).toContain(String(input));
         return new Response(new Uint8Array(receiptBytes), {
           headers: { 'content-type': 'image/jpeg' },
         });
@@ -953,9 +1030,17 @@ describe('Durable first-run data, additive read migration and private portable b
           rows('SELECT payload FROM card_transactions WHERE id=?', [transaction.id])[0]['payload'],
         ),
       ) as { attachmentIds: string[] };
-      expect(restored.attachmentIds[0]).toMatch(/^data:image\/jpeg;base64,/);
-      const encoded = restored.attachmentIds[0].split(',')[1];
-      expect(Uint8Array.from(atob(encoded), (byte) => byte.charCodeAt(0))).toEqual(receiptBytes);
+      expect(restored.attachmentIds).toHaveLength(4);
+      expect(
+        restored.attachmentIds
+          .slice(0, 3)
+          .every((item) => item.startsWith('data:image/jpeg;base64,')),
+      ).toBe(true);
+      expect(restored.attachmentIds[3]).toBe(dataUrl);
+      for (const media of restored.attachmentIds.slice(0, 3)) {
+        const encoded = media.split(',')[1];
+        expect(Uint8Array.from(atob(encoded), (byte) => byte.charCodeAt(0))).toEqual(receiptBytes);
+      }
     } finally {
       vi.unstubAllGlobals();
     }
@@ -2819,10 +2904,15 @@ describe('Durable first-run data, additive read migration and private portable b
     await database.initialise();
     const backup = await database.exportBackupJson();
     const before = rows('SELECT * FROM sms_candidates');
+    const clearDiscovery = vi.spyOn(
+      database as unknown as { clearPlatformDiscoveryAfterCommit: () => Promise<void> },
+      'clearPlatformDiscoveryAfterCommit',
+    );
     sql.exec(
       "CREATE TRIGGER fail_restore BEFORE INSERT ON sms_candidates BEGIN SELECT RAISE(ABORT,'synthetic restore failure'); END",
     );
     await expect(database.restoreBackupJson(backup)).rejects.toThrow('synthetic restore failure');
+    expect(clearDiscovery).not.toHaveBeenCalled();
     expect(rows('SELECT * FROM sms_candidates')).toEqual(before);
     expect(count('card_transactions')).toBe(1);
     expect(count('sms_reconciliation')).toBe(1);

@@ -1,7 +1,9 @@
 import { TestBed } from '@angular/core/testing';
 import { computed, signal } from '@angular/core';
-import { provideRouter } from '@angular/router';
+import { ActivatedRoute, convertToParamMap, provideRouter } from '@angular/router';
+import { of } from 'rxjs';
 import {
+  CardTransaction,
   ConsumerWallet,
   ConsumerWalletEvent,
   ConsumerWalletEventAllocation,
@@ -17,11 +19,18 @@ import { WalletsPage } from './wallets';
 
 const timestamp = '2026-11-02T12:00:00.000Z';
 
-function setup(enabled = true, setupIntent: WalletSetupIntent | null = null) {
+function setup(
+  enabled = true,
+  setupIntent: WalletSetupIntent | null = null,
+  queryParams: Record<string, string> = {},
+  sourceRecords: readonly PaymentSource[] = [],
+  transactionRecords: readonly CardTransaction[] = [],
+) {
   const savedWallets = signal<readonly ConsumerWallet[]>([]);
   const savedEvents = signal<readonly ConsumerWalletEvent[]>([]);
   const featureEnabled = signal(enabled);
   const intent = signal(setupIntent);
+  const loadError = signal<string | null>(null);
   const activeWallets = computed(() => savedWallets().filter((wallet) => !wallet.archived));
   const archivedWallets = computed(() => savedWallets().filter((wallet) => wallet.archived));
   const balances = computed(() => new Map<string, number>());
@@ -30,6 +39,8 @@ function setup(enabled = true, setupIntent: WalletSetupIntent | null = null) {
     events: savedEvents,
     allocations: signal<readonly ConsumerWalletEventAllocation[]>([]),
     enabled: featureEnabled,
+    loading: signal(false),
+    loadError,
     setupIntent: intent,
     activeWallets,
     archivedWallets,
@@ -67,10 +78,13 @@ function setup(enabled = true, setupIntent: WalletSetupIntent | null = null) {
       },
     ),
     cancelSetup: vi.fn(async () => intent.set(null)),
+    initialise: vi.fn(async () => loadError.set(null)),
   };
-  const paymentSources = signal<readonly PaymentSource[]>([]);
+  const paymentSources = signal<readonly PaymentSource[]>(sourceRecords);
+  const transactions = signal<readonly CardTransaction[]>(transactionRecords);
   const store = {
     paymentSources,
+    transactions,
     updatePaymentSource: vi.fn(async (source: PaymentSource) => {
       paymentSources.update((items) =>
         items.map((item) => (item.id === source.id ? source : item)),
@@ -83,6 +97,13 @@ function setup(enabled = true, setupIntent: WalletSetupIntent | null = null) {
     imports: [WalletsPage],
     providers: [
       provideRouter([]),
+      {
+        provide: ActivatedRoute,
+        useValue: {
+          queryParamMap: of(convertToParamMap(queryParams)),
+          snapshot: { queryParamMap: convertToParamMap(queryParams) },
+        },
+      },
       { provide: ConsumerWalletService, useValue: consumerWalletService },
       { provide: CardNestStore, useValue: store },
       { provide: SnackbarService, useValue: snackbar },
@@ -90,7 +111,7 @@ function setup(enabled = true, setupIntent: WalletSetupIntent | null = null) {
   });
   const fixture = TestBed.createComponent(WalletsPage);
   fixture.detectChanges();
-  return { fixture, consumerWalletService, paymentSources, snackbar };
+  return { fixture, consumerWalletService, paymentSources, transactions, snackbar };
 }
 
 describe('Wallets page Stage A', () => {
@@ -187,6 +208,136 @@ describe('Wallets page Stage A', () => {
     confirm.click();
     fixture.detectChanges();
     expect(consumerWalletService.archiveWallet).toHaveBeenCalledOnce();
+    fixture.destroy();
+  });
+
+  it('keeps disabled consumer wallet history readable but hides mutation controls', () => {
+    const { fixture, consumerWalletService } = setup(false);
+    const wallet: ConsumerWallet = {
+      id: 'disabled-history-wallet',
+      providerId: 'amazon-pay',
+      kind: 'STANDARD',
+      nickname: 'Read-only rewards',
+      archived: true,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    consumerWalletService.wallets.set([wallet]);
+    fixture.detectChanges();
+    expect(fixture.nativeElement.textContent).toContain('Read-only rewards');
+    expect(fixture.nativeElement.querySelector('.archived-wallets')).not.toBeNull();
+    expect(fixture.nativeElement.textContent).not.toContain('Register wallet');
+    expect(fixture.nativeElement.querySelector('.wallet-actions button')?.textContent).toContain(
+      'History',
+    );
+    expect(
+      Array.from(fixture.nativeElement.querySelectorAll('.wallet-actions button')).map((button) =>
+        (button as HTMLButtonElement).textContent?.trim(),
+      ),
+    ).toEqual(['History']);
+    fixture.destroy();
+  });
+
+  it('shows a retryable error instead of presenting failed wallet loading as empty data', async () => {
+    const { fixture, consumerWalletService } = setup();
+    consumerWalletService.loadError.set(
+      'Wallet data could not be loaded. Existing data was preserved.',
+    );
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('[role="alert"]')?.textContent).toContain(
+      'Existing data was preserved',
+    );
+    const retry = [...fixture.nativeElement.querySelectorAll('button')].find(
+      (button: HTMLButtonElement) => button.textContent?.includes('Retry wallet loading'),
+    ) as HTMLButtonElement;
+    retry.click();
+    await fixture.whenStable();
+    expect(consumerWalletService.initialise).toHaveBeenCalledOnce();
+    expect(consumerWalletService.loadError()).toBeNull();
+    fixture.destroy();
+  });
+
+  it('locates and highlights the selected transaction across active and archived FASTag records', () => {
+    const sources: PaymentSource[] = [
+      {
+        id: 'active-fastag-a',
+        kind: 'FASTAG',
+        nickname: 'Active vehicle A',
+        vehicleNumber: 'FICT001',
+        noLimit: false,
+        balanceMinor: 12000,
+        autoLoad: false,
+        archived: false,
+      },
+      {
+        id: 'archived-fastag-b',
+        kind: 'FASTAG',
+        nickname: 'Archived vehicle B',
+        vehicleNumber: 'FICT002',
+        noLimit: false,
+        balanceMinor: 3400,
+        autoLoad: false,
+        archived: true,
+      },
+      {
+        id: 'active-fastag-c',
+        kind: 'FASTAG',
+        nickname: 'Active vehicle C',
+        vehicleNumber: 'FICT003',
+        noLimit: true,
+        autoLoad: false,
+        archived: false,
+      },
+      {
+        id: 'archived-fastag-d',
+        kind: 'FASTAG',
+        nickname: 'Archived vehicle D',
+        vehicleNumber: 'FICT004',
+        noLimit: true,
+        autoLoad: false,
+        archived: true,
+      },
+    ];
+    const toll: CardTransaction = {
+      id: 'archived-toll-preserved-transaction',
+      cardId: 'archived-fastag-b',
+      type: 'PURCHASE',
+      amountMinor: 3400,
+      currencyCode: 'INR',
+      transactionDate: '2025-11-01',
+      merchant: 'Synthetic toll plaza',
+      categoryId: 'other',
+      attachmentIds: [],
+      createdAt: '2025-11-01T10:00:00Z',
+      updatedAt: '2025-11-01T10:00:00Z',
+    };
+    const { fixture } = setup(true, null, { source: toll.cardId, transaction: toll.id }, sources, [
+      toll,
+    ]);
+    const page = fixture.componentInstance;
+    fixture.detectChanges();
+    expect(page.fastagWallets().map((source) => source.id)).toEqual([
+      'active-fastag-a',
+      'active-fastag-c',
+      'archived-fastag-b',
+      'archived-fastag-d',
+    ]);
+    expect(page.focusedFastagSourceId()).toBe(toll.cardId);
+    expect(page.focusedFastagTransaction()).toEqual(toll);
+    const record = fixture.nativeElement.querySelector(`#fastag-${toll.cardId}`) as HTMLElement;
+    expect(record.classList.contains('focused')).toBe(true);
+    expect(record.getAttribute('data-source-id')).toBe(toll.cardId);
+    expect(record.querySelector('[data-transaction-id]')?.getAttribute('data-transaction-id')).toBe(
+      toll.id,
+    );
+    expect(record.textContent).toContain('Synthetic toll plaza');
+    const historyLink = (Array.from(record.querySelectorAll('a')) as HTMLAnchorElement[]).find(
+      (link) => link.textContent?.includes('View activity'),
+    );
+    expect(historyLink).toBeDefined();
+    expect(historyLink?.getAttribute('href')).toContain(toll.cardId);
+    expect(historyLink?.getAttribute('href')).toContain(toll.id);
+    expect(record.querySelector('a[href*="add=true"]')).toBeNull();
     fixture.destroy();
   });
 });

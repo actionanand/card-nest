@@ -40,6 +40,8 @@ export class WalletsPage {
   readonly fastagOpen = signal(false);
   readonly consumerOpen = signal(false);
   readonly historyWalletId = signal<string | null>(null);
+  readonly focusedFastagSourceId = signal<string | null>(null);
+  readonly focusedFastagTransactionId = signal<string | null>(null);
   readonly restoreTargetId = signal<string | null>(null);
   readonly replacementWalletId = signal('');
   readonly saving = signal(false);
@@ -75,6 +77,18 @@ export class WalletsPage {
     const walletId = this.historyWalletId();
     return walletId ? this.wallets.events().filter((event) => event.walletId === walletId) : [];
   });
+  readonly focusedFastagTransaction = computed(() => {
+    const sourceId = this.focusedFastagSourceId();
+    const transactionId = this.focusedFastagTransactionId();
+    if (!sourceId || !transactionId) return null;
+    return (
+      this.store
+        .transactions()
+        .find(
+          (transaction) => transaction.id === transactionId && transaction.cardId === sourceId,
+        ) ?? null
+    );
+  });
   readonly selectedRestoreTarget = computed(() =>
     this.wallets.wallets().find((wallet) => wallet.id === this.restoreTargetId()),
   );
@@ -103,6 +117,18 @@ export class WalletsPage {
 
   constructor() {
     this.route.queryParamMap.pipe(takeUntilDestroyed()).subscribe((params) => {
+      const sourceId = params.get('source');
+      const source = this.store
+        .paymentSources()
+        .find((item) => item.id === sourceId && item.kind === 'FASTAG');
+      this.focusedFastagSourceId.set(source?.id ?? null);
+      this.focusedFastagTransactionId.set(source ? params.get('transaction') : null);
+      if (source)
+        queueMicrotask(() => {
+          const element = document.getElementById(`fastag-${source.id}`);
+          if (element && typeof element.scrollIntoView === 'function')
+            element.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        });
       const setupId = params.get('setup');
       const intent = this.wallets.setupIntent();
       if (!setupId || !intent || setupId !== intent.id) return;
@@ -228,6 +254,12 @@ export class WalletsPage {
   async confirmPendingAction(): Promise<void> {
     const action = this.pendingAction();
     if (!action || this.saving()) return;
+    if (action.kind !== 'ARCHIVE_FASTAG' && !this.wallets.enabled()) {
+      this.actionError.set(
+        'Wallets is off. Enable Wallets in Settings before changing consumer wallets.',
+      );
+      return;
+    }
     this.saving.set(true);
     this.actionError.set(null);
     try {
@@ -337,6 +369,7 @@ export class WalletsPage {
   }
 
   async archiveConsumerWallet(wallet: ConsumerWallet): Promise<void> {
+    if (!this.wallets.enabled()) return;
     try {
       await this.wallets.archiveWallet(wallet.id);
       this.snackbar.show('Wallet archived. Its history and balance are kept.');
@@ -349,6 +382,7 @@ export class WalletsPage {
   }
 
   async restoreConsumerWallet(wallet: ConsumerWallet): Promise<void> {
+    if (!this.wallets.enabled()) return;
     this.restoreError.set(null);
     if (this.needsReplacement()) {
       this.restoreTargetId.set(wallet.id);
@@ -371,6 +405,7 @@ export class WalletsPage {
   }
 
   async confirmRestoreReplacement(): Promise<void> {
+    if (!this.wallets.enabled()) return;
     const targetId = this.restoreTargetId();
     if (!targetId || !this.replacementWalletId()) return;
     this.saving.set(true);

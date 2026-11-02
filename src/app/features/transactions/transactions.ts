@@ -1930,6 +1930,16 @@ export class TransactionsPage {
       void this.router.navigate(['/cards'], { queryParams: { open: transaction.cardId } });
       return;
     }
+    if (
+      this.store
+        .paymentSources()
+        .some((source) => source.id === transaction.cardId && source.kind === 'FASTAG')
+    ) {
+      void this.router.navigate(['/wallets'], {
+        queryParams: { source: transaction.cardId, transaction: transaction.id },
+      });
+      return;
+    }
     void this.router.navigate(['/sources'], { fragment: transaction.cardId });
   }
   goToEmi(planId: string): void {

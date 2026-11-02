@@ -881,7 +881,11 @@ export class SettingsPage {
       await this.backups.restore(this.selectedBackupContents, this.pendingRestorePassphrase);
       this.clearBackupCredentials();
       this.showBackupDialog.set(false);
-      this.snackbar.show('Backup restored. CardNest will reload now.');
+      const cleanupWarning = this.database.discoveryCleanupWarning();
+      this.snackbar.show(
+        cleanupWarning ?? 'Backup restored. CardNest will reload now.',
+        cleanupWarning ? 'WARNING' : 'SUCCESS',
+      );
       globalThis.setTimeout(() => globalThis.location.reload(), 900);
     } catch (error: unknown) {
       this.backupError.set(

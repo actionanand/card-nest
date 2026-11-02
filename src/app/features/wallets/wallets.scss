@@ -12,6 +12,22 @@
   color: var(--muted);
 }
 
+.wallets-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem;
+  border: 1px solid var(--danger);
+  border-radius: 0.5rem;
+  background: var(--danger-soft);
+}
+
+.wallets-error p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 .wallet-section {
   display: grid;
   gap: 0.85rem;
@@ -51,6 +67,21 @@
 
 .wallet-row.archived {
   opacity: 0.78;
+}
+
+.wallet-row.focused {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  scroll-margin-block: 1rem;
+}
+
+.fastag-transaction-highlight {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 0.5rem 0.65rem;
+  border-inline-start: 3px solid var(--accent);
+  background: var(--panel);
+  overflow-wrap: anywhere;
 }
 
 .wallet-identity {

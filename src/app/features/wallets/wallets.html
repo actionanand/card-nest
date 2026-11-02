@@ -8,6 +8,20 @@
     <a class="btn" routerLink="/settings">Settings</a>
   </header>
 
+  @if (wallets.loadError(); as loadError) {
+    <div class="wallets-error" role="alert">
+      <p>{{ loadError }}</p>
+      <button
+        class="btn"
+        type="button"
+        [disabled]="wallets.loading()"
+        (click)="wallets.initialise()"
+      >
+        {{ wallets.loading() ? 'Loading…' : 'Retry wallet loading' }}
+      </button>
+    </div>
+  }
+
   @if (!wallets.enabled()) {
     <p class="wallets-state" role="status">
       Wallets is off. Existing records remain available for inspection.
@@ -27,7 +41,13 @@
     @if (fastagWallets().length) {
       <div class="wallet-list">
         @for (source of fastagWallets(); track source.id) {
-          <article class="wallet-row" [class.archived]="source.archived">
+          <article
+            class="wallet-row"
+            [id]="'fastag-' + source.id"
+            [attr.data-source-id]="source.id"
+            [class.archived]="source.archived"
+            [class.focused]="focusedFastagSourceId() === source.id"
+          >
             <div class="wallet-identity">
               <span class="wallet-symbol"><app-icon name="car" /></span>
               <div>
@@ -43,6 +63,17 @@
                 </p>
               </div>
             </div>
+            @if (focusedFastagTransaction(); as transaction) {
+              @if (transaction.cardId === source.id) {
+                <p class="fastag-transaction-highlight">
+                  <span class="visually-hidden" [attr.data-transaction-id]="transaction.id">
+                    {{ transaction.id }}
+                  </span>
+                  Selected transaction: {{ transaction.merchant || transaction.type }} ·
+                  {{ transaction.transactionDate }} · {{ money(transaction.amountMinor) }}
+                </p>
+              }
+            }
             <div class="wallet-balance">
               @if (source.noLimit) {
                 <small>Balance not tracked</small>
@@ -71,9 +102,6 @@
                     />
                   </label>
                 }
-                <a class="btn" routerLink="/transactions" [queryParams]="{ source: source.id }">
-                  View activity
-                </a>
                 <a
                   class="btn"
                   routerLink="/transactions"
@@ -82,6 +110,13 @@
                   Add transaction
                 </a>
               }
+              <a
+                class="btn"
+                routerLink="/transactions"
+                [queryParams]="{ source: source.id, transaction: focusedFastagTransactionId() }"
+              >
+                View activity
+              </a>
               <button
                 class="btn"
                 type="button"
@@ -145,13 +180,19 @@
             </div>
             <div class="wallet-actions">
               <button class="btn" type="button" (click)="showHistory(wallet)">History</button>
-              <button class="btn" type="button" (click)="requestConsumerArchive(wallet)">
-                Archive
-              </button>
-              @if (!wallets.events().some((event) => event.walletId === wallet.id)) {
-                <button class="btn danger" type="button" (click)="requestEmptyWalletDelete(wallet)">
-                  Delete
+              @if (wallets.enabled()) {
+                <button class="btn" type="button" (click)="requestConsumerArchive(wallet)">
+                  Archive
                 </button>
+                @if (!wallets.events().some((event) => event.walletId === wallet.id)) {
+                  <button
+                    class="btn danger"
+                    type="button"
+                    (click)="requestEmptyWalletDelete(wallet)"
+                  >
+                    Delete
+                  </button>
+                }
               }
             </div>
           </article>
@@ -180,17 +221,19 @@
               </div>
               <div class="wallet-actions">
                 <button class="btn" type="button" (click)="showHistory(wallet)">History</button>
-                <button class="btn" type="button" (click)="restoreConsumerWallet(wallet)">
-                  Restore
-                </button>
-                @if (!wallets.events().some((event) => event.walletId === wallet.id)) {
-                  <button
-                    class="btn danger"
-                    type="button"
-                    (click)="requestEmptyWalletDelete(wallet)"
-                  >
-                    Delete
+                @if (wallets.enabled()) {
+                  <button class="btn" type="button" (click)="restoreConsumerWallet(wallet)">
+                    Restore
                   </button>
+                  @if (!wallets.events().some((event) => event.walletId === wallet.id)) {
+                    <button
+                      class="btn danger"
+                      type="button"
+                      (click)="requestEmptyWalletDelete(wallet)"
+                    >
+                      Delete
+                    </button>
+                  }
                 }
               </div>
             </article>
