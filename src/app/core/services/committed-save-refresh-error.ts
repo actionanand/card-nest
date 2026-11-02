@@ -3,9 +3,13 @@ export class CommittedSaveRefreshError extends Error {
   constructor(
     readonly transactionId: string,
     cause: unknown,
+    operation: 'saved' | 'deleted' = 'saved',
   ) {
+    const committedAction = operation === 'deleted' ? 'Transaction deleted' : 'Transaction saved';
+    const retryGuidance =
+      operation === 'deleted' ? 'Do not repeat the delete.' : 'Do not enter it again.';
     super(
-      'Transaction saved, but the screen could not fully refresh. Reopen the activity list; do not enter it again.',
+      `${committedAction}, but the screen could not fully refresh. Retry the refresh; ${retryGuidance}`,
       { cause },
     );
     this.name = 'CommittedSaveRefreshError';

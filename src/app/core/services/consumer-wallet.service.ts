@@ -35,6 +35,11 @@ export interface WalletPurchaseInput {
   readonly notes?: string;
 }
 
+type WalletEventPosition = Pick<
+  ConsumerWalletEvent,
+  'id' | 'eventDate' | 'eventTime' | 'createdAt'
+>;
+
 export const WALLETS_FEATURE_STATE_KEY = 'consumer_wallets_feature_state';
 export const WALLETS_SETUP_INTENT_KEY = 'consumer_wallets_setup_intent';
 
@@ -89,8 +94,11 @@ export class ConsumerWalletService {
   readonly activeWalletLimit = this.environment.maxWallets;
   readonly balances = computed(() => {
     const totals = new Map<string, number>();
-    for (const event of this.events())
+    const today = indiaTodayIso();
+    for (const event of this.events()) {
+      if (event.eventDate > today) continue;
       totals.set(event.walletId, (totals.get(event.walletId) ?? 0) + event.balanceDeltaMinor);
+    }
     return totals;
   });
 
@@ -354,8 +362,7 @@ export class ConsumerWalletService {
         updatedAt: timestamp,
       };
       await this.insertEvent(tx, record);
-      const balance = await this.balanceIn(tx, input.walletId);
-      if (!Number.isSafeInteger(balance)) throw new Error('Wallet balance would overflow.');
+      await this.assertChronologicalLedger(tx, input.walletId);
       return { event: record, allocations: [] as ConsumerWalletEventAllocation[] };
     });
     this.publishEventWrite(event.event, event.allocations);
@@ -387,16 +394,24 @@ export class ConsumerWalletService {
           (existing.eventType === 'BALANCE_CORRECTION' ||
             existing.eventType === 'UNKNOWN_BALANCE') &&
           existing.eventDate === eventDate
-        )
-          return { event: existing, allocations: [] as ConsumerWalletEventAllocation[] };
+        ) {
+          const historicalBalance = await this.balanceIn(tx, input.walletId, existing);
+          if (input.newBalanceMinor - historicalBalance === existing.balanceDeltaMinor)
+            return { event: existing, allocations: [] as ConsumerWalletEventAllocation[] };
+        }
         throw new Error('This wallet correction ID was already used for a different event.');
       }
-      const currentBalance = await this.balanceIn(tx, input.walletId);
-      if (!Number.isSafeInteger(currentBalance)) throw new Error('Wallet balance is invalid.');
-      const deltaMinor = input.newBalanceMinor - currentBalance;
+      const timestamp = new Date().toISOString();
+      const position: WalletEventPosition = {
+        id: input.id,
+        eventDate,
+        eventTime: undefined,
+        createdAt: timestamp,
+      };
+      const historicalBalance = await this.balanceIn(tx, input.walletId, position);
+      const deltaMinor = input.newBalanceMinor - historicalBalance;
       if (deltaMinor === 0)
         return { event: null, allocations: [] as ConsumerWalletEventAllocation[] };
-      const timestamp = new Date().toISOString();
       const record: ConsumerWalletEvent = {
         id: input.id,
         walletId: input.walletId,
@@ -411,6 +426,7 @@ export class ConsumerWalletService {
       await this.insertEvent(tx, record);
       const allocations =
         deltaMinor < 0 ? await this.allocateDebit(tx, record, Math.abs(deltaMinor), 0) : [];
+      await this.assertChronologicalLedger(tx, input.walletId);
       return { event: record, allocations };
     });
     if (result.event) this.publishEventWrite(result.event, result.allocations);
@@ -435,9 +451,6 @@ export class ConsumerWalletService {
       );
       if (duplicate)
         return { event: duplicate, allocations: [] as ConsumerWalletEventAllocation[] };
-      const balance = await this.balanceIn(tx, input.walletId);
-      if (!Number.isSafeInteger(balance) || balance < input.amountMinor)
-        throw new Error('Purchase exceeds the available wallet balance.');
       const timestamp = new Date().toISOString();
       const event: ConsumerWalletEvent = {
         id: input.id,
@@ -453,8 +466,12 @@ export class ConsumerWalletService {
         createdAt: timestamp,
         updatedAt: timestamp,
       };
+      const historicalBalance = await this.balanceIn(tx, input.walletId, event);
+      if (historicalBalance < input.amountMinor)
+        throw new Error('Purchase exceeds the available historical wallet balance.');
       await this.insertEvent(tx, event);
       const allocations = await this.allocateDebit(tx, event, input.amountMinor, 0);
+      await this.assertChronologicalLedger(tx, input.walletId);
       return { event, allocations };
     });
     this.publishEventWrite(result.event, result.allocations);
@@ -485,6 +502,25 @@ export class ConsumerWalletService {
         expenseReversalMinor: row.expense_reversal_minor,
         createdAt: row.created_at,
       })),
+    );
+  }
+
+  forgetFundedLoadForTransaction(transactionId: string): void {
+    const deletedIds = new Set(
+      this.events()
+        .filter(
+          (event) =>
+            event.eventType === 'FUNDED_LOAD' && event.sourceTransactionId === transactionId,
+        )
+        .map((event) => event.id),
+    );
+    if (!deletedIds.size) return;
+    this.events.update((events) => events.filter((event) => !deletedIds.has(event.id)));
+    this.allocations.update((allocations) =>
+      allocations.filter(
+        (allocation) =>
+          !deletedIds.has(allocation.creditEventId) && !deletedIds.has(allocation.debitEventId),
+      ),
     );
   }
 
@@ -635,12 +671,108 @@ export class ConsumerWalletService {
     throw new Error('This wallet event ID was already used for a different financial event.');
   }
 
-  private async balanceIn(tx: DatabaseSession, walletId: string): Promise<number> {
-    const [row] = await tx.query<{ balance: number | null }>(
-      'SELECT COALESCE(SUM(balance_delta_minor),0) AS balance FROM consumer_wallet_events WHERE wallet_id=?',
+  private compareWalletEvents(left: WalletEventPosition, right: WalletEventPosition): number {
+    return (
+      left.eventDate.localeCompare(right.eventDate) ||
+      (left.eventTime ?? '').localeCompare(right.eventTime ?? '') ||
+      left.createdAt.localeCompare(right.createdAt) ||
+      left.id.localeCompare(right.id)
+    );
+  }
+
+  private async readChronologicalEvents(
+    tx: DatabaseSession,
+    walletId: string,
+  ): Promise<ConsumerWalletEvent[]> {
+    const rows = await tx.query<{ payload: string }>(
+      'SELECT payload FROM consumer_wallet_events WHERE wallet_id=?',
       [walletId],
     );
-    return Number(row?.balance ?? 0);
+    return rows
+      .map((row) => JSON.parse(row.payload) as ConsumerWalletEvent)
+      .sort((left, right) => this.compareWalletEvents(left, right));
+  }
+
+  private async balanceIn(
+    tx: DatabaseSession,
+    walletId: string,
+    before?: WalletEventPosition,
+  ): Promise<number> {
+    const events = await this.readChronologicalEvents(tx, walletId);
+    let balance = 0;
+    for (const event of events) {
+      if (before && this.compareWalletEvents(event, before) >= 0) break;
+      const next = balance + event.balanceDeltaMinor;
+      if (!Number.isSafeInteger(event.balanceDeltaMinor) || !Number.isSafeInteger(next))
+        throw new Error('Wallet history exceeds the supported balance range.');
+      if (next < 0) throw new Error('Wallet history contains a negative historical balance.');
+      balance = next;
+    }
+    return balance;
+  }
+
+  private async assertChronologicalLedger(tx: DatabaseSession, walletId: string): Promise<void> {
+    const events = await this.readChronologicalEvents(tx, walletId);
+    const allocationRows = await tx.query<{
+      debit_event_id: string;
+      credit_event_id: string;
+      allocated_minor: number;
+    }>(
+      `SELECT debit_event_id,credit_event_id,allocated_minor
+       FROM consumer_wallet_event_allocations
+       WHERE debit_event_id IN (SELECT id FROM consumer_wallet_events WHERE wallet_id=?)`,
+      [walletId],
+    );
+    const actualByDebit = new Map<string, Map<string, number>>();
+    for (const allocation of allocationRows) {
+      const creditMap = actualByDebit.get(allocation.debit_event_id) ?? new Map<string, number>();
+      creditMap.set(
+        allocation.credit_event_id,
+        (creditMap.get(allocation.credit_event_id) ?? 0) + allocation.allocated_minor,
+      );
+      actualByDebit.set(allocation.debit_event_id, creditMap);
+    }
+
+    let balance = 0;
+    const lots: { id: string; available: number }[] = [];
+    for (const event of events) {
+      if (!Number.isSafeInteger(event.balanceDeltaMinor))
+        throw new Error('Wallet history contains an invalid balance change.');
+      const nextBalance = balance + event.balanceDeltaMinor;
+      if (!Number.isSafeInteger(nextBalance))
+        throw new Error('Wallet history exceeds the supported balance range.');
+      if (nextBalance < 0)
+        throw new Error('Wallet event would create a negative historical balance.');
+      balance = nextBalance;
+
+      if (event.balanceDeltaMinor > 0) {
+        lots.push({ id: event.id, available: event.balanceDeltaMinor });
+        continue;
+      }
+      if (event.amountMinor !== Math.abs(event.balanceDeltaMinor))
+        throw new Error('Wallet debit amount does not match its balance change.');
+
+      let remaining = Math.abs(event.balanceDeltaMinor);
+      const expected = new Map<string, number>();
+      for (const lot of lots) {
+        if (!remaining) break;
+        const allocatedMinor = Math.min(lot.available, remaining);
+        if (!allocatedMinor) continue;
+        expected.set(lot.id, allocatedMinor);
+        lot.available -= allocatedMinor;
+        remaining -= allocatedMinor;
+      }
+      if (remaining) throw new Error('Wallet event exceeds historical credit provenance.');
+
+      const actual = actualByDebit.get(event.id) ?? new Map<string, number>();
+      if (
+        expected.size !== actual.size ||
+        [...expected].some(([creditId, amount]) => actual.get(creditId) !== amount)
+      )
+        throw new Error(
+          'Wallet event would change audited FIFO allocations. Correct the history without rewriting prior events.',
+        );
+    }
   }
 
   private async insertEvent(tx: DatabaseSession, event: ConsumerWalletEvent): Promise<void> {
@@ -679,25 +811,44 @@ export class ConsumerWalletService {
     amountMinor: number,
     expenseReversalMinor: number,
   ): Promise<ConsumerWalletEventAllocation[]> {
-    const credits = await tx.query<{
+    const creditRows = await tx.query<{
       id: string;
       balance_delta_minor: number;
-      event_date: string;
-      created_at: string;
+      payload: string;
     }>(
-      'SELECT id,balance_delta_minor,event_date,created_at FROM consumer_wallet_events WHERE wallet_id=? AND balance_delta_minor>0 AND id<>? ORDER BY event_date,created_at,id',
+      'SELECT id,balance_delta_minor,payload FROM consumer_wallet_events WHERE wallet_id=? AND balance_delta_minor>0 AND id<>?',
       [debit.walletId, debit.id],
     );
+    const credits = creditRows
+      .map((row) => ({
+        id: row.id,
+        amountMinor: row.balance_delta_minor,
+        event: JSON.parse(row.payload) as ConsumerWalletEvent,
+      }))
+      .filter((credit) => this.compareWalletEvents(credit.event, debit) < 0)
+      .sort((left, right) => this.compareWalletEvents(left.event, right.event));
     let remaining = amountMinor;
     let expenseRemaining = expenseReversalMinor;
     const allocations: ConsumerWalletEventAllocation[] = [];
     for (const credit of credits) {
       if (!remaining) break;
-      const [usedRow] = await tx.query<{ allocated: number }>(
-        'SELECT COALESCE(SUM(allocated_minor),0) AS allocated FROM consumer_wallet_event_allocations WHERE credit_event_id=?',
+      const priorAllocations = await tx.query<{
+        allocated_minor: number;
+        payload: string;
+      }>(
+        `SELECT a.allocated_minor,e.payload
+         FROM consumer_wallet_event_allocations a
+         JOIN consumer_wallet_events e ON e.id=a.debit_event_id
+         WHERE a.credit_event_id=?`,
         [credit.id],
       );
-      const available = credit.balance_delta_minor - Number(usedRow?.allocated ?? 0);
+      const alreadyConsumed = priorAllocations.reduce((total, allocation) => {
+        const priorDebit = JSON.parse(allocation.payload) as ConsumerWalletEvent;
+        return this.compareWalletEvents(priorDebit, debit) < 0
+          ? total + allocation.allocated_minor
+          : total;
+      }, 0);
+      const available = credit.amountMinor - alreadyConsumed;
       if (available <= 0) continue;
       const allocatedMinor = Math.min(available, remaining);
       const allocatedExpense = Math.min(allocatedMinor, expenseRemaining);

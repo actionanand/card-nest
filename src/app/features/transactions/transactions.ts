@@ -28,6 +28,13 @@ import {
 } from '../../core/models/domain';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { ConsumerWalletService } from '../../core/services/consumer-wallet.service';
+import {
+  eligibleWalletLoadingDestinations,
+  resolveWalletLoadAmounts,
+  walletLoadApprovalMatches,
+  walletLoadConfirmationKey,
+  WalletLoadingFundingKind,
+} from '../../core/services/wallet-loading';
 import { displayBankAccountSuffix } from '../../core/services/bank-account-identifier';
 import {
   formatMoney,
@@ -298,6 +305,9 @@ export class TransactionsPage {
   }
   readonly helpOpen = signal(false);
   readonly deleteCandidate = signal<CardTransaction | null>(null);
+  readonly committedDeleteRefreshPending = signal(false);
+  readonly committedDeleteRefreshError = signal<string | null>(null);
+  readonly refreshingCommittedDelete = signal(false);
   readonly payFromOpen = signal(false);
   readonly payFromSearch = signal('');
   readonly payFromBankMode = signal(false);
@@ -565,6 +575,7 @@ export class TransactionsPage {
     paymentMethodDetail: new FormControl('', { nonNullable: true }),
     walletId: new FormControl('', { nonNullable: true }),
     walletLoadedAmount: new FormControl('', { nonNullable: true }),
+    walletLoadConfirmedFor: new FormControl('', { nonNullable: true }),
     paymentMethodCustom: new FormControl('', {
       nonNullable: true,
       validators: Validators.maxLength(80),
@@ -728,12 +739,58 @@ export class TransactionsPage {
       : options;
   }
   readonly walletLoadWalletOptions = computed(() =>
-    this.consumerWallets.activeWallets().map((wallet) => ({
+    eligibleWalletLoadingDestinations(
+      this.consumerWallets.activeWallets(),
+      this.walletLoadingFundingKind(),
+    ).map((wallet) => ({
       value: wallet.id,
       label: wallet.nickname || wallet.customName || wallet.providerId,
       detail: wallet.kind === 'UPI_LITE' ? 'UPI Lite' : 'Consumer wallet',
     })),
   );
+  readonly walletLoadSummary = computed(() => {
+    this.formChanges();
+    if (this.form.controls.paymentMethod.value !== 'WALLET_LOADING') return null;
+    const debitAmountMinor = parseMoneyToMinor(this.form.controls.amount.value);
+    if (debitAmountMinor === null) return null;
+    const amounts = resolveWalletLoadAmounts(
+      debitAmountMinor,
+      this.form.controls.walletLoadedAmount.value,
+    );
+    const wallet = this.walletLoadWalletOptions().find(
+      (item) => item.value === this.form.controls.walletId.value,
+    );
+    if (!amounts || !wallet) return null;
+    return {
+      confirmationKey: walletLoadConfirmationKey(
+        this.form.controls.cardId.value,
+        wallet.value,
+        this.form.controls.transactionDate.value,
+        amounts,
+      ),
+      fundingSource: this.walletLoadFundingSourceLabel(),
+      walletName: wallet.label,
+      ...amounts,
+    };
+  });
+  private walletLoadFundingSourceLabel(): string {
+    const sourceId = this.form.controls.cardId.value;
+    const card = this.store.cards().find((item) => item.id === sourceId);
+    if (card) return `${card.nickname} · ${card.lastDigits}`;
+    const source = this.store.paymentSources().find((item) => item.id === sourceId);
+    if (!source) return this.selectedSourceLabel();
+    if (source.kind !== 'DEBIT') return source.nickname;
+    const suffix = source.lastDigits ? ` · ${displayBankAccountSuffix(source.lastDigits)}` : '';
+    return `${source.institution || 'Bank/UPI'} · ${source.nickname}${suffix}`;
+  }
+  private walletLoadingFundingKind(): WalletLoadingFundingKind {
+    const sourceId = this.form.controls.cardId.value;
+    const card = this.store.cards().find((item) => item.id === sourceId && !item.deletedAt);
+    if (card && !card.archived && card.currencyCode === 'INR') return 'CARD';
+    const source = this.store.paymentSources().find((item) => item.id === sourceId);
+    if (source && !source.archived && source.kind === 'DEBIT') return 'BANK_UPI';
+    return 'UNSUPPORTED';
+  }
   private canLoadConsumerWallet(): boolean {
     if (
       this.form.controls.type.value !== 'PURCHASE' ||
@@ -741,11 +798,7 @@ export class TransactionsPage {
       !this.consumerWallets.activeWallets().length
     )
       return false;
-    const sourceId = this.form.controls.cardId.value;
-    const card = this.store.cards().find((item) => item.id === sourceId && !item.deletedAt);
-    if (card) return !card.archived && card.currencyCode === 'INR';
-    const source = this.store.paymentSources().find((item) => item.id === sourceId);
-    return !!source && !source.archived && source.kind === 'DEBIT';
+    return this.walletLoadWalletOptions().length > 0;
   }
   readonly manualPaymentDetail = paymentMethodDetailConfig;
   setManualPaymentMethod(value: string): void {
@@ -756,7 +809,38 @@ export class TransactionsPage {
       paymentMethodCustom: '',
       walletId: value === 'WALLET_LOADING' ? (this.walletLoadWalletOptions()[0]?.value ?? '') : '',
       walletLoadedAmount: '',
+      walletLoadConfirmedFor: '',
     });
+  }
+  setWalletLoadDestination(walletId: string): void {
+    if (!this.walletLoadWalletOptions().some((option) => option.value === walletId)) return;
+    this.form.controls.walletId.setValue(walletId);
+    this.form.controls.walletLoadConfirmedFor.setValue('');
+  }
+  confirmWalletLoad(event: Event): void {
+    const summary = this.walletLoadSummary();
+    this.form.controls.walletLoadConfirmedFor.setValue(
+      summary && (event.target as HTMLInputElement).checked ? summary.confirmationKey : '',
+    );
+  }
+  private revalidateWalletLoadSelection(): void {
+    if (this.form.controls.paymentMethod.value !== 'WALLET_LOADING') return;
+    if (!this.canLoadConsumerWallet()) {
+      this.form.patchValue({
+        paymentMethod: 'NONE',
+        walletId: '',
+        walletLoadedAmount: '',
+        walletLoadConfirmedFor: '',
+      });
+      return;
+    }
+    if (
+      !this.walletLoadWalletOptions().some(
+        (option) => option.value === this.form.controls.walletId.value,
+      )
+    ) {
+      this.form.patchValue({ walletId: '', walletLoadConfirmedFor: '' });
+    }
   }
   setManualPaymentDetail(value: string): void {
     this.form.controls.paymentMethodDetail.setValue(value);
@@ -1029,6 +1113,18 @@ export class TransactionsPage {
   });
 
   constructor() {
+    for (const control of [
+      this.form.controls.cardId,
+      this.form.controls.amount,
+      this.form.controls.transactionDate,
+      this.form.controls.walletId,
+      this.form.controls.walletLoadedAmount,
+    ])
+      control.valueChanges
+        .pipe(takeUntilDestroyed())
+        .subscribe(() =>
+          this.form.controls.walletLoadConfirmedFor.setValue('', { emitEvent: false }),
+        );
     effect(() => {
       this.formChanges();
       this.showForm();
@@ -1334,6 +1430,7 @@ export class TransactionsPage {
       this.form.controls.cardId.markAsDirty();
       this.form.controls.archivedSourceReassignmentConfirmedFor.setValue('');
       this.payFromBankMode.set(true);
+      this.revalidateWalletLoadSelection();
       this.payFromOpen.set(false);
       this.payFromSearch.set('');
       return;
@@ -1342,6 +1439,7 @@ export class TransactionsPage {
     this.form.controls.cardId.setValue(id);
     this.form.controls.cardId.markAsDirty();
     this.form.controls.archivedSourceReassignmentConfirmedFor.setValue('');
+    this.revalidateWalletLoadSelection();
     this.payFromOpen.set(false);
     this.payFromSearch.set('');
   }
@@ -1351,6 +1449,7 @@ export class TransactionsPage {
     this.form.controls.cardId.setValue(id);
     this.form.controls.cardId.markAsDirty();
     this.form.controls.archivedSourceReassignmentConfirmedFor.setValue('');
+    this.revalidateWalletLoadSelection();
   }
   confirmArchivedSourceReassignment(event: Event): void {
     const confirmed = (event.target as HTMLInputElement).checked;
@@ -1426,6 +1525,7 @@ export class TransactionsPage {
         walletLoad?.loadedAmountMinor === undefined
           ? ''
           : String(walletLoad.loadedAmountMinor / 100),
+      walletLoadConfirmedFor: '',
       paymentMethodCustom: transaction.paymentMethodCustom ?? '',
       smsAdditionalComment: transaction.smsAdditionalComment ?? '',
       taxIncluded: transaction.taxIncluded ?? false,
@@ -1457,6 +1557,7 @@ export class TransactionsPage {
     this.form.controls.preserveLegacy.setValue(false);
     this.form.controls.unlinkConfirmed.setValue(false);
     this.form.controls.relatedTransactionId.setValue('');
+    this.revalidateWalletLoadSelection();
   }
 
   relatedTransactionOptions(): readonly CardTransaction[] {
@@ -2008,15 +2109,62 @@ export class TransactionsPage {
     try {
       await this.store.deleteRecordedTransaction(transaction.id);
     } catch (error: unknown) {
+      if (error instanceof CommittedSaveRefreshError) {
+        this.consumerWallets.forgetFundedLoadForTransaction(transaction.id);
+        this.finishCommittedDelete(transaction.id);
+        this.committedDeleteRefreshPending.set(true);
+        this.committedDeleteRefreshError.set(error.message);
+        this.snackbar.show(
+          'Transaction deleted. Wallet or ledger history still needs a refresh; use the retry action.',
+          'WARNING',
+        );
+        return;
+      }
       this.snackbar.show(
         error instanceof Error ? error.message : 'Unable to delete transaction.',
         'WARNING',
       );
       return;
     }
-    if (this.detailTransactionId() === transaction.id) this.closeDetails();
-    this.deleteCandidate.set(null);
+    this.consumerWallets.forgetFundedLoadForTransaction(transaction.id);
+    this.finishCommittedDelete(transaction.id);
+    try {
+      await this.consumerWallets.reloadFinancialHistory();
+    } catch (error: unknown) {
+      this.committedDeleteRefreshPending.set(true);
+      this.committedDeleteRefreshError.set(
+        error instanceof Error ? error.message : 'Wallet activity could not be refreshed.',
+      );
+      this.snackbar.show(
+        'Transaction deleted, but wallet activity could not be refreshed. Use the retry action.',
+        'WARNING',
+      );
+      return;
+    }
     this.snackbar.show('Transaction deleted.', 'WARNING');
+  }
+  private finishCommittedDelete(transactionId: string): void {
+    if (this.detailTransactionId() === transactionId) this.closeDetails();
+    this.deleteCandidate.set(null);
+  }
+  async retryCommittedDeleteRefresh(): Promise<void> {
+    if (!this.committedDeleteRefreshPending() || this.refreshingCommittedDelete()) return;
+    this.refreshingCommittedDelete.set(true);
+    try {
+      await Promise.all([
+        this.store.refreshPaymentLedger(),
+        this.consumerWallets.reloadFinancialHistory(),
+      ]);
+      this.committedDeleteRefreshPending.set(false);
+      this.committedDeleteRefreshError.set(null);
+      this.snackbar.show('Ledger and wallet history refreshed.');
+    } catch (error: unknown) {
+      this.committedDeleteRefreshError.set(
+        error instanceof Error ? error.message : 'Ledger or wallet history could not be refreshed.',
+      );
+    } finally {
+      this.refreshingCommittedDelete.set(false);
+    }
   }
   async duplicate(transaction: CardTransaction): Promise<void> {
     if (!this.canDuplicate(transaction) || this.saving()) return;
@@ -2201,25 +2349,32 @@ export class TransactionsPage {
         };
     let walletLoading: WalletLoadingDetails | undefined;
     if (value.paymentMethod === 'WALLET_LOADING') {
-      const loadedAmountMinor = parseMoneyToMinor(value.walletLoadedAmount);
+      const loadAmounts = resolveWalletLoadAmounts(amountMinor, value.walletLoadedAmount);
+      const walletLoadSummary = this.walletLoadSummary();
       if (
         !this.canLoadConsumerWallet() ||
-        !value.walletId ||
-        loadedAmountMinor === null ||
-        loadedAmountMinor <= 0 ||
-        loadedAmountMinor > amountMinor ||
+        !this.walletLoadWalletOptions().some((option) => option.value === value.walletId) ||
+        !loadAmounts ||
+        !walletLoadSummary ||
+        !walletLoadApprovalMatches(
+          value.walletLoadConfirmedFor,
+          walletLoadSummary.confirmationKey,
+        ) ||
         value.repeat !== 'NONE'
       ) {
         this.snackbar.show(
           value.repeat !== 'NONE'
             ? 'Wallet loads cannot repeat. Record each real debit separately.'
-            : 'Choose an eligible consumer wallet and a valid credited amount no greater than the debit.',
+            : 'Review the wallet-load summary and explicitly approve the current funding source, destination and amounts.',
           'WARNING',
         );
         return;
       }
       annotation = { paymentMethod: 'WALLET_LOADING' };
-      walletLoading = { walletId: value.walletId, loadedAmountMinor };
+      walletLoading = {
+        walletId: value.walletId,
+        loadedAmountMinor: loadAmounts.loadedAmountMinor,
+      };
     } else {
       try {
         annotation = validateSmsPaymentAnnotation(value, this.manualPaymentContext());
@@ -2467,6 +2622,7 @@ export class TransactionsPage {
       paymentMethodDetail: '',
       walletId: '',
       walletLoadedAmount: '',
+      walletLoadConfirmedFor: '',
       paymentMethodCustom: '',
       smsAdditionalComment: '',
       taxIncluded: false,

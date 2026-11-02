@@ -32,6 +32,24 @@
       </button>
     </div>
   </header>
+  @if (committedDeleteRefreshPending()) {
+    <div class="panel committed-delete-refresh" role="alert">
+      <p>
+        The transaction deletion committed. Wallet or ledger views may be stale.
+        @if (committedDeleteRefreshError(); as message) {
+          {{ message }}
+        }
+      </p>
+      <button
+        class="btn"
+        type="button"
+        [disabled]="refreshingCommittedDelete()"
+        (click)="retryCommittedDeleteRefresh()"
+      >
+        {{ refreshingCommittedDelete() ? 'Refreshing…' : 'Retry refresh' }}
+      </button>
+    </div>
+  }
   @if (combineOpen()) {
     <app-payment-groups-panel
       [groupId]="manageGroupId()"
@@ -388,15 +406,55 @@
                 label="Consumer wallet"
                 [options]="walletLoadWalletOptions()"
                 [value]="form.controls.walletId.value"
-                (valueChange)="form.controls.walletId.setValue($event)"
+                (valueChange)="setWalletLoadDestination($event)"
               />
               <label
                 >Amount credited<input
                   formControlName="walletLoadedAmount"
                   inputmode="decimal"
                   autocomplete="off"
-                  placeholder="0.00"
+                  placeholder="Same as debit"
               /></label>
+              @if (walletLoadSummary(); as summary) {
+                <fieldset class="full wallet-load-summary">
+                  <legend>Review wallet load</legend>
+                  <dl>
+                    <div>
+                      <dt>Funding source</dt>
+                      <dd>{{ summary.fundingSource }}</dd>
+                    </div>
+                    <div>
+                      <dt>Destination</dt>
+                      <dd>{{ summary.walletName }}</dd>
+                    </div>
+                    <div>
+                      <dt>Debited</dt>
+                      <dd>{{ money(summary.debitAmountMinor, 'INR') }}</dd>
+                    </div>
+                    <div>
+                      <dt>Credited</dt>
+                      <dd>{{ money(summary.loadedAmountMinor, 'INR') }}</dd>
+                    </div>
+                    <div>
+                      <dt>Included fee</dt>
+                      <dd>{{ money(summary.feeMinor, 'INR') }}</dd>
+                    </div>
+                  </dl>
+                  <p>
+                    The full debit is counted as an expense; wallet credit is not counted again.
+                  </p>
+                  <label>
+                    <input
+                      type="checkbox"
+                      [checked]="
+                        form.controls.walletLoadConfirmedFor.value === summary.confirmationKey
+                      "
+                      (change)="confirmWalletLoad($event)"
+                    />
+                    I approve this wallet load.
+                  </label>
+                </fieldset>
+              }
             }
             @if (manualPaymentDetail(form.controls.paymentMethod.value); as detail) {
               <app-select-picker

@@ -5,6 +5,7 @@ import { CapacitorSQLite } from '@capacitor-community/sqlite';
 import { SqliteDatabase } from './sqlite-database';
 import { DATABASE_MIGRATIONS } from './migrations';
 import { CardNestStore } from '../services/card-nest-store';
+import { CommittedSaveRefreshError } from '../services/committed-save-refresh-error';
 import {
   ConsumerWalletService,
   WALLETS_FEATURE_STATE_KEY,
@@ -603,6 +604,14 @@ describe('Durable first-run data, additive read migration and private portable b
         eventDate: '2026-10-01',
       }),
     ).resolves.toEqual(openingBalance);
+    await expect(
+      wallets.updateWalletBalance({
+        id: 'wallet-load-opening-balance',
+        walletId: wallet.id,
+        newBalanceMinor: 1200,
+        eventDate: '2026-10-01',
+      }),
+    ).rejects.toThrow('already used for a different event');
     await wallets.addWalletCredit({
       id: 'wallet-load-manual-credit',
       walletId: wallet.id,
@@ -686,6 +695,21 @@ describe('Durable first-run data, additive read migration and private portable b
 
     await save(5000);
     await save(5000);
+    await save(4800);
+    expect(
+      rows(
+        'SELECT amount_minor,fee_minor FROM consumer_wallet_events WHERE source_transaction_id=?',
+        [transaction.id],
+      ),
+    ).toEqual([{ amount_minor: 4800, fee_minor: 400 }]);
+    const alternateWallet = await wallets.registerWallet({ providerId: 'paytm-wallet' });
+    await save(4800, alternateWallet.id);
+    expect(
+      rows('SELECT wallet_id FROM consumer_wallet_events WHERE source_transaction_id=?', [
+        transaction.id,
+      ]),
+    ).toEqual([{ wallet_id: alternateWallet.id }]);
+    await save(5000);
     expect(rows('SELECT id FROM card_transactions WHERE id=?', [transaction.id])).toHaveLength(1);
     expect(
       rows(
@@ -700,13 +724,40 @@ describe('Durable first-run data, additive read migration and private portable b
       ),
     ).toEqual([{ count: 1 }]);
 
-    await wallets.recordWalletPurchase({
+    const walletPurchase = await wallets.recordWalletPurchase({
       id: 'wallet-load-test-purchase',
       walletId: wallet.id,
       amountMinor: 2100,
       eventDate: '2026-10-06',
       categoryId: 'other',
     });
+    await expect(
+      wallets.recordWalletPurchase({
+        id: 'wallet-load-test-purchase',
+        walletId: wallet.id,
+        amountMinor: 2100,
+        eventDate: '2026-10-06',
+        categoryId: 'other',
+      }),
+    ).resolves.toEqual(walletPurchase);
+    const fundedLoad = rows(
+      "SELECT id FROM consumer_wallet_events WHERE event_type='FUNDED_LOAD' AND source_transaction_id=?",
+      [transaction.id],
+    )[0];
+    const purchaseAllocations = rows(
+      'SELECT credit_event_id,allocated_minor FROM consumer_wallet_event_allocations WHERE debit_event_id=? ORDER BY credit_event_id',
+      ['wallet-load-test-purchase'],
+    );
+    expect(purchaseAllocations).toEqual(
+      [
+        { credit_event_id: openingBalance!.id, allocated_minor: 950 },
+        { credit_event_id: 'wallet-load-manual-credit', allocated_minor: 100 },
+        { credit_event_id: 'wallet-load-promo-credit', allocated_minor: 50 },
+        { credit_event_id: fundedLoad['id'], allocated_minor: 1000 },
+      ].sort((left, right) =>
+        String(left.credit_event_id).localeCompare(String(right.credit_event_id)),
+      ),
+    );
     await expect(save(4000)).rejects.toThrow('already been spent or returned');
     await expect(store.deleteRecordedTransaction(transaction.id)).rejects.toThrow(
       'already been spent or returned',
@@ -717,6 +768,232 @@ describe('Durable first-run data, additive read migration and private portable b
         transaction.id,
       ]),
     ).toEqual([{ amount_minor: 5000 }]);
+
+    const unconsumedTransaction = {
+      ...transaction,
+      id: 'wallet-load-unconsumed-source-debit',
+      amountMinor: 1000,
+      transactionDate: '2026-10-10',
+      createdAt: '2026-10-10T10:00:00.000Z',
+      updatedAt: '2026-10-10T10:00:00.000Z',
+    };
+    await store.saveManualTransaction(unconsumedTransaction, '', false, undefined, '', {
+      walletId: wallet.id,
+      loadedAmountMinor: 1000,
+    });
+    await wallets.reloadFinancialHistory();
+    const unconsumedLoad = wallets
+      .events()
+      .find((event) => event.sourceTransactionId === unconsumedTransaction.id)!;
+    vi.spyOn(database, 'query').mockRejectedValueOnce(new Error('synthetic refresh failure'));
+    await expect(store.deleteRecordedTransaction(unconsumedTransaction.id)).rejects.toBeInstanceOf(
+      CommittedSaveRefreshError,
+    );
+    expect(rows('SELECT id FROM card_transactions WHERE id=?', [unconsumedTransaction.id])).toEqual(
+      [],
+    );
+    expect(rows('SELECT id FROM consumer_wallet_events WHERE id=?', [unconsumedLoad.id])).toEqual(
+      [],
+    );
+    expect(wallets.events().some((event) => event.id === unconsumedLoad.id)).toBe(true);
+    wallets.forgetFundedLoadForTransaction(unconsumedTransaction.id);
+    expect(wallets.events().some((event) => event.id === unconsumedLoad.id)).toBe(false);
+    expect(wallets.balances().get(wallet.id)).toBe(4000);
+
+    await store.refreshPaymentLedger();
+    await wallets.reloadFinancialHistory();
+    expect(wallets.events().some((event) => event.id === unconsumedLoad.id)).toBe(false);
+  });
+  it('does not let a future wallet credit fund a backdated purchase', async () => {
+    await database.initialise();
+    const wallets = TestBed.inject(ConsumerWalletService);
+    await wallets.initialise();
+    const wallet = await wallets.registerWallet({ providerId: 'amazon-pay' });
+    const today = indiaTodayIso();
+    const futureLoad = {
+      id: 'future-wallet-load',
+      walletId: wallet.id,
+      eventType: 'FUNDED_LOAD',
+      eventDate: addCalendarDays(today, 1),
+      eventTime: '10:00',
+      amountMinor: 5000,
+      balanceDeltaMinor: 5000,
+      loadedAmountMinor: 5000,
+      feeMinor: 0,
+      createdAt: '2026-11-02T10:00:00.000Z',
+      updatedAt: '2026-11-02T10:00:00.000Z',
+    };
+    await database.run(
+      'INSERT INTO consumer_wallet_events(id,wallet_id,event_type,event_date,event_time,amount_minor,balance_delta_minor,loaded_amount_minor,fee_minor,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
+      [
+        futureLoad.id,
+        futureLoad.walletId,
+        futureLoad.eventType,
+        futureLoad.eventDate,
+        futureLoad.eventTime,
+        futureLoad.amountMinor,
+        futureLoad.balanceDeltaMinor,
+        futureLoad.loadedAmountMinor,
+        futureLoad.feeMinor,
+        JSON.stringify(futureLoad),
+        futureLoad.createdAt,
+        futureLoad.updatedAt,
+      ],
+    );
+    expect(wallets.balances().get(wallet.id) ?? 0).toBe(0);
+    await expect(
+      wallets.recordWalletPurchase({
+        id: 'backdated-wallet-purchase',
+        walletId: wallet.id,
+        amountMinor: 1000,
+        eventDate: today,
+        categoryId: 'other',
+      }),
+    ).rejects.toThrow('historical');
+    expect(
+      rows('SELECT id FROM consumer_wallet_events WHERE id=?', ['backdated-wallet-purchase']),
+    ).toEqual([]);
+  });
+  it('accepts a safe backdated balance correction without changing later FIFO provenance', async () => {
+    await database.initialise();
+    const wallets = TestBed.inject(ConsumerWalletService);
+    await wallets.initialise();
+    const wallet = await wallets.registerWallet({ providerId: 'amazon-pay' });
+    const today = indiaTodayIso();
+    await wallets.addWalletCredit({
+      id: 'correction-opening-credit',
+      walletId: wallet.id,
+      amountMinor: 1000,
+      eventType: 'MANUAL_CREDIT',
+      eventDate: addCalendarDays(today, -3),
+    });
+    await wallets.recordWalletPurchase({
+      id: 'correction-later-purchase',
+      walletId: wallet.id,
+      amountMinor: 200,
+      eventDate: addCalendarDays(today, -1),
+      categoryId: 'other',
+    });
+
+    await wallets.updateWalletBalance({
+      id: 'safe-backdated-correction',
+      walletId: wallet.id,
+      newBalanceMinor: 900,
+      eventDate: addCalendarDays(today, -2),
+    });
+
+    expect(wallets.balances().get(wallet.id)).toBe(700);
+    expect(
+      rows(
+        'SELECT credit_event_id,allocated_minor FROM consumer_wallet_event_allocations WHERE debit_event_id=?',
+        ['correction-later-purchase'],
+      ),
+    ).toEqual([{ credit_event_id: 'correction-opening-credit', allocated_minor: 200 }]);
+  });
+  it('rejects a backdated correction that would change an audited downstream FIFO allocation', async () => {
+    await database.initialise();
+    const wallets = TestBed.inject(ConsumerWalletService);
+    await wallets.initialise();
+    const wallet = await wallets.registerWallet({ providerId: 'amazon-pay' });
+    const today = indiaTodayIso();
+    await wallets.addWalletCredit({
+      id: 'fifo-first-credit',
+      walletId: wallet.id,
+      amountMinor: 500,
+      eventType: 'MANUAL_CREDIT',
+      eventDate: addCalendarDays(today, -4),
+    });
+    await wallets.addWalletCredit({
+      id: 'fifo-second-credit',
+      walletId: wallet.id,
+      amountMinor: 500,
+      eventType: 'PROMOTIONAL_CREDIT',
+      eventDate: addCalendarDays(today, -2),
+    });
+    await wallets.recordWalletPurchase({
+      id: 'fifo-later-purchase',
+      walletId: wallet.id,
+      amountMinor: 500,
+      eventDate: addCalendarDays(today, -1),
+      categoryId: 'other',
+    });
+
+    await expect(
+      wallets.updateWalletBalance({
+        id: 'unsafe-backdated-correction',
+        walletId: wallet.id,
+        newBalanceMinor: 100,
+        eventDate: addCalendarDays(today, -3),
+      }),
+    ).rejects.toThrow('change audited FIFO allocations');
+    expect(
+      rows('SELECT id FROM consumer_wallet_events WHERE id=?', ['unsafe-backdated-correction']),
+    ).toEqual([]);
+    expect(
+      rows(
+        'SELECT credit_event_id,allocated_minor FROM consumer_wallet_event_allocations WHERE debit_event_id=?',
+        ['fifo-later-purchase'],
+      ),
+    ).toEqual([{ credit_event_id: 'fifo-first-credit', allocated_minor: 500 }]);
+  });
+  it('rejects a backdated correction that would make a later purchase historically negative', async () => {
+    await database.initialise();
+    const wallets = TestBed.inject(ConsumerWalletService);
+    await wallets.initialise();
+    const wallet = await wallets.registerWallet({ providerId: 'amazon-pay' });
+    const today = indiaTodayIso();
+    await wallets.addWalletCredit({
+      id: 'negative-history-credit',
+      walletId: wallet.id,
+      amountMinor: 1000,
+      eventType: 'MANUAL_CREDIT',
+      eventDate: addCalendarDays(today, -3),
+    });
+    await wallets.recordWalletPurchase({
+      id: 'negative-history-purchase',
+      walletId: wallet.id,
+      amountMinor: 700,
+      eventDate: addCalendarDays(today, -1),
+      categoryId: 'other',
+    });
+
+    await expect(
+      wallets.updateWalletBalance({
+        id: 'negative-history-correction',
+        walletId: wallet.id,
+        newBalanceMinor: 0,
+        eventDate: addCalendarDays(today, -2),
+      }),
+    ).rejects.toThrow('negative historical balance');
+    expect(
+      rows('SELECT id FROM consumer_wallet_events WHERE id=?', ['negative-history-correction']),
+    ).toEqual([]);
+    expect(wallets.balances().get(wallet.id)).toBe(300);
+  });
+  it('rejects a wallet-credit overflow without committing the overflowing event', async () => {
+    await database.initialise();
+    const wallets = TestBed.inject(ConsumerWalletService);
+    await wallets.initialise();
+    const wallet = await wallets.registerWallet({ providerId: 'amazon-pay' });
+    await wallets.addWalletCredit({
+      id: 'maximum-wallet-credit',
+      walletId: wallet.id,
+      amountMinor: Number.MAX_SAFE_INTEGER,
+      eventType: 'MANUAL_CREDIT',
+      eventDate: '2026-11-01',
+    });
+    await expect(
+      wallets.addWalletCredit({
+        id: 'overflow-wallet-credit',
+        walletId: wallet.id,
+        amountMinor: 1,
+        eventType: 'PROMOTIONAL_CREDIT',
+        eventDate: '2026-11-02',
+      }),
+    ).rejects.toThrow('supported balance range');
+    expect(
+      rows('SELECT id FROM consumer_wallet_events WHERE id=?', ['overflow-wallet-credit']),
+    ).toEqual([]);
   });
   beforeEach(() => {
     vi.clearAllMocks();

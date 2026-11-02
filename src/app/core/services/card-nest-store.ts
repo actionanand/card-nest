@@ -1146,8 +1146,15 @@ export class CardNestStore {
   }
 
   async deleteRecordedTransaction(id: string): Promise<void> {
-    await this.removePersistedTransaction(id);
-    await this.loadTransactions();
+    const result = await this.database.atomic((tx) => this.removeTransactionInSession(tx, id));
+    this.publishStoredBalances(result.wallets);
+    this.transactions.update((items) => items.filter((item) => item.id !== id));
+    try {
+      if (result.funding) await this.loadTransfers();
+      await this.loadTransactions();
+    } catch (error: unknown) {
+      throw new CommittedSaveRefreshError(id, error, 'deleted');
+    }
   }
 
   addTransaction(transaction: CardTransaction): void {
