@@ -2,6 +2,7 @@ import { LpgEvent, MobileRecharge } from './utilities-model';
 import {
   addCalendarDays,
   calendarDaysBetween,
+  latestRechargeToClone,
   lpgUsageSummary,
   mobileActivitySummary,
   mobileVoiceCoveragePeriods,
@@ -28,6 +29,54 @@ const lpgEvent = (id: string, eventType: LpgEvent['eventType'], eventDate: strin
 });
 
 describe('Indian utility calendar calculations', () => {
+  it('selects the latest eligible historical voice plan, excluding Data Only and future plans', () => {
+    const selected = latestRechargeToClone(
+      [
+        recharge('old-voice', {
+          planType: 'VOICE_ONLY',
+          startDate: '2026-01-01',
+          endDate: '2026-01-28',
+        }),
+        recharge('latest-voice', {
+          planType: 'VOICE_DATA',
+          startDate: '2026-10-01',
+          endDate: '2026-10-28',
+          createdAt: '2026-10-01T10:00:00Z',
+        }),
+        recharge('newer-data', {
+          planType: 'DATA_ONLY',
+          startDate: '2026-10-30',
+          endDate: '2026-11-28',
+        }),
+        recharge('future-voice', {
+          planType: 'VOICE_ONLY',
+          startDate: '2026-11-03',
+          endDate: '2026-11-30',
+        }),
+      ],
+      '2026-11-02',
+    );
+    expect(selected?.id).toBe('latest-voice');
+    expect(
+      latestRechargeToClone(
+        [
+          recharge('same-day-a', {
+            startDate: '2026-10-01',
+            createdAt: '2026-10-01T10:00:00Z',
+          }),
+          recharge('same-day-z', {
+            startDate: '2026-10-01',
+            createdAt: '2026-10-01T10:00:00Z',
+          }),
+        ],
+        '2026-11-02',
+      )?.id,
+    ).toBe('same-day-z');
+    expect(latestRechargeToClone([recharge('data', { planType: 'DATA_ONLY' })], '2026-11-02')).toBe(
+      null,
+    );
+  });
+
   it('treats endDate as the inclusive last-active day and validity as whole active days', () => {
     expect(addCalendarDays('2026-10-01', 29)).toBe('2026-10-30');
     expect(calendarDaysBetween('2026-10-01', '2026-10-30')).toBe(29);

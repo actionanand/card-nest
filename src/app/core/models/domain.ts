@@ -279,6 +279,60 @@ export interface PaymentSource {
   archived: boolean;
 }
 
+export type ConsumerWalletKind = 'STANDARD' | 'UPI_LITE';
+
+export interface ConsumerWallet {
+  readonly id: string;
+  readonly providerId: string;
+  readonly kind: ConsumerWalletKind;
+  readonly customName?: string;
+  readonly nickname?: string;
+  readonly archived: boolean;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export type ConsumerWalletEventType =
+  | 'FUNDED_LOAD'
+  | 'PURCHASE'
+  | 'MANUAL_CREDIT'
+  | 'PROMOTIONAL_CREDIT'
+  | 'BALANCE_CORRECTION'
+  | 'UPI_LITE_RETURN'
+  | 'REFUND'
+  | 'REVERSAL'
+  | 'UNKNOWN_BALANCE';
+
+export interface ConsumerWalletEvent {
+  readonly id: string;
+  readonly walletId: string;
+  readonly eventType: ConsumerWalletEventType;
+  readonly eventDate: string;
+  readonly amountMinor: Money;
+  readonly balanceDeltaMinor: Money;
+  readonly loadedAmountMinor?: Money;
+  readonly feeMinor?: Money;
+  readonly fundingSourceKind?: 'CARD' | 'BANK';
+  readonly fundingSourceId?: string;
+  /** Soft link: retention may remove the transaction while this audit record remains. */
+  readonly sourceTransactionId?: string;
+  readonly returnSourceId?: string;
+  readonly reversalOfEventId?: string;
+  readonly memo?: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+/** FIFO provenance consumed by a wallet debit; not a card payment-group relationship. */
+export interface ConsumerWalletEventAllocation {
+  readonly id: string;
+  readonly debitEventId: string;
+  readonly creditEventId: string;
+  readonly allocatedMinor: Money;
+  readonly expenseReversalMinor: Money;
+  readonly createdAt: string;
+}
+
 export interface WalletBalanceReconciliation {
   candidateId: string;
   transactionId: string;

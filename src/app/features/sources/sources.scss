@@ -36,54 +36,6 @@
     overflow-wrap: anywhere;
   }
 }
-.fastag-create {
-  margin-bottom: 1rem;
-}
-.fastag-trigger {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 1rem;
-  min-height: 3.5rem;
-  width: 100%;
-  border: 1px solid var(--line);
-  border-radius: 0.75rem;
-  color: var(--accent);
-  background: var(--surface);
-  text-align: left;
-  cursor: pointer;
-}
-.fastag-trigger > span {
-  display: grid;
-  gap: 0.25rem;
-}
-.fastag-trigger small {
-  color: var(--muted);
-  font-weight: 400;
-}
-.fastag-trigger app-icon {
-  width: 1.2rem;
-  height: 1.2rem;
-}
-.wallet-form {
-  display: grid;
-  gap: 0.8rem;
-  min-width: 0;
-}
-.wallet-form > p {
-  margin: 0;
-  color: var(--muted);
-  font-size: 0.8rem;
-}
-.wallet-form label {
-  min-width: 0;
-}
-.wallet-form .modal-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.6rem;
-}
 .source-add app-icon,
 .source-actions app-icon,
 .activity-toolbar app-icon {

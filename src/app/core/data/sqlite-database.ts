@@ -1,11 +1,12 @@
 import { CapacitorSQLite } from '@capacitor-community/sqlite';
 import { Capacitor } from '@capacitor/core';
-import { Service, signal } from '@angular/core';
+import { inject, Service, signal } from '@angular/core';
 import { CLASSIFY_LEGACY_ADJUSTMENTS, DATABASE_MIGRATIONS } from './migrations';
 import { clearPlatformDiscovery, prunePlatformDiscovery } from './platform-data';
 import { INITIAL_DATA_KEY } from './app-initialization';
 import { reconcileCategoryCatalog } from './category-catalog';
 import { RECONCILE_BANK_ACTIVITY_LATEST } from './bank-activity-latest';
+import { APP_ENVIRONMENT } from '../services/app-environment';
 
 interface JeepSqliteElement extends HTMLElement {
   wasmPath: string;
@@ -69,9 +70,15 @@ const BACKUP_TABLES = [
   'sms_sync_state',
   'source_transfers',
   'source_balance_adjustments',
+  'consumer_wallets',
+  'consumer_wallet_events',
+  'consumer_wallet_event_allocations',
 ] as const;
 
 const DELETE_TABLES = [
+  'consumer_wallet_event_allocations',
+  'consumer_wallet_events',
+  'consumer_wallets',
   'category_catalog_state',
   'category_catalog_conflicts',
   'bank_activity_candidates',
@@ -112,6 +119,7 @@ const DELETE_TABLES = [
 export class SqliteDatabase {
   private readonly databaseName = 'cardnest';
   private readonly isWeb = Capacitor.getPlatform() === 'web';
+  private readonly environment = inject(APP_ENVIRONMENT);
   private writeQueue: Promise<void> = Promise.resolve();
   readonly ready = signal(false);
   readonly unavailableReason = signal<string | null>(null);
@@ -321,8 +329,39 @@ export class SqliteDatabase {
     const jsonstring = JSON.stringify(parsed);
     const validation = await CapacitorSQLite.isJsonValid({ jsonstring });
     if (!validation.result) throw new Error('The backup database is invalid.');
-    await clearPlatformDiscovery();
+    const originalDatabase = await this.exportPortableBackupJson(true);
+    try {
+      await this.closeCurrentDatabase();
+      this.ready.set(false);
+      await CapacitorSQLite.importFromJson({ jsonstring });
+      // The legacy importer closes its temporary connection. Reopen and migrate before
+      // persisting the restore marker or saving the web store.
+      await this.initialise();
+      if (!this.ready()) throw new Error('The restored database could not be opened.');
+      await this.assertConsumerWalletLimit();
+      await clearPlatformDiscovery();
+      await CapacitorSQLite.run({
+        database: this.databaseName,
+        statement: `INSERT INTO app_preferences(key,encrypted_value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET encrypted_value=excluded.encrypted_value`,
+        values: [INITIAL_DATA_KEY, 'RESTORED'],
+        transaction: false,
+      });
+      if (this.isWeb) await CapacitorSQLite.saveToStore({ database: this.databaseName });
+    } catch (error: unknown) {
+      try {
+        await this.restoreOriginalDatabase(originalDatabase);
+      } catch (rollbackError: unknown) {
+        this.ready.set(false);
+        throw new Error(
+          'The legacy backup could not be restored, and CardNest could not fully recover the original database.',
+          { cause: rollbackError },
+        );
+      }
+      throw error;
+    }
+  }
 
+  private async closeCurrentDatabase(): Promise<void> {
     try {
       await CapacitorSQLite.close({ database: this.databaseName });
     } catch {
@@ -333,19 +372,18 @@ export class SqliteDatabase {
     } catch {
       // The importer can continue when no retained connection exists.
     }
+  }
+
+  private async restoreOriginalDatabase(json: string): Promise<void> {
+    await this.closeCurrentDatabase();
     this.ready.set(false);
-    await CapacitorSQLite.importFromJson({ jsonstring });
-    // The legacy importer closes its temporary connection. Reopen and migrate before
-    // persisting the restore marker or saving the web store.
     await this.initialise();
-    if (!this.ready()) throw new Error('The restored database could not be opened.');
-    await CapacitorSQLite.run({
-      database: this.databaseName,
-      statement: `INSERT INTO app_preferences(key,encrypted_value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET encrypted_value=excluded.encrypted_value`,
-      values: [INITIAL_DATA_KEY, 'RESTORED'],
-      transaction: false,
+    if (!this.ready()) throw new Error('The original database could not be reopened.');
+    await this.restorePortableBackup(JSON.parse(json) as Record<string, unknown>, {
+      clearDiscovery: false,
+      reconcile: false,
+      markRestored: false,
     });
-    if (this.isWeb) await CapacitorSQLite.saveToStore({ database: this.databaseName });
   }
 
   private repairLegacyPluginExport(value: Record<string, unknown>): void {
@@ -413,6 +451,14 @@ export class SqliteDatabase {
       transaction: true,
       statements: `
         UPDATE sms_candidates SET payload = NULL WHERE event_at < '${cutoffIso}';
+        UPDATE consumer_wallet_events
+           SET source_transaction_id=NULL,
+               payload=CASE WHEN json_valid(payload)
+                 THEN json_remove(payload,'$.sourceTransactionId','$.merchant','$.memo','$.notes')
+                 ELSE payload END
+         WHERE source_transaction_id IN (
+           SELECT id FROM card_transactions WHERE transaction_date < '${cutoffIso}'
+         );
         INSERT INTO sms_sync_state(key,value) VALUES ('retention_cutoff','${cutoffIso}') ON CONFLICT(key) DO UPDATE SET value=excluded.value;
         DELETE FROM transaction_links
          WHERE transaction_id IN (SELECT id FROM card_transactions WHERE transaction_date < '${cutoffIso}')
@@ -440,7 +486,7 @@ export class SqliteDatabase {
     return removed;
   }
 
-  private async exportPortableBackupJson(): Promise<string> {
+  private async exportPortableBackupJson(includePendingSmsPayload = false): Promise<string> {
     const versionResult = await CapacitorSQLite.query({
       database: this.databaseName,
       statement: 'PRAGMA user_version;',
@@ -451,12 +497,17 @@ export class SqliteDatabase {
       const result = await CapacitorSQLite.query({
         database: this.databaseName,
         statement:
-          name === 'sms_candidates'
+          name === 'sms_candidates' && !includePendingSmsPayload
             ? `SELECT id, provider_id, event_at, kind, state, NULL AS payload, transaction_id, updated_at, decision, read_at, received_at FROM sms_candidates`
             : `SELECT * FROM ${name}`,
         values: [],
       });
-      tables.push({ name, rows: (result.values ?? []) as Record<string, unknown>[] });
+      const rows = (result.values ?? []) as Record<string, unknown>[];
+      const portableRows =
+        name === 'card_transactions'
+          ? await Promise.all(rows.map((row) => this.embedReceiptMedia(row)))
+          : rows;
+      tables.push({ name, rows: portableRows });
     }
     const backup: PortableBackup = {
       format: 'cardnest-portable-sqlite',
@@ -467,7 +518,50 @@ export class SqliteDatabase {
     return JSON.stringify(backup);
   }
 
-  private async restorePortableBackup(value: Record<string, unknown>): Promise<void> {
+  private async embedReceiptMedia(row: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (typeof row['payload'] !== 'string') return row;
+    let transaction: Record<string, unknown>;
+    try {
+      const parsed: unknown = JSON.parse(row['payload']);
+      if (!this.isRecord(parsed) || !Array.isArray(parsed['attachmentIds'])) return row;
+      transaction = parsed;
+    } catch {
+      return row;
+    }
+    const storedAttachmentIds = transaction['attachmentIds'] as unknown[];
+    const attachmentIds = await Promise.all(
+      storedAttachmentIds.map(async (attachment: unknown, index: number) => {
+        if (typeof attachment !== 'string' || attachment.startsWith('data:')) return attachment;
+        if (!/^(?:[a-z][a-z0-9+.-]*:\/\/|\/)/i.test(attachment)) return attachment;
+        try {
+          const response = await fetch(attachment);
+          if (!response.ok) throw new Error(`Receipt request returned ${response.status}.`);
+          const blob = await response.blob();
+          if (!blob.size) throw new Error('Receipt file is empty.');
+          return await this.blobToDataUrl(blob);
+        } catch (error: unknown) {
+          throw new Error(
+            `Receipt ${index + 1} for transaction ${String(transaction['id'] ?? row['id'])} could not be embedded. Restore the receipt on this device before creating a portable backup.`,
+            { cause: error },
+          );
+        }
+      }),
+    );
+    return { ...row, payload: JSON.stringify({ ...transaction, attachmentIds }) };
+  }
+
+  private async blobToDataUrl(blob: Blob): Promise<string> {
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    let binary = '';
+    for (let offset = 0; offset < bytes.length; offset += 0x8000)
+      binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+    return `data:${blob.type || 'application/octet-stream'};base64,${btoa(binary)}`;
+  }
+
+  private async restorePortableBackup(
+    value: Record<string, unknown>,
+    options: { clearDiscovery?: boolean; reconcile?: boolean; markRestored?: boolean } = {},
+  ): Promise<void> {
     if (value['version'] !== 1 || !Array.isArray(value['tables'])) {
       throw new Error('The backup database is invalid.');
     }
@@ -486,8 +580,15 @@ export class SqliteDatabase {
       }
       backupTables.set(item['name'], item['rows'] as readonly Record<string, unknown>[]);
     }
+    const activeWallets = (backupTables.get('consumer_wallets') ?? []).filter(
+      (row) => row['archived'] === 0 || row['archived'] === '0' || row['archived'] === false,
+    );
+    if (activeWallets.length > this.environment.maxWallets)
+      throw new Error(
+        `This backup exceeds the configured limit of ${this.environment.maxWallets} active consumer wallets.`,
+      );
 
-    await clearPlatformDiscovery();
+    if (options.clearDiscovery !== false) await clearPlatformDiscovery();
     await CapacitorSQLite.beginTransaction({ database: this.databaseName });
     try {
       await CapacitorSQLite.execute({
@@ -530,56 +631,59 @@ export class SqliteDatabase {
         }
       }
       await flushInserts();
-      for (const statement of RECONCILE_BANK_ACTIVITY_LATEST) {
+      if (options.reconcile !== false) {
+        for (const statement of RECONCILE_BANK_ACTIVITY_LATEST) {
+          await CapacitorSQLite.run({
+            database: this.databaseName,
+            statement,
+            values: [],
+            transaction: false,
+          });
+        }
+        // Portable imports rebuild rowids. Pending evidence stays durable, but its local replay cursor must restart.
         await CapacitorSQLite.run({
           database: this.databaseName,
-          statement,
+          statement: "DELETE FROM app_preferences WHERE key='bank_activity_discovery_cursor'",
           values: [],
           transaction: false,
         });
-      }
-      // Portable imports rebuild rowids. Pending evidence stays durable, but its local replay cursor must restart.
-      await CapacitorSQLite.run({
-        database: this.databaseName,
-        statement: "DELETE FROM app_preferences WHERE key='bank_activity_discovery_cursor'",
-        values: [],
-        transaction: false,
-      });
-      await reconcileCategoryCatalog({
-        query: async <T extends Record<string, unknown>>(
-          statement: string,
-          values: readonly unknown[] = [],
-        ) => {
-          const result = await CapacitorSQLite.query({
-            database: this.databaseName,
-            statement,
-            values: [...values],
-          });
-          return (result.values ?? []) as T[];
-        },
-        run: async (statement, values = []) => {
-          const result = await CapacitorSQLite.run({
-            database: this.databaseName,
-            statement,
-            values: [...values],
-            transaction: false,
-          });
-          return result.changes?.changes ?? 0;
-        },
-      });
-      await CapacitorSQLite.execute({
-        database: this.databaseName,
-        transaction: false,
-        statements: `${CLASSIFY_LEGACY_ADJUSTMENTS};
+        await reconcileCategoryCatalog({
+          query: async <T extends Record<string, unknown>>(
+            statement: string,
+            values: readonly unknown[] = [],
+          ) => {
+            const result = await CapacitorSQLite.query({
+              database: this.databaseName,
+              statement,
+              values: [...values],
+            });
+            return (result.values ?? []) as T[];
+          },
+          run: async (statement, values = []) => {
+            const result = await CapacitorSQLite.run({
+              database: this.databaseName,
+              statement,
+              values: [...values],
+              transaction: false,
+            });
+            return result.changes?.changes ?? 0;
+          },
+        });
+        await CapacitorSQLite.execute({
+          database: this.databaseName,
+          transaction: false,
+          statements: `${CLASSIFY_LEGACY_ADJUSTMENTS};
         UPDATE transaction_split_groups SET anchor_transaction_id=(SELECT transaction_id FROM transaction_split_members WHERE group_id=transaction_split_groups.id ORDER BY transaction_id LIMIT 1) WHERE anchor_transaction_id IS NULL;
         UPDATE transaction_split_groups SET currency_code=COALESCE((SELECT currency_code FROM card_transactions WHERE id=anchor_transaction_id),'INR'),updated_at=created_at WHERE updated_at='';`,
-      });
-      await CapacitorSQLite.run({
-        database: this.databaseName,
-        statement: `INSERT INTO app_preferences(key,encrypted_value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET encrypted_value=excluded.encrypted_value`,
-        values: [INITIAL_DATA_KEY, 'RESTORED'],
-        transaction: false,
-      });
+        });
+      }
+      if (options.markRestored !== false)
+        await CapacitorSQLite.run({
+          database: this.databaseName,
+          statement: `INSERT INTO app_preferences(key,encrypted_value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET encrypted_value=excluded.encrypted_value`,
+          values: [INITIAL_DATA_KEY, 'RESTORED'],
+          transaction: false,
+        });
       await CapacitorSQLite.commitTransaction({ database: this.databaseName });
     } catch (error: unknown) {
       await CapacitorSQLite.rollbackTransaction({ database: this.databaseName });
@@ -590,6 +694,19 @@ export class SqliteDatabase {
 
   private isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
+  }
+
+  private async assertConsumerWalletLimit(): Promise<void> {
+    const result = await CapacitorSQLite.query({
+      database: this.databaseName,
+      statement: 'SELECT COUNT(*) AS count FROM consumer_wallets WHERE archived=0',
+      values: [],
+    });
+    const count = Number(result.values?.[0]?.['count'] ?? 0);
+    if (count > this.environment.maxWallets)
+      throw new Error(
+        `This backup exceeds the configured limit of ${this.environment.maxWallets} active consumer wallets.`,
+      );
   }
 
   private async initialiseWebStore(): Promise<void> {

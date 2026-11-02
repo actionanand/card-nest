@@ -18,6 +18,10 @@ import { SqliteDatabase } from '../../core/data/sqlite-database';
 import { ApplicationPinService } from '../../core/services/application-pin.service';
 import { AppLockService } from '../../core/services/app-lock.service';
 import { CardNestStore } from '../../core/services/card-nest-store';
+import {
+  ConsumerWalletService,
+  WalletSetupKind,
+} from '../../core/services/consumer-wallet.service';
 import { NotificationService } from '../../core/services/notification.service';
 import { AppTheme, ThemeService } from '../../core/services/theme.service';
 import { formatMoney, parseMoneyToMinor } from '../../core/services/money';
@@ -96,7 +100,14 @@ export class SettingsPage {
   readonly currentSection = signal('security');
   scrollSection(
     id:
-      'security' | 'appearance' | 'defaults' | 'bank-cash' | 'utilities' | 'notifications' | 'data',
+      | 'security'
+      | 'appearance'
+      | 'defaults'
+      | 'bank-cash'
+      | 'utilities'
+      | 'wallets'
+      | 'notifications'
+      | 'data',
   ): void {
     const section = document.getElementById(id);
     if (!section) return;
@@ -115,6 +126,7 @@ export class SettingsPage {
     new Date().getFullYear() > 2026 ? `2026 – ${new Date().getFullYear()}` : '2026';
   readonly database = inject(SqliteDatabase);
   readonly store = inject(CardNestStore);
+  readonly consumerWallets = inject(ConsumerWalletService);
   readonly notifications = inject(NotificationService);
   readonly utilities = inject(UtilitiesService);
   readonly pin = inject(ApplicationPinService);
@@ -151,6 +163,9 @@ export class SettingsPage {
   readonly pinError = signal<string | null>(null);
   readonly pinMessage = signal<string | null>(null);
   readonly preferenceMessage = signal<string | null>(null);
+  readonly walletSetupOpen = signal(false);
+  readonly walletSetupBusy = signal(false);
+  readonly walletSetupError = signal<string | null>(null);
   readonly savingPin = signal(false);
   readonly showBackupDialog = signal(false);
   readonly backupAction = signal<BackupAction>('CREATE');
@@ -680,6 +695,65 @@ export class SettingsPage {
     } catch {
       input.checked = previous;
       this.snackbar.show('Utility reminder setting could not be saved.', 'WARNING');
+    }
+  }
+
+  toggleWallets(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    const requested = input.checked;
+    input.checked = this.consumerWallets.enabled();
+    this.walletSetupError.set(null);
+    if (!requested) {
+      if (this.consumerWallets.enabled())
+        void this.consumerWallets
+          .setEnabled(false)
+          .then(() => this.snackbar.show('Wallets are off. Wallet history and balances are kept.'))
+          .catch(() => this.snackbar.show('Wallets setting could not be saved.', 'WARNING'));
+      return;
+    }
+    if (!this.consumerWallets.hasEligibleWallets()) {
+      this.walletSetupOpen.set(true);
+      return;
+    }
+    void this.consumerWallets
+      .setEnabled(true)
+      .then(() => this.snackbar.show('Wallets are on.'))
+      .catch((error: unknown) =>
+        this.snackbar.show(
+          error instanceof Error ? error.message : 'Wallets could not be enabled.',
+          'WARNING',
+        ),
+      );
+  }
+
+  closeWalletSetup(): void {
+    if (!this.walletSetupBusy()) this.walletSetupOpen.set(false);
+  }
+
+  async chooseWalletSetup(kind: WalletSetupKind): Promise<void> {
+    if (this.walletSetupBusy()) return;
+    this.walletSetupBusy.set(true);
+    this.walletSetupError.set(null);
+    let intentId: string | undefined;
+    try {
+      const intent = await this.consumerWallets.beginSetup(kind);
+      intentId = intent.id;
+      const navigated = await this.router.navigate(['/wallets'], {
+        queryParams: { setup: intent.id },
+      });
+      if (!navigated) {
+        await this.consumerWallets.cancelSetup(intent.id);
+        this.walletSetupError.set('Wallet setup could not be opened. Wallets remain off.');
+        return;
+      }
+      this.walletSetupOpen.set(false);
+    } catch (error: unknown) {
+      if (intentId) await this.consumerWallets.cancelSetup(intentId);
+      this.walletSetupError.set(
+        error instanceof Error ? error.message : 'Wallet setup could not be started.',
+      );
+    } finally {
+      this.walletSetupBusy.set(false);
     }
   }
 

@@ -9,45 +9,6 @@
       <app-icon name="plus" /><span>Add transaction</span>
     </a>
   </header>
-  <section class="fastag-create">
-    <button class="fastag-trigger" type="button" (click)="openWallet()" aria-haspopup="dialog">
-      <app-icon name="car" />
-      <span
-        ><strong>Add FASTag wallet</strong
-        ><small>Track tolls and top-ups separately for each vehicle.</small></span
-      >
-      <app-icon name="plus" />
-    </button>
-  </section>
-  @if (walletOpen()) {
-    <app-profile-modal title="Add FASTag wallet" [busy]="walletSaving()" (closed)="closeWallet()">
-      <form class="wallet-form" [formGroup]="walletForm" (submit)="addFastag($event)">
-        <p>
-          Choose your own vehicle and provider. A detected registration does not establish
-          ownership.
-        </p>
-        <label>Wallet name<input formControlName="name" maxlength="80" required /></label>
-        <label>Provider<input formControlName="provider" maxlength="80" /></label>
-        <label>Vehicle registration<input formControlName="plate" maxlength="16" required /></label>
-        @if (walletError()) {
-          <p class="form-error" role="alert">{{ walletError() }}</p>
-        }
-        <div class="modal-actions">
-          <button
-            type="submit"
-            class="btn btn-primary"
-            [disabled]="!walletForm.valid || walletSaving()"
-          >
-            {{ walletSaving() ? 'Creating…' : 'Create wallet' }}
-          </button>
-          <button class="btn" type="button" [disabled]="walletSaving()" (click)="closeWallet()">
-            Cancel
-          </button>
-        </div>
-      </form>
-    </app-profile-modal>
-  }
-
   <div class="source-tabs" role="tablist" aria-label="Money source views">
     <button
       id="accounts-tab"

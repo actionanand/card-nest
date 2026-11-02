@@ -17,6 +17,7 @@ import { CardExpiryService } from './core/services/card-expiry.service';
 import { routes } from './app.routes';
 import { UtilitiesService } from './features/utilities/utilities.service';
 import { BankActivityService } from './features/bank-activity/bank-activity.service';
+import { ConsumerWalletService } from './core/services/consumer-wallet.service';
 
 export const appConfig: ApplicationConfig = {
   providers: [
@@ -34,6 +35,7 @@ export const appConfig: ApplicationConfig = {
       const cardExpiry = inject(CardExpiryService);
       const utilities = inject(UtilitiesService);
       const bankActivity = inject(BankActivityService);
+      const consumerWallets = inject(ConsumerWalletService);
       const initialiseStorage = database
         .initialise()
         .then(() =>
@@ -50,6 +52,7 @@ export const appConfig: ApplicationConfig = {
         )
         .then(() => appLock.initialise());
       return initialiseStorage
+        .then(() => consumerWallets.initialise().catch(() => undefined))
         .then(() => {
           notifications.setUtilityReminders(utilities.reminderTargets());
           return notifications.initialise(store.cards(), (cardId) => store.cardDueAmount(cardId));

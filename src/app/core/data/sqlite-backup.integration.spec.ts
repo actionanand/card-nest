@@ -5,7 +5,11 @@ import { CapacitorSQLite } from '@capacitor-community/sqlite';
 import { SqliteDatabase } from './sqlite-database';
 import { DATABASE_MIGRATIONS } from './migrations';
 import { CardNestStore } from '../services/card-nest-store';
-import { CardTransaction } from '../models/domain';
+import {
+  ConsumerWalletService,
+  WALLETS_FEATURE_STATE_KEY,
+} from '../services/consumer-wallet.service';
+import { CardTransaction, PaymentSource } from '../models/domain';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
@@ -36,7 +40,7 @@ import { CATEGORY_REGISTRY } from './category-definitions';
 const { DatabaseSync } = process.getBuiltinModule('node:sqlite') as typeof import('node:sqlite');
 
 vi.hoisted(() => vi.resetModules());
-const config = { smsPageSize: 200, seedDemoData: false };
+const config = { smsPageSize: 200, maxWallets: 15, seedDemoData: false };
 vi.mock('@capacitor-community/sqlite', () => ({
   CapacitorSQLite: {
     createConnection: vi.fn(),
@@ -59,6 +63,214 @@ vi.mock('@capacitor-community/sqlite', () => ({
 describe('Durable first-run data, additive read migration and private portable backups', () => {
   let sql: DatabaseSyncType;
   let database: SqliteDatabase;
+  it('initializes Wallets from legacy FASTag data but preserves explicit OFF', async () => {
+    await database.initialise();
+    const store = TestBed.inject(CardNestStore);
+    await store.initialisePreferences();
+    await store.addWallet({
+      id: 'legacy-fastag-wallet',
+      nickname: 'Synthetic FASTag',
+      kind: 'FASTAG',
+      vehicleNumber: 'KA01AB1234',
+      noLimit: false,
+      balanceMinor: 0,
+      autoLoad: false,
+      archived: false,
+    });
+    const wallets = TestBed.inject(ConsumerWalletService);
+    await wallets.initialise();
+    expect(wallets.featureState()).toBe('ENABLED');
+
+    await database.run('UPDATE app_preferences SET encrypted_value=? WHERE key=?', [
+      'DISABLED',
+      WALLETS_FEATURE_STATE_KEY,
+    ]);
+    await wallets.initialise();
+    expect(wallets.featureState()).toBe('DISABLED');
+    expect(
+      store.paymentSources().find((source) => source.id === 'legacy-fastag-wallet'),
+    ).toMatchObject({
+      id: 'legacy-fastag-wallet',
+      kind: 'FASTAG',
+      vehicleNumber: 'KA01AB1234',
+    });
+  });
+
+  it('cancels setup without enabling and commits a consumer wallet with activation atomically', async () => {
+    await database.initialise();
+    const store = TestBed.inject(CardNestStore);
+    await store.initialisePreferences();
+    const wallets = TestBed.inject(ConsumerWalletService);
+    await wallets.initialise();
+    expect(wallets.featureState()).toBe('NEVER_CONFIGURED');
+
+    const cancelled = await wallets.beginSetup('CONSUMER');
+    await wallets.cancelSetup(cancelled.id);
+    expect(wallets.featureState()).toBe('NEVER_CONFIGURED');
+    expect(
+      sql
+        .prepare('SELECT key FROM app_preferences WHERE key=?')
+        .get('consumer_wallets_setup_intent'),
+    ).toBeUndefined();
+
+    const intent = await wallets.beginSetup('CONSUMER');
+    const wallet = await wallets.registerWallet({
+      providerId: 'other',
+      customName: 'Synthetic Gift Balance',
+      nickname: 'Rewards',
+      setupIntentId: intent.id,
+    });
+    expect(wallets.featureState()).toBe('ENABLED');
+    expect(wallets.wallets()).toContainEqual(wallet);
+    expect(
+      sql
+        .prepare('SELECT encrypted_value FROM app_preferences WHERE key=?')
+        .get(WALLETS_FEATURE_STATE_KEY)?.['encrypted_value'],
+    ).toBe('ENABLED');
+    expect(
+      sql
+        .prepare('SELECT key FROM app_preferences WHERE key=?')
+        .get('consumer_wallets_setup_intent'),
+    ).toBeUndefined();
+  });
+
+  it('commits FASTag registration and Wallets activation together or rolls both back', async () => {
+    await database.initialise();
+    const store = TestBed.inject(CardNestStore);
+    await store.initialisePreferences();
+    const wallets = TestBed.inject(ConsumerWalletService);
+    await wallets.initialise();
+    const intent = await wallets.beginSetup('FASTAG');
+    const source: PaymentSource = {
+      id: 'atomic-setup-fastag',
+      kind: 'FASTAG',
+      nickname: 'Synthetic atomic FASTag',
+      vehicleNumber: 'FICT001',
+      noLimit: false,
+      balanceMinor: 0,
+      autoLoad: false,
+      archived: false,
+    };
+    sql.exec(
+      `CREATE TRIGGER fail_wallet_activation BEFORE UPDATE ON app_preferences
+       WHEN NEW.key='${WALLETS_FEATURE_STATE_KEY}' AND NEW.encrypted_value='ENABLED'
+       BEGIN SELECT RAISE(ABORT,'synthetic Wallets activation failure'); END`,
+    );
+    await expect(wallets.saveFastagWallet(source, intent.id)).rejects.toThrow(
+      'synthetic Wallets activation failure',
+    );
+    expect(store.paymentSources().some((item) => item.id === source.id)).toBe(false);
+    expect(wallets.featureState()).toBe('NEVER_CONFIGURED');
+    expect(
+      rows("SELECT encrypted_value FROM app_preferences WHERE key='payment_sources'")[0]?.[
+        'encrypted_value'
+      ],
+    ).not.toContain(source.id);
+    sql.exec('DROP TRIGGER fail_wallet_activation');
+
+    await wallets.saveFastagWallet(source, intent.id);
+    expect(wallets.featureState()).toBe('ENABLED');
+    expect(store.paymentSources().find((item) => item.id === source.id)).toEqual(source);
+    expect(
+      rows("SELECT encrypted_value FROM app_preferences WHERE key='payment_sources'")[0]?.[
+        'encrypted_value'
+      ],
+    ).toContain(source.id);
+  });
+
+  it('limits active consumer wallets and atomically replaces one when restoring at capacity', async () => {
+    await database.initialise();
+    const store = TestBed.inject(CardNestStore);
+    await store.initialisePreferences();
+    const wallets = TestBed.inject(ConsumerWalletService);
+    await wallets.initialise();
+    await wallets.saveFastagWallet({
+      id: 'outside-consumer-wallet-cap',
+      kind: 'FASTAG',
+      nickname: 'Synthetic FASTag',
+      vehicleNumber: 'FICT001',
+      noLimit: false,
+      balanceMinor: 0,
+      autoLoad: false,
+      archived: false,
+    });
+    const created: Awaited<ReturnType<typeof wallets.registerWallet>>[] = [];
+    for (let index = 0; index < 15; index += 1)
+      created.push(
+        await wallets.registerWallet({ providerId: 'amazon-pay', nickname: `Synthetic ${index}` }),
+      );
+    await expect(
+      wallets.registerWallet({ providerId: 'amazon-pay', nickname: 'Sixteenth' }),
+    ).rejects.toThrow('up to 15 active wallets');
+    await wallets.archiveWallet(created[14].id);
+    await expect(
+      wallets.registerWallet({ providerId: 'amazon-pay', nickname: 'Synthetic 0' }),
+    ).rejects.toThrow('identity already exists');
+
+    await wallets.registerWallet({
+      providerId: 'paytm-wallet',
+      nickname: 'Replacement slot',
+    });
+    const before = sql
+      .prepare('SELECT id,archived,payload FROM consumer_wallets ORDER BY id')
+      .all();
+    sql.exec(
+      `CREATE TRIGGER fail_wallet_replacement BEFORE UPDATE ON consumer_wallets
+       WHEN NEW.id='${created[0].id}' BEGIN SELECT RAISE(ABORT,'synthetic replacement failure'); END`,
+    );
+    await expect(wallets.restoreWallet(created[14].id, created[0].id)).rejects.toThrow(
+      'synthetic replacement failure',
+    );
+    expect(
+      sql.prepare('SELECT id,archived,payload FROM consumer_wallets ORDER BY id').all(),
+    ).toEqual(before);
+    sql.exec('DROP TRIGGER fail_wallet_replacement');
+
+    await wallets.restoreWallet(created[14].id, created[0].id);
+    expect(wallets.wallets().find((wallet) => wallet.id === created[14].id)?.archived).toBe(false);
+    expect(wallets.wallets().find((wallet) => wallet.id === created[0].id)?.archived).toBe(true);
+    expect(wallets.activeWallets()).toHaveLength(15);
+    expect(store.paymentSources().filter((source) => source.kind === 'FASTAG')).toHaveLength(1);
+  });
+
+  it('rejects portable backups above the active-wallet limit without replacing current data', async () => {
+    await database.initialise();
+    const store = TestBed.inject(CardNestStore);
+    await store.initialisePreferences();
+    const wallets = TestBed.inject(ConsumerWalletService);
+    await wallets.initialise();
+    const existing = await wallets.registerWallet({
+      providerId: 'amazon-pay',
+      nickname: 'Existing',
+    });
+    const beforeWalletRows = rows('SELECT * FROM consumer_wallets ORDER BY id');
+    const beforePreferences = rows('SELECT * FROM app_preferences ORDER BY key');
+    const backup = JSON.parse(await database.exportBackupJson()) as {
+      format: string;
+      version: number;
+      databaseVersion: number;
+      tables: { name: string; rows: Record<string, unknown>[] }[];
+    };
+    const table = backup.tables.find((candidate) => candidate.name === 'consumer_wallets')!;
+    const base = table.rows[0];
+    for (let index = 1; index < 16; index += 1) {
+      const id = `over-limit-${index}`;
+      const payload = JSON.parse(String(base['payload'])) as Record<string, unknown>;
+      table.rows.push({
+        ...base,
+        id,
+        nickname: `Synthetic ${index}`,
+        payload: JSON.stringify({ ...payload, id, nickname: `Synthetic ${index}` }),
+      });
+    }
+    await expect(database.restoreBackupJson(JSON.stringify(backup))).rejects.toThrow(
+      'exceeds the configured limit of 15 active consumer wallets',
+    );
+    expect(rows('SELECT * FROM consumer_wallets ORDER BY id')).toEqual(beforeWalletRows);
+    expect(rows('SELECT * FROM app_preferences ORDER BY key')).toEqual(beforePreferences);
+    expect(wallets.wallets().map((wallet) => wallet.id)).toEqual([existing.id]);
+  });
+
   it('persists default-off UI preferences through serialized writes, reload and encrypted backup restoration', async () => {
     await database.initialise();
     const store = TestBed.inject(CardNestStore);
@@ -348,6 +560,7 @@ describe('Durable first-run data, additive read migration and private portable b
       providers: [
         SqliteDatabase,
         CardNestStore,
+        ConsumerWalletService,
         SmsReviewService,
         { provide: AppLockService, useValue: { locked: () => false, foreground: () => true } },
         { provide: APP_ENVIRONMENT, useValue: config },
@@ -360,6 +573,394 @@ describe('Durable first-run data, additive read migration and private portable b
     sql.close();
     vi.restoreAllMocks();
   });
+  it('round-trips consumer-wallet events, FIFO allocations, FASTag identity and cloned recharge history', async () => {
+    await database.initialise();
+    const store = TestBed.inject(CardNestStore);
+    await store.initialisePreferences();
+    const wallets = TestBed.inject(ConsumerWalletService);
+    await wallets.initialise();
+    const funded = await wallets.registerWallet({
+      providerId: 'amazon-pay',
+      nickname: 'Synthetic funded wallet',
+    });
+    const upiLite = await wallets.registerWallet({ providerId: 'upi-lite' });
+    await wallets.archiveWallet(upiLite.id);
+    await wallets.setEnabled(false);
+    const fastag: PaymentSource = {
+      id: 'backup-fastag-source',
+      kind: 'FASTAG',
+      nickname: 'Synthetic backup FASTag',
+      institution: 'Fictional provider',
+      vehicleNumber: 'FICT001',
+      noLimit: false,
+      balanceMinor: 76500,
+      autoLoad: false,
+      archived: false,
+    };
+    await store.addWallet(fastag);
+
+    const eventRows = [
+      {
+        id: 'backup-load-event',
+        walletId: funded.id,
+        eventType: 'FUNDED_LOAD',
+        eventDate: '2026-10-20',
+        amountMinor: 30000,
+        balanceDeltaMinor: 30000,
+        loadedAmountMinor: 30000,
+        feeMinor: 2000,
+        fundingSourceKind: 'CARD',
+        fundingSourceId: 'backup-card',
+        sourceTransactionId: 'backup-funding-transaction',
+        createdAt: '2026-10-20T10:00:00Z',
+        updatedAt: '2026-10-20T10:00:00Z',
+      },
+      {
+        id: 'backup-wallet-purchase',
+        walletId: funded.id,
+        eventType: 'PURCHASE',
+        eventDate: '2026-10-21',
+        amountMinor: 5000,
+        balanceDeltaMinor: -5000,
+        createdAt: '2026-10-21T10:00:00Z',
+        updatedAt: '2026-10-21T10:00:00Z',
+      },
+      {
+        id: 'backup-upi-load',
+        walletId: upiLite.id,
+        eventType: 'FUNDED_LOAD',
+        eventDate: '2026-10-22',
+        amountMinor: 50000,
+        balanceDeltaMinor: 50000,
+        loadedAmountMinor: 50000,
+        feeMinor: 0,
+        fundingSourceKind: 'BANK',
+        fundingSourceId: 'backup-bank-source',
+        sourceTransactionId: 'backup-bank-load-transaction',
+        createdAt: '2026-10-22T10:00:00Z',
+        updatedAt: '2026-10-22T10:00:00Z',
+      },
+      {
+        id: 'backup-upi-return',
+        walletId: upiLite.id,
+        eventType: 'UPI_LITE_RETURN',
+        eventDate: '2026-10-23',
+        amountMinor: 10000,
+        balanceDeltaMinor: -10000,
+        fundingSourceKind: 'BANK',
+        returnSourceId: 'backup-favourite-bank',
+        createdAt: '2026-10-23T10:00:00Z',
+        updatedAt: '2026-10-23T10:00:00Z',
+      },
+      {
+        id: 'backup-manual-credit',
+        walletId: funded.id,
+        eventType: 'PROMOTIONAL_CREDIT',
+        eventDate: '2026-10-24',
+        amountMinor: 1200,
+        balanceDeltaMinor: 1200,
+        createdAt: '2026-10-24T10:00:00Z',
+        updatedAt: '2026-10-24T10:00:00Z',
+      },
+    ];
+    await database.atomic(async (tx) => {
+      for (const event of eventRows)
+        await tx.run(
+          'INSERT INTO consumer_wallet_events(id,wallet_id,event_type,event_date,amount_minor,balance_delta_minor,loaded_amount_minor,fee_minor,funding_source_kind,funding_source_id,source_transaction_id,return_source_id,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+          [
+            event.id,
+            event.walletId,
+            event.eventType,
+            event.eventDate,
+            event.amountMinor,
+            event.balanceDeltaMinor,
+            'loadedAmountMinor' in event ? event.loadedAmountMinor : null,
+            'feeMinor' in event ? event.feeMinor : null,
+            'fundingSourceKind' in event ? event.fundingSourceKind : null,
+            'fundingSourceId' in event ? event.fundingSourceId : null,
+            'sourceTransactionId' in event ? event.sourceTransactionId : null,
+            'returnSourceId' in event ? event.returnSourceId : null,
+            JSON.stringify(event),
+            event.createdAt,
+            event.updatedAt,
+          ],
+        );
+      await tx.run(
+        'INSERT INTO consumer_wallet_event_allocations(id,debit_event_id,credit_event_id,allocated_minor,expense_reversal_minor,created_at) VALUES(?,?,?,?,?,?)',
+        [
+          'backup-purchase-allocation',
+          'backup-wallet-purchase',
+          'backup-load-event',
+          5000,
+          0,
+          'now',
+        ],
+      );
+      await tx.run(
+        'INSERT INTO consumer_wallet_event_allocations(id,debit_event_id,credit_event_id,allocated_minor,expense_reversal_minor,created_at) VALUES(?,?,?,?,?,?)',
+        ['backup-return-allocation', 'backup-upi-return', 'backup-upi-load', 10000, 10000, 'now'],
+      );
+    });
+
+    const utilities = TestBed.inject(UtilitiesService);
+    await utilities.initialise();
+    const mobile = await utilities.saveMobileProfile({
+      personName: 'Synthetic clone profile',
+      operator: 'JIO',
+      subscriptionType: 'PREPAID',
+    });
+    const originalRecharge = await utilities.saveRecharge({
+      profileId: mobile.id,
+      planType: 'VOICE_DATA',
+      amountMinor: 34900,
+      startDate: '2026-10-01',
+      validityDays: 28,
+    });
+    const clonedRecharge = await utilities.saveRecharge({
+      profileId: mobile.id,
+      planType: originalRecharge.planType,
+      amountMinor: originalRecharge.amountMinor,
+      startDate: '2026-11-02',
+      validityDays: 28,
+      comment: 'Cloned draft saved as new history',
+    });
+
+    const expectedWallets = rows('SELECT * FROM consumer_wallets ORDER BY id');
+    const expectedEvents = rows('SELECT * FROM consumer_wallet_events ORDER BY id');
+    const expectedAllocations = rows('SELECT * FROM consumer_wallet_event_allocations ORDER BY id');
+    const expectedSources = store.paymentSources();
+    const expectedRecharges = rows('SELECT * FROM mobile_recharges ORDER BY id');
+    vi.stubGlobal('crypto', webcrypto);
+    vi.stubGlobal('Blob', NodeBlob);
+    try {
+      const backups = TestBed.inject(BackupService);
+      const backup = await backups.create('synthetic-wallet-roundtrip-passphrase');
+      expect(backup.contents).not.toContain('Synthetic funded wallet');
+      await database.run('DELETE FROM consumer_wallet_event_allocations');
+      await database.run('DELETE FROM consumer_wallet_events');
+      await database.run('DELETE FROM consumer_wallets');
+      await database.run('DELETE FROM mobile_recharges');
+      await database.run(
+        "UPDATE app_preferences SET encrypted_value='[]' WHERE key='payment_sources'",
+      );
+      await backups.restore(backup.contents, 'synthetic-wallet-roundtrip-passphrase');
+      await store.initialisePreferences();
+      await wallets.initialise();
+      await utilities.initialise();
+
+      expect(rows('SELECT * FROM consumer_wallets ORDER BY id')).toEqual(expectedWallets);
+      expect(rows('SELECT * FROM consumer_wallet_events ORDER BY id')).toEqual(expectedEvents);
+      expect(rows('SELECT * FROM consumer_wallet_event_allocations ORDER BY id')).toEqual(
+        expectedAllocations,
+      );
+      expect(wallets.featureState()).toBe('DISABLED');
+      expect(wallets.showWalletNavigation()).toBe(true);
+      expect(wallets.wallets().find((wallet) => wallet.id === upiLite.id)?.archived).toBe(true);
+      expect(store.paymentSources()).toEqual(expectedSources);
+      expect(store.paymentSources().find((source) => source.id === fastag.id)).toEqual(fastag);
+      expect(rows('SELECT * FROM mobile_recharges ORDER BY id')).toEqual(expectedRecharges);
+      expect(utilities.rechargesFor(mobile.id).map((recharge) => recharge.id)).toEqual([
+        clonedRecharge.id,
+        originalRecharge.id,
+      ]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('retains wallet balance and FIFO attribution after old funding transactions are pruned', async () => {
+    await database.initialise();
+    const store = TestBed.inject(CardNestStore);
+    await store.initialisePreferences();
+    const wallets = TestBed.inject(ConsumerWalletService);
+    await wallets.initialise();
+    const wallet = await wallets.registerWallet({ providerId: 'upi-lite' });
+    const sourceTransaction = {
+      id: 'old-retained-wallet-funding',
+      cardId: '',
+      type: 'PURCHASE',
+      amountMinor: 50000,
+      currencyCode: 'INR',
+      transactionDate: '2018-01-01',
+      categoryId: 'other',
+      attachmentIds: [],
+      createdAt: '2018-01-01T10:00:00Z',
+      updatedAt: '2018-01-01T10:00:00Z',
+    };
+    await database.run(
+      'INSERT INTO card_transactions(id,card_id,category_id,type,amount_minor,currency_code,transaction_date,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)',
+      [
+        sourceTransaction.id,
+        null,
+        sourceTransaction.categoryId,
+        sourceTransaction.type,
+        sourceTransaction.amountMinor,
+        sourceTransaction.currencyCode,
+        sourceTransaction.transactionDate,
+        JSON.stringify(sourceTransaction),
+        sourceTransaction.createdAt,
+        sourceTransaction.updatedAt,
+      ],
+    );
+    const load = {
+      id: 'retained-wallet-load',
+      walletId: wallet.id,
+      eventType: 'FUNDED_LOAD',
+      eventDate: '2018-01-01',
+      amountMinor: 50000,
+      balanceDeltaMinor: 50000,
+      loadedAmountMinor: 50000,
+      feeMinor: 0,
+      fundingSourceKind: 'BANK',
+      fundingSourceId: 'retained-bank-id',
+      sourceTransactionId: sourceTransaction.id,
+      merchant: 'Private old merchant',
+      memo: 'Private old note',
+      createdAt: '2018-01-01T10:00:00Z',
+      updatedAt: '2018-01-01T10:00:00Z',
+    };
+    const purchaseEvent = {
+      id: 'retained-wallet-purchase',
+      walletId: wallet.id,
+      eventType: 'PURCHASE',
+      eventDate: '2025-01-01',
+      amountMinor: 10000,
+      balanceDeltaMinor: -10000,
+      createdAt: '2025-01-01T10:00:00Z',
+      updatedAt: '2025-01-01T10:00:00Z',
+    };
+    const returnEvent = {
+      id: 'retained-upi-return',
+      walletId: wallet.id,
+      eventType: 'UPI_LITE_RETURN',
+      eventDate: '2025-02-01',
+      amountMinor: 15000,
+      balanceDeltaMinor: -15000,
+      returnSourceId: 'any-active-bank-id',
+      createdAt: '2025-02-01T10:00:00Z',
+      updatedAt: '2025-02-01T10:00:00Z',
+    };
+    await database.atomic(async (tx) => {
+      for (const event of [load, purchaseEvent, returnEvent])
+        await tx.run(
+          'INSERT INTO consumer_wallet_events(id,wallet_id,event_type,event_date,amount_minor,balance_delta_minor,loaded_amount_minor,fee_minor,funding_source_kind,funding_source_id,source_transaction_id,return_source_id,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+          [
+            event.id,
+            event.walletId,
+            event.eventType,
+            event.eventDate,
+            event.amountMinor,
+            event.balanceDeltaMinor,
+            'loadedAmountMinor' in event ? event.loadedAmountMinor : null,
+            'feeMinor' in event ? event.feeMinor : null,
+            'fundingSourceKind' in event ? event.fundingSourceKind : null,
+            'fundingSourceId' in event ? event.fundingSourceId : null,
+            'sourceTransactionId' in event ? event.sourceTransactionId : null,
+            'returnSourceId' in event ? event.returnSourceId : null,
+            JSON.stringify(event),
+            event.createdAt,
+            event.updatedAt,
+          ],
+        );
+      await tx.run(
+        'INSERT INTO consumer_wallet_event_allocations(id,debit_event_id,credit_event_id,allocated_minor,expense_reversal_minor,created_at) VALUES(?,?,?,?,?,?)',
+        ['retained-purchase-allocation', purchaseEvent.id, load.id, 10000, 0, 'now'],
+      );
+      await tx.run(
+        'INSERT INTO consumer_wallet_event_allocations(id,debit_event_id,credit_event_id,allocated_minor,expense_reversal_minor,created_at) VALUES(?,?,?,?,?,?)',
+        ['retained-return-allocation', returnEvent.id, load.id, 15000, 15000, 'now'],
+      );
+    });
+    const balanceBeforeRetention = Number(
+      rows('SELECT SUM(balance_delta_minor) AS balance FROM consumer_wallet_events')[0]['balance'],
+    );
+    expect(balanceBeforeRetention).toBe(25000);
+
+    await database.deleteDataOlderThan('2020-01-01');
+
+    expect(count('card_transactions')).toBe(0);
+    expect(
+      rows('SELECT source_transaction_id FROM consumer_wallet_events WHERE id=?', [load.id])[0][
+        'source_transaction_id'
+      ],
+    ).toBeNull();
+    const retainedPayload = JSON.parse(
+      String(
+        rows('SELECT payload FROM consumer_wallet_events WHERE id=?', [load.id])[0]['payload'],
+      ),
+    ) as Record<string, unknown>;
+    expect(retainedPayload['merchant']).toBeUndefined();
+    expect(retainedPayload['memo']).toBeUndefined();
+    expect(count('consumer_wallet_events')).toBe(3);
+    expect(count('consumer_wallet_event_allocations')).toBe(2);
+    expect(
+      rows('SELECT SUM(balance_delta_minor) AS balance FROM consumer_wallet_events')[0]['balance'],
+    ).toBe(balanceBeforeRetention);
+  });
+
+  it('embeds legacy receipt file paths into encrypted backups and restores their media bytes', async () => {
+    await database.initialise();
+    const store = TestBed.inject(CardNestStore);
+    await store.initialisePreferences();
+    const receiptPath = 'file:///synthetic/receipt-image.jpg';
+    const receiptBytes = new Uint8Array([0x43, 0x61, 0x72, 0x64, 0x4e, 0x65, 0x73, 0x74]);
+    const transaction = {
+      id: 'legacy-file-receipt-transaction',
+      cardId: null,
+      type: 'PURCHASE',
+      amountMinor: 1200,
+      currencyCode: 'INR',
+      transactionDate: '2026-10-25',
+      categoryId: 'other',
+      attachmentIds: [receiptPath],
+      createdAt: '2026-10-25T10:00:00Z',
+      updatedAt: '2026-10-25T10:00:00Z',
+    };
+    await database.run(
+      'INSERT INTO card_transactions(id,card_id,category_id,type,amount_minor,currency_code,transaction_date,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)',
+      [
+        transaction.id,
+        null,
+        transaction.categoryId,
+        transaction.type,
+        transaction.amountMinor,
+        transaction.currencyCode,
+        transaction.transactionDate,
+        JSON.stringify(transaction),
+        transaction.createdAt,
+        transaction.updatedAt,
+      ],
+    );
+    vi.stubGlobal('crypto', webcrypto);
+    vi.stubGlobal('Blob', NodeBlob);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (path: string) => {
+        expect(path).toBe(receiptPath);
+        return new Response(new Uint8Array(receiptBytes), {
+          headers: { 'content-type': 'image/jpeg' },
+        });
+      }),
+    );
+    try {
+      const backups = TestBed.inject(BackupService);
+      const backup = await backups.create('synthetic-receipt-backup-passphrase');
+      await database.run('DELETE FROM card_transactions WHERE id=?', [transaction.id]);
+      await backups.restore(backup.contents, 'synthetic-receipt-backup-passphrase');
+      await store.initialisePreferences();
+      const restored = JSON.parse(
+        String(
+          rows('SELECT payload FROM card_transactions WHERE id=?', [transaction.id])[0]['payload'],
+        ),
+      ) as { attachmentIds: string[] };
+      expect(restored.attachmentIds[0]).toMatch(/^data:image\/jpeg;base64,/);
+      const encoded = restored.attachmentIds[0].split(',')[1];
+      expect(Uint8Array.from(atob(encoded), (byte) => byte.charCodeAt(0))).toEqual(receiptBytes);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('restores an encrypted backup created before optional SMS annotation fields existed', async () => {
     await database.initialise();
     const store = TestBed.inject(CardNestStore);
@@ -2226,6 +2827,133 @@ describe('Durable first-run data, additive read migration and private portable b
     expect(count('card_transactions')).toBe(1);
     expect(count('sms_reconciliation')).toBe(1);
   });
+  it('rolls back a failed legacy plugin import without losing pending SMS or financial data', async () => {
+    await database.initialise();
+    const store = TestBed.inject(CardNestStore);
+    await store.initialisePreferences();
+    const transaction = {
+      id: 'legacy-import-rollback-transaction',
+      cardId: '',
+      type: 'PURCHASE',
+      amountMinor: 1200,
+      currencyCode: 'INR',
+      transactionDate: '2026-10-25',
+      categoryId: 'other',
+      attachmentIds: [],
+      createdAt: '2026-10-25T10:00:00Z',
+      updatedAt: '2026-10-25T10:00:00Z',
+    };
+    await database.run(
+      'INSERT INTO card_transactions(id,card_id,category_id,type,amount_minor,currency_code,transaction_date,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)',
+      [
+        transaction.id,
+        null,
+        transaction.categoryId,
+        transaction.type,
+        transaction.amountMinor,
+        transaction.currencyCode,
+        transaction.transactionDate,
+        JSON.stringify(transaction),
+        transaction.createdAt,
+        transaction.updatedAt,
+      ],
+    );
+    await database.run(
+      "INSERT INTO sms_candidates(id,provider_id,event_at,kind,state,payload,updated_at) VALUES('rollback-sms','synthetic','2026-10-25','BANK_DEBIT','PENDING','{\"message\":\"private pending evidence\"}','before')",
+    );
+    const originalTransactions = rows('SELECT * FROM card_transactions ORDER BY id');
+    const originalCandidates = rows('SELECT * FROM sms_candidates ORDER BY id');
+    const originalPreferences = rows('SELECT * FROM app_preferences ORDER BY key');
+    vi.mocked(CapacitorSQLite.isJsonValid).mockResolvedValue({ result: true });
+    vi.mocked(CapacitorSQLite.importFromJson).mockImplementation(async () => {
+      sql.exec(
+        'DELETE FROM card_transactions; DELETE FROM sms_candidates; DELETE FROM app_preferences;',
+      );
+      throw new Error('synthetic legacy import failure');
+    });
+
+    await expect(
+      database.restoreBackupJson(
+        JSON.stringify({ database: 'synthetic-legacy', version: 7, tables: [] }),
+      ),
+    ).rejects.toThrow('synthetic legacy import failure');
+    expect(database.ready()).toBe(true);
+    expect(rows('SELECT * FROM card_transactions ORDER BY id')).toEqual(originalTransactions);
+    expect(rows('SELECT * FROM sms_candidates ORDER BY id')).toEqual(originalCandidates);
+    expect(rows('SELECT * FROM app_preferences ORDER BY key')).toEqual(originalPreferences);
+  });
+
+  it('rolls back original data when a legacy import fails during a forward migration', async () => {
+    await database.initialise();
+    const store = TestBed.inject(CardNestStore);
+    await store.initialisePreferences();
+    const transaction = {
+      id: 'legacy-migration-rollback-transaction',
+      cardId: '',
+      type: 'PURCHASE',
+      amountMinor: 2400,
+      currencyCode: 'INR',
+      transactionDate: '2026-10-26',
+      categoryId: 'other',
+      attachmentIds: [],
+      createdAt: '2026-10-26T10:00:00Z',
+      updatedAt: '2026-10-26T10:00:00Z',
+    };
+    await database.run(
+      'INSERT INTO card_transactions(id,card_id,category_id,type,amount_minor,currency_code,transaction_date,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)',
+      [
+        transaction.id,
+        null,
+        transaction.categoryId,
+        transaction.type,
+        transaction.amountMinor,
+        transaction.currencyCode,
+        transaction.transactionDate,
+        JSON.stringify(transaction),
+        transaction.createdAt,
+        transaction.updatedAt,
+      ],
+    );
+    await database.run(
+      "INSERT INTO sms_candidates(id,provider_id,event_at,kind,state,payload,updated_at) VALUES('migration-rollback-sms','synthetic','2026-10-26','BANK_DEBIT','PENDING','{\"message\":\"preserve this evidence\"}','before')",
+    );
+    const originalTransactions = rows('SELECT * FROM card_transactions ORDER BY id');
+    const originalCandidates = rows('SELECT * FROM sms_candidates ORDER BY id');
+    const originalPreferences = rows('SELECT * FROM app_preferences ORDER BY key');
+    const execute = vi.mocked(CapacitorSQLite.execute).getMockImplementation()!;
+    let failLatestMigration = true;
+    vi.mocked(CapacitorSQLite.isJsonValid).mockResolvedValue({ result: true });
+    vi.mocked(CapacitorSQLite.execute).mockImplementation(async (options) => {
+      if (
+        failLatestMigration &&
+        options.transaction &&
+        options.statements?.includes('PRAGMA user_version = 15')
+      ) {
+        failLatestMigration = false;
+        throw new Error('synthetic forward migration failure');
+      }
+      return execute(options);
+    });
+    vi.mocked(CapacitorSQLite.importFromJson).mockImplementation(async () => {
+      sql.close();
+      sql = new DatabaseSync(':memory:');
+      sql.exec('PRAGMA foreign_keys=ON');
+      schema(14);
+      installFinancialData();
+      return { changes: { changes: 1 } };
+    });
+
+    await expect(
+      database.restoreBackupJson(
+        JSON.stringify({ database: 'synthetic-legacy', version: 14, tables: [] }),
+      ),
+    ).rejects.toThrow('The restored database could not be opened.');
+    expect(database.ready()).toBe(true);
+    expect(rows('SELECT * FROM card_transactions ORDER BY id')).toEqual(originalTransactions);
+    expect(rows('SELECT * FROM sms_candidates ORDER BY id')).toEqual(originalCandidates);
+    expect(rows('SELECT * FROM app_preferences ORDER BY key')).toEqual(originalPreferences);
+  });
+
   it('reopens and migrates a legacy plugin import before recording RESTORED, without introducing demo data', async () => {
     await database.initialise();
     vi.mocked(CapacitorSQLite.isJsonValid).mockResolvedValue({ result: true });
@@ -2250,6 +2978,8 @@ describe('Durable first-run data, additive read migration and private portable b
     ]);
     expect(vi.mocked(CapacitorSQLite.closeConnection)).toHaveBeenCalled();
     expect(CapacitorSQLite.createConnection).toHaveBeenCalledTimes(2);
-    expect(sql.prepare('PRAGMA user_version').get()?.['user_version']).toBe(14);
+    expect(sql.prepare('PRAGMA user_version').get()?.['user_version']).toBe(
+      DATABASE_MIGRATIONS.at(-1)?.version,
+    );
   });
 });

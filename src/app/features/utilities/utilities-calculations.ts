@@ -75,6 +75,30 @@ function hasData(plan: MobileRecharge): boolean {
   return plan.planType !== 'VOICE_ONLY';
 }
 
+export function latestRechargeToClone(
+  plans: readonly MobileRecharge[],
+  today: string,
+): MobileRecharge | null {
+  return (
+    plans
+      .filter(
+        (plan) =>
+          plan.planType !== 'DATA_ONLY' &&
+          plan.startDate <= today &&
+          validCalendarDate(plan.startDate) &&
+          validCalendarDate(plan.endDate) &&
+          plan.endDate >= plan.startDate,
+      )
+      .slice()
+      .sort(
+        (left, right) =>
+          right.startDate.localeCompare(left.startDate) ||
+          right.createdAt.localeCompare(left.createdAt) ||
+          right.id.localeCompare(left.id),
+      )[0] ?? null
+  );
+}
+
 export interface MobileVoiceCoveragePeriod {
   readonly startDate: string;
   readonly endDate: string;

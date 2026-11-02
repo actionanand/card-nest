@@ -1650,7 +1650,10 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
         SmsReviewService,
         BackupService,
         { provide: AppLockService, useValue: lock },
-        { provide: APP_ENVIRONMENT, useValue: { smsPageSize: 200, seedDemoData: false } },
+        {
+          provide: APP_ENVIRONMENT,
+          useValue: { smsPageSize: 200, maxWallets: 15, seedDemoData: false },
+        },
         { provide: NATIVE_EXPORT, useValue: {} },
       ],
     });

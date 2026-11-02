@@ -31,6 +31,7 @@ import {
 import {
   addCalendarDays,
   calendarDaysBetween,
+  latestRechargeToClone,
   utilityOverview,
   validCalendarDate,
 } from './utilities-calculations';
@@ -86,6 +87,7 @@ export class UtilitiesPage {
     this.utilities.lpgProfiles().find((profile) => profile.id === this.lpgEventProfileId()),
   );
   readonly validityMode = signal<'DAYS' | 'END_DATE'>('DAYS');
+  readonly cloneDuplicateWarning = signal(false);
   readonly error = signal<string | null>(null);
   readonly saving = signal(false);
   readonly deletion = signal<{
@@ -315,6 +317,7 @@ export class UtilitiesPage {
   startRecharge(profile: MobileProfile): void {
     if (this.saving()) return;
     this.error.set(null);
+    this.cloneDuplicateWarning.set(false);
     this.editingRechargeId.set(null);
     this.rechargeProfileId.set(profile.id);
     this.validityMode.set('DAYS');
@@ -328,10 +331,42 @@ export class UtilitiesPage {
     });
   }
 
+  cloneRechargeSource(profile: MobileProfile): MobileRecharge | null {
+    if (profile.archived) return null;
+    return latestRechargeToClone(this.utilities.rechargesFor(profile.id), this.today);
+  }
+
+  cloneRecharge(profile: MobileProfile): void {
+    if (this.saving()) return;
+    const source = this.cloneRechargeSource(profile);
+    if (!source) return;
+    const startDate = this.today;
+    const validityDays = calendarDaysBetween(source.startDate, source.endDate) + 1;
+    if (!Number.isSafeInteger(validityDays) || validityDays <= 0) return;
+    this.startRecharge(profile);
+    this.rechargeForm.reset({
+      planType: source.planType,
+      amount: source.amountMinor === undefined ? '' : String(source.amountMinor / 100),
+      startDate,
+      validityDays: String(validityDays),
+      endDate: '',
+      comment: source.comment ?? '',
+    });
+    this.validityMode.set('DAYS');
+    this.cloneDuplicateWarning.set(
+      this.utilities
+        .rechargesFor(profile.id)
+        .some(
+          (recharge) => recharge.startDate === startDate && recharge.planType === source.planType,
+        ),
+    );
+  }
+
   closeRecharge(): void {
     if (this.saving()) return;
     this.rechargeProfileId.set(null);
     this.error.set(null);
+    this.cloneDuplicateWarning.set(false);
     this.restoreHistoryFocus();
   }
 

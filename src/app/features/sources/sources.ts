@@ -17,11 +17,9 @@ import {
 } from '../../core/services/money';
 import { SnackbarService } from '../../core/services/snackbar.service';
 import { AppIcon } from '../../shared/app-icon';
-import { ProfileModal } from '../../shared/profile-modal';
 import { PaymentSourceLogo } from '../../shared/payment-source-logo';
 import { AppDatePipe } from '../../core/services/date-format.service';
 import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
-import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { recordedTransactionTime } from '../../core/services/transaction-time';
 import {
   bankCashTracked,
@@ -56,12 +54,10 @@ interface SourceCycleGroup {
   selector: 'app-sources-page',
   imports: [
     RouterLink,
-    ProfileModal,
     AppIcon,
     PaymentSourceLogo,
     AppDatePipe,
     AppSelectPicker,
-    ReactiveFormsModule,
     SourceMovementDialog,
   ],
   templateUrl: './sources.html',
@@ -69,68 +65,13 @@ interface SourceCycleGroup {
 })
 export class SourcesPage {
   private readonly calendarClock = inject(DeviceCalendarClock);
-  readonly walletOpen = signal(false);
-  readonly walletSaving = signal(false);
-  openWallet(): void {
-    if (this.walletSaving()) return;
-    this.walletError.set('');
-    this.walletOpen.set(true);
-  }
-  closeWallet(): void {
-    if (!this.walletSaving()) this.walletOpen.set(false);
-  }
-  readonly walletError = signal('');
-  readonly walletForm = new FormGroup({
-    name: new FormControl('', {
-      nonNullable: true,
-      validators: [Validators.required, Validators.maxLength(80)],
-    }),
-    provider: new FormControl('', { nonNullable: true, validators: Validators.maxLength(80) }),
-    plate: new FormControl('', {
-      nonNullable: true,
-      validators: [Validators.required, Validators.pattern(/^[A-Za-z0-9 -]{5,16}$/)],
-    }),
-  });
-  async addFastag(event: Event): Promise<void> {
-    event.preventDefault();
-    if (!this.walletForm.valid || this.walletSaving()) {
-      this.walletForm.markAllAsTouched();
-      return;
-    }
-    this.walletError.set('');
-    const value = this.walletForm.getRawValue();
-    if (!value.name.trim()) {
-      this.walletError.set('Enter a wallet name.');
-      return;
-    }
-    this.walletSaving.set(true);
-    try {
-      await this.store.addWallet({
-        id: crypto.randomUUID(),
-        nickname: value.name.trim(),
-        kind: 'FASTAG',
-        institution: value.provider.trim(),
-        vehicleNumber: value.plate.replace(/[ -]/g, '').toUpperCase(),
-        noLimit: false,
-        balanceMinor: 0,
-        autoLoad: false,
-        archived: false,
-      });
-      this.walletForm.reset();
-      this.walletOpen.set(false);
-      this.snackbar.show('FASTag wallet created.');
-    } catch (error: unknown) {
-      this.walletError.set(error instanceof Error ? error.message : 'Wallet could not be saved.');
-      this.snackbar.show(this.walletError(), 'WARNING');
-    } finally {
-      this.walletSaving.set(false);
-    }
-  }
   readonly store = inject(CardNestStore);
   readonly movement = signal<MovementRequest | null>(null);
   readonly tracking = computed(() => this.store.bankCashTracking());
   readonly nonBankSources = computed(() =>
-    this.store.activePaymentSources().filter((source) => source.kind !== 'DEBIT'),
+    this.store
+      .activePaymentSources()
+      .filter((source) => source.kind !== 'DEBIT' && source.kind !== 'FASTAG'),
   );
   readonly bankBalanceSummary = computed(() => {
     if (!bankTrackingEnabled(this.tracking())) return { status: 'OFF' as BalanceSummaryStatus };

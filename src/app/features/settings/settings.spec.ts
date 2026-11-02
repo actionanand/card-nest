@@ -2,7 +2,7 @@ import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
 import { of } from 'rxjs';
 import axe from 'axe-core';
-import { ActivatedRoute, provideRouter } from '@angular/router';
+import { ActivatedRoute, provideRouter, Router } from '@angular/router';
 import { Capacitor } from '@capacitor/core';
 import { SettingsPage } from './settings';
 import { SqliteDatabase } from '../../core/data/sqlite-database';
@@ -14,6 +14,7 @@ import { UtilitiesService } from '../utilities/utilities.service';
 import { App } from '../../app';
 import { NotificationService } from '../../core/services/notification.service';
 import { UiPreferencesService } from '../../core/services/ui-preferences.service';
+import { ConsumerWalletService } from '../../core/services/consumer-wallet.service';
 
 describe('Explicit backup destination choice', () => {
   const backup = { fileName: 'synthetic.cnbak', contents: 'synthetic-encrypted-file' };
@@ -379,4 +380,104 @@ describe('Explicit backup destination choice', () => {
     expect(fixture.componentInstance.uiPreferences.setFloatingShortcutEnabled(true)).toBe(false);
     fixture.destroy();
   });
+  it('keeps Wallets off when setup is opened and cancelled', async () => {
+    const enabled = signal(false);
+    const service = {
+      enabled,
+      hasEligibleWallets: signal(false),
+      setEnabled: vi.fn(async (value: boolean) => enabled.set(value)),
+    };
+    TestBed.overrideProvider(ConsumerWalletService, { useValue: service });
+    const database = TestBed.inject(SqliteDatabase);
+    database.ready.set(true);
+    const fixture = TestBed.createComponent(SettingsPage);
+    fixture.detectChanges();
+    const checkbox = fixture.nativeElement.querySelector(
+      '#wallets input[type="checkbox"]',
+    ) as HTMLInputElement;
+    checkbox.click();
+    fixture.detectChanges();
+    expect(fixture.componentInstance.walletSetupOpen()).toBe(true);
+    expect(fixture.componentInstance.consumerWallets.enabled()).toBe(false);
+    expect(service.setEnabled).not.toHaveBeenCalled();
+    expect(fixture.nativeElement.textContent).toContain('Set up Wallets');
+    const cancel = [...fixture.nativeElement.querySelectorAll('app-profile-modal button')].find(
+      (button: HTMLButtonElement) => button.textContent?.trim() === 'Cancel',
+    ) as HTMLButtonElement;
+    cancel.click();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(fixture.componentInstance.walletSetupOpen()).toBe(false);
+    expect(fixture.componentInstance.consumerWallets.enabled()).toBe(false);
+    fixture.destroy();
+  });
+
+  it('re-enables saved wallets directly and persists an explicit OFF selection', async () => {
+    const enabled = signal(false);
+    const hasEligibleWallets = signal(true);
+    const service = {
+      enabled,
+      hasEligibleWallets,
+      setEnabled: vi.fn(async (value: boolean) => enabled.set(value)),
+    };
+    TestBed.overrideProvider(ConsumerWalletService, { useValue: service });
+    TestBed.inject(SqliteDatabase).ready.set(true);
+    const fixture = TestBed.createComponent(SettingsPage);
+    fixture.detectChanges();
+    const checkbox = fixture.nativeElement.querySelector(
+      '#wallets input[type="checkbox"]',
+    ) as HTMLInputElement;
+    checkbox.click();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(service.setEnabled).toHaveBeenNthCalledWith(1, true);
+    expect(enabled()).toBe(true);
+    checkbox.click();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(service.setEnabled).toHaveBeenNthCalledWith(2, false);
+    expect(enabled()).toBe(false);
+    fixture.destroy();
+  });
+
+  it.each(['FASTAG', 'CONSUMER'] as const)(
+    'starts %s setup without enabling Wallets before persistence',
+    async (kind) => {
+      const enabled = signal(false);
+      const service = {
+        enabled,
+        hasEligibleWallets: signal(false),
+        setEnabled: vi.fn(async (value: boolean) => enabled.set(value)),
+        beginSetup: vi.fn(async (setupKind: 'FASTAG' | 'CONSUMER') => ({
+          id: `setup-${setupKind}`,
+          kind: setupKind,
+          createdAt: '2026-11-02T12:00:00Z',
+        })),
+      };
+      TestBed.overrideProvider(ConsumerWalletService, { useValue: service });
+      TestBed.inject(SqliteDatabase).ready.set(true);
+      const router = TestBed.inject(Router);
+      vi.spyOn(router, 'navigate').mockResolvedValue(true);
+      const fixture = TestBed.createComponent(SettingsPage);
+      fixture.detectChanges();
+      const checkbox = fixture.nativeElement.querySelector(
+        '#wallets input[type="checkbox"]',
+      ) as HTMLInputElement;
+      checkbox.click();
+      fixture.detectChanges();
+      const choice = [...fixture.nativeElement.querySelectorAll('app-profile-modal button')].find(
+        (button: HTMLButtonElement) =>
+          button.textContent?.includes(kind === 'FASTAG' ? 'FASTag' : 'Wallet'),
+      ) as HTMLButtonElement;
+      choice.click();
+      await fixture.whenStable();
+      expect(service.beginSetup).toHaveBeenCalledWith(kind);
+      expect(router.navigate).toHaveBeenCalledWith(['/wallets'], {
+        queryParams: { setup: `setup-${kind}` },
+      });
+      expect(enabled()).toBe(false);
+      expect(service.setEnabled).not.toHaveBeenCalled();
+      fixture.destroy();
+    },
+  );
 });

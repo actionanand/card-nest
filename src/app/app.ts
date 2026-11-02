@@ -14,6 +14,7 @@ import { Router, RouterLink, RouterLinkActive, RouterOutlet } from '@angular/rou
 import { SqliteDatabase } from './core/data/sqlite-database';
 import { AppLockService } from './core/services/app-lock.service';
 import { CardNestStore } from './core/services/card-nest-store';
+import { ConsumerWalletService } from './core/services/consumer-wallet.service';
 import { NotificationService } from './core/services/notification.service';
 import { SnackbarService } from './core/services/snackbar.service';
 import { AppIcon } from './shared/app-icon';
@@ -56,6 +57,7 @@ function sanitizedMoneyInput(value: string): string {
 })
 export class App {
   readonly store = inject(CardNestStore);
+  readonly consumerWallets = inject(ConsumerWalletService);
   private readonly notifications = inject(NotificationService);
   readonly database = inject(SqliteDatabase);
   readonly appLock = inject(AppLockService);

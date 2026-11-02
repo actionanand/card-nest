@@ -3,12 +3,11 @@ import { provideRouter } from '@angular/router';
 import { SourcesPage } from './sources';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { SqliteDatabase } from '../../core/data/sqlite-database';
-import { SnackbarService } from '../../core/services/snackbar.service';
 import { CardTransaction, CreditCard, PaymentSource } from '../../core/models/domain';
 import { TransactionsPage } from '../transactions/transactions';
 import axe from 'axe-core';
 
-describe('Explicit FASTag wallet creation and feedback', () => {
+describe('FASTag source visibility and management relocation', () => {
   const setup = () => {
     TestBed.configureTestingModule({
       imports: [SourcesPage],
@@ -16,85 +15,46 @@ describe('Explicit FASTag wallet creation and feedback', () => {
     });
     const fixture = TestBed.createComponent(SourcesPage);
     fixture.detectChanges();
-    fixture.componentInstance.walletOpen.set(true);
-    fixture.componentInstance.walletForm.setValue({
-      name: 'Synthetic vehicle',
-      provider: 'Fictional toll provider',
-      plate: 'FICT001',
-    });
     return fixture;
   };
-  it('opens FASTag creation in a dialog and restores focus after Cancel', async () => {
+  it('removes FASTag creation from Sources while preserving existing FASTag source visibility', () => {
     const fixture = setup();
-    const page = fixture.componentInstance;
-    page.walletOpen.set(false);
+    const store = TestBed.inject(CardNestStore);
+    const fastag: PaymentSource = {
+      id: 'preserved-fastag-source',
+      kind: 'FASTAG',
+      nickname: 'Synthetic vehicle',
+      vehicleNumber: 'FICT001',
+      noLimit: false,
+      balanceMinor: 12000,
+      autoLoad: false,
+      archived: false,
+    };
+    store.paymentSources.set([...store.paymentSources(), fastag]);
     fixture.detectChanges();
-    const trigger = fixture.nativeElement.querySelector('.fastag-trigger') as HTMLButtonElement;
-    trigger.focus();
-    trigger.click();
+    expect(fixture.nativeElement.querySelector('.fastag-trigger')).toBeNull();
+    expect(fixture.nativeElement.textContent).not.toContain('Add FASTAG wallet');
+    expect(fixture.componentInstance.nonBankSources()).not.toContainEqual(fastag);
+    expect(
+      fixture.componentInstance.sourceOptions().some((option) => option.value === fastag.id),
+    ).toBe(true);
+    const toll: CardTransaction = {
+      id: 'preserved-fastag-toll',
+      cardId: fastag.id,
+      type: 'PURCHASE',
+      amountMinor: 1200,
+      currencyCode: 'INR',
+      transactionDate: '2026-10-25',
+      categoryId: 'other',
+      attachmentIds: [],
+      createdAt: '2026-10-25T10:00:00Z',
+      updatedAt: '2026-10-25T10:00:00Z',
+    };
+    store.transactions.set([toll]);
+    fixture.componentInstance.showSourceActivity(fastag.id);
     fixture.detectChanges();
-    await fixture.whenStable();
-    expect(fixture.nativeElement.querySelector('app-profile-modal dialog[open]')).not.toBeNull();
-    const cancel = [...fixture.nativeElement.querySelectorAll('app-profile-modal button')].find(
-      (button: HTMLButtonElement) => button.textContent?.trim() === 'Cancel',
-    ) as HTMLButtonElement;
-    cancel.click();
-    fixture.detectChanges();
-    await fixture.whenStable();
-    expect(page.walletOpen()).toBe(false);
-    expect(document.activeElement).toBe(trigger);
+    expect(fixture.componentInstance.visibleTransactions()).toEqual([toll]);
     fixture.destroy();
-  });
-  it('shows success after saving, resets/collapses the form and preserves existing wallets and balances', async () => {
-    const fixture = setup();
-    const store = TestBed.inject(CardNestStore);
-    const before = store.paymentSources();
-    const add = vi.spyOn(store, 'addWallet').mockResolvedValue();
-    const snackbar = vi.spyOn(TestBed.inject(SnackbarService), 'show');
-    await fixture.componentInstance.addFastag(new Event('submit'));
-    expect(add).toHaveBeenCalledWith(
-      expect.objectContaining({
-        nickname: 'Synthetic vehicle',
-        kind: 'FASTAG',
-        vehicleNumber: 'FICT001',
-        balanceMinor: 0,
-      }),
-    );
-    expect(snackbar).toHaveBeenCalledWith('FASTag wallet created.');
-    expect(fixture.componentInstance.walletOpen()).toBe(false);
-    expect(fixture.componentInstance.walletForm.pristine).toBe(true);
-    expect(fixture.componentInstance.walletForm.controls.name.value).toBe('');
-    expect(store.paymentSources()).toEqual(before);
-  });
-  it('keeps invalid registration or failed creation editable and reports the failure without success', async () => {
-    const fixture = setup();
-    const store = TestBed.inject(CardNestStore);
-    const add = vi
-      .spyOn(store, 'addWallet')
-      .mockRejectedValue(new Error('Synthetic wallet write failure'));
-    const snackbar = vi.spyOn(TestBed.inject(SnackbarService), 'show');
-    fixture.componentInstance.walletForm.controls.plate.setValue('!');
-    await fixture.componentInstance.addFastag(new Event('submit'));
-    expect(add).not.toHaveBeenCalled();
-    fixture.componentInstance.walletForm.controls.plate.setValue('FICT001');
-    await fixture.componentInstance.addFastag(new Event('submit'));
-    expect(fixture.componentInstance.walletOpen()).toBe(true);
-    expect(fixture.componentInstance.walletForm.controls.name.value).toBe('Synthetic vehicle');
-    expect(snackbar).toHaveBeenCalledExactlyOnceWith('Synthetic wallet write failure', 'WARNING');
-  });
-  it('prevents repeated submit while creation is pending', async () => {
-    const fixture = setup();
-    let finish!: () => void;
-    const add = vi
-      .spyOn(TestBed.inject(CardNestStore), 'addWallet')
-      .mockReturnValue(new Promise<void>((resolve) => (finish = resolve)));
-    const first = fixture.componentInstance.addFastag(new Event('submit'));
-    await fixture.componentInstance.addFastag(new Event('submit'));
-    expect(add).toHaveBeenCalledOnce();
-    expect(fixture.componentInstance.walletSaving()).toBe(true);
-    finish();
-    await first;
-    expect(fixture.componentInstance.walletSaving()).toBe(false);
   });
   it('routes bank enrollment and identity editing to Discovered Accounts', () => {
     const fixture = setup();
@@ -622,7 +582,6 @@ describe('Explicit FASTag wallet creation and feedback', () => {
     'shows one Pluxee available balance and correct Add money state for a %s balance',
     (_, balance, label, enabled) => {
       const fixture = setup();
-      fixture.componentInstance.walletOpen.set(false);
       const store = TestBed.inject(CardNestStore);
       store.paymentSources.set([
         {
@@ -656,7 +615,6 @@ describe('Explicit FASTag wallet creation and feedback', () => {
   );
   it('enables Pluxee Add money reactively after Set current balance succeeds', async () => {
     const fixture = setup();
-    fixture.componentInstance.walletOpen.set(false);
     const store = TestBed.inject(CardNestStore);
     store.paymentSources.set([
       {

@@ -57,6 +57,11 @@
         <a routerLink="/sources" routerLinkActive="active" (click)="mobileMenuOpen.set(false)"
           ><app-icon name="sources" /> Cash, Banks & Pluxee</a
         >
+        @if (consumerWallets.showWalletNavigation()) {
+          <a routerLink="/wallets" routerLinkActive="active" (click)="mobileMenuOpen.set(false)"
+            ><app-icon name="wallet" /> Wallets</a
+          >
+        }
         @if (utilities.showIndianUtilities()) {
           <a routerLink="/utilities" routerLinkActive="active" (click)="mobileMenuOpen.set(false)"
             ><app-icon name="mobile" /> Indian Utilities</a
@@ -134,6 +139,9 @@
       <a routerLink="/sources" routerLinkActive="active"
         ><app-icon name="sources" /> Cash, Banks & Pluxee</a
       >
+      @if (consumerWallets.showWalletNavigation()) {
+        <a routerLink="/wallets" routerLinkActive="active"><app-icon name="wallet" /> Wallets</a>
+      }
       @if (utilities.showIndianUtilities()) {
         <a routerLink="/utilities" routerLinkActive="active"
           ><app-icon name="mobile" /> Indian Utilities</a

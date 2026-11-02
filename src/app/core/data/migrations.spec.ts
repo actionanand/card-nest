@@ -3,6 +3,58 @@ import { DATABASE_MIGRATIONS } from './migrations';
 const { DatabaseSync } = process.getBuiltinModule('node:sqlite') as typeof import('node:sqlite');
 
 describe('SMS upgrade of an existing version-6 database', () => {
+  it('adds consumer-wallet tables to schema v14 without changing source preferences', () => {
+    const sql = new DatabaseSync(':memory:');
+    try {
+      sql.exec('PRAGMA foreign_keys=ON');
+      for (const migration of DATABASE_MIGRATIONS.filter((item) => item.version < 15))
+        for (const statement of migration.statements) sql.exec(statement);
+      sql.exec(
+        "INSERT INTO app_preferences VALUES('payment_sources','FASTAG_AND_PLUXEE_UNCHANGED');PRAGMA user_version=14",
+      );
+      for (const statement of DATABASE_MIGRATIONS.find((item) => item.version === 15)!.statements)
+        sql.exec(statement);
+
+      const tables = sql
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'consumer_wallet%' ORDER BY name",
+        )
+        .all()
+        .map((row) => String(row['name']));
+      expect(tables).toEqual([
+        'consumer_wallet_event_allocations',
+        'consumer_wallet_events',
+        'consumer_wallets',
+      ]);
+      expect(
+        sql
+          .prepare("SELECT encrypted_value FROM app_preferences WHERE key='payment_sources'")
+          .get()?.['encrypted_value'],
+      ).toBe('FASTAG_AND_PLUXEE_UNCHANGED');
+
+      sql.exec(`
+        INSERT INTO consumer_wallets(id,provider_id,wallet_kind,archived,payload,created_at,updated_at)
+          VALUES('wallet','amazon-pay','STANDARD',0,'{}','now','now');
+        INSERT INTO consumer_wallet_events(id,wallet_id,event_type,event_date,amount_minor,balance_delta_minor,payload,created_at,updated_at)
+          VALUES('credit','wallet','MANUAL_CREDIT','2026-11-01',5000,5000,'{}','now','now');
+        INSERT INTO consumer_wallet_events(id,wallet_id,event_type,event_date,amount_minor,balance_delta_minor,payload,created_at,updated_at)
+          VALUES('debit','wallet','PURCHASE','2026-11-02',1000,-1000,'{}','now','now');
+        INSERT INTO consumer_wallet_event_allocations(id,debit_event_id,credit_event_id,allocated_minor,created_at)
+          VALUES('allocation','debit','credit',1000,'now');
+      `);
+      expect(sql.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+      expect(() => sql.exec("DELETE FROM consumer_wallets WHERE id='wallet'")).toThrow();
+      expect(() => sql.exec("DELETE FROM consumer_wallet_events WHERE id='credit'")).toThrow();
+      expect(
+        sql.prepare('SELECT allocated_minor FROM consumer_wallet_event_allocations').get()?.[
+          'allocated_minor'
+        ],
+      ).toBe(1000);
+    } finally {
+      sql.close();
+    }
+  });
+
   it('classifies historical adjustments only from positive audit provenance and preserves financial columns', () => {
     const sql = new DatabaseSync(':memory:');
     try {

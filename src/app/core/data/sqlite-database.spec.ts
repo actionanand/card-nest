@@ -132,6 +132,19 @@ describe('SQLite shared write queue', () => {
   it('backs up processing tombstones without extracted message payloads', async () => {
     const value = JSON.parse(await database.exportBackupJson()) as { tables: { name: string }[] };
     expect(value.tables.some((t) => t.name === 'sms_candidates')).toBe(true);
+    expect(value.tables.map((table) => table.name)).toEqual(
+      expect.arrayContaining([
+        'consumer_wallets',
+        'consumer_wallet_events',
+        'consumer_wallet_event_allocations',
+      ]),
+    );
+    expect(value.tables.findIndex((table) => table.name === 'consumer_wallets')).toBeLessThan(
+      value.tables.findIndex((table) => table.name === 'consumer_wallet_events'),
+    );
+    expect(value.tables.findIndex((table) => table.name === 'consumer_wallet_events')).toBeLessThan(
+      value.tables.findIndex((table) => table.name === 'consumer_wallet_event_allocations'),
+    );
     expect(
       vi
         .mocked(CapacitorSQLite.query)
@@ -144,6 +157,9 @@ describe('SQLite shared write queue', () => {
     expect(statement).toContain('DELETE FROM sms_reconciliation');
     expect(statement).toContain('DELETE FROM sms_candidates');
     expect(statement).toContain('DELETE FROM sms_sync_state');
+    expect(statement).toContain('DELETE FROM consumer_wallet_event_allocations');
+    expect(statement).toContain('DELETE FROM consumer_wallet_events');
+    expect(statement).toContain('DELETE FROM consumer_wallets');
     await expect(database.deleteDataOlderThan("bad-date' OR 1=1")).rejects.toThrow(
       'Invalid retention date',
     );

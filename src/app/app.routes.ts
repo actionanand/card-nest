@@ -70,6 +70,10 @@ export const routes: Routes = [
     loadComponent: () => import('./features/sources/sources').then((item) => item.SourcesPage),
   },
   {
+    path: 'wallets',
+    loadComponent: () => import('./features/wallets/wallets').then((item) => item.WalletsPage),
+  },
+  {
     path: 'utilities',
     loadComponent: () =>
       import('./features/utilities/utilities').then((item) => item.UtilitiesPage),

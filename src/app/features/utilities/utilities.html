@@ -245,6 +245,11 @@
             <button class="btn" type="button" (click)="startRecharge(profile)">
               <app-icon name="plus" /> Add recharge
             </button>
+            @if (cloneRechargeSource(profile)) {
+              <button class="btn" type="button" (click)="cloneRecharge(profile)">
+                <app-icon name="copy" /> Clone Recharge
+              </button>
+            }
             <button class="btn" type="button" (click)="openRechargeHistory(profile)">
               <app-icon name="history" /> Recharge history
             </button>
@@ -271,6 +276,12 @@
                 <p class="form-note">
                   <strong>{{ profile.personName }}</strong> · {{ profile.operator }}
                 </p>
+                @if (cloneDuplicateWarning()) {
+                  <p class="form-note" role="status">
+                    Another {{ rechargeForm.controls.planType.value.replaceAll('_', ' ') }} recharge
+                    already starts today.
+                  </p>
+                }
                 <app-select-picker
                   label="Recharge plan"
                   formControlName="planType"

@@ -148,4 +148,16 @@ export const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
     ],
   },
   { version: 14, statements: RECONCILE_BANK_ACTIVITY_LATEST },
+  {
+    version: 15,
+    statements: [
+      `CREATE TABLE consumer_wallets (id TEXT PRIMARY KEY NOT NULL, provider_id TEXT NOT NULL, wallet_kind TEXT NOT NULL CHECK(wallet_kind IN ('STANDARD','UPI_LITE')), custom_name TEXT, nickname TEXT, archived INTEGER NOT NULL DEFAULT 0 CHECK(archived IN (0,1)), payload TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+      `CREATE INDEX idx_consumer_wallets_active ON consumer_wallets(archived,provider_id)`,
+      `CREATE TABLE consumer_wallet_events (id TEXT PRIMARY KEY NOT NULL, wallet_id TEXT NOT NULL, event_type TEXT NOT NULL CHECK(event_type IN ('FUNDED_LOAD','PURCHASE','MANUAL_CREDIT','PROMOTIONAL_CREDIT','BALANCE_CORRECTION','UPI_LITE_RETURN','REFUND','REVERSAL','UNKNOWN_BALANCE')), event_date TEXT NOT NULL, amount_minor INTEGER NOT NULL CHECK(amount_minor > 0), balance_delta_minor INTEGER NOT NULL CHECK(balance_delta_minor <> 0), loaded_amount_minor INTEGER CHECK(loaded_amount_minor IS NULL OR loaded_amount_minor >= 0), fee_minor INTEGER CHECK(fee_minor IS NULL OR fee_minor >= 0), funding_source_kind TEXT CHECK(funding_source_kind IS NULL OR funding_source_kind IN ('CARD','BANK')), funding_source_id TEXT, source_transaction_id TEXT, return_source_id TEXT, reversal_of_event_id TEXT REFERENCES consumer_wallet_events(id) ON DELETE RESTRICT, payload TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, FOREIGN KEY(wallet_id) REFERENCES consumer_wallets(id) ON DELETE RESTRICT)`,
+      `CREATE INDEX idx_consumer_wallet_events_wallet_date ON consumer_wallet_events(wallet_id,event_date DESC,created_at DESC)`,
+      `CREATE INDEX idx_consumer_wallet_events_source_transaction ON consumer_wallet_events(source_transaction_id)`,
+      `CREATE TABLE consumer_wallet_event_allocations (id TEXT PRIMARY KEY NOT NULL, debit_event_id TEXT NOT NULL, credit_event_id TEXT NOT NULL, allocated_minor INTEGER NOT NULL CHECK(allocated_minor > 0), expense_reversal_minor INTEGER NOT NULL DEFAULT 0 CHECK(expense_reversal_minor >= 0), created_at TEXT NOT NULL, UNIQUE(debit_event_id,credit_event_id), FOREIGN KEY(debit_event_id) REFERENCES consumer_wallet_events(id) ON DELETE RESTRICT, FOREIGN KEY(credit_event_id) REFERENCES consumer_wallet_events(id) ON DELETE RESTRICT)`,
+      `CREATE INDEX idx_consumer_wallet_allocations_credit ON consumer_wallet_event_allocations(credit_event_id)`,
+    ],
+  },
 ];

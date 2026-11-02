@@ -42,7 +42,11 @@ describe('Indian Utilities page', () => {
       { value: 'PREPAID', label: 'Prepaid' },
       { value: 'POSTPAID', label: 'Postpaid' },
     ],
-    mobilePlanOptions: [{ value: 'VOICE_DATA', label: 'Voice + Data' }],
+    mobilePlanOptions: [
+      { value: 'VOICE_DATA', label: 'Voice + Data' },
+      { value: 'VOICE_ONLY', label: 'Voice Only' },
+      { value: 'DATA_ONLY', label: 'Data only' },
+    ],
     lpgProviderOptions: [{ value: 'HPCL', label: 'HPCL' }],
     cylinderOptions: [{ value: 'NORMAL', label: 'Normal' }],
     lpgEventOptions: [
@@ -319,6 +323,145 @@ describe('Indian Utilities page', () => {
     expect(fixture.nativeElement.querySelector('app-profile-modal dialog[open]')).toBeNull();
     fixture.destroy();
   });
+  it('clones the latest eligible voice recharge into a fresh editable India-today draft', async () => {
+    const profile: MobileProfile = {
+      id: 'clone-mobile',
+      kind: 'MOBILE',
+      personName: 'Fiction Clone',
+      operator: 'JIO',
+      subscriptionType: 'PREPAID',
+      archived: false,
+      createdAt: 'before',
+      updatedAt: 'before',
+    };
+    const dataOnlyProfile = { ...profile, id: 'data-only-mobile', personName: 'Fiction Data' };
+    mobiles.set([profile, dataOnlyProfile]);
+    const fixture = TestBed.createComponent(UtilitiesPage);
+    const page = fixture.componentInstance;
+    const today = page.today;
+    const source = {
+      id: 'eligible-voice-data',
+      profileId: profile.id,
+      planType: 'VOICE_DATA' as const,
+      amountMinor: 34900,
+      startDate: addCalendarDays(today, -28),
+      endDate: addCalendarDays(today, -1),
+      comment: 'Synthetic eligible plan',
+      createdAt: `${today}T10:00:00Z`,
+      updatedAt: `${today}T10:00:00Z`,
+    };
+    recharges.set([
+      {
+        ...source,
+        id: 'older-voice',
+        planType: 'VOICE_ONLY',
+        amountMinor: 19900,
+        startDate: addCalendarDays(today, -60),
+        endDate: addCalendarDays(today, -33),
+        createdAt: `${today}T09:00:00Z`,
+      },
+      source,
+      {
+        ...source,
+        id: 'newer-data-only',
+        profileId: dataOnlyProfile.id,
+        planType: 'DATA_ONLY',
+        startDate: addCalendarDays(today, -2),
+        endDate: addCalendarDays(today, 27),
+      },
+      {
+        ...source,
+        id: 'future-voice',
+        planType: 'VOICE_ONLY',
+        startDate: addCalendarDays(today, 1),
+        endDate: addCalendarDays(today, 28),
+      },
+    ]);
+    fixture.detectChanges();
+    expect(page.cloneRechargeSource(profile)?.id).toBe(source.id);
+    const profiles = Array.from(
+      fixture.nativeElement.querySelectorAll('.mobile-profile'),
+    ) as HTMLElement[];
+    const cloneCard = profiles.find((item) => item.textContent?.includes(profile.personName))!;
+    const dataCard = profiles.find((item) =>
+      item.textContent?.includes(dataOnlyProfile.personName),
+    )!;
+    const cloneButton = Array.from(cloneCard.querySelectorAll('.profile-actions button'))
+      .map((button) => button as HTMLButtonElement)
+      .find((button) => button.textContent?.includes('Clone Recharge'));
+    expect(cloneButton).toBeDefined();
+    expect(dataCard.textContent).not.toContain('Clone Recharge');
+
+    cloneButton!.click();
+    fixture.detectChanges();
+    expect(page.editingRechargeId()).toBeNull();
+    expect(page.rechargeForm.getRawValue()).toMatchObject({
+      planType: 'VOICE_DATA',
+      amount: '349',
+      startDate: today,
+      validityDays: '28',
+      comment: 'Synthetic eligible plan',
+    });
+    expect(fixture.nativeElement.textContent).not.toContain('Another');
+    expect(mock.saveRecharge).not.toHaveBeenCalled();
+
+    await page.saveRecharge(new Event('submit'));
+    expect(mock.saveRecharge).toHaveBeenCalledWith({
+      id: undefined,
+      profileId: profile.id,
+      planType: 'VOICE_DATA',
+      amountMinor: 34900,
+      startDate: today,
+      validityDays: 28,
+      endDate: undefined,
+      comment: 'Synthetic eligible plan',
+    });
+    expect(recharges().find((item) => item.id === source.id)).toEqual(source);
+    fixture.destroy();
+  });
+
+  it('warns before saving a clone when a same-profile plan already starts today', () => {
+    const profile: MobileProfile = {
+      id: 'duplicate-clone-mobile',
+      kind: 'MOBILE',
+      personName: 'Fiction Duplicate',
+      operator: 'JIO',
+      subscriptionType: 'PREPAID',
+      archived: false,
+      createdAt: 'before',
+      updatedAt: 'before',
+    };
+    mobiles.set([profile]);
+    const fixture = TestBed.createComponent(UtilitiesPage);
+    const page = fixture.componentInstance;
+    const today = page.today;
+    recharges.set([
+      {
+        id: 'voice-starting-today',
+        profileId: profile.id,
+        planType: 'VOICE_ONLY',
+        amountMinor: 12000,
+        startDate: today,
+        endDate: addCalendarDays(today, 27),
+        createdAt: `${today}T10:00:00Z`,
+        updatedAt: `${today}T10:00:00Z`,
+      },
+    ]);
+    fixture.detectChanges();
+    const card = fixture.nativeElement.querySelector('.mobile-profile') as HTMLElement;
+    const cloneButton = [...card.querySelectorAll('button')].find((button) =>
+      button.textContent?.includes('Clone Recharge'),
+    ) as HTMLButtonElement;
+    cloneButton.click();
+    fixture.detectChanges();
+    expect(page.cloneDuplicateWarning()).toBe(true);
+    expect(fixture.nativeElement.textContent).toContain(
+      'Another VOICE ONLY recharge already starts today.',
+    );
+    expect(mock.saveRecharge).not.toHaveBeenCalled();
+    fixture.destroy();
+  });
+
   it('shows active and scheduled recharges separately and keeps every expired record in history', async () => {
     const profile: MobileProfile = {
       id: 'history-mobile',

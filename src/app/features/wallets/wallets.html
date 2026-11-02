@@ -1,0 +1,334 @@
+<div class="page wallets-page">
+  <header class="page-header">
+    <div>
+      <p class="eyebrow">Accounts</p>
+      <h1>Wallets</h1>
+      <p class="subtitle">FASTag and registered consumer wallets.</p>
+    </div>
+    <a class="btn" routerLink="/settings">Settings</a>
+  </header>
+
+  @if (!wallets.enabled()) {
+    <p class="wallets-state" role="status">
+      Wallets is off. Existing records remain available for inspection.
+    </p>
+  }
+
+  <section class="wallet-section" aria-labelledby="fastag-heading">
+    <div class="section-heading">
+      <div>
+        <p class="eyebrow">Vehicle wallets</p>
+        <h2 id="fastag-heading">FASTag</h2>
+      </div>
+      <button class="btn btn-primary" type="button" (click)="openFastag()">
+        <app-icon name="plus" /> Add FASTag wallet
+      </button>
+    </div>
+    @if (fastagWallets().length) {
+      <div class="wallet-list">
+        @for (source of fastagWallets(); track source.id) {
+          <article class="wallet-row" [class.archived]="source.archived">
+            <div class="wallet-identity">
+              <span class="wallet-symbol"><app-icon name="car" /></span>
+              <div>
+                <h3>{{ source.nickname }}</h3>
+                <p>
+                  {{ source.institution || 'FASTag' }}
+                  @if (source.vehicleNumber) {
+                    · {{ source.vehicleNumber }}
+                  }
+                  @if (source.archived) {
+                    · Archived
+                  }
+                </p>
+              </div>
+            </div>
+            <div class="wallet-balance">
+              @if (source.noLimit) {
+                <small>Balance not tracked</small>
+              } @else {
+                <small>Available balance</small>
+                <strong>{{ money(source.balanceMinor ?? 0) }}</strong>
+              }
+            </div>
+            <div class="wallet-actions">
+              @if (!source.archived) {
+                <label class="fastag-toggle">
+                  <input
+                    type="checkbox"
+                    [checked]="source.noLimit"
+                    (change)="toggleFastagBalance(source)"
+                  />
+                  <span>No tracked balance</span>
+                </label>
+                @if (!source.noLimit) {
+                  <label class="fastag-balance-edit">
+                    Balance
+                    <input
+                      inputmode="decimal"
+                      [value]="(source.balanceMinor ?? 0) / 100"
+                      (change)="updateFastagBalance(source, $event)"
+                    />
+                  </label>
+                }
+                <a class="btn" routerLink="/transactions" [queryParams]="{ source: source.id }">
+                  View activity
+                </a>
+                <a
+                  class="btn"
+                  routerLink="/transactions"
+                  [queryParams]="{ add: true, source: source.id }"
+                >
+                  Add transaction
+                </a>
+              }
+              <button
+                class="btn"
+                type="button"
+                (click)="
+                  source.archived ? setFastagArchived(source, false) : requestFastagArchive(source)
+                "
+              >
+                {{ source.archived ? 'Restore' : 'Archive' }}
+              </button>
+            </div>
+          </article>
+        }
+      </div>
+    } @else {
+      <p class="empty-state">No FASTag wallets registered.</p>
+    }
+  </section>
+
+  <section class="wallet-section" aria-labelledby="consumer-heading">
+    <div class="section-heading">
+      <div>
+        <p class="eyebrow">Separate from card and bank accounts</p>
+        <h2 id="consumer-heading">Consumer wallets</h2>
+      </div>
+      @if (wallets.enabled()) {
+        <button
+          class="btn btn-primary"
+          type="button"
+          [disabled]="activeWallets().length >= wallets.activeWalletLimit"
+          (click)="openConsumerWallet()"
+        >
+          <app-icon name="plus" /> Register wallet
+        </button>
+      }
+    </div>
+    @if (wallets.enabled() && activeWallets().length >= wallets.activeWalletLimit) {
+      <p class="limit-note" role="status">
+        The {{ wallets.activeWalletLimit }} active-wallet limit is reached. Archive or delete an
+        eligible wallet before registering another.
+      </p>
+    }
+    @if (activeWallets().length) {
+      <div class="wallet-list">
+        @for (wallet of activeWallets(); track wallet.id) {
+          <article class="wallet-row">
+            <div class="wallet-identity">
+              <span class="wallet-symbol"><app-icon name="sources" /></span>
+              <div>
+                <h3>{{ walletName(wallet) }}</h3>
+                <p>
+                  {{ providerLabel(wallet) }}
+                  @if (wallet.kind === 'UPI_LITE') {
+                    · UPI Lite
+                  }
+                </p>
+              </div>
+            </div>
+            <div class="wallet-balance">
+              <small>Available balance</small>
+              <strong>{{ money(balance(wallet)) }}</strong>
+            </div>
+            <div class="wallet-actions">
+              <button class="btn" type="button" (click)="showHistory(wallet)">History</button>
+              <button class="btn" type="button" (click)="requestConsumerArchive(wallet)">
+                Archive
+              </button>
+              @if (!wallets.events().some((event) => event.walletId === wallet.id)) {
+                <button class="btn danger" type="button" (click)="requestEmptyWalletDelete(wallet)">
+                  Delete
+                </button>
+              }
+            </div>
+          </article>
+        }
+      </div>
+    } @else {
+      <p class="empty-state">No active consumer wallets.</p>
+    }
+
+    @if (archivedWallets().length) {
+      <details class="archived-wallets">
+        <summary>Archived wallets · {{ archivedWallets().length }}</summary>
+        <div class="wallet-list">
+          @for (wallet of archivedWallets(); track wallet.id) {
+            <article class="wallet-row archived">
+              <div class="wallet-identity">
+                <span class="wallet-symbol"><app-icon name="sources" /></span>
+                <div>
+                  <h3>{{ walletName(wallet) }}</h3>
+                  <p>{{ providerLabel(wallet) }} · Archived</p>
+                </div>
+              </div>
+              <div class="wallet-balance">
+                <small>Available balance</small>
+                <strong>{{ money(balance(wallet)) }}</strong>
+              </div>
+              <div class="wallet-actions">
+                <button class="btn" type="button" (click)="showHistory(wallet)">History</button>
+                <button class="btn" type="button" (click)="restoreConsumerWallet(wallet)">
+                  Restore
+                </button>
+                @if (!wallets.events().some((event) => event.walletId === wallet.id)) {
+                  <button
+                    class="btn danger"
+                    type="button"
+                    (click)="requestEmptyWalletDelete(wallet)"
+                  >
+                    Delete
+                  </button>
+                }
+              </div>
+            </article>
+          }
+        </div>
+      </details>
+    }
+  </section>
+</div>
+
+@if (fastagOpen()) {
+  <app-profile-modal title="Add FASTag wallet" [busy]="saving()" (closed)="closeFastag()">
+    <form class="wallet-form" [formGroup]="fastagForm" (submit)="saveFastag($event)">
+      <p>Choose your vehicle and provider. A detected registration does not establish ownership.</p>
+      <label>Wallet name<input formControlName="name" maxlength="80" required /></label>
+      <label>Provider<input formControlName="provider" maxlength="80" /></label>
+      <label>Vehicle registration<input formControlName="plate" maxlength="16" required /></label>
+      @if (error(); as message) {
+        <p class="form-error" role="alert">{{ message }}</p>
+      }
+      <div class="modal-actions">
+        <button class="btn btn-primary" type="submit" [disabled]="fastagForm.invalid || saving()">
+          {{ saving() ? 'Creating…' : 'Create wallet' }}
+        </button>
+        <button class="btn" type="button" [disabled]="saving()" (click)="closeFastag()">
+          Cancel
+        </button>
+      </div>
+    </form>
+  </app-profile-modal>
+}
+
+@if (consumerOpen()) {
+  <app-profile-modal title="Register Wallet" [busy]="saving()" (closed)="closeConsumerWallet()">
+    <form class="wallet-form" [formGroup]="consumerForm" (submit)="saveConsumerWallet($event)">
+      <app-select-picker
+        label="Wallet provider"
+        formControlName="providerId"
+        [options]="providerOptions"
+      />
+      @if (consumerForm.controls.providerId.value === 'other') {
+        <label
+          >Custom wallet name<input formControlName="customName" maxlength="80" required
+        /></label>
+      }
+      <label>Display nickname (optional)<input formControlName="nickname" maxlength="80" /></label>
+      <p class="form-note">Available balance starts at ₹0.00.</p>
+      @if (error(); as message) {
+        <p class="form-error" role="alert">{{ message }}</p>
+      }
+      <div class="modal-actions">
+        <button class="btn btn-primary" type="submit" [disabled]="saving()">
+          {{ saving() ? 'Saving…' : 'Register wallet' }}
+        </button>
+        <button class="btn" type="button" [disabled]="saving()" (click)="closeConsumerWallet()">
+          Cancel
+        </button>
+      </div>
+    </form>
+  </app-profile-modal>
+}
+
+@if (selectedHistoryWallet(); as wallet) {
+  <app-profile-modal [title]="walletName(wallet) + ' history'" (closed)="closeHistory()">
+    @if (selectedHistoryEvents().length) {
+      <ol class="wallet-events">
+        @for (event of selectedHistoryEvents(); track event.id) {
+          <li>
+            <span>{{ event.eventDate }} · {{ event.eventType.replaceAll('_', ' ') }}</span>
+            <strong>{{ money(event.balanceDeltaMinor) }}</strong>
+          </li>
+        }
+      </ol>
+    } @else {
+      <p class="empty-state">No wallet events recorded.</p>
+    }
+  </app-profile-modal>
+}
+
+@if (selectedRestoreTarget(); as target) {
+  <app-profile-modal
+    title="Restore wallet at the active limit"
+    [busy]="saving()"
+    (closed)="closeRestore()"
+  >
+    <p>
+      Restoring {{ walletName(target) }} will archive one active wallet. Balances and history stay
+      unchanged.
+    </p>
+    <fieldset class="replacement-list">
+      <legend>Choose the wallet to archive</legend>
+      @for (wallet of activeWallets(); track wallet.id) {
+        <label>
+          <input
+            type="radio"
+            name="replacement-wallet"
+            [value]="wallet.id"
+            [checked]="replacementWalletId() === wallet.id"
+            (change)="replacementWalletId.set(wallet.id)"
+          />
+          <span>{{ walletName(wallet) }} · {{ money(balance(wallet)) }}</span>
+        </label>
+      }
+    </fieldset>
+    @if (selectedReplacement(); as replacement) {
+      <p class="replacement-summary">
+        Archive {{ walletName(replacement) }}; restore {{ walletName(target) }}.
+      </p>
+    }
+    @if (restoreError(); as message) {
+      <p class="form-error" role="alert">{{ message }}</p>
+    }
+    <div class="modal-actions">
+      <button
+        class="btn btn-primary"
+        type="button"
+        [disabled]="saving() || !selectedReplacement()"
+        (click)="confirmRestoreReplacement()"
+      >
+        Confirm replacement
+      </button>
+      <button class="btn" type="button" [disabled]="saving()" (click)="closeRestore()">
+        Cancel
+      </button>
+    </div>
+  </app-profile-modal>
+}
+
+@if (pendingAction()) {
+  <app-confirmation-dialog
+    [title]="pendingActionTitle()"
+    [message]="pendingActionMessage()"
+    [confirmLabel]="
+      pendingAction()?.kind === 'DELETE_CONSUMER' ? 'Delete wallet' : 'Archive wallet'
+    "
+    [busy]="saving()"
+    [error]="actionError()"
+    (confirmed)="confirmPendingAction()"
+    (cancelled)="cancelPendingAction()"
+  />
+}

@@ -2,6 +2,7 @@
   class="page settings"
   [attr.aria-hidden]="
     showPinForm() ||
+    walletSetupOpen() ||
     showBackupDialog() ||
     protectedAction() ||
     pendingBackup() ||
@@ -12,6 +13,7 @@
   "
   [attr.inert]="
     showPinForm() ||
+    walletSetupOpen() ||
     showBackupDialog() ||
     protectedAction() ||
     pendingBackup() ||
@@ -76,6 +78,13 @@
         (click)="scrollSection('utilities')"
       >
         Indian Utilities
+      </button>
+      <button
+        type="button"
+        [attr.aria-pressed]="currentSection() === 'wallets'"
+        (click)="scrollSection('wallets')"
+      >
+        Wallets
       </button>
       <button
         type="button"
@@ -507,6 +516,32 @@
           </label>
         }
       </section>
+      <section id="wallets" class="panel">
+        <div class="setting-heading">
+          <span aria-hidden="true"><app-icon name="wallet" /></span>
+          <div>
+            <h2>Wallets</h2>
+            <p>Manage consumer wallets and FASTag records separately from Pluxee.</p>
+          </div>
+        </div>
+        <label class="setting-row toggle">
+          <span>
+            <strong>Wallets</strong>
+            <small
+              >Turn off new consumer-wallet activity without deleting wallets or history.</small
+            >
+          </span>
+          <input
+            type="checkbox"
+            [checked]="consumerWallets.enabled()"
+            [disabled]="!database.ready() || walletSetupBusy()"
+            (change)="toggleWallets($event)"
+          />
+        </label>
+        @if (walletSetupError(); as error) {
+          <p class="setting-status" role="alert">{{ error }}</p>
+        }
+      </section>
       <section id="notifications" class="panel">
         <div class="setting-heading">
           <span aria-hidden="true"><app-icon name="reminders" /></span>
@@ -860,6 +895,40 @@
       </form>
     </section>
   </div>
+}
+
+@if (walletSetupOpen()) {
+  <app-profile-modal
+    title="Set up Wallets"
+    [busy]="walletSetupBusy()"
+    (closed)="closeWalletSetup()"
+  >
+    <p>Choose what you want to register. Wallets turns on only after the record is saved.</p>
+    @if (walletSetupError(); as error) {
+      <p class="pin-error" role="alert">{{ error }}</p>
+    }
+    <div class="pin-actions">
+      <button
+        class="btn btn-primary"
+        type="button"
+        [disabled]="walletSetupBusy()"
+        (click)="chooseWalletSetup('FASTAG')"
+      >
+        <app-icon name="car" /> FASTag
+      </button>
+      <button
+        class="btn btn-primary"
+        type="button"
+        [disabled]="walletSetupBusy()"
+        (click)="chooseWalletSetup('CONSUMER')"
+      >
+        <app-icon name="wallet" /> Wallet
+      </button>
+      <button class="btn" type="button" [disabled]="walletSetupBusy()" (click)="closeWalletSetup()">
+        Cancel
+      </button>
+    </div>
+  </app-profile-modal>
 }
 
 @if (restoreConfirmationOpen()) {

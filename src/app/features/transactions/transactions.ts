@@ -1960,7 +1960,7 @@ export class TransactionsPage {
       try {
         const blob = await fetch(path).then((response) => response.blob());
         if (blob.size <= MAX_RECEIPT_BYTES) {
-          accepted.push(path);
+          accepted.push(path.startsWith('data:') ? path : await this.blobToDataUrl(blob));
           continue;
         }
         const compressed = await this.compressReceipt(blob);
