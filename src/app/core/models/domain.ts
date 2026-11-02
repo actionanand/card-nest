@@ -127,7 +127,7 @@ export interface CardTransaction {
   balanceTiming?: BalanceTiming;
   /** When `balanceTiming` was answered; an answer older than the current balance is stale. */
   balanceTimingAt?: string;
-  paymentMethod?: SmsPaymentMethod;
+  paymentMethod?: TransactionPaymentMethod;
   paymentMethodDetail?: SmsPaymentMethodDetail;
   paymentMethodCustom?: string;
   smsAdditionalComment?: string;
@@ -150,6 +150,13 @@ export type BalanceTiming = 'AFTER_BASELINE' | 'INCLUDED_IN_BASELINE';
 
 export type SmsPaymentMethod =
   'NONE' | 'UPI' | 'UPI_GLOBAL' | 'CARD' | 'CARD_TAP' | 'NEFT' | 'CHEQUE' | 'SWIFT_WIRE';
+
+export type TransactionPaymentMethod = SmsPaymentMethod | 'WALLET_LOADING';
+
+export interface WalletLoadingDetails {
+  readonly walletId: string;
+  readonly loadedAmountMinor: Money;
+}
 
 export type SmsPaymentMethodDetail =
   | 'BHIM_APP'
@@ -308,8 +315,11 @@ export interface ConsumerWalletEvent {
   readonly walletId: string;
   readonly eventType: ConsumerWalletEventType;
   readonly eventDate: string;
+  readonly eventTime?: string;
   readonly amountMinor: Money;
   readonly balanceDeltaMinor: Money;
+  /** Full card/bank debit for a funded load; wallet credit remains amountMinor. */
+  readonly debitAmountMinor?: Money;
   readonly loadedAmountMinor?: Money;
   readonly feeMinor?: Money;
   readonly fundingSourceKind?: 'CARD' | 'BANK';
@@ -318,7 +328,12 @@ export interface ConsumerWalletEvent {
   readonly sourceTransactionId?: string;
   readonly returnSourceId?: string;
   readonly reversalOfEventId?: string;
+  readonly fundingCategoryId?: string;
+  readonly categoryId?: string;
+  readonly merchant?: string;
   readonly memo?: string;
+  readonly notes?: string;
+  readonly paymentMethod?: SmsPaymentMethod;
   readonly createdAt: string;
   readonly updatedAt: string;
 }

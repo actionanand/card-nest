@@ -383,6 +383,21 @@
               [value]="form.controls.paymentMethod.value"
               (valueChange)="setManualPaymentMethod($event)"
             />
+            @if (form.controls.paymentMethod.value === 'WALLET_LOADING') {
+              <app-select-picker
+                label="Consumer wallet"
+                [options]="walletLoadWalletOptions()"
+                [value]="form.controls.walletId.value"
+                (valueChange)="form.controls.walletId.setValue($event)"
+              />
+              <label
+                >Amount credited<input
+                  formControlName="walletLoadedAmount"
+                  inputmode="decimal"
+                  autocomplete="off"
+                  placeholder="0.00"
+              /></label>
+            }
             @if (manualPaymentDetail(form.controls.paymentMethod.value); as detail) {
               <app-select-picker
                 [label]="detail.label"
@@ -637,6 +652,51 @@
   </section>
 
   <section class="month-ledger" aria-label="Transactions grouped by period">
+    @if (projectedWalletActivities().length) {
+      <details class="panel month-group wallet-activity-group">
+        <summary>
+          <span>Consumer wallet activity ({{ projectedWalletActivities().length }})</span>
+          <strong>Wallet balance movements</strong>
+          <app-icon name="chevron_right" />
+        </summary>
+        <div class="month-entries">
+          @for (activity of projectedWalletActivities(); track activity.id) {
+            @let event = activity.event;
+            <article>
+              <span class="transaction-open-button transfer-row">
+                <span
+                  class="tx-icon"
+                  [class.credit]="event.balanceDeltaMinor > 0"
+                  aria-hidden="true"
+                >
+                  <app-icon name="sources" />
+                </span>
+                <span class="tx-main">
+                  <strong>{{ event.merchant || consumerWalletEventLabel(event) }}</strong>
+                  <small
+                    >{{ consumerWalletName(event.walletId) }} ·
+                    {{ consumerWalletEventLabel(event) }}</small
+                  >
+                  @if (event.categoryId) {
+                    <small>{{ categoryName(event.categoryId) }}</small>
+                  }
+                  @if (event.memo || event.notes) {
+                    <small>{{ event.memo || event.notes }}</small>
+                  }
+                </span>
+                <span class="tx-date">
+                  <span>{{ event.eventDate | appDate }}</span>
+                  <small>{{ event.eventTime?.slice(0, 5) || 'Wallet' }}</small>
+                </span>
+                <strong class="tx-amount" [class.credit]="event.balanceDeltaMinor > 0">
+                  {{ event.balanceDeltaMinor > 0 ? '+' : '−' }}{{ money(event.amountMinor, 'INR') }}
+                </strong>
+              </span>
+            </article>
+          }
+        </div>
+      </details>
+    }
     @if (visibleTransfers().length) {
       <details class="panel month-group transfer-group">
         <summary>
@@ -735,6 +795,12 @@
                     >{{ categoryName(transaction.categoryId) }} ·
                     {{ store.sourceDetail(transaction.cardId) }}</small
                   >
+                  @if (fundedWalletLoad(transaction.id); as load) {
+                    <small class="wallet-load-provenance">
+                      Wallet load · {{ consumerWalletName(load.walletId) }} ·
+                      {{ money(load.loadedAmountMinor ?? load.amountMinor, 'INR') }} credited
+                    </small>
+                  }
                   <small class="tx-source-mobile">
                     <span class="tx-date-pill">{{ transaction.transactionDate | appDate }}</span>
                     <span class="tx-mobile-source">{{

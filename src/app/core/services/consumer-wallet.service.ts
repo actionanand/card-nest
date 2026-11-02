@@ -4,10 +4,12 @@ import {
   ConsumerWallet,
   ConsumerWalletEvent,
   ConsumerWalletEventAllocation,
+  ConsumerWalletKind,
   PaymentSource,
 } from '../models/domain';
 import { APP_ENVIRONMENT } from './app-environment';
 import { CardNestStore } from './card-nest-store';
+import { indiaTodayIso } from './india-date';
 import {
   CONSUMER_WALLET_PROVIDERS,
   ConsumerWalletProviderId,
@@ -20,6 +22,17 @@ export interface WalletSetupIntent {
   readonly id: string;
   readonly kind: WalletSetupKind;
   readonly createdAt: string;
+}
+
+export interface WalletPurchaseInput {
+  readonly id: string;
+  readonly walletId: string;
+  readonly amountMinor: number;
+  readonly eventDate: string;
+  readonly eventTime?: string;
+  readonly categoryId: string;
+  readonly merchant?: string;
+  readonly notes?: string;
 }
 
 export const WALLETS_FEATURE_STATE_KEY = 'consumer_wallets_feature_state';
@@ -303,6 +316,178 @@ export class ConsumerWalletService {
     if (setupIntentId) this.setupIntent.set(null);
   }
 
+  async addWalletCredit(input: {
+    id: string;
+    walletId: string;
+    amountMinor: number;
+    eventType: 'MANUAL_CREDIT' | 'PROMOTIONAL_CREDIT';
+    eventDate?: string;
+    memo?: string;
+  }): Promise<ConsumerWalletEvent> {
+    if (!Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0)
+      throw new Error('Enter a positive wallet credit amount.');
+    const eventDate = input.eventDate ?? indiaTodayIso();
+    this.assertWalletDate(eventDate);
+    const event = await this.database.atomic(async (tx) => {
+      await this.assertWalletsEnabled(tx);
+      await this.assertActiveWallet(tx, input.walletId);
+      const duplicate = await this.readIdempotentEvent(
+        tx,
+        input.id,
+        input.walletId,
+        input.eventType,
+        input.amountMinor,
+        eventDate,
+      );
+      if (duplicate)
+        return { event: duplicate, allocations: [] as ConsumerWalletEventAllocation[] };
+      const timestamp = new Date().toISOString();
+      const record: ConsumerWalletEvent = {
+        id: input.id,
+        walletId: input.walletId,
+        eventType: input.eventType,
+        eventDate,
+        amountMinor: input.amountMinor,
+        balanceDeltaMinor: input.amountMinor,
+        memo: input.memo?.trim().slice(0, 200) || undefined,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      };
+      await this.insertEvent(tx, record);
+      const balance = await this.balanceIn(tx, input.walletId);
+      if (!Number.isSafeInteger(balance)) throw new Error('Wallet balance would overflow.');
+      return { event: record, allocations: [] as ConsumerWalletEventAllocation[] };
+    });
+    this.publishEventWrite(event.event, event.allocations);
+    return event.event;
+  }
+
+  async updateWalletBalance(input: {
+    id: string;
+    walletId: string;
+    newBalanceMinor: number;
+    eventDate?: string;
+    memo?: string;
+  }): Promise<ConsumerWalletEvent | null> {
+    if (!Number.isSafeInteger(input.newBalanceMinor) || input.newBalanceMinor < 0)
+      throw new Error('Enter a valid non-negative wallet balance.');
+    const eventDate = input.eventDate ?? indiaTodayIso();
+    this.assertWalletDate(eventDate);
+    const result = await this.database.atomic(async (tx) => {
+      await this.assertWalletsEnabled(tx);
+      await this.assertActiveWallet(tx, input.walletId);
+      const [existingRow] = await tx.query<{ payload: string }>(
+        'SELECT payload FROM consumer_wallet_events WHERE id=?',
+        [input.id],
+      );
+      if (existingRow) {
+        const existing = JSON.parse(existingRow.payload) as ConsumerWalletEvent;
+        if (
+          existing.walletId === input.walletId &&
+          (existing.eventType === 'BALANCE_CORRECTION' ||
+            existing.eventType === 'UNKNOWN_BALANCE') &&
+          existing.eventDate === eventDate
+        )
+          return { event: existing, allocations: [] as ConsumerWalletEventAllocation[] };
+        throw new Error('This wallet correction ID was already used for a different event.');
+      }
+      const currentBalance = await this.balanceIn(tx, input.walletId);
+      if (!Number.isSafeInteger(currentBalance)) throw new Error('Wallet balance is invalid.');
+      const deltaMinor = input.newBalanceMinor - currentBalance;
+      if (deltaMinor === 0)
+        return { event: null, allocations: [] as ConsumerWalletEventAllocation[] };
+      const timestamp = new Date().toISOString();
+      const record: ConsumerWalletEvent = {
+        id: input.id,
+        walletId: input.walletId,
+        eventType: deltaMinor > 0 ? 'UNKNOWN_BALANCE' : 'BALANCE_CORRECTION',
+        eventDate,
+        amountMinor: Math.abs(deltaMinor),
+        balanceDeltaMinor: deltaMinor,
+        memo: input.memo?.trim().slice(0, 200) || undefined,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      };
+      await this.insertEvent(tx, record);
+      const allocations =
+        deltaMinor < 0 ? await this.allocateDebit(tx, record, Math.abs(deltaMinor), 0) : [];
+      return { event: record, allocations };
+    });
+    if (result.event) this.publishEventWrite(result.event, result.allocations);
+    return result.event;
+  }
+
+  async recordWalletPurchase(input: WalletPurchaseInput): Promise<ConsumerWalletEvent> {
+    if (!Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0)
+      throw new Error('Enter a positive wallet purchase amount.');
+    this.assertWalletDate(input.eventDate);
+    if (!input.categoryId.trim()) throw new Error('Choose a transaction category.');
+    const result = await this.database.atomic(async (tx) => {
+      await this.assertWalletsEnabled(tx);
+      await this.assertActiveWallet(tx, input.walletId);
+      const duplicate = await this.readIdempotentEvent(
+        tx,
+        input.id,
+        input.walletId,
+        'PURCHASE',
+        input.amountMinor,
+        input.eventDate,
+      );
+      if (duplicate)
+        return { event: duplicate, allocations: [] as ConsumerWalletEventAllocation[] };
+      const balance = await this.balanceIn(tx, input.walletId);
+      if (!Number.isSafeInteger(balance) || balance < input.amountMinor)
+        throw new Error('Purchase exceeds the available wallet balance.');
+      const timestamp = new Date().toISOString();
+      const event: ConsumerWalletEvent = {
+        id: input.id,
+        walletId: input.walletId,
+        eventType: 'PURCHASE',
+        eventDate: input.eventDate,
+        eventTime: input.eventTime,
+        amountMinor: input.amountMinor,
+        balanceDeltaMinor: -input.amountMinor,
+        categoryId: input.categoryId,
+        merchant: input.merchant?.trim().slice(0, 100) || undefined,
+        notes: input.notes?.trim().slice(0, 500) || undefined,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      };
+      await this.insertEvent(tx, event);
+      const allocations = await this.allocateDebit(tx, event, input.amountMinor, 0);
+      return { event, allocations };
+    });
+    this.publishEventWrite(result.event, result.allocations);
+    return result.event;
+  }
+
+  async reloadFinancialHistory(): Promise<void> {
+    const [events, allocations] = await Promise.all([
+      this.database.query<{ payload: string }>(
+        'SELECT payload FROM consumer_wallet_events ORDER BY event_date DESC,created_at DESC',
+      ),
+      this.database.query<{
+        id: string;
+        debit_event_id: string;
+        credit_event_id: string;
+        allocated_minor: number;
+        expense_reversal_minor: number;
+        created_at: string;
+      }>('SELECT * FROM consumer_wallet_event_allocations ORDER BY created_at,id'),
+    ]);
+    this.events.set(events.map((row) => JSON.parse(row.payload) as ConsumerWalletEvent));
+    this.allocations.set(
+      allocations.map((row) => ({
+        id: row.id,
+        debitEventId: row.debit_event_id,
+        creditEventId: row.credit_event_id,
+        allocatedMinor: row.allocated_minor,
+        expenseReversalMinor: row.expense_reversal_minor,
+        createdAt: row.created_at,
+      })),
+    );
+  }
+
   async archiveWallet(walletId: string): Promise<void> {
     const next = await this.database.atomic(async (tx) => {
       await this.assertWalletsEnabled(tx);
@@ -403,10 +588,157 @@ export class ConsumerWalletService {
   }
 
   private async assertWalletsEnabled(tx: DatabaseSession): Promise<void> {
-    if ((await this.readFeatureState(tx)) !== 'ENABLED')
+    const [row] = await tx.query<{ encrypted_value: string }>(
+      'SELECT encrypted_value FROM app_preferences WHERE key=?',
+      [WALLETS_FEATURE_STATE_KEY],
+    );
+    if (row?.encrypted_value !== 'ENABLED')
       throw new Error(
         'Wallets is off. Enable Wallets in Settings before changing consumer wallets.',
       );
+  }
+
+  private assertWalletDate(value: string): void {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || !Number.isFinite(Date.parse(`${value}T00:00:00Z`)))
+      throw new Error('Enter a valid wallet event date.');
+  }
+
+  private async assertActiveWallet(tx: DatabaseSession, walletId: string): Promise<void> {
+    const [row] = await tx.query<{ wallet_kind: ConsumerWalletKind; archived: number }>(
+      'SELECT wallet_kind,archived FROM consumer_wallets WHERE id=?',
+      [walletId],
+    );
+    if (!row || row.archived !== 0) throw new Error('Choose an active registered consumer wallet.');
+  }
+
+  private async readIdempotentEvent(
+    tx: DatabaseSession,
+    id: string,
+    walletId: string,
+    eventType: ConsumerWalletEvent['eventType'],
+    amountMinor: number,
+    eventDate: string,
+  ): Promise<ConsumerWalletEvent | null> {
+    const [row] = await tx.query<{ payload: string }>(
+      'SELECT payload FROM consumer_wallet_events WHERE id=?',
+      [id],
+    );
+    if (!row) return null;
+    const existing = JSON.parse(row.payload) as ConsumerWalletEvent;
+    if (
+      existing.walletId === walletId &&
+      existing.eventType === eventType &&
+      existing.amountMinor === amountMinor &&
+      existing.eventDate === eventDate
+    )
+      return existing;
+    throw new Error('This wallet event ID was already used for a different financial event.');
+  }
+
+  private async balanceIn(tx: DatabaseSession, walletId: string): Promise<number> {
+    const [row] = await tx.query<{ balance: number | null }>(
+      'SELECT COALESCE(SUM(balance_delta_minor),0) AS balance FROM consumer_wallet_events WHERE wallet_id=?',
+      [walletId],
+    );
+    return Number(row?.balance ?? 0);
+  }
+
+  private async insertEvent(tx: DatabaseSession, event: ConsumerWalletEvent): Promise<void> {
+    await tx.run(
+      'INSERT INTO consumer_wallet_events(id,wallet_id,event_type,event_date,event_time,amount_minor,balance_delta_minor,debit_amount_minor,loaded_amount_minor,fee_minor,funding_source_kind,funding_source_id,source_transaction_id,return_source_id,reversal_of_event_id,funding_category_id,category_id,merchant,notes,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+      [
+        event.id,
+        event.walletId,
+        event.eventType,
+        event.eventDate,
+        event.eventTime ?? null,
+        event.amountMinor,
+        event.balanceDeltaMinor,
+        event.debitAmountMinor ?? null,
+        event.loadedAmountMinor ?? null,
+        event.feeMinor ?? null,
+        event.fundingSourceKind ?? null,
+        event.fundingSourceId ?? null,
+        event.sourceTransactionId ?? null,
+        event.returnSourceId ?? null,
+        event.reversalOfEventId ?? null,
+        event.fundingCategoryId ?? null,
+        event.categoryId ?? null,
+        event.merchant ?? null,
+        event.notes ?? null,
+        JSON.stringify(event),
+        event.createdAt,
+        event.updatedAt,
+      ],
+    );
+  }
+
+  private async allocateDebit(
+    tx: DatabaseSession,
+    debit: ConsumerWalletEvent,
+    amountMinor: number,
+    expenseReversalMinor: number,
+  ): Promise<ConsumerWalletEventAllocation[]> {
+    const credits = await tx.query<{
+      id: string;
+      balance_delta_minor: number;
+      event_date: string;
+      created_at: string;
+    }>(
+      'SELECT id,balance_delta_minor,event_date,created_at FROM consumer_wallet_events WHERE wallet_id=? AND balance_delta_minor>0 AND id<>? ORDER BY event_date,created_at,id',
+      [debit.walletId, debit.id],
+    );
+    let remaining = amountMinor;
+    let expenseRemaining = expenseReversalMinor;
+    const allocations: ConsumerWalletEventAllocation[] = [];
+    for (const credit of credits) {
+      if (!remaining) break;
+      const [usedRow] = await tx.query<{ allocated: number }>(
+        'SELECT COALESCE(SUM(allocated_minor),0) AS allocated FROM consumer_wallet_event_allocations WHERE credit_event_id=?',
+        [credit.id],
+      );
+      const available = credit.balance_delta_minor - Number(usedRow?.allocated ?? 0);
+      if (available <= 0) continue;
+      const allocatedMinor = Math.min(available, remaining);
+      const allocatedExpense = Math.min(allocatedMinor, expenseRemaining);
+      const allocation: ConsumerWalletEventAllocation = {
+        id: crypto.randomUUID(),
+        debitEventId: debit.id,
+        creditEventId: credit.id,
+        allocatedMinor,
+        expenseReversalMinor: allocatedExpense,
+        createdAt: new Date().toISOString(),
+      };
+      await tx.run(
+        'INSERT INTO consumer_wallet_event_allocations(id,debit_event_id,credit_event_id,allocated_minor,expense_reversal_minor,created_at) VALUES(?,?,?,?,?,?)',
+        [
+          allocation.id,
+          allocation.debitEventId,
+          allocation.creditEventId,
+          allocation.allocatedMinor,
+          allocation.expenseReversalMinor,
+          allocation.createdAt,
+        ],
+      );
+      allocations.push(allocation);
+      remaining -= allocatedMinor;
+      expenseRemaining -= allocatedExpense;
+    }
+    if (remaining)
+      throw new Error('Wallet balance provenance is incomplete; the debit was not saved.');
+    return allocations;
+  }
+
+  private publishEventWrite(
+    event: ConsumerWalletEvent,
+    allocations: readonly ConsumerWalletEventAllocation[],
+  ): void {
+    this.events.update((items) => [event, ...items.filter((item) => item.id !== event.id)]);
+    if (allocations.length)
+      this.allocations.update((items) => [
+        ...allocations,
+        ...items.filter((item) => !allocations.some((next) => next.id === item.id)),
+      ]);
   }
 
   private async completeSetup(tx: DatabaseSession, intentId: string | undefined): Promise<void> {

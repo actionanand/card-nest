@@ -181,6 +181,9 @@
             <div class="wallet-actions">
               <button class="btn" type="button" (click)="showHistory(wallet)">History</button>
               @if (wallets.enabled()) {
+                <button class="btn" type="button" (click)="openWalletActivity(wallet)">
+                  Record activity
+                </button>
                 <button class="btn" type="button" (click)="requestConsumerArchive(wallet)">
                   Archive
                 </button>
@@ -310,6 +313,61 @@
     } @else {
       <p class="empty-state">No wallet events recorded.</p>
     }
+  </app-profile-modal>
+}
+
+@if (walletActivityWallet(); as wallet) {
+  <app-profile-modal
+    [title]="'Record activity · ' + walletName(wallet)"
+    [busy]="saving()"
+    (closed)="closeWalletActivity()"
+  >
+    <form
+      class="wallet-form"
+      [formGroup]="walletActivityForm"
+      (submit)="saveWalletActivity($event)"
+    >
+      <app-select-picker
+        label="Activity type"
+        formControlName="kind"
+        [options]="walletActivityKinds"
+      />
+      <label>
+        {{
+          walletActivityForm.controls.kind.value === 'BALANCE'
+            ? 'Verified current balance'
+            : 'Amount'
+        }}
+        <input
+          formControlName="amount"
+          inputmode="decimal"
+          autocomplete="off"
+          placeholder="0.00"
+          required
+        />
+      </label>
+      @if (walletActivityForm.controls.kind.value === 'PURCHASE') {
+        <app-select-picker
+          label="Category"
+          formControlName="categoryId"
+          [options]="walletActivityCategories()"
+        />
+        <label>Merchant or title<input formControlName="merchant" maxlength="100" /></label>
+      }
+      <label>Date<input formControlName="eventDate" type="date" required /></label>
+      <label>Note (optional)<input formControlName="memo" maxlength="200" /></label>
+      @if (walletActivityError(); as message) {
+        <p class="form-error" role="alert">{{ message }}</p>
+      }
+      <div class="modal-actions">
+        <button class="btn btn-primary" type="submit" [disabled]="saving()">
+          {{ saving() ? 'Saving…' : 'Record activity' }}
+        </button>
+        <button class="btn" type="button" [disabled]="saving()" (click)="closeWalletActivity()">
+          Cancel
+        </button>
+      </div>
+    </form>
   </app-profile-modal>
 }
 

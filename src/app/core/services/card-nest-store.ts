@@ -17,6 +17,9 @@ import {
   RecurringRule,
   SourceBalanceAdjustment,
   SourceTransfer,
+  ConsumerWallet,
+  ConsumerWalletEvent,
+  WalletLoadingDetails,
 } from '../models/domain';
 import { DatabaseSession, SqliteDatabase } from '../data/sqlite-database';
 import { walletEffectApplies } from './wallet-anchor';
@@ -924,6 +927,7 @@ export class CardNestStore {
     unlinkConfirmed = false,
     recurringRule?: RecurringRule,
     archivedSourceReassignmentConfirmedFor = '',
+    walletLoading?: WalletLoadingDetails,
   ): Promise<void> {
     if (!this.database.ready()) throw new Error('Database is not ready.');
     const result = await this.database.atomic(async (tx) => {
@@ -932,12 +936,35 @@ export class CardNestStore {
         [transaction.id],
       );
       const previous = row ? (JSON.parse(row.payload) as CardTransaction) : null;
+      const [previousWalletLoadRow] = await tx.query<{ id: string; payload: string }>(
+        "SELECT id,payload FROM consumer_wallet_events WHERE event_type='FUNDED_LOAD' AND source_transaction_id=?",
+        [transaction.id],
+      );
+      const previousWalletLoad = previousWalletLoadRow
+        ? (JSON.parse(previousWalletLoadRow.payload) as ConsumerWalletEvent)
+        : null;
       if (
         !Number.isSafeInteger(transaction.amountMinor) ||
         transaction.amountMinor <= 0 ||
         !validTransferDate(transaction.transactionDate)
       )
         throw new Error('Enter a valid amount and transaction date.');
+      if (
+        transaction.paymentMethod === 'WALLET_LOADING' &&
+        (!walletLoading || transaction.type !== 'PURCHASE')
+      )
+        throw new Error(
+          'Wallet Loading requires a purchase debit, active destination wallet and loaded amount.',
+        );
+      if (
+        walletLoading &&
+        (transaction.paymentMethod !== 'WALLET_LOADING' || transaction.type !== 'PURCHASE')
+      )
+        throw new Error('Wallet loading details are only valid for a purchase debit.');
+      if (previousWalletLoad && !walletLoading)
+        throw new Error(
+          'This debit already funds a wallet. Keep Wallet Loading selected or reverse the linked load first.',
+        );
       const sources = await this.readStoredSources(tx);
       const card = this.cards().find((item) => item.id === transaction.cardId && !item.deletedAt);
       const previousCard = previous
@@ -1067,6 +1094,8 @@ export class CardNestStore {
         next.splitGroupId = undefined;
       }
       const saved = await this.writeTransaction(tx, next);
+      if (walletLoading)
+        await this.saveWalletLoadEvent(tx, next, walletLoading, previousWalletLoad);
       let savedRule: RecurringRule | undefined;
       if (recurringRule) {
         if (
@@ -3272,6 +3301,134 @@ export class CardNestStore {
     writeCachedTransactions(transactions);
   }
 
+  private async saveWalletLoadEvent(
+    tx: DatabaseSession,
+    transaction: CardTransaction,
+    input: WalletLoadingDetails,
+    previous: ConsumerWalletEvent | null,
+  ): Promise<void> {
+    if (!Number.isSafeInteger(input.loadedAmountMinor) || input.loadedAmountMinor <= 0)
+      throw new Error('Enter a positive wallet loaded amount.');
+    if (input.loadedAmountMinor > transaction.amountMinor)
+      throw new Error(
+        'Loaded amount cannot exceed the debit. Record excess value as a separate bonus.',
+      );
+    const [feature] = await tx.query<{ encrypted_value: string }>(
+      'SELECT encrypted_value FROM app_preferences WHERE key=?',
+      ['consumer_wallets_feature_state'],
+    );
+    if (feature?.encrypted_value !== 'ENABLED')
+      throw new Error('Wallets is off. Enable Wallets before loading a consumer wallet.');
+    const [walletRow] = await tx.query<{ archived: number; wallet_kind: string; payload: string }>(
+      'SELECT archived,wallet_kind,payload FROM consumer_wallets WHERE id=?',
+      [input.walletId],
+    );
+    if (!walletRow || walletRow.archived !== 0)
+      throw new Error('Choose an active registered consumer wallet.');
+    const consumerWallet = JSON.parse(walletRow.payload) as ConsumerWallet;
+    const sources = await this.readStoredSources(tx);
+    const source = sources.find((item) => item.id === transaction.cardId);
+    const card = this.cards().find((item) => item.id === transaction.cardId);
+    if (card && (card.archived || card.deletedAt || card.currencyCode !== 'INR'))
+      throw new Error('Choose an active INR credit card to fund this wallet load.');
+    if (!card && (!source || source.kind !== 'DEBIT' || source.archived))
+      throw new Error('Wallet Loading can only use an active credit card or Bank/UPI account.');
+    if (consumerWallet.kind === 'UPI_LITE' && !source)
+      throw new Error('UPI Lite can only be loaded from an active Bank/UPI account.');
+    if (source && source.kind !== 'DEBIT')
+      throw new Error('Wallet Loading cannot use Cash, Pluxee, FASTag, or another wallet.');
+    if (transaction.currencyCode !== 'INR')
+      throw new Error('Consumer wallet loads must be denominated in INR.');
+
+    if (previous) {
+      const [usedRow] = await tx.query<{ allocated: number }>(
+        'SELECT COALESCE(SUM(allocated_minor),0) AS allocated FROM consumer_wallet_event_allocations WHERE credit_event_id=?',
+        [previous.id],
+      );
+      const consumed = Number(usedRow?.allocated ?? 0);
+      if (
+        consumed > 0 &&
+        (previous.walletId !== input.walletId ||
+          previous.amountMinor !== input.loadedAmountMinor ||
+          previous.eventDate !== transaction.transactionDate ||
+          previous.debitAmountMinor !== transaction.amountMinor ||
+          previous.fundingSourceId !== transaction.cardId ||
+          previous.fundingCategoryId !== transaction.categoryId)
+      )
+        throw new Error(
+          'This wallet load has already been spent or returned; reverse linked wallet activity first.',
+        );
+    }
+
+    const [balanceRow] = await tx.query<{ balance: number | null }>(
+      'SELECT COALESCE(SUM(balance_delta_minor),0) AS balance FROM consumer_wallet_events WHERE wallet_id=?',
+      [input.walletId],
+    );
+    const previousDelta = previous?.walletId === input.walletId ? previous.balanceDeltaMinor : 0;
+    const nextBalance = Number(balanceRow?.balance ?? 0) - previousDelta + input.loadedAmountMinor;
+    if (!Number.isSafeInteger(nextBalance) || nextBalance < 0)
+      throw new Error('Wallet balance would exceed the supported amount.');
+    if (previous && previous.walletId !== input.walletId) {
+      const [oldBalanceRow] = await tx.query<{ balance: number | null }>(
+        'SELECT COALESCE(SUM(balance_delta_minor),0) AS balance FROM consumer_wallet_events WHERE wallet_id=?',
+        [previous.walletId],
+      );
+      const oldBalance = Number(oldBalanceRow?.balance ?? 0) - previous.balanceDeltaMinor;
+      if (!Number.isSafeInteger(oldBalance) || oldBalance < 0)
+        throw new Error('The previous wallet balance cannot safely remove this load.');
+    }
+
+    const now = new Date().toISOString();
+    const event: ConsumerWalletEvent = {
+      id: previous?.id ?? crypto.randomUUID(),
+      walletId: input.walletId,
+      eventType: 'FUNDED_LOAD',
+      eventDate: transaction.transactionDate,
+      eventTime: transaction.transactionTime,
+      amountMinor: input.loadedAmountMinor,
+      balanceDeltaMinor: input.loadedAmountMinor,
+      debitAmountMinor: transaction.amountMinor,
+      loadedAmountMinor: input.loadedAmountMinor,
+      feeMinor: transaction.amountMinor - input.loadedAmountMinor,
+      fundingSourceKind: card ? 'CARD' : 'BANK',
+      fundingSourceId: transaction.cardId,
+      sourceTransactionId: transaction.id,
+      fundingCategoryId: transaction.categoryId,
+      merchant: transaction.merchant,
+      notes: transaction.notes,
+      paymentMethod:
+        transaction.paymentMethod === 'WALLET_LOADING' ? undefined : transaction.paymentMethod,
+      createdAt: previous?.createdAt ?? now,
+      updatedAt: now,
+    };
+    await tx.run(
+      `INSERT INTO consumer_wallet_events(id,wallet_id,event_type,event_date,event_time,amount_minor,balance_delta_minor,debit_amount_minor,loaded_amount_minor,fee_minor,funding_source_kind,funding_source_id,source_transaction_id,funding_category_id,merchant,notes,payload,created_at,updated_at)
+       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+       ON CONFLICT(id) DO UPDATE SET wallet_id=excluded.wallet_id,event_type=excluded.event_type,event_date=excluded.event_date,event_time=excluded.event_time,amount_minor=excluded.amount_minor,balance_delta_minor=excluded.balance_delta_minor,debit_amount_minor=excluded.debit_amount_minor,loaded_amount_minor=excluded.loaded_amount_minor,fee_minor=excluded.fee_minor,funding_source_kind=excluded.funding_source_kind,funding_source_id=excluded.funding_source_id,source_transaction_id=excluded.source_transaction_id,funding_category_id=excluded.funding_category_id,merchant=excluded.merchant,notes=excluded.notes,payload=excluded.payload,updated_at=excluded.updated_at`,
+      [
+        event.id,
+        event.walletId,
+        event.eventType,
+        event.eventDate,
+        event.eventTime ?? null,
+        event.amountMinor,
+        event.balanceDeltaMinor,
+        event.debitAmountMinor ?? null,
+        event.loadedAmountMinor ?? null,
+        event.feeMinor ?? null,
+        event.fundingSourceKind ?? null,
+        event.fundingSourceId ?? null,
+        event.sourceTransactionId ?? null,
+        event.fundingCategoryId ?? null,
+        event.merchant ?? null,
+        event.notes ?? null,
+        JSON.stringify(event),
+        event.createdAt,
+        event.updatedAt,
+      ],
+    );
+  }
+
   private async persistTransaction(transaction: CardTransaction): Promise<void> {
     if (!this.database.ready()) return;
     const result = await this.database.atomic((tx) => this.writeTransaction(tx, transaction));
@@ -3511,6 +3668,21 @@ export class CardNestStore {
     const wallets = await this.readStoredSources(tx);
     const settings = await this.readTrackingSettings(tx);
     const previous = row ? (JSON.parse(row.payload) as CardTransaction) : null;
+    const [walletLoad] = await tx.query<{ id: string }>(
+      "SELECT id FROM consumer_wallet_events WHERE event_type='FUNDED_LOAD' AND source_transaction_id=?",
+      [id],
+    );
+    if (walletLoad) {
+      const [used] = await tx.query<{ allocated: number }>(
+        'SELECT COALESCE(SUM(allocated_minor),0) AS allocated FROM consumer_wallet_event_allocations WHERE credit_event_id=?',
+        [walletLoad.id],
+      );
+      if (Number(used?.allocated ?? 0) > 0)
+        throw new Error(
+          'This wallet load has already been spent or returned; reverse linked wallet activity first.',
+        );
+      await tx.run('DELETE FROM consumer_wallet_events WHERE id=?', [walletLoad.id]);
+    }
     applyWalletTransaction(wallets, previous, -1);
     reverseBalanceEffect(wallets, previous?.balanceEffect, settings);
     const [funding] = await tx.query<{ payload: string }>(

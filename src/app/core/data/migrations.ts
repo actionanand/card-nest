@@ -160,4 +160,16 @@ export const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
       `CREATE INDEX idx_consumer_wallet_allocations_credit ON consumer_wallet_event_allocations(credit_event_id)`,
     ],
   },
+  {
+    version: 16,
+    statements: [
+      `ALTER TABLE consumer_wallet_events ADD COLUMN event_time TEXT`,
+      `ALTER TABLE consumer_wallet_events ADD COLUMN debit_amount_minor INTEGER CHECK(debit_amount_minor IS NULL OR debit_amount_minor >= 0)`,
+      `ALTER TABLE consumer_wallet_events ADD COLUMN funding_category_id TEXT`,
+      `ALTER TABLE consumer_wallet_events ADD COLUMN category_id TEXT`,
+      `ALTER TABLE consumer_wallet_events ADD COLUMN merchant TEXT`,
+      `ALTER TABLE consumer_wallet_events ADD COLUMN notes TEXT`,
+      `CREATE UNIQUE INDEX idx_consumer_wallet_funded_load_transaction ON consumer_wallet_events(source_transaction_id) WHERE event_type='FUNDED_LOAD' AND source_transaction_id IS NOT NULL`,
+    ],
+  },
 ];

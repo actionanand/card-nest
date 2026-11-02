@@ -19,12 +19,15 @@ import { Capacitor } from '@capacitor/core';
 import {
   BalanceTiming,
   CardTransaction,
+  ConsumerWalletEvent,
   EmiPlan,
   RecurringRule,
   SourceTransfer,
   TransactionType,
+  WalletLoadingDetails,
 } from '../../core/models/domain';
 import { CardNestStore } from '../../core/services/card-nest-store';
+import { ConsumerWalletService } from '../../core/services/consumer-wallet.service';
 import { displayBankAccountSuffix } from '../../core/services/bank-account-identifier';
 import {
   formatMoney,
@@ -71,6 +74,20 @@ type TransactionTypeFilter = TransactionType | 'ALL' | 'WITH_IMAGE';
 type RepeatChoice = 'NONE' | 'INFINITE' | `${number}`;
 type EmiKind = 'NO_COST' | 'STANDARD';
 type EmiStartMode = 'THIS_MONTH' | 'NEXT_MONTH' | 'CUSTOM';
+
+type ActivityProjectionItem =
+  | {
+      readonly kind: 'CARD_TRANSACTION';
+      readonly id: string;
+      readonly date: string;
+      readonly transaction: CardTransaction;
+    }
+  | {
+      readonly kind: 'CONSUMER_WALLET_EVENT';
+      readonly id: string;
+      readonly date: string;
+      readonly event: ConsumerWalletEvent;
+    };
 
 interface SelectedFilterSource {
   readonly id: string;
@@ -125,6 +142,7 @@ function sanitizedMoneyInput(value: string): string {
 export class TransactionsPage {
   private readonly calendarClock = inject(DeviceCalendarClock);
   readonly store = inject(CardNestStore);
+  readonly consumerWallets = inject(ConsumerWalletService);
   recordedTime(transaction: CardTransaction): string {
     return recordedTransactionTime(
       transaction.transactionTime,
@@ -545,6 +563,8 @@ export class TransactionsPage {
     archivedSourceReassignmentConfirmedFor: new FormControl('', { nonNullable: true }),
     paymentMethod: new FormControl('NONE', { nonNullable: true }),
     paymentMethodDetail: new FormControl('', { nonNullable: true }),
+    walletId: new FormControl('', { nonNullable: true }),
+    walletLoadedAmount: new FormControl('', { nonNullable: true }),
     paymentMethodCustom: new FormControl('', {
       nonNullable: true,
       validators: Validators.maxLength(80),
@@ -702,7 +722,30 @@ export class TransactionsPage {
   }
   manualPaymentMethods() {
     this.formChanges();
-    return paymentMethodsFor(this.manualPaymentContext());
+    const options = paymentMethodsFor(this.manualPaymentContext());
+    return this.canLoadConsumerWallet()
+      ? [...options, { value: 'WALLET_LOADING', label: 'Consumer wallet load' }]
+      : options;
+  }
+  readonly walletLoadWalletOptions = computed(() =>
+    this.consumerWallets.activeWallets().map((wallet) => ({
+      value: wallet.id,
+      label: wallet.nickname || wallet.customName || wallet.providerId,
+      detail: wallet.kind === 'UPI_LITE' ? 'UPI Lite' : 'Consumer wallet',
+    })),
+  );
+  private canLoadConsumerWallet(): boolean {
+    if (
+      this.form.controls.type.value !== 'PURCHASE' ||
+      !this.consumerWallets.enabled() ||
+      !this.consumerWallets.activeWallets().length
+    )
+      return false;
+    const sourceId = this.form.controls.cardId.value;
+    const card = this.store.cards().find((item) => item.id === sourceId && !item.deletedAt);
+    if (card) return !card.archived && card.currencyCode === 'INR';
+    const source = this.store.paymentSources().find((item) => item.id === sourceId);
+    return !!source && !source.archived && source.kind === 'DEBIT';
   }
   readonly manualPaymentDetail = paymentMethodDetailConfig;
   setManualPaymentMethod(value: string): void {
@@ -711,6 +754,8 @@ export class TransactionsPage {
       paymentMethod: value,
       paymentMethodDetail: '',
       paymentMethodCustom: '',
+      walletId: value === 'WALLET_LOADING' ? (this.walletLoadWalletOptions()[0]?.value ?? '') : '',
+      walletLoadedAmount: '',
     });
   }
   setManualPaymentDetail(value: string): void {
@@ -862,6 +907,62 @@ export class TransactionsPage {
   readonly visibleTotal = computed(() =>
     this.filtered().reduce((sum, item) => sum - transactionEffect(item), 0),
   );
+  readonly activityProjection = computed<readonly ActivityProjectionItem[]>(() => {
+    const items: ActivityProjectionItem[] = this.filtered().map((transaction) => ({
+      kind: 'CARD_TRANSACTION',
+      id: transaction.id,
+      date: transaction.transactionDate,
+      transaction,
+    }));
+    const term = this.search().trim().toLocaleLowerCase();
+    if (this.sourceFilter() === 'ALL' && !this.creditCardsOnly())
+      for (const event of this.consumerWallets.events()) {
+        if (event.eventType === 'FUNDED_LOAD') continue;
+        if (this.hideCredits() && event.balanceDeltaMinor > 0) continue;
+        if (this.categoryFilter() !== 'ALL' && event.categoryId !== this.categoryFilter()) continue;
+        const wallet = this.consumerWallets.wallets().find((item) => item.id === event.walletId);
+        const searchable =
+          `${wallet?.nickname ?? wallet?.customName ?? wallet?.providerId ?? ''} ${event.merchant ?? ''} ${event.memo ?? ''} ${event.notes ?? ''} ${event.eventType}`.toLocaleLowerCase();
+        if (term && !searchable.includes(term)) continue;
+        items.push({
+          kind: 'CONSUMER_WALLET_EVENT',
+          id: event.id,
+          date: event.eventDate,
+          event,
+        });
+      }
+    return items.sort(
+      (left, right) =>
+        right.date.localeCompare(left.date) ||
+        (right.kind === 'CONSUMER_WALLET_EVENT' ? (right.event.eventTime ?? '') : '').localeCompare(
+          left.kind === 'CONSUMER_WALLET_EVENT' ? (left.event.eventTime ?? '') : '',
+        ) ||
+        right.id.localeCompare(left.id),
+    );
+  });
+  readonly projectedWalletActivities = computed(() =>
+    this.activityProjection().filter(
+      (item): item is Extract<ActivityProjectionItem, { kind: 'CONSUMER_WALLET_EVENT' }> =>
+        item.kind === 'CONSUMER_WALLET_EVENT',
+    ),
+  );
+  consumerWalletName(walletId: string): string {
+    const wallet = this.consumerWallets.wallets().find((item) => item.id === walletId);
+    return wallet?.nickname || wallet?.customName || wallet?.providerId || 'Consumer wallet';
+  }
+  consumerWalletEventLabel(event: ConsumerWalletEvent): string {
+    return event.eventType
+      .replaceAll('_', ' ')
+      .toLocaleLowerCase()
+      .replace(/^\w/, (value) => value.toUpperCase());
+  }
+  fundedWalletLoad(transactionId: string): ConsumerWalletEvent | undefined {
+    return this.consumerWallets
+      .events()
+      .find(
+        (event) => event.eventType === 'FUNDED_LOAD' && event.sourceTransactionId === transactionId,
+      );
+  }
   readonly logicalGroups = computed(() =>
     this.sourceFilter() === 'ALL'
       ? (this.store.paymentGroups?.() ?? []).filter(
@@ -1295,6 +1396,12 @@ export class TransactionsPage {
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
     this.closeDetails();
     this.editingId.set(transaction.id);
+    const walletLoad = this.consumerWallets
+      .events()
+      .find(
+        (event) =>
+          event.eventType === 'FUNDED_LOAD' && event.sourceTransactionId === transaction.id,
+      );
     this.form.reset({
       cardId: transaction.cardId,
       type: transaction.type,
@@ -1314,6 +1421,11 @@ export class TransactionsPage {
       archivedSourceReassignmentConfirmedFor: '',
       paymentMethod: transaction.paymentMethod ?? 'NONE',
       paymentMethodDetail: transaction.paymentMethodDetail ?? '',
+      walletId: walletLoad?.walletId ?? '',
+      walletLoadedAmount:
+        walletLoad?.loadedAmountMinor === undefined
+          ? ''
+          : String(walletLoad.loadedAmountMinor / 100),
       paymentMethodCustom: transaction.paymentMethodCustom ?? '',
       smsAdditionalComment: transaction.smsAdditionalComment ?? '',
       taxIncluded: transaction.taxIncluded ?? false,
@@ -2082,15 +2194,42 @@ export class TransactionsPage {
     const existing = this.store
       .transactions()
       .find((transaction) => transaction.id === this.editingId());
-    let annotation;
-    try {
-      annotation = validateSmsPaymentAnnotation(value, this.manualPaymentContext());
-    } catch (error: unknown) {
-      this.snackbar.show(
-        error instanceof Error ? error.message : 'Choose valid payment metadata.',
-        'WARNING',
-      );
-      return;
+    let annotation:
+      | ReturnType<typeof validateSmsPaymentAnnotation>
+      | {
+          paymentMethod: 'WALLET_LOADING';
+        };
+    let walletLoading: WalletLoadingDetails | undefined;
+    if (value.paymentMethod === 'WALLET_LOADING') {
+      const loadedAmountMinor = parseMoneyToMinor(value.walletLoadedAmount);
+      if (
+        !this.canLoadConsumerWallet() ||
+        !value.walletId ||
+        loadedAmountMinor === null ||
+        loadedAmountMinor <= 0 ||
+        loadedAmountMinor > amountMinor ||
+        value.repeat !== 'NONE'
+      ) {
+        this.snackbar.show(
+          value.repeat !== 'NONE'
+            ? 'Wallet loads cannot repeat. Record each real debit separately.'
+            : 'Choose an eligible consumer wallet and a valid credited amount no greater than the debit.',
+          'WARNING',
+        );
+        return;
+      }
+      annotation = { paymentMethod: 'WALLET_LOADING' };
+      walletLoading = { walletId: value.walletId, loadedAmountMinor };
+    } else {
+      try {
+        annotation = validateSmsPaymentAnnotation(value, this.manualPaymentContext());
+      } catch (error: unknown) {
+        this.snackbar.show(
+          error instanceof Error ? error.message : 'Choose valid payment metadata.',
+          'WARNING',
+        );
+        return;
+      }
     }
     const newCardRecurrence =
       !existing &&
@@ -2175,6 +2314,7 @@ export class TransactionsPage {
           value.unlinkConfirmed,
           persistedCardRecurrence ? recurringRule : undefined,
           value.archivedSourceReassignmentConfirmedFor,
+          walletLoading,
         );
       } catch (error: unknown) {
         if (error instanceof CommittedSaveRefreshError) refreshWarning = error.message;
@@ -2184,6 +2324,14 @@ export class TransactionsPage {
             'WARNING',
           );
           return;
+        }
+      }
+      if (walletLoading) {
+        try {
+          await this.consumerWallets.reloadFinancialHistory();
+        } catch {
+          refreshWarning ??=
+            'Wallet load saved, but wallet activity could not be refreshed. Reopen Transactions to reload it.';
         }
       }
       if (recurringRule && persistedCardRecurrence) {
@@ -2317,6 +2465,8 @@ export class TransactionsPage {
       archivedSourceReassignmentConfirmedFor: '',
       paymentMethod: 'NONE',
       paymentMethodDetail: '',
+      walletId: '',
+      walletLoadedAmount: '',
       paymentMethodCustom: '',
       smsAdditionalComment: '',
       taxIncluded: false,

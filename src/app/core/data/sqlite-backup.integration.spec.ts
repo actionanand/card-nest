@@ -582,6 +582,142 @@ describe('Durable first-run data, additive read migration and private portable b
       INSERT INTO sms_candidates(id,provider_id,event_at,kind,state,payload,updated_at) VALUES('synthetic-pending','2','2026-10-02','PURCHASE','PENDING','{"evidence":"Synthetic pending evidence"}','before');
       INSERT INTO sms_reconciliation VALUES('synthetic-binding','synthetic-read','synthetic-transaction','IMPORT',12345,'before');`);
   }
+  it('saves funded wallet loads atomically with their real source debit and protects consumed provenance', async () => {
+    await database.initialise();
+    const store = TestBed.inject(CardNestStore);
+    await store.initialisePreferences();
+    const wallets = TestBed.inject(ConsumerWalletService);
+    await wallets.initialise();
+    const wallet = await wallets.registerWallet({ providerId: 'amazon-pay' });
+    const openingBalance = await wallets.updateWalletBalance({
+      id: 'wallet-load-opening-balance',
+      walletId: wallet.id,
+      newBalanceMinor: 1000,
+      eventDate: '2026-10-01',
+    });
+    await expect(
+      wallets.updateWalletBalance({
+        id: 'wallet-load-opening-balance',
+        walletId: wallet.id,
+        newBalanceMinor: 1000,
+        eventDate: '2026-10-01',
+      }),
+    ).resolves.toEqual(openingBalance);
+    await wallets.addWalletCredit({
+      id: 'wallet-load-manual-credit',
+      walletId: wallet.id,
+      amountMinor: 100,
+      eventType: 'MANUAL_CREDIT',
+      eventDate: '2026-10-02',
+    });
+    await wallets.addWalletCredit({
+      id: 'wallet-load-promo-credit',
+      walletId: wallet.id,
+      amountMinor: 50,
+      eventType: 'PROMOTIONAL_CREDIT',
+      eventDate: '2026-10-03',
+    });
+    await wallets.updateWalletBalance({
+      id: 'wallet-load-correction',
+      walletId: wallet.id,
+      newBalanceMinor: 1100,
+      eventDate: '2026-10-04',
+    });
+    const card = {
+      id: 'wallet-load-card',
+      nickname: 'Synthetic load card',
+      issuerName: 'Fictional Bank',
+      lastDigits: '4321',
+      network: 'VISA' as const,
+      theme: 'green',
+      statementDay: 1,
+      dueDateMode: 'DAYS_AFTER_STATEMENT' as const,
+      daysAfterStatement: 20,
+      adjustDueDateOnWeekend: false,
+      currencyCode: 'INR',
+      openingBalanceMinor: 0,
+      remindToSettle: false,
+      annualFeeEnabled: false,
+      emergencyPhones: [],
+      supportEmails: [],
+      archived: false,
+      createdAt: '2026-10-01T00:00:00.000Z',
+      updatedAt: '2026-10-01T00:00:00.000Z',
+    };
+    await database.run(
+      'INSERT INTO credit_cards(id,nickname,issuer_name,last_digits,network,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)',
+      [
+        card.id,
+        card.nickname,
+        card.issuerName,
+        card.lastDigits,
+        card.network,
+        JSON.stringify(card),
+        card.createdAt,
+        card.updatedAt,
+      ],
+    );
+    store.cards.set([card]);
+    const transaction = {
+      id: 'wallet-load-source-debit',
+      cardId: card.id,
+      type: 'PURCHASE' as const,
+      amountMinor: 5200,
+      currencyCode: 'INR',
+      transactionDate: '2026-10-05',
+      categoryId: 'other',
+      merchant: 'Synthetic wallet top-up',
+      attachmentIds: [],
+      paymentMethod: 'WALLET_LOADING' as const,
+      createdAt: '2026-10-05T10:00:00.000Z',
+      updatedAt: '2026-10-05T10:00:00.000Z',
+    };
+    const save = (loadedAmountMinor: number, walletId = wallet.id) =>
+      store.saveManualTransaction(transaction, '', false, undefined, '', {
+        walletId,
+        loadedAmountMinor,
+      });
+
+    await expect(save(5000, 'missing-wallet')).rejects.toThrow('active registered consumer wallet');
+    expect(rows('SELECT id FROM card_transactions WHERE id=?', [transaction.id])).toEqual([]);
+    expect(
+      rows('SELECT id FROM consumer_wallet_events WHERE source_transaction_id=?', [transaction.id]),
+    ).toEqual([]);
+
+    await save(5000);
+    await save(5000);
+    expect(rows('SELECT id FROM card_transactions WHERE id=?', [transaction.id])).toHaveLength(1);
+    expect(
+      rows(
+        'SELECT amount_minor,debit_amount_minor,fee_minor FROM consumer_wallet_events WHERE source_transaction_id=?',
+        [transaction.id],
+      ),
+    ).toEqual([{ amount_minor: 5000, debit_amount_minor: 5200, fee_minor: 200 }]);
+    expect(
+      rows(
+        "SELECT COUNT(*) AS count FROM consumer_wallet_events WHERE event_type='FUNDED_LOAD' AND source_transaction_id=?",
+        [transaction.id],
+      ),
+    ).toEqual([{ count: 1 }]);
+
+    await wallets.recordWalletPurchase({
+      id: 'wallet-load-test-purchase',
+      walletId: wallet.id,
+      amountMinor: 2100,
+      eventDate: '2026-10-06',
+      categoryId: 'other',
+    });
+    await expect(save(4000)).rejects.toThrow('already been spent or returned');
+    await expect(store.deleteRecordedTransaction(transaction.id)).rejects.toThrow(
+      'already been spent or returned',
+    );
+    expect(rows('SELECT id FROM card_transactions WHERE id=?', [transaction.id])).toHaveLength(1);
+    expect(
+      rows('SELECT amount_minor FROM consumer_wallet_events WHERE source_transaction_id=?', [
+        transaction.id,
+      ]),
+    ).toEqual([{ amount_minor: 5000 }]);
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     config.seedDemoData = false;

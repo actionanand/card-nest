@@ -7,6 +7,7 @@ import { ConsumerWallet, PaymentSource } from '../../core/models/domain';
 import { ConsumerWalletService } from '../../core/services/consumer-wallet.service';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { formatMoney, parseMoneyToMinor } from '../../core/services/money';
+import { indiaTodayIso } from '../../core/services/india-date';
 import { AppIcon } from '../../shared/app-icon';
 import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
 import { ProfileModal } from '../../shared/profile-modal';
@@ -40,6 +41,9 @@ export class WalletsPage {
   readonly fastagOpen = signal(false);
   readonly consumerOpen = signal(false);
   readonly historyWalletId = signal<string | null>(null);
+  readonly walletActivityId = signal<string | null>(null);
+  readonly walletActivityEventId = signal('');
+  readonly walletActivityError = signal<string | null>(null);
   readonly focusedFastagSourceId = signal<string | null>(null);
   readonly focusedFastagTransactionId = signal<string | null>(null);
   readonly restoreTargetId = signal<string | null>(null);
@@ -73,6 +77,32 @@ export class WalletsPage {
   readonly selectedHistoryWallet = computed(() =>
     this.wallets.wallets().find((wallet) => wallet.id === this.historyWalletId()),
   );
+  readonly walletActivityWallet = computed(() =>
+    this.wallets.wallets().find((wallet) => wallet.id === this.walletActivityId()),
+  );
+  readonly walletActivityKinds: readonly AppSelectOption[] = [
+    { value: 'PURCHASE', label: 'Purchase' },
+    { value: 'MANUAL_CREDIT', label: 'Manual credit' },
+    { value: 'PROMOTIONAL_CREDIT', label: 'Promotional credit' },
+    { value: 'BALANCE', label: 'Set verified balance' },
+  ];
+  readonly walletActivityCategories = computed(() =>
+    this.store.categories().map((category) => ({ value: category.id, label: category.name })),
+  );
+  readonly walletActivityForm = new FormGroup({
+    kind: new FormControl<'PURCHASE' | 'MANUAL_CREDIT' | 'PROMOTIONAL_CREDIT' | 'BALANCE'>(
+      'PURCHASE',
+      { nonNullable: true },
+    ),
+    amount: new FormControl('', { nonNullable: true, validators: [Validators.required] }),
+    eventDate: new FormControl(indiaTodayIso(), {
+      nonNullable: true,
+      validators: [Validators.required],
+    }),
+    categoryId: new FormControl('other', { nonNullable: true }),
+    merchant: new FormControl('', { nonNullable: true, validators: [Validators.maxLength(100)] }),
+    memo: new FormControl('', { nonNullable: true, validators: [Validators.maxLength(200)] }),
+  });
   readonly selectedHistoryEvents = computed(() => {
     const walletId = this.historyWalletId();
     return walletId ? this.wallets.events().filter((event) => event.walletId === walletId) : [];
@@ -425,6 +455,85 @@ export class WalletsPage {
 
   showHistory(wallet: ConsumerWallet): void {
     this.historyWalletId.set(wallet.id);
+  }
+
+  openWalletActivity(wallet: ConsumerWallet): void {
+    if (!this.wallets.enabled() || this.saving()) return;
+    this.walletActivityError.set(null);
+    this.walletActivityId.set(wallet.id);
+    this.walletActivityEventId.set(crypto.randomUUID());
+    this.walletActivityForm.reset({
+      kind: 'PURCHASE',
+      amount: '',
+      eventDate: indiaTodayIso(),
+      categoryId: this.store.categories().find((category) => category.id === 'other')?.id ?? '',
+      merchant: '',
+      memo: '',
+    });
+  }
+
+  closeWalletActivity(): void {
+    if (this.saving()) return;
+    this.walletActivityId.set(null);
+    this.walletActivityError.set(null);
+  }
+
+  async saveWalletActivity(event: Event): Promise<void> {
+    event.preventDefault();
+    const wallet = this.walletActivityWallet();
+    if (!wallet || !this.wallets.enabled() || this.saving()) return;
+    this.walletActivityForm.markAllAsTouched();
+    if (this.walletActivityForm.invalid) return;
+    const value = this.walletActivityForm.getRawValue();
+    const amountMinor = parseMoneyToMinor(value.amount);
+    if (
+      amountMinor === null ||
+      amountMinor < 0 ||
+      (value.kind !== 'BALANCE' && amountMinor === 0) ||
+      (value.kind === 'PURCHASE' && !value.categoryId)
+    ) {
+      this.walletActivityError.set('Enter a valid amount and the required purchase category.');
+      return;
+    }
+    this.saving.set(true);
+    this.walletActivityError.set(null);
+    try {
+      if (value.kind === 'PURCHASE')
+        await this.wallets.recordWalletPurchase({
+          id: this.walletActivityEventId(),
+          walletId: wallet.id,
+          amountMinor,
+          eventDate: value.eventDate,
+          categoryId: value.categoryId,
+          merchant: value.merchant,
+          notes: value.memo,
+        });
+      else if (value.kind === 'MANUAL_CREDIT' || value.kind === 'PROMOTIONAL_CREDIT')
+        await this.wallets.addWalletCredit({
+          id: this.walletActivityEventId(),
+          walletId: wallet.id,
+          amountMinor,
+          eventType: value.kind,
+          eventDate: value.eventDate,
+          memo: value.memo,
+        });
+      else
+        await this.wallets.updateWalletBalance({
+          id: this.walletActivityEventId(),
+          walletId: wallet.id,
+          newBalanceMinor: amountMinor,
+          eventDate: value.eventDate,
+          memo: value.memo,
+        });
+      this.walletActivityId.set(null);
+      this.snackbar.show('Wallet activity recorded.');
+    } catch (error: unknown) {
+      this.walletActivityError.set(
+        error instanceof Error ? error.message : 'Wallet activity could not be saved.',
+      );
+    } finally {
+      this.saving.set(false);
+    }
   }
 
   closeHistory(): void {

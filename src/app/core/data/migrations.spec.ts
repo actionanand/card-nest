@@ -55,6 +55,44 @@ describe('SMS upgrade of an existing version-6 database', () => {
     }
   });
 
+  it('adds funded-load provenance and uniqueness constraints in schema v16', () => {
+    const sql = new DatabaseSync(':memory:');
+    try {
+      sql.exec('PRAGMA foreign_keys=ON');
+      for (const migration of DATABASE_MIGRATIONS.filter((item) => item.version <= 15))
+        for (const statement of migration.statements) sql.exec(statement);
+      sql.exec(`
+        INSERT INTO consumer_wallets(id,provider_id,wallet_kind,archived,payload,created_at,updated_at)
+          VALUES('wallet','amazon-pay','STANDARD',0,'{}','now','now');
+        INSERT INTO consumer_wallet_events(id,wallet_id,event_type,event_date,amount_minor,balance_delta_minor,funding_source_kind,funding_source_id,source_transaction_id,payload,created_at,updated_at)
+          VALUES('load','wallet','FUNDED_LOAD','2026-10-01',30000,30000,'CARD','card','debit','{}','now','now');
+      `);
+      for (const statement of DATABASE_MIGRATIONS.find((item) => item.version === 16)!.statements)
+        sql.exec(statement);
+      expect(
+        sql
+          .prepare(
+            'SELECT debit_amount_minor,funding_category_id FROM consumer_wallet_events WHERE id=?',
+          )
+          .get('load'),
+      ).toMatchObject({ debit_amount_minor: null, funding_category_id: null });
+      sql.exec(
+        "UPDATE consumer_wallet_events SET debit_amount_minor=32000,funding_category_id='other',event_time='10:30' WHERE id='load'",
+      );
+      expect(() =>
+        sql.exec(
+          "INSERT INTO consumer_wallet_events(id,wallet_id,event_type,event_date,amount_minor,balance_delta_minor,source_transaction_id,payload,created_at,updated_at) VALUES('duplicate-load','wallet','FUNDED_LOAD','2026-10-01',30000,30000,'debit','{}','later','later')",
+        ),
+      ).toThrow();
+      sql.exec(
+        "INSERT INTO consumer_wallet_events(id,wallet_id,event_type,event_date,amount_minor,balance_delta_minor,source_transaction_id,payload,created_at,updated_at) VALUES('purchase','wallet','PURCHASE','2026-10-02',1000,-1000,'debit','{}','later','later')",
+      );
+      expect(sql.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+    } finally {
+      sql.close();
+    }
+  });
+
   it('classifies historical adjustments only from positive audit provenance and preserves financial columns', () => {
     const sql = new DatabaseSync(':memory:');
     try {
