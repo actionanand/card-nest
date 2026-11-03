@@ -93,6 +93,96 @@ describe('SMS upgrade of an existing version-6 database', () => {
     }
   });
 
+  it('adds return, refund provenance, expense reversal and typed wallet split tables in schema v17', () => {
+    const sql = new DatabaseSync(':memory:');
+    try {
+      sql.exec('PRAGMA foreign_keys=ON');
+      for (const migration of DATABASE_MIGRATIONS.filter((item) => item.version <= 16))
+        for (const statement of migration.statements) sql.exec(statement);
+      sql.exec(`
+        INSERT INTO consumer_wallets(id,provider_id,wallet_kind,archived,payload,created_at,updated_at)
+          VALUES('upi','upi-lite','UPI_LITE',0,'{}','now','now');
+        INSERT INTO consumer_wallet_events(id,wallet_id,event_type,event_date,amount_minor,balance_delta_minor,payload,created_at,updated_at)
+          VALUES('load','upi','FUNDED_LOAD','2026-11-01',50000,50000,'{}','load','load');
+        INSERT INTO consumer_wallet_events(id,wallet_id,event_type,event_date,amount_minor,balance_delta_minor,payload,created_at,updated_at)
+          VALUES('return','upi','UPI_LITE_RETURN','2026-11-03',10000,-10000,'{}','return','return');
+        INSERT INTO transaction_split_groups(id,original_amount_minor,created_at,kind,anchor_transaction_id,title,currency_code,bill_total_minor,updated_at)
+          VALUES('group',10000,'now','PAYMENTS',NULL,'Mixed','INR',10000,'now');
+      `);
+      for (const statement of DATABASE_MIGRATIONS.find((item) => item.version === 17)!.statements)
+        sql.exec(statement);
+      sql.exec(`
+        INSERT INTO consumer_wallet_return_links(return_event_id,wallet_id,bank_source_id,created_at)
+          VALUES('return','upi','bank-1','now');
+        INSERT INTO consumer_wallet_credit_provenance(credit_event_id,source_credit_event_id,allocated_minor,created_at)
+          VALUES('return','load',10000,'now');
+        INSERT INTO consumer_wallet_expense_reversals(return_event_id,credit_event_id,funded_load_event_id,reversed_minor,created_at)
+          VALUES('return','load','load',10000,'now');
+        INSERT INTO consumer_wallet_split_members(group_id,wallet_event_id,member_kind,member_order,created_at)
+          VALUES('group','return','WALLET_REFUND',1,'now');
+      `);
+      expect(sql.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+      expect(() =>
+        sql.exec(
+          "INSERT INTO consumer_wallet_return_links(return_event_id,wallet_id,bank_source_id,existing_bank_transaction_id,created_at) VALUES('return','upi','bank-1','bank-credit','later')",
+        ),
+      ).toThrow();
+      expect(() =>
+        sql.exec(
+          "INSERT INTO consumer_wallet_split_members(group_id,wallet_event_id,member_kind,member_order,created_at) VALUES('group','return','WALLET_PURCHASE',2,'later')",
+        ),
+      ).toThrow();
+    } finally {
+      sql.close();
+    }
+  });
+
+  it('retains the additive v17 wallet return, refund provenance and typed split schema', () => {
+    const sql = new DatabaseSync(':memory:');
+    try {
+      sql.exec('PRAGMA foreign_keys=ON');
+      for (const migration of DATABASE_MIGRATIONS.filter((item) => item.version <= 16))
+        for (const statement of migration.statements) sql.exec(statement);
+      sql.exec(`
+        INSERT INTO consumer_wallets(id,provider_id,wallet_kind,archived,payload,created_at,updated_at)
+          VALUES('upi','upi-lite','UPI_LITE',0,'{}','now','now');
+        INSERT INTO consumer_wallet_events(id,wallet_id,event_type,event_date,amount_minor,balance_delta_minor,payload,created_at,updated_at)
+          VALUES('load','upi','FUNDED_LOAD','2026-11-01',50000,50000,'{}','load','load');
+        INSERT INTO consumer_wallet_events(id,wallet_id,event_type,event_date,amount_minor,balance_delta_minor,payload,created_at,updated_at)
+          VALUES('return','upi','UPI_LITE_RETURN','2026-11-03',10000,-10000,'{}','return','return');
+        INSERT INTO consumer_wallet_events(id,wallet_id,event_type,event_date,amount_minor,balance_delta_minor,payload,created_at,updated_at)
+          VALUES('return-2','upi','UPI_LITE_RETURN','2026-11-04',10000,-10000,'{}','return-2','return-2');
+        INSERT INTO transaction_split_groups(id,original_amount_minor,created_at,kind,anchor_transaction_id,title,currency_code,bill_total_minor,updated_at)
+          VALUES('group',10000,'now','PAYMENTS',NULL,'Mixed','INR',10000,'now');
+      `);
+      for (const statement of DATABASE_MIGRATIONS.find((item) => item.version === 17)!.statements)
+        sql.exec(statement);
+      sql.exec(`
+        INSERT INTO consumer_wallet_return_links(return_event_id,wallet_id,bank_source_id,existing_bank_transaction_id,created_at)
+          VALUES('return','upi','bank-1','bank-credit','now');
+        INSERT INTO consumer_wallet_credit_provenance(credit_event_id,source_credit_event_id,allocated_minor,created_at)
+          VALUES('return','load',10000,'now');
+        INSERT INTO consumer_wallet_expense_reversals(return_event_id,credit_event_id,funded_load_event_id,reversed_minor,created_at)
+          VALUES('return','return','load',10000,'now');
+        INSERT INTO consumer_wallet_split_members(group_id,wallet_event_id,member_kind,member_order,created_at)
+          VALUES('group','return','WALLET_REFUND',1,'now');
+      `);
+      expect(sql.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+      expect(() =>
+        sql.exec(
+          "INSERT INTO consumer_wallet_return_links(return_event_id,wallet_id,bank_source_id,existing_bank_transaction_id,created_at) VALUES('return-2','upi','bank-1','bank-credit','later')",
+        ),
+      ).toThrow();
+      expect(() =>
+        sql.exec(
+          "INSERT INTO consumer_wallet_split_members(group_id,wallet_event_id,member_kind,member_order,created_at) VALUES('group','return','WALLET_PURCHASE',2,'later')",
+        ),
+      ).toThrow();
+    } finally {
+      sql.close();
+    }
+  });
+
   it('classifies historical adjustments only from positive audit provenance and preserves financial columns', () => {
     const sql = new DatabaseSync(':memory:');
     try {

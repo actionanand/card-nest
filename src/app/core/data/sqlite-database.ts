@@ -71,11 +71,19 @@ const BACKUP_TABLES = [
   'source_transfers',
   'source_balance_adjustments',
   'consumer_wallets',
+  'consumer_wallet_return_links',
+  'consumer_wallet_credit_provenance',
+  'consumer_wallet_expense_reversals',
+  'consumer_wallet_split_members',
   'consumer_wallet_events',
   'consumer_wallet_event_allocations',
 ] as const;
 
 const DELETE_TABLES = [
+  'consumer_wallet_split_members',
+  'consumer_wallet_expense_reversals',
+  'consumer_wallet_credit_provenance',
+  'consumer_wallet_return_links',
   'consumer_wallet_event_allocations',
   'consumer_wallet_events',
   'consumer_wallets',
@@ -479,7 +487,8 @@ export class SqliteDatabase {
         DELETE FROM source_transfers WHERE transfer_date < '${cutoffIso}';
         DELETE FROM card_transactions WHERE transaction_date < '${cutoffIso}';
         DELETE FROM transaction_split_groups
-         WHERE id NOT IN (SELECT DISTINCT group_id FROM transaction_split_members);
+         WHERE id NOT IN (SELECT DISTINCT group_id FROM transaction_split_members)
+           AND id NOT IN (SELECT DISTINCT group_id FROM consumer_wallet_split_members);
         DELETE FROM statements WHERE cycle_end_date < '${cutoffIso}';
         DELETE FROM monthly_income WHERE cycle_end_date < '${cutoffIso}';
       `,

@@ -4,7 +4,10 @@ import { ActivatedRoute, NavigationEnd, Router, RouterLink } from '@angular/rout
 import { filter } from 'rxjs';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { ConsumerWallet, PaymentSource } from '../../core/models/domain';
-import { ConsumerWalletService } from '../../core/services/consumer-wallet.service';
+import {
+  ConsumerWalletService,
+  UpiLiteReturnPreview,
+} from '../../core/services/consumer-wallet.service';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { formatMoney, parseMoneyToMinor } from '../../core/services/money';
 import { indiaTodayIso } from '../../core/services/india-date';
@@ -44,6 +47,16 @@ export class WalletsPage {
   readonly walletActivityId = signal<string | null>(null);
   readonly walletActivityEventId = signal('');
   readonly walletActivityError = signal<string | null>(null);
+  readonly returnWalletId = signal<string | null>(null);
+  readonly returnEventId = signal('');
+  readonly returnPreview = signal<UpiLiteReturnPreview | null>(null);
+  readonly returnApprovedFor = signal('');
+  readonly returnError = signal<string | null>(null);
+  readonly returnBalanceTimingNeeded = signal(false);
+  readonly balanceTimingOptions: readonly AppSelectOption[] = [
+    { value: 'AFTER_BASELINE', label: 'It happened after the confirmed bank balance' },
+    { value: 'INCLUDED_IN_BASELINE', label: 'It is already included in that bank balance' },
+  ];
   readonly focusedFastagSourceId = signal<string | null>(null);
   readonly focusedFastagTransactionId = signal<string | null>(null);
   readonly restoreTargetId = signal<string | null>(null);
@@ -71,6 +84,23 @@ export class WalletsPage {
   );
   readonly activeWallets = this.wallets.activeWallets;
   readonly archivedWallets = this.wallets.archivedWallets;
+  readonly eligibleReturnBanks = computed(() =>
+    this.store
+      .paymentSources()
+      .filter(
+        (source) =>
+          source.kind === 'DEBIT' &&
+          !source.archived &&
+          !!source.lastDigits &&
+          source.id !== 'source-debit' &&
+          source.institution !== 'Primary bank',
+      )
+      .sort(
+        (left, right) =>
+          Number(right.isPrimaryBank) - Number(left.isPrimaryBank) ||
+          left.nickname.localeCompare(right.nickname),
+      ),
+  );
   readonly providerOptions: readonly AppSelectOption[] = CONSUMER_WALLET_PROVIDERS.map(
     ({ id, label }) => ({ value: id, label }),
   );
@@ -102,6 +132,21 @@ export class WalletsPage {
     categoryId: new FormControl('other', { nonNullable: true }),
     merchant: new FormControl('', { nonNullable: true, validators: [Validators.maxLength(100)] }),
     memo: new FormControl('', { nonNullable: true, validators: [Validators.maxLength(200)] }),
+  });
+  readonly returnForm = new FormGroup({
+    bankSourceId: new FormControl('', { nonNullable: true, validators: [Validators.required] }),
+    amount: new FormControl('', { nonNullable: true, validators: [Validators.required] }),
+    eventDate: new FormControl(indiaTodayIso(), {
+      nonNullable: true,
+      validators: [Validators.required],
+    }),
+    eventTime: new FormControl('', { nonNullable: true }),
+    reference: new FormControl('', { nonNullable: true, validators: [Validators.maxLength(100)] }),
+    note: new FormControl('', { nonNullable: true, validators: [Validators.maxLength(200)] }),
+    existingBankTransactionId: new FormControl('', { nonNullable: true }),
+    balanceTiming: new FormControl<'AFTER_BASELINE' | 'INCLUDED_IN_BASELINE' | ''>('', {
+      nonNullable: true,
+    }),
   });
   readonly selectedHistoryEvents = computed(() => {
     const walletId = this.historyWalletId();
@@ -146,6 +191,14 @@ export class WalletsPage {
   });
 
   constructor() {
+    this.returnForm.valueChanges.pipe(takeUntilDestroyed()).subscribe(() => {
+      this.returnPreview.set(null);
+      this.returnApprovedFor.set('');
+      this.returnError.set(null);
+    });
+    this.returnForm.controls.eventDate.valueChanges
+      .pipe(takeUntilDestroyed())
+      .subscribe(() => this.returnForm.controls.balanceTiming.setValue('', { emitEvent: false }));
     this.route.queryParamMap.pipe(takeUntilDestroyed()).subscribe((params) => {
       const sourceId = params.get('source');
       const source = this.store
@@ -455,6 +508,152 @@ export class WalletsPage {
 
   showHistory(wallet: ConsumerWallet): void {
     this.historyWalletId.set(wallet.id);
+  }
+
+  returnBankLabel(sourceId: string): string {
+    const source = this.eligibleReturnBanks().find((item) => item.id === sourceId);
+    if (!source) return 'Choose a Bank/UPI account';
+    return `${source.institution || source.nickname} · ${source.nickname}${source.lastDigits ? ` · ${source.lastDigits.slice(-3)}` : ''}${source.isPrimaryBank ? ' · Primary' : ''}`;
+  }
+
+  openReturnToBank(wallet: ConsumerWallet): void {
+    if (!this.wallets.enabled() || this.saving() || wallet.kind !== 'UPI_LITE') return;
+    const banks = this.eligibleReturnBanks();
+    const selected = banks.length === 1 ? banks[0] : banks.find((bank) => bank.isPrimaryBank);
+    this.returnWalletId.set(wallet.id);
+    this.returnEventId.set(crypto.randomUUID());
+    this.returnPreview.set(null);
+    this.returnApprovedFor.set('');
+    this.returnError.set(null);
+    this.returnBalanceTimingNeeded.set(false);
+    this.returnForm.reset({
+      bankSourceId: selected?.id ?? '',
+      amount: '',
+      eventDate: indiaTodayIso(),
+      eventTime: '',
+      reference: '',
+      note: '',
+      existingBankTransactionId: '',
+      balanceTiming: '',
+    });
+  }
+
+  closeReturnToBank(): void {
+    if (this.saving()) return;
+    this.returnWalletId.set(null);
+    this.returnEventId.set('');
+    this.returnPreview.set(null);
+    this.returnApprovedFor.set('');
+    this.returnError.set(null);
+    this.returnBalanceTimingNeeded.set(false);
+  }
+
+  existingReturnBankCreditOptions(): readonly AppSelectOption[] {
+    const value = this.returnForm.getRawValue();
+    const amountMinor = parseMoneyToMinor(value.amount);
+    const matching = this.store
+      .transactions()
+      .filter(
+        (transaction) =>
+          transaction.type === 'CREDIT' &&
+          transaction.cardId === value.bankSourceId &&
+          transaction.amountMinor === amountMinor &&
+          transaction.transactionDate === value.eventDate &&
+          (!value.reference || transaction.reference === value.reference),
+      );
+    if (!matching.length) return [];
+    return matching.map((transaction) => ({
+      value: transaction.id,
+      label: `${transaction.merchant || 'Bank credit'} · ${transaction.transactionDate}`,
+      detail: `${this.money(transaction.amountMinor)}${transaction.reference ? ` · Ref ${transaction.reference}` : ''}`,
+    }));
+  }
+
+  private returnInput(walletId: string, id: string) {
+    const value = this.returnForm.getRawValue();
+    const amountMinor = parseMoneyToMinor(value.amount);
+    if (!amountMinor || !this.eligibleReturnBanks().some((bank) => bank.id === value.bankSourceId))
+      throw new Error('Choose an active Bank/UPI account and a positive return amount.');
+    return {
+      id,
+      walletId,
+      bankSourceId: value.bankSourceId,
+      amountMinor,
+      eventDate: value.eventDate,
+      eventTime: value.eventTime || undefined,
+      reference: value.reference.trim() || undefined,
+      note: value.note.trim() || undefined,
+      existingBankTransactionId: value.existingBankTransactionId || undefined,
+      balanceTiming: value.balanceTiming || undefined,
+    } as const;
+  }
+
+  async previewReturnToBank(): Promise<void> {
+    const walletId = this.returnWalletId();
+    if (!walletId || !this.wallets.enabled() || this.saving()) return;
+    this.returnForm.markAllAsTouched();
+    if (this.returnForm.invalid) return;
+    this.saving.set(true);
+    this.returnError.set(null);
+    try {
+      const input = this.returnInput(walletId, this.returnEventId());
+      this.returnPreview.set(await this.wallets.previewUpiLiteReturn(input));
+      this.returnApprovedFor.set('');
+      this.returnBalanceTimingNeeded.set(false);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Return could not be previewed.';
+      this.returnError.set(message);
+      this.returnBalanceTimingNeeded.set(
+        message.startsWith('This has no time') || message.startsWith('This entry existed'),
+      );
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  setReturnApproval(event: Event): void {
+    const preview = this.returnPreview();
+    this.returnApprovedFor.set(
+      preview && (event.target as HTMLInputElement).checked ? preview.confirmationKey : '',
+    );
+  }
+
+  setReturnBalanceTiming(value: string): void {
+    if (value === 'AFTER_BASELINE' || value === 'INCLUDED_IN_BASELINE')
+      this.returnForm.controls.balanceTiming.setValue(value);
+  }
+
+  async confirmReturnToBank(): Promise<void> {
+    const walletId = this.returnWalletId();
+    const preview = this.returnPreview();
+    if (
+      !walletId ||
+      !preview ||
+      !this.wallets.enabled() ||
+      this.saving() ||
+      this.returnApprovedFor() !== preview.confirmationKey
+    )
+      return;
+    this.saving.set(true);
+    this.returnError.set(null);
+    try {
+      const input = this.returnInput(walletId, this.returnEventId());
+      const event = await this.wallets.recordUpiLiteReturn({
+        ...input,
+        confirmationKey: preview.confirmationKey,
+      });
+      this.returnWalletId.set(null);
+      this.returnEventId.set('');
+      this.returnPreview.set(null);
+      this.returnApprovedFor.set('');
+      this.snackbar.show(`Return to Bank recorded: ${this.money(event.amountMinor)}.`);
+    } catch (error: unknown) {
+      this.returnError.set(
+        error instanceof Error ? error.message : 'Return to Bank could not be recorded.',
+      );
+    } finally {
+      this.saving.set(false);
+    }
   }
 
   openWalletActivity(wallet: ConsumerWallet): void {

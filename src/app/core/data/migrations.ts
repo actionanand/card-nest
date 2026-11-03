@@ -172,4 +172,17 @@ export const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
       `CREATE UNIQUE INDEX idx_consumer_wallet_funded_load_transaction ON consumer_wallet_events(source_transaction_id) WHERE event_type='FUNDED_LOAD' AND source_transaction_id IS NOT NULL`,
     ],
   },
+  {
+    version: 17,
+    statements: [
+      `CREATE TABLE consumer_wallet_return_links (return_event_id TEXT PRIMARY KEY NOT NULL, wallet_id TEXT NOT NULL, bank_source_id TEXT NOT NULL, existing_bank_transaction_id TEXT UNIQUE, balance_effect TEXT, reference TEXT, note TEXT, created_at TEXT NOT NULL, FOREIGN KEY(return_event_id) REFERENCES consumer_wallet_events(id) ON DELETE RESTRICT, FOREIGN KEY(wallet_id) REFERENCES consumer_wallets(id) ON DELETE RESTRICT)`,
+      `CREATE INDEX idx_consumer_wallet_return_bank_source ON consumer_wallet_return_links(bank_source_id,created_at)`,
+      `CREATE TABLE consumer_wallet_credit_provenance (credit_event_id TEXT NOT NULL, source_credit_event_id TEXT NOT NULL, allocated_minor INTEGER NOT NULL CHECK(allocated_minor > 0), created_at TEXT NOT NULL, PRIMARY KEY(credit_event_id,source_credit_event_id), FOREIGN KEY(credit_event_id) REFERENCES consumer_wallet_events(id) ON DELETE RESTRICT, FOREIGN KEY(source_credit_event_id) REFERENCES consumer_wallet_events(id) ON DELETE RESTRICT)`,
+      `CREATE INDEX idx_consumer_wallet_credit_provenance_source ON consumer_wallet_credit_provenance(source_credit_event_id)`,
+      `CREATE TABLE consumer_wallet_expense_reversals (return_event_id TEXT NOT NULL, credit_event_id TEXT NOT NULL, funded_load_event_id TEXT NOT NULL, reversed_minor INTEGER NOT NULL CHECK(reversed_minor > 0), created_at TEXT NOT NULL, PRIMARY KEY(return_event_id,credit_event_id,funded_load_event_id), FOREIGN KEY(return_event_id) REFERENCES consumer_wallet_events(id) ON DELETE RESTRICT, FOREIGN KEY(credit_event_id) REFERENCES consumer_wallet_events(id) ON DELETE RESTRICT, FOREIGN KEY(funded_load_event_id) REFERENCES consumer_wallet_events(id) ON DELETE RESTRICT)`,
+      `CREATE INDEX idx_consumer_wallet_expense_reversals_funded ON consumer_wallet_expense_reversals(funded_load_event_id,created_at)`,
+      `CREATE TABLE consumer_wallet_split_members (group_id TEXT NOT NULL, wallet_event_id TEXT NOT NULL UNIQUE, member_kind TEXT NOT NULL CHECK(member_kind IN ('WALLET_PURCHASE','WALLET_REFUND')), member_order INTEGER NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(group_id,wallet_event_id), FOREIGN KEY(group_id) REFERENCES transaction_split_groups(id) ON DELETE CASCADE, FOREIGN KEY(wallet_event_id) REFERENCES consumer_wallet_events(id) ON DELETE RESTRICT)`,
+      `CREATE INDEX idx_consumer_wallet_split_group_order ON consumer_wallet_split_members(group_id,member_order)`,
+    ],
+  },
 ];

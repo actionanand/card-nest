@@ -1,20 +1,34 @@
 import { Service, computed, inject, signal } from '@angular/core';
 import { DatabaseSession, SqliteDatabase } from '../data/sqlite-database';
 import {
+  allocateConsumerWalletDebit,
   assertChronologicalConsumerWalletLedger,
   compareConsumerWalletEvents,
   ConsumerWalletEventPosition,
+  planConsumerWalletDebit,
 } from '../data/consumer-wallet-ledger';
 import {
   ConsumerWallet,
   ConsumerWalletEvent,
   ConsumerWalletEventAllocation,
+  ConsumerWalletExpenseReversal,
   ConsumerWalletKind,
+  ConsumerWalletReturnLink,
   PaymentSource,
+  BalanceTiming,
+  CardTransaction,
 } from '../models/domain';
 import { APP_ENVIRONMENT } from './app-environment';
 import { CardNestStore } from './card-nest-store';
 import { indiaTodayIso } from './india-date';
+import {
+  applyBankCashTransaction,
+  isEnrolledBankAccount,
+  needsBaselineConfirmation,
+  parseBankCashTracking,
+  TIMING_QUESTION,
+  validTransferDate,
+} from './source-balance';
 import {
   CONSUMER_WALLET_PROVIDERS,
   ConsumerWalletProviderId,
@@ -38,6 +52,67 @@ export interface WalletPurchaseInput {
   readonly categoryId: string;
   readonly merchant?: string;
   readonly notes?: string;
+}
+
+export interface UpiLiteReturnInput {
+  readonly id: string;
+  readonly walletId: string;
+  readonly bankSourceId: string;
+  readonly amountMinor: number;
+  readonly eventDate: string;
+  readonly eventTime?: string;
+  readonly reference?: string;
+  readonly note?: string;
+  readonly existingBankTransactionId?: string;
+  readonly balanceTiming?: BalanceTiming;
+  readonly confirmationKey: string;
+}
+
+export interface UpiLiteReturnAttribution {
+  readonly creditEventId: string;
+  readonly creditEventType: ConsumerWalletEvent['eventType'];
+  readonly allocatedMinor: number;
+  readonly expenseReversalMinor: number;
+}
+
+export interface UpiLiteReturnPreview {
+  readonly walletId: string;
+  readonly bankSourceId: string;
+  readonly bankName: string;
+  readonly amountMinor: number;
+  readonly eventDate: string;
+  readonly eventTime?: string;
+  readonly existingBankTransactionId?: string;
+  readonly fundedPrincipalReversalMinor: number;
+  readonly nonFundedReturnMinor: number;
+  readonly remainingWalletBalanceMinor: number;
+  readonly attributions: readonly UpiLiteReturnAttribution[];
+  readonly confirmationKey: string;
+}
+
+function upiLiteReturnConfirmationKey(
+  input: Omit<UpiLiteReturnInput, 'confirmationKey'>,
+  existingBankTransactionId: string | undefined,
+  attributions: readonly UpiLiteReturnAttribution[],
+  remainingWalletBalanceMinor: number,
+): string {
+  return JSON.stringify([
+    input.walletId,
+    input.bankSourceId,
+    input.amountMinor,
+    input.eventDate,
+    input.eventTime ?? '',
+    input.balanceTiming ?? '',
+    input.reference?.trim() ?? '',
+    existingBankTransactionId ?? '',
+    remainingWalletBalanceMinor,
+    attributions.map((item) => [
+      item.creditEventId,
+      item.creditEventType,
+      item.allocatedMinor,
+      item.expenseReversalMinor,
+    ]),
+  ]);
 }
 
 export const WALLETS_FEATURE_STATE_KEY = 'consumer_wallets_feature_state';
@@ -368,7 +443,6 @@ export class ConsumerWalletService {
     this.publishEventWrite(event.event, event.allocations);
     return event.event;
   }
-
   async updateWalletBalance(input: {
     id: string;
     walletId: string;
@@ -425,7 +499,7 @@ export class ConsumerWalletService {
       };
       await this.insertEvent(tx, record);
       const allocations =
-        deltaMinor < 0 ? await this.allocateDebit(tx, record, Math.abs(deltaMinor), 0) : [];
+        deltaMinor < 0 ? await allocateConsumerWalletDebit(tx, record, Math.abs(deltaMinor)) : [];
       await assertChronologicalConsumerWalletLedger(tx, input.walletId);
       return { event: record, allocations };
     });
@@ -470,10 +544,456 @@ export class ConsumerWalletService {
       if (historicalBalance < input.amountMinor)
         throw new Error('Purchase exceeds the available historical wallet balance.');
       await this.insertEvent(tx, event);
-      const allocations = await this.allocateDebit(tx, event, input.amountMinor, 0);
+      const allocations = await allocateConsumerWalletDebit(tx, event, input.amountMinor);
       await assertChronologicalConsumerWalletLedger(tx, input.walletId);
       return { event, allocations };
     });
+    this.publishEventWrite(result.event, result.allocations);
+    return result.event;
+  }
+
+  private async classifyReturnAllocation(
+    tx: DatabaseSession,
+    returnEventId: string,
+    credit: ConsumerWalletEvent,
+    allocatedMinor: number,
+    alreadyConsumedMinor: number,
+    reversedByFundedLoad: Map<string, number>,
+    createdAt: string,
+  ): Promise<{ expenseReversalMinor: number; reversals: ConsumerWalletExpenseReversal[] }> {
+    const provenanceRows = await tx.query<{
+      source_credit_event_id: string;
+      allocated_minor: number;
+      payload: string;
+    }>(
+      `SELECT p.source_credit_event_id,p.allocated_minor,e.payload
+       FROM consumer_wallet_credit_provenance p
+       JOIN consumer_wallet_events e ON e.id=p.source_credit_event_id
+       WHERE p.credit_event_id=?`,
+      [credit.id],
+    );
+    const origins = provenanceRows.length
+      ? provenanceRows
+          .map((row) => ({
+            id: row.source_credit_event_id,
+            amountMinor: row.allocated_minor,
+            event: JSON.parse(row.payload) as ConsumerWalletEvent,
+          }))
+          .sort((left, right) => compareConsumerWalletEvents(left.event, right.event))
+      : [{ id: credit.id, amountMinor: credit.amountMinor, event: credit }];
+    if (origins.reduce((total, origin) => total + origin.amountMinor, 0) !== credit.amountMinor)
+      throw new Error('Refund credit provenance is incomplete.');
+
+    const allocationStart = alreadyConsumedMinor;
+    const allocationEnd = alreadyConsumedMinor + allocatedMinor;
+    let originStart = 0;
+    let expenseReversalMinor = 0;
+    const reversals: ConsumerWalletExpenseReversal[] = [];
+    for (const origin of origins) {
+      const originEnd = originStart + origin.amountMinor;
+      const overlap = Math.max(
+        0,
+        Math.min(allocationEnd, originEnd) - Math.max(allocationStart, originStart),
+      );
+      originStart = originEnd;
+      if (!overlap || origin.event.eventType !== 'FUNDED_LOAD') continue;
+      const [reversedRow] = await tx.query<{ reversed: number | null }>(
+        'SELECT COALESCE(SUM(reversed_minor),0) AS reversed FROM consumer_wallet_expense_reversals WHERE funded_load_event_id=?',
+        [origin.id],
+      );
+      const alreadyReversed =
+        Number(reversedRow?.reversed ?? 0) + (reversedByFundedLoad.get(origin.id) ?? 0);
+      const fundedPrincipal = origin.event.loadedAmountMinor ?? origin.event.amountMinor;
+      const reversedMinor = Math.min(overlap, Math.max(0, fundedPrincipal - alreadyReversed));
+      if (!reversedMinor) continue;
+      reversals.push({
+        returnEventId,
+        creditEventId: credit.id,
+        fundedLoadEventId: origin.id,
+        reversedMinor,
+        createdAt,
+      });
+      reversedByFundedLoad.set(
+        origin.id,
+        (reversedByFundedLoad.get(origin.id) ?? 0) + reversedMinor,
+      );
+      expenseReversalMinor += reversedMinor;
+    }
+    return { expenseReversalMinor, reversals };
+  }
+
+  async previewUpiLiteReturn(
+    input: Omit<UpiLiteReturnInput, 'confirmationKey'>,
+  ): Promise<UpiLiteReturnPreview> {
+    if (!input.id.trim() || !Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0)
+      throw new Error('Enter a positive wallet return amount.');
+    if (!validTransferDate(input.eventDate, input.eventTime))
+      throw new Error('Enter a valid return date and time.');
+    const reference = input.reference?.trim().slice(0, 100) || undefined;
+    const timestamp = new Date().toISOString();
+    return this.database.atomic(async (tx) => {
+      await this.assertWalletsEnabled(tx);
+      await this.assertActiveWallet(tx, input.walletId);
+      const [walletRow] = await tx.query<{ wallet_kind: string }>(
+        'SELECT wallet_kind FROM consumer_wallets WHERE id=?',
+        [input.walletId],
+      );
+      if (walletRow?.wallet_kind !== 'UPI_LITE')
+        throw new Error('Return to Bank is available only for an active UPI Lite wallet.');
+      const [sourcePreference] = await tx.query<{ encrypted_value: string }>(
+        "SELECT encrypted_value FROM app_preferences WHERE key='payment_sources'",
+      );
+      let sources: PaymentSource[];
+      try {
+        sources = sourcePreference
+          ? (JSON.parse(sourcePreference.encrypted_value) as PaymentSource[])
+          : this.store.paymentSources().map((source) => ({ ...source }));
+      } catch {
+        throw new Error('Bank accounts could not be read; the return was not recorded.');
+      }
+      const bank = sources.find((source) => source.id === input.bankSourceId);
+      if (
+        !bank ||
+        bank.archived ||
+        !isEnrolledBankAccount(bank) ||
+        bank.id === 'source-debit' ||
+        bank.institution === 'Primary bank'
+      )
+        throw new Error('Choose an active registered Bank/UPI account.');
+      const existingBankTransaction = await this.resolveExistingBankCredit(tx, bank, input);
+      const [trackingPreference] = await tx.query<{ encrypted_value: string }>(
+        'SELECT encrypted_value FROM app_preferences WHERE key=?',
+        ['bank_cash_tracking'],
+      );
+      const settings = parseBankCashTracking(trackingPreference?.encrypted_value);
+      if (
+        !existingBankTransaction &&
+        !input.balanceTiming &&
+        needsBaselineConfirmation(bank, settings, input.eventDate, input.eventTime)
+      )
+        throw new Error(TIMING_QUESTION);
+
+      const event: ConsumerWalletEvent = {
+        id: input.id,
+        walletId: input.walletId,
+        eventType: 'UPI_LITE_RETURN',
+        eventDate: input.eventDate,
+        eventTime: input.eventTime,
+        amountMinor: input.amountMinor,
+        balanceDeltaMinor: -input.amountMinor,
+        returnSourceId: bank.id,
+        memo: input.note?.trim().slice(0, 200) || undefined,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      };
+      const historicalBalance = await this.balanceIn(tx, input.walletId, event);
+      if (historicalBalance < input.amountMinor)
+        throw new Error('Return exceeds the available historical UPI Lite balance.');
+      if (!existingBankTransaction) {
+        applyBankCashTransaction(
+          sources,
+          null,
+          {
+            id: `wallet-return-bank-credit-${input.id}`,
+            cardId: bank.id,
+            type: 'CREDIT',
+            amountMinor: input.amountMinor,
+            currencyCode: 'INR',
+            transactionDate: input.eventDate,
+            transactionTime: input.eventTime,
+            merchant: `UPI Lite return${reference ? ` · Ref ${reference}` : ''}`,
+            categoryId: 'contra-expenses',
+            origin: 'MANUAL',
+            balanceTiming: input.balanceTiming,
+            balanceTimingAt: input.balanceTiming ? timestamp : undefined,
+            attachmentIds: [],
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          },
+          settings,
+          timestamp,
+        );
+      }
+      const reversedByFundedLoad = new Map<string, number>();
+      const reversalRows: ConsumerWalletExpenseReversal[] = [];
+      const plan = await planConsumerWalletDebit(
+        tx,
+        event,
+        input.amountMinor,
+        async (credit, allocatedMinor, alreadyConsumedMinor) => {
+          const classified = await this.classifyReturnAllocation(
+            tx,
+            event.id,
+            credit,
+            allocatedMinor,
+            alreadyConsumedMinor,
+            reversedByFundedLoad,
+            timestamp,
+          );
+          reversalRows.push(...classified.reversals);
+          return classified.expenseReversalMinor;
+        },
+      );
+      const attributions: UpiLiteReturnAttribution[] = plan.map((item) => ({
+        creditEventId: item.creditEvent.id,
+        creditEventType: item.creditEvent.eventType,
+        allocatedMinor: item.allocatedMinor,
+        expenseReversalMinor: item.expenseReversalMinor,
+      }));
+      const previewAllocations: ConsumerWalletEventAllocation[] = plan.map((item, index) => ({
+        id: `preview:${index}:${item.creditEvent.id}`,
+        debitEventId: event.id,
+        creditEventId: item.creditEvent.id,
+        allocatedMinor: item.allocatedMinor,
+        expenseReversalMinor: item.expenseReversalMinor,
+        createdAt: timestamp,
+      }));
+      await assertChronologicalConsumerWalletLedger(tx, input.walletId, {
+        additionalEvents: [event],
+        additionalAllocations: previewAllocations,
+      });
+      const fundedPrincipalReversalMinor = attributions.reduce(
+        (total, item) => total + item.expenseReversalMinor,
+        0,
+      );
+      const remainingWalletBalanceMinor = historicalBalance - input.amountMinor;
+      return {
+        walletId: input.walletId,
+        bankSourceId: bank.id,
+        bankName: bank.institution || bank.nickname,
+        amountMinor: input.amountMinor,
+        eventDate: input.eventDate,
+        eventTime: input.eventTime,
+        existingBankTransactionId: existingBankTransaction?.id,
+        fundedPrincipalReversalMinor,
+        nonFundedReturnMinor: input.amountMinor - fundedPrincipalReversalMinor,
+        remainingWalletBalanceMinor,
+        attributions,
+        confirmationKey: upiLiteReturnConfirmationKey(
+          input,
+          existingBankTransaction?.id,
+          attributions,
+          remainingWalletBalanceMinor,
+        ),
+      };
+    });
+  }
+
+  async recordUpiLiteReturn(input: UpiLiteReturnInput): Promise<ConsumerWalletEvent> {
+    if (!input.id.trim() || !Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0)
+      throw new Error('Enter a positive wallet return amount.');
+    if (!validTransferDate(input.eventDate, input.eventTime))
+      throw new Error('Enter a valid return date and time.');
+    const reference = input.reference?.trim().slice(0, 100) || undefined;
+    const note = input.note?.trim().slice(0, 200) || undefined;
+    const timestamp = new Date().toISOString();
+    const result = await this.database.atomic(async (tx) => {
+      await this.assertWalletsEnabled(tx);
+      await this.assertActiveWallet(tx, input.walletId);
+      const [walletRow] = await tx.query<{ wallet_kind: string }>(
+        'SELECT wallet_kind FROM consumer_wallets WHERE id=?',
+        [input.walletId],
+      );
+      if (walletRow?.wallet_kind !== 'UPI_LITE')
+        throw new Error('Return to Bank is available only for an active UPI Lite wallet.');
+
+      const [sourcePreference] = await tx.query<{ encrypted_value: string }>(
+        "SELECT encrypted_value FROM app_preferences WHERE key='payment_sources'",
+      );
+      let sources: PaymentSource[];
+      try {
+        sources = sourcePreference
+          ? (JSON.parse(sourcePreference.encrypted_value) as PaymentSource[])
+          : this.store.paymentSources().map((source) => ({ ...source }));
+      } catch {
+        throw new Error('Bank accounts could not be read; the return was not recorded.');
+      }
+      const bank = sources.find((source) => source.id === input.bankSourceId);
+      if (
+        !bank ||
+        bank.archived ||
+        !isEnrolledBankAccount(bank) ||
+        bank.id === 'source-debit' ||
+        bank.institution === 'Primary bank'
+      )
+        throw new Error('Choose an active registered Bank/UPI account.');
+      const [trackingPreference] = await tx.query<{ encrypted_value: string }>(
+        'SELECT encrypted_value FROM app_preferences WHERE key=?',
+        ['bank_cash_tracking'],
+      );
+      const settings = parseBankCashTracking(trackingPreference?.encrypted_value);
+
+      const [sameIdRow] = await tx.query<{ payload: string }>(
+        'SELECT payload FROM consumer_wallet_events WHERE id=?',
+        [input.id],
+      );
+      if (sameIdRow) {
+        const existing = JSON.parse(sameIdRow.payload) as ConsumerWalletEvent;
+        const [link] = await tx.query<{
+          wallet_id: string;
+          bank_source_id: string;
+          existing_bank_transaction_id: string | null;
+          reference: string | null;
+          note: string | null;
+        }>(
+          'SELECT wallet_id,bank_source_id,existing_bank_transaction_id,reference,note FROM consumer_wallet_return_links WHERE return_event_id=?',
+          [input.id],
+        );
+        if (
+          existing.eventType !== 'UPI_LITE_RETURN' ||
+          existing.walletId !== input.walletId ||
+          existing.amountMinor !== input.amountMinor ||
+          existing.eventDate !== input.eventDate ||
+          (existing.eventTime ?? '') !== (input.eventTime ?? '') ||
+          link?.wallet_id !== input.walletId ||
+          link?.bank_source_id !== bank.id ||
+          (input.existingBankTransactionId !== undefined &&
+            link?.existing_bank_transaction_id !== input.existingBankTransactionId) ||
+          (link?.reference ?? undefined) !== reference ||
+          (link?.note ?? undefined) !== note
+        )
+          throw new Error('This return ID was already used for a different financial event.');
+        const allocations = await this.readEventAllocations(tx, existing.id);
+        return { event: existing, allocations, sources };
+      }
+
+      const existingBankTransaction = await this.resolveExistingBankCredit(tx, bank, {
+        ...input,
+        reference,
+      });
+
+      const event: ConsumerWalletEvent = {
+        id: input.id,
+        walletId: input.walletId,
+        eventType: 'UPI_LITE_RETURN',
+        eventDate: input.eventDate,
+        eventTime: input.eventTime,
+        amountMinor: input.amountMinor,
+        balanceDeltaMinor: -input.amountMinor,
+        returnSourceId: bank.id,
+        memo: note,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      };
+      const historicalBalance = await this.balanceIn(tx, input.walletId, event);
+      if (historicalBalance < input.amountMinor)
+        throw new Error('Return exceeds the available historical UPI Lite balance.');
+
+      let balanceEffect: CardTransaction['balanceEffect'];
+      if (!existingBankTransaction) {
+        if (
+          !input.balanceTiming &&
+          needsBaselineConfirmation(bank, settings, input.eventDate, input.eventTime)
+        )
+          throw new Error(TIMING_QUESTION);
+        const bankCredit = applyBankCashTransaction(
+          sources,
+          null,
+          {
+            id: `wallet-return-bank-credit-${input.id}`,
+            cardId: bank.id,
+            type: 'CREDIT',
+            amountMinor: input.amountMinor,
+            currencyCode: 'INR',
+            transactionDate: input.eventDate,
+            transactionTime: input.eventTime,
+            merchant: `UPI Lite return${reference ? ` · Ref ${reference}` : ''}`,
+            categoryId: 'contra-expenses',
+            origin: 'MANUAL',
+            balanceTiming: input.balanceTiming,
+            balanceTimingAt: input.balanceTiming ? timestamp : undefined,
+            attachmentIds: [],
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          },
+          settings,
+          timestamp,
+        );
+        balanceEffect = bankCredit.balanceEffect;
+      }
+
+      await this.insertEvent(tx, event);
+      const reversalsByFundedLoad = new Map<string, number>();
+      const reversalRows: ConsumerWalletExpenseReversal[] = [];
+      const attributions: UpiLiteReturnAttribution[] = [];
+      const allocations = await allocateConsumerWalletDebit(
+        tx,
+        event,
+        input.amountMinor,
+        async (credit, allocatedMinor, alreadyConsumedMinor) => {
+          const classified = await this.classifyReturnAllocation(
+            tx,
+            event.id,
+            credit,
+            allocatedMinor,
+            alreadyConsumedMinor,
+            reversalsByFundedLoad,
+            timestamp,
+          );
+          reversalRows.push(...classified.reversals);
+          attributions.push({
+            creditEventId: credit.id,
+            creditEventType: credit.eventType,
+            allocatedMinor,
+            expenseReversalMinor: classified.expenseReversalMinor,
+          });
+          return classified.expenseReversalMinor;
+        },
+      );
+      const remainingWalletBalanceMinor = historicalBalance - input.amountMinor;
+      const confirmationKey = upiLiteReturnConfirmationKey(
+        input,
+        existingBankTransaction?.id,
+        attributions,
+        remainingWalletBalanceMinor,
+      );
+      if (!input.confirmationKey || input.confirmationKey !== confirmationKey)
+        throw new Error(
+          'Wallet or FIFO attribution changed. Review and approve the return summary again.',
+        );
+      for (const reversal of reversalRows)
+        await tx.run(
+          'INSERT INTO consumer_wallet_expense_reversals(return_event_id,credit_event_id,funded_load_event_id,reversed_minor,created_at) VALUES(?,?,?,?,?)',
+          [
+            reversal.returnEventId,
+            reversal.creditEventId,
+            reversal.fundedLoadEventId,
+            reversal.reversedMinor,
+            reversal.createdAt,
+          ],
+        );
+      await assertChronologicalConsumerWalletLedger(tx, input.walletId);
+      const returnLink: ConsumerWalletReturnLink = {
+        returnEventId: event.id,
+        walletId: event.walletId,
+        bankSourceId: bank.id,
+        existingBankTransactionId: existingBankTransaction?.id,
+        balanceEffect,
+        reference,
+        note,
+        createdAt: timestamp,
+      };
+      await tx.run(
+        'INSERT INTO consumer_wallet_return_links(return_event_id,wallet_id,bank_source_id,existing_bank_transaction_id,balance_effect,reference,note,created_at) VALUES(?,?,?,?,?,?,?,?)',
+        [
+          returnLink.returnEventId,
+          returnLink.walletId,
+          returnLink.bankSourceId,
+          returnLink.existingBankTransactionId ?? null,
+          returnLink.balanceEffect ? JSON.stringify(returnLink.balanceEffect) : null,
+          returnLink.reference ?? null,
+          returnLink.note ?? null,
+          returnLink.createdAt,
+        ],
+      );
+      if (balanceEffect) await this.writePreference(tx, 'payment_sources', JSON.stringify(sources));
+      return { event, allocations, sources, balanceEffect };
+    });
+    if (
+      result.balanceEffect ||
+      !this.store.paymentSources().some((source) => source.id === input.bankSourceId)
+    )
+      this.store.paymentSources.set(result.sources);
     this.publishEventWrite(result.event, result.allocations);
     return result.event;
   }
@@ -671,6 +1191,98 @@ export class ConsumerWalletService {
     throw new Error('This wallet event ID was already used for a different financial event.');
   }
 
+  private async resolveExistingBankCredit(
+    tx: DatabaseSession,
+    bank: PaymentSource,
+    input: Pick<
+      UpiLiteReturnInput,
+      'amountMinor' | 'eventDate' | 'reference' | 'existingBankTransactionId'
+    >,
+  ): Promise<CardTransaction | undefined> {
+    const rows = await tx.query<{ id: string; payload: string }>(
+      `SELECT id,payload FROM card_transactions
+       WHERE type='CREDIT' AND json_extract(payload,'$.cardId')=?`,
+      [bank.id],
+    );
+    const credits = rows.map((row) => ({
+      id: row.id,
+      transaction: JSON.parse(row.payload) as CardTransaction,
+    }));
+    let existing: CardTransaction | undefined;
+    if (input.existingBankTransactionId) {
+      existing = credits.find((item) => item.id === input.existingBankTransactionId)?.transaction;
+      if (!existing) throw new Error('The selected Bank/UPI credit does not match this return.');
+    } else if (input.reference) {
+      const referenced = credits.filter((item) => item.transaction.reference === input.reference);
+      if (referenced.length > 1)
+        throw new Error(
+          'More than one Bank/UPI credit has this reference; choose the exact receipt.',
+        );
+      if (referenced.length === 1) existing = referenced[0].transaction;
+      else if (
+        credits.some(
+          (item) =>
+            item.transaction.amountMinor === input.amountMinor &&
+            item.transaction.transactionDate === input.eventDate,
+        )
+      )
+        throw new Error('An existing Bank/UPI credit has different reference details.');
+    } else {
+      const matching = credits.filter(
+        (item) =>
+          item.transaction.amountMinor === input.amountMinor &&
+          item.transaction.transactionDate === input.eventDate,
+      );
+      if (matching.length > 1)
+        throw new Error(
+          'More than one Bank/UPI credit matches; choose the exact existing receipt.',
+        );
+      if (matching.length === 1) existing = matching[0].transaction;
+    }
+    if (
+      existing &&
+      (existing.cardId !== bank.id ||
+        existing.type !== 'CREDIT' ||
+        existing.amountMinor !== input.amountMinor ||
+        existing.transactionDate !== input.eventDate ||
+        (input.reference && existing.reference !== input.reference))
+    )
+      throw new Error('The selected Bank/UPI credit does not match this return.');
+    if (existing) {
+      const [linked] = await tx.query<{ return_event_id: string }>(
+        'SELECT return_event_id FROM consumer_wallet_return_links WHERE existing_bank_transaction_id=?',
+        [existing.id],
+      );
+      if (linked) throw new Error('That Bank/UPI credit is already linked to a wallet return.');
+    }
+    return existing;
+  }
+
+  private async readEventAllocations(
+    tx: DatabaseSession,
+    debitEventId: string,
+  ): Promise<ConsumerWalletEventAllocation[]> {
+    const rows = await tx.query<{
+      id: string;
+      debit_event_id: string;
+      credit_event_id: string;
+      allocated_minor: number;
+      expense_reversal_minor: number;
+      created_at: string;
+    }>(
+      'SELECT id,debit_event_id,credit_event_id,allocated_minor,expense_reversal_minor,created_at FROM consumer_wallet_event_allocations WHERE debit_event_id=? ORDER BY created_at,id',
+      [debitEventId],
+    );
+    return rows.map((row) => ({
+      id: row.id,
+      debitEventId: row.debit_event_id,
+      creditEventId: row.credit_event_id,
+      allocatedMinor: row.allocated_minor,
+      expenseReversalMinor: row.expense_reversal_minor,
+      createdAt: row.created_at,
+    }));
+  }
+
   private async readChronologicalEvents(
     tx: DatabaseSession,
     walletId: string,
@@ -730,81 +1342,6 @@ export class ConsumerWalletService {
         event.updatedAt,
       ],
     );
-  }
-
-  private async allocateDebit(
-    tx: DatabaseSession,
-    debit: ConsumerWalletEvent,
-    amountMinor: number,
-    expenseReversalMinor: number,
-  ): Promise<ConsumerWalletEventAllocation[]> {
-    const creditRows = await tx.query<{
-      id: string;
-      balance_delta_minor: number;
-      payload: string;
-    }>(
-      'SELECT id,balance_delta_minor,payload FROM consumer_wallet_events WHERE wallet_id=? AND balance_delta_minor>0 AND id<>?',
-      [debit.walletId, debit.id],
-    );
-    const credits = creditRows
-      .map((row) => ({
-        id: row.id,
-        amountMinor: row.balance_delta_minor,
-        event: JSON.parse(row.payload) as ConsumerWalletEvent,
-      }))
-      .filter((credit) => compareConsumerWalletEvents(credit.event, debit) < 0)
-      .sort((left, right) => compareConsumerWalletEvents(left.event, right.event));
-    let remaining = amountMinor;
-    let expenseRemaining = expenseReversalMinor;
-    const allocations: ConsumerWalletEventAllocation[] = [];
-    for (const credit of credits) {
-      if (!remaining) break;
-      const priorAllocations = await tx.query<{
-        allocated_minor: number;
-        payload: string;
-      }>(
-        `SELECT a.allocated_minor,e.payload
-         FROM consumer_wallet_event_allocations a
-         JOIN consumer_wallet_events e ON e.id=a.debit_event_id
-         WHERE a.credit_event_id=?`,
-        [credit.id],
-      );
-      const alreadyConsumed = priorAllocations.reduce((total, allocation) => {
-        const priorDebit = JSON.parse(allocation.payload) as ConsumerWalletEvent;
-        return compareConsumerWalletEvents(priorDebit, debit) < 0
-          ? total + allocation.allocated_minor
-          : total;
-      }, 0);
-      const available = credit.amountMinor - alreadyConsumed;
-      if (available <= 0) continue;
-      const allocatedMinor = Math.min(available, remaining);
-      const allocatedExpense = Math.min(allocatedMinor, expenseRemaining);
-      const allocation: ConsumerWalletEventAllocation = {
-        id: crypto.randomUUID(),
-        debitEventId: debit.id,
-        creditEventId: credit.id,
-        allocatedMinor,
-        expenseReversalMinor: allocatedExpense,
-        createdAt: new Date().toISOString(),
-      };
-      await tx.run(
-        'INSERT INTO consumer_wallet_event_allocations(id,debit_event_id,credit_event_id,allocated_minor,expense_reversal_minor,created_at) VALUES(?,?,?,?,?,?)',
-        [
-          allocation.id,
-          allocation.debitEventId,
-          allocation.creditEventId,
-          allocation.allocatedMinor,
-          allocation.expenseReversalMinor,
-          allocation.createdAt,
-        ],
-      );
-      allocations.push(allocation);
-      remaining -= allocatedMinor;
-      expenseRemaining -= allocatedExpense;
-    }
-    if (remaining)
-      throw new Error('Wallet balance provenance is incomplete; the debit was not saved.');
-    return allocations;
   }
 
   private publishEventWrite(

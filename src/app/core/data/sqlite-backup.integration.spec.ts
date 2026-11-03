@@ -1253,6 +1253,164 @@ describe('Durable first-run data, additive read migration and private portable b
       rows('SELECT id FROM consumer_wallet_events WHERE id=?', ['overflow-wallet-credit']),
     ).toEqual([]);
   });
+  it('previews and atomically posts UPI Lite returns with funded-principal FIFO attribution', async () => {
+    await database.initialise();
+    const store = TestBed.inject(CardNestStore);
+    await store.initialisePreferences();
+    const wallets = TestBed.inject(ConsumerWalletService);
+    await wallets.initialise();
+    const bank = await store.addBankAccount({ institution: 'ICICI Bank', lastDigits: '419' });
+    await store.enableBankTracking({ [bank.id]: 50000 });
+    const wallet = await wallets.registerWallet({ providerId: 'upi-lite' });
+    const today = indiaTodayIso();
+    await wallets.addWalletCredit({
+      id: 'return-test-manual-credit',
+      walletId: wallet.id,
+      amountMinor: 4000,
+      eventType: 'MANUAL_CREDIT',
+      eventDate: addCalendarDays(today, -4),
+    });
+    const fundedLoad = {
+      id: 'return-test-funded-load',
+      walletId: wallet.id,
+      eventType: 'FUNDED_LOAD',
+      eventDate: addCalendarDays(today, -3),
+      amountMinor: 6000,
+      balanceDeltaMinor: 6000,
+      loadedAmountMinor: 6000,
+      feeMinor: 500,
+      fundingSourceKind: 'BANK',
+      fundingSourceId: bank.id,
+      createdAt: `${addCalendarDays(today, -3)}T10:00:00.000Z`,
+      updatedAt: `${addCalendarDays(today, -3)}T10:00:00.000Z`,
+    };
+    await database.run(
+      'INSERT INTO consumer_wallet_events(id,wallet_id,event_type,event_date,amount_minor,balance_delta_minor,loaded_amount_minor,fee_minor,funding_source_kind,funding_source_id,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
+      [
+        fundedLoad.id,
+        fundedLoad.walletId,
+        fundedLoad.eventType,
+        fundedLoad.eventDate,
+        fundedLoad.amountMinor,
+        fundedLoad.balanceDeltaMinor,
+        fundedLoad.loadedAmountMinor,
+        fundedLoad.feeMinor,
+        fundedLoad.fundingSourceKind,
+        fundedLoad.fundingSourceId,
+        JSON.stringify(fundedLoad),
+        fundedLoad.createdAt,
+        fundedLoad.updatedAt,
+      ],
+    );
+    const input = {
+      id: 'return-test-event',
+      walletId: wallet.id,
+      bankSourceId: bank.id,
+      amountMinor: 8000,
+      eventDate: addCalendarDays(today, 2),
+      eventTime: '10:00',
+      reference: 'SYNTHETIC-RETURN-1',
+      note: 'Synthetic return test',
+    };
+    const preview = await wallets.previewUpiLiteReturn(input);
+    expect(preview).toMatchObject({
+      fundedPrincipalReversalMinor: 4000,
+      nonFundedReturnMinor: 4000,
+      remainingWalletBalanceMinor: 2000,
+      attributions: [
+        {
+          creditEventId: 'return-test-manual-credit',
+          allocatedMinor: 4000,
+          expenseReversalMinor: 0,
+        },
+        {
+          creditEventId: fundedLoad.id,
+          allocatedMinor: 4000,
+          expenseReversalMinor: 4000,
+        },
+      ],
+    });
+    expect(rows('SELECT id FROM consumer_wallet_events WHERE id=?', [input.id])).toEqual([]);
+
+    const confirmedInput = { ...input, confirmationKey: preview.confirmationKey };
+    sql.exec(
+      `CREATE TRIGGER fail_return_link BEFORE INSERT ON consumer_wallet_return_links
+       BEGIN SELECT RAISE(ABORT,'synthetic return link failure'); END`,
+    );
+    await expect(wallets.recordUpiLiteReturn(confirmedInput)).rejects.toThrow(
+      'synthetic return link failure',
+    );
+    expect(rows('SELECT id FROM consumer_wallet_events WHERE id=?', [input.id])).toEqual([]);
+    expect(
+      rows('SELECT * FROM consumer_wallet_event_allocations WHERE debit_event_id=?', [input.id]),
+    ).toEqual([]);
+    expect(
+      rows('SELECT * FROM consumer_wallet_expense_reversals WHERE return_event_id=?', [input.id]),
+    ).toEqual([]);
+    expect(store.paymentSources().find((source) => source.id === bank.id)?.balanceMinor).toBe(
+      50000,
+    );
+    sql.exec('DROP TRIGGER fail_return_link');
+
+    const returned = await wallets.recordUpiLiteReturn(confirmedInput);
+    expect(returned).toMatchObject({
+      id: input.id,
+      eventType: 'UPI_LITE_RETURN',
+      amountMinor: 8000,
+      balanceDeltaMinor: -8000,
+    });
+    expect(
+      rows(
+        'SELECT credit_event_id,allocated_minor,expense_reversal_minor FROM consumer_wallet_event_allocations WHERE debit_event_id=? ORDER BY created_at,id',
+        [input.id],
+      ),
+    ).toEqual([
+      {
+        credit_event_id: 'return-test-manual-credit',
+        allocated_minor: 4000,
+        expense_reversal_minor: 0,
+      },
+      {
+        credit_event_id: fundedLoad.id,
+        allocated_minor: 4000,
+        expense_reversal_minor: 4000,
+      },
+    ]);
+    expect(
+      rows(
+        'SELECT credit_event_id,funded_load_event_id,reversed_minor FROM consumer_wallet_expense_reversals WHERE return_event_id=?',
+        [input.id],
+      ),
+    ).toEqual([
+      {
+        credit_event_id: fundedLoad.id,
+        funded_load_event_id: fundedLoad.id,
+        reversed_minor: 4000,
+      },
+    ]);
+    expect(
+      rows(
+        'SELECT bank_source_id,reference,note FROM consumer_wallet_return_links WHERE return_event_id=?',
+        [input.id],
+      ),
+    ).toEqual([
+      {
+        bank_source_id: bank.id,
+        reference: input.reference,
+        note: input.note,
+      },
+    ]);
+    expect(store.paymentSources().find((source) => source.id === bank.id)?.balanceMinor).toBe(
+      58000,
+    );
+    await expect(wallets.recordUpiLiteReturn(confirmedInput)).resolves.toEqual(returned);
+    expect(
+      rows('SELECT id FROM consumer_wallet_event_allocations WHERE debit_event_id=?', [input.id]),
+    ).toHaveLength(2);
+    expect(store.paymentSources().find((source) => source.id === bank.id)?.balanceMinor).toBe(
+      58000,
+    );
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     config.seedDemoData = false;

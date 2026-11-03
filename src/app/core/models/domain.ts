@@ -348,6 +348,40 @@ export interface ConsumerWalletEventAllocation {
   readonly createdAt: string;
 }
 
+export interface ConsumerWalletReturnLink {
+  readonly returnEventId: string;
+  readonly walletId: string;
+  readonly bankSourceId: string;
+  readonly existingBankTransactionId?: string;
+  readonly balanceEffect?: AppliedBalanceEffect;
+  readonly reference?: string;
+  readonly note?: string;
+  readonly createdAt: string;
+}
+
+export interface ConsumerWalletCreditProvenance {
+  readonly creditEventId: string;
+  readonly sourceCreditEventId: string;
+  readonly allocatedMinor: Money;
+  readonly createdAt: string;
+}
+
+export interface ConsumerWalletExpenseReversal {
+  readonly returnEventId: string;
+  readonly creditEventId: string;
+  readonly fundedLoadEventId: string;
+  readonly reversedMinor: Money;
+  readonly createdAt: string;
+}
+
+export interface ConsumerWalletSplitMember {
+  readonly groupId: string;
+  readonly walletEventId: string;
+  readonly memberKind: 'WALLET_PURCHASE' | 'WALLET_REFUND';
+  readonly memberOrder: number;
+  readonly createdAt: string;
+}
+
 export interface WalletBalanceReconciliation {
   candidateId: string;
   transactionId: string;

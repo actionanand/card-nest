@@ -184,6 +184,11 @@
                 <button class="btn" type="button" (click)="openWalletActivity(wallet)">
                   Record activity
                 </button>
+                @if (wallet.kind === 'UPI_LITE') {
+                  <button class="btn" type="button" (click)="openReturnToBank(wallet)">
+                    Return to Bank
+                  </button>
+                }
                 <button class="btn" type="button" (click)="requestConsumerArchive(wallet)">
                   Archive
                 </button>
@@ -369,6 +374,120 @@
       </div>
     </form>
   </app-profile-modal>
+}
+
+@if (returnWalletId(); as walletId) {
+  @if (wallets.wallets().find((wallet) => wallet.id === walletId); as wallet) {
+    <app-profile-modal
+      [title]="'Return to Bank · ' + walletName(wallet)"
+      [busy]="saving()"
+      (closed)="closeReturnToBank()"
+    >
+      <form class="wallet-form" (submit)="previewReturnToBank(); $event.preventDefault()">
+        <p>Record a return transfer already made outside CardNest.</p>
+        <p>Available UPI Lite balance: {{ money(balance(wallet)) }}</p>
+        @if (eligibleReturnBanks().length) {
+          <app-select-picker
+            label="Receiving Bank/UPI account"
+            [options]="
+              eligibleReturnBanks().map((source) => ({
+                value: source.id,
+                label: returnBankLabel(source.id),
+              }))
+            "
+            [value]="returnForm.controls.bankSourceId.value"
+            (valueChange)="returnForm.controls.bankSourceId.setValue($event)"
+          />
+        } @else {
+          <p class="form-error" role="alert">
+            Add an active Bank/UPI account before recording a return.
+          </p>
+        }
+        <label
+          >Return amount<input
+            [formControl]="returnForm.controls.amount"
+            inputmode="decimal"
+            required
+        /></label>
+        <label
+          >Date<input [formControl]="returnForm.controls.eventDate" type="date" required
+        /></label>
+        <label
+          >Time (optional)<input [formControl]="returnForm.controls.eventTime" type="time"
+        /></label>
+        <label
+          >Reference (optional)<input [formControl]="returnForm.controls.reference" maxlength="100"
+        /></label>
+        @if (existingReturnBankCreditOptions().length) {
+          <app-select-picker
+            label="Existing Bank credit"
+            [options]="existingReturnBankCreditOptions()"
+            [value]="returnForm.controls.existingBankTransactionId.value"
+            (valueChange)="returnForm.controls.existingBankTransactionId.setValue($event)"
+          />
+        }
+        <label
+          >Note (optional)<textarea
+            [formControl]="returnForm.controls.note"
+            maxlength="200"
+          ></textarea>
+        </label>
+        @if (returnBalanceTimingNeeded()) {
+          <app-select-picker
+            label="Was the return after the confirmed bank balance?"
+            [options]="balanceTimingOptions"
+            [value]="returnForm.controls.balanceTiming.value"
+            (valueChange)="setReturnBalanceTiming($event)"
+          />
+        }
+        @if (returnError(); as message) {
+          <p class="form-error" role="alert">{{ message }}</p>
+        }
+        <button class="btn" type="submit" [disabled]="saving() || returnForm.invalid">
+          {{ saving() ? 'Calculating…' : 'Review return' }}
+        </button>
+        @if (returnPreview(); as preview) {
+          <fieldset class="return-summary">
+            <legend>Review return to {{ returnBankLabel(preview.bankSourceId) }}</legend>
+            <p>UPI Lite deduction: {{ money(preview.amountMinor) }}</p>
+            <p>Bank credit: {{ money(preview.amountMinor) }}</p>
+            @if (preview.existingBankTransactionId) {
+              <p>Linked to an existing Bank credit; no second Bank entry will be posted.</p>
+            }
+            <p>
+              Funded principal expense reversal: {{ money(preview.fundedPrincipalReversalMinor) }}
+            </p>
+            <p>Other value with no expense reversal: {{ money(preview.nonFundedReturnMinor) }}</p>
+            <p>Wallet balance after return: {{ money(preview.remainingWalletBalanceMinor) }}</p>
+            <ul>
+              @for (allocation of preview.attributions; track allocation.creditEventId) {
+                <li>
+                  {{ allocation.creditEventType.replaceAll('_', ' ') }} ·
+                  {{ money(allocation.allocatedMinor) }} returned ·
+                  {{ money(allocation.expenseReversalMinor) }} expense reversal
+                </li>
+              }
+            </ul>
+            <label>
+              <input type="checkbox" (change)="setReturnApproval($event)" />
+              I approve this return and its FIFO expense attribution.
+            </label>
+          </fieldset>
+          <button
+            class="btn btn-primary"
+            type="button"
+            [disabled]="saving() || returnApprovedFor() !== preview.confirmationKey"
+            (click)="confirmReturnToBank()"
+          >
+            {{ saving() ? 'Recording…' : 'Record return' }}
+          </button>
+        }
+        <button class="btn" type="button" [disabled]="saving()" (click)="closeReturnToBank()">
+          Cancel
+        </button>
+      </form>
+    </app-profile-modal>
+  }
 }
 
 @if (selectedRestoreTarget(); as target) {
