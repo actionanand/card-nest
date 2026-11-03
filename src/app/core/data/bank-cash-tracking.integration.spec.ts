@@ -5,6 +5,7 @@ import { Capacitor } from '@capacitor/core';
 import { CapacitorSQLite } from '@capacitor-community/sqlite';
 import { SqliteDatabase } from './sqlite-database';
 import { CardNestStore } from '../services/card-nest-store';
+import { ConsumerWalletService } from '../services/consumer-wallet.service';
 import { APP_ENVIRONMENT } from '../services/app-environment';
 import { NATIVE_EXPORT } from '../services/native-export';
 import { AppLockService } from '../services/app-lock.service';
@@ -40,6 +41,7 @@ import { SnackbarService } from '../services/snackbar.service';
 import { legacyFingerprintCompleteBankAccount } from '../services/bank-account-identifier';
 import { CATEGORY_REGISTRY } from './category-definitions';
 import { DeviceCalendarClock } from '../services/device-date';
+import { walletLoadApprovalMatches } from '../services/wallet-loading';
 import { CategoriesPage } from '../../features/categories/categories';
 import { DashboardPage } from '../../features/dashboard/dashboard';
 
@@ -1009,6 +1011,155 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     await fixture.whenStable();
     expect(fixture.componentInstance.form.controls.cardId.value).toBe('');
     fixture.destroy();
+  });
+  it('reactively filters wallet-load destinations and invalidates stale wallet approvals', async () => {
+    const { store } = await boot();
+    const consumerWallets = TestBed.inject(ConsumerWalletService);
+    await consumerWallets.initialise();
+    const standard = await consumerWallets.registerWallet({ providerId: 'amazon-pay' });
+    const secondStandard = await consumerWallets.registerWallet({ providerId: 'paytm-wallet' });
+    const upiLite = await consumerWallets.registerWallet({ providerId: 'upi-lite' });
+    const archivedWallet = await consumerWallets.registerWallet({ providerId: 'mobikwik-wallet' });
+    await consumerWallets.archiveWallet(archivedWallet.id);
+
+    const firstBank = await store.addBankAccount({
+      nickname: 'First load bank',
+      institution: 'Synthetic Bank',
+      lastDigits: '123',
+    });
+    const secondBank = await store.addBankAccount({
+      nickname: 'Second load bank',
+      institution: 'Sample Bank',
+      lastDigits: '456',
+    });
+    const archivedBank = await store.addBankAccount({
+      nickname: 'Archived load bank',
+      institution: 'Archived Bank',
+      lastDigits: '789',
+    });
+    await store.updatePaymentSource({ ...archivedBank, archived: true });
+
+    const firstCard = { ...card, id: 'wallet-reactive-card-a', nickname: 'Load Card A' };
+    const secondCard = { ...card, id: 'wallet-reactive-card-b', nickname: 'Load Card B' };
+    const archivedCard = {
+      ...card,
+      id: 'wallet-reactive-card-archived',
+      nickname: 'Archived Load Card',
+      archived: true,
+    };
+    const fixtureCards = [firstCard, secondCard, archivedCard];
+    for (const fixtureCard of fixtureCards)
+      await database.run(
+        'INSERT INTO credit_cards(id,nickname,issuer_name,last_digits,network,payload,archived,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)',
+        [
+          fixtureCard.id,
+          fixtureCard.nickname,
+          fixtureCard.issuerName,
+          fixtureCard.lastDigits,
+          fixtureCard.network,
+          JSON.stringify(fixtureCard),
+          fixtureCard.archived ? 1 : 0,
+          fixtureCard.createdAt,
+          fixtureCard.updatedAt,
+        ],
+      );
+    store.cards.set(fixtureCards);
+
+    const fixture = TestBed.createComponent(TransactionsPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const page = fixture.componentInstance;
+    const optionIds = () =>
+      page
+        .walletLoadWalletOptions()
+        .map((option) => option.value)
+        .sort();
+    const standardIds = [standard.id, secondStandard.id].sort();
+    const bankIds = [...standardIds, upiLite.id].sort();
+    page.openAdd();
+    page.form.patchValue({
+      type: 'PURCHASE',
+      cardId: firstBank.id,
+      amount: '320',
+      transactionDate: '2026-11-02',
+      paymentMethod: 'NONE',
+    });
+    page.setManualPaymentMethod('WALLET_LOADING');
+    expect(optionIds()).toEqual(bankIds);
+    page.setWalletLoadDestination(upiLite.id);
+    expect(page.walletLoadSummary()).toMatchObject({
+      debitAmountMinor: 32000,
+      loadedAmountMinor: 32000,
+      feeMinor: 0,
+    });
+    page.form.controls.walletLoadedAmount.setValue('300');
+    fixture.detectChanges();
+    const bankSummary = page.walletLoadSummary()!;
+    expect(bankSummary).toMatchObject({
+      fundingSource: expect.stringContaining(firstBank.nickname),
+      walletName: expect.stringContaining('upi-lite'),
+      debitAmountMinor: 32000,
+      loadedAmountMinor: 30000,
+      feeMinor: 2000,
+    });
+    const approvalCheckbox = fixture.nativeElement.querySelector(
+      '.wallet-load-summary input[type="checkbox"]',
+    ) as HTMLInputElement;
+    expect(approvalCheckbox).not.toBeNull();
+    approvalCheckbox.checked = true;
+    approvalCheckbox.dispatchEvent(new Event('change'));
+    fixture.detectChanges();
+    const approvedBankKey = page.form.controls.walletLoadConfirmedFor.value;
+    expect(approvedBankKey).toBe(bankSummary.confirmationKey);
+
+    page.selectPayFrom(firstCard.id);
+    fixture.detectChanges();
+    expect(optionIds()).toEqual(standardIds);
+    expect(page.form.controls.walletId.value).toBe('');
+    expect(page.form.controls.walletLoadConfirmedFor.value).toBe('');
+    expect(
+      walletLoadApprovalMatches(approvedBankKey, page.walletLoadSummary()?.confirmationKey ?? ''),
+    ).toBe(false);
+    const saveManualTransaction = vi.spyOn(store, 'saveManualTransaction');
+    await page.save();
+    expect(saveManualTransaction).not.toHaveBeenCalled();
+
+    page.setWalletLoadDestination(standard.id);
+    page.form.controls.walletLoadedAmount.setValue('300');
+    const firstCardSummary = page.walletLoadSummary()!;
+    page.form.controls.walletLoadConfirmedFor.setValue(firstCardSummary.confirmationKey);
+    page.selectPayFrom(secondCard.id);
+    fixture.detectChanges();
+    expect(page.form.controls.walletLoadConfirmedFor.value).toBe('');
+    expect(optionIds()).toEqual(standardIds);
+
+    page.selectBankAccount(secondBank.id);
+    fixture.detectChanges();
+    expect(optionIds()).toEqual(bankIds);
+    page.setWalletLoadDestination(upiLite.id);
+    expect(page.form.controls.walletId.value).toBe(upiLite.id);
+    page.selectBankAccount(firstBank.id);
+    fixture.detectChanges();
+    expect(page.walletLoadWalletOptions().map((option) => option.value)).toContain(upiLite.id);
+    expect(page.form.controls.walletLoadConfirmedFor.value).toBe('');
+
+    page.form.controls.cardId.setValue(archivedCard.id);
+    fixture.detectChanges();
+    expect(page.walletLoadWalletOptions()).toEqual([]);
+    page.form.controls.cardId.setValue(archivedBank.id);
+    fixture.detectChanges();
+    expect(page.walletLoadWalletOptions()).toEqual([]);
+
+    page.selectBankAccount(firstBank.id);
+    page.setManualPaymentMethod('WALLET_LOADING');
+    page.setWalletLoadDestination(upiLite.id);
+    await consumerWallets.setEnabled(false);
+    fixture.detectChanges();
+    expect(page.walletLoadWalletOptions()).toEqual([]);
+    expect(page.form.controls.walletId.value).toBe('');
+    expect(page.form.controls.walletLoadConfirmedFor.value).toBe('');
+    fixture.destroy();
+    await settle();
   });
   it('edits archived-card transactions in place and guards new or reassigned writes', async () => {
     const { store } = await boot();

@@ -738,16 +738,18 @@ export class TransactionsPage {
       ? [...options, { value: 'WALLET_LOADING', label: 'Consumer wallet load' }]
       : options;
   }
-  readonly walletLoadWalletOptions = computed(() =>
-    eligibleWalletLoadingDestinations(
+  readonly walletLoadWalletOptions = computed(() => {
+    this.formChanges();
+    if (!this.consumerWallets.enabled()) return [];
+    return eligibleWalletLoadingDestinations(
       this.consumerWallets.activeWallets(),
       this.walletLoadingFundingKind(),
     ).map((wallet) => ({
       value: wallet.id,
       label: wallet.nickname || wallet.customName || wallet.providerId,
       detail: wallet.kind === 'UPI_LITE' ? 'UPI Lite' : 'Consumer wallet',
-    })),
-  );
+    }));
+  });
   readonly walletLoadSummary = computed(() => {
     this.formChanges();
     if (this.form.controls.paymentMethod.value !== 'WALLET_LOADING') return null;
@@ -834,10 +836,14 @@ export class TransactionsPage {
       });
       return;
     }
+    const selectedWalletId = this.form.controls.walletId.value;
+    if (!selectedWalletId && this.form.controls.walletLoadConfirmedFor.value) {
+      this.form.controls.walletLoadConfirmedFor.setValue('', { emitEvent: false });
+      return;
+    }
     if (
-      !this.walletLoadWalletOptions().some(
-        (option) => option.value === this.form.controls.walletId.value,
-      )
+      selectedWalletId &&
+      !this.walletLoadWalletOptions().some((option) => option.value === selectedWalletId)
     ) {
       this.form.patchValue({ walletId: '', walletLoadConfirmedFor: '' });
     }
@@ -1133,7 +1139,10 @@ export class TransactionsPage {
       this.store.categoryCatalog?.();
       this.store.transactions();
       this.store.paymentGroups();
+      this.consumerWallets.enabled();
+      this.walletLoadWalletOptions();
       untracked(() => this.suggestNewCategory());
+      untracked(() => this.revalidateWalletLoadSelection());
     });
     this.destroyRef.onDestroy(() => this.closeWebCamera());
     if (Capacitor.getPlatform() === 'web') void this.detectWebCamera();

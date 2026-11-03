@@ -22,6 +22,7 @@ import {
   WalletLoadingDetails,
 } from '../models/domain';
 import { DatabaseSession, SqliteDatabase } from '../data/sqlite-database';
+import { assertChronologicalConsumerWalletLedger } from '../data/consumer-wallet-ledger';
 import { walletEffectApplies } from './wallet-anchor';
 import {
   bankDisplayName,
@@ -1093,7 +1094,7 @@ export class CardNestStore {
         await detachPaymentGroup(tx, next.id);
         next.splitGroupId = undefined;
       }
-      const saved = await this.writeTransaction(tx, next);
+      const saved = await this.writeTransaction(tx, next, !!walletLoading);
       if (walletLoading)
         await this.saveWalletLoadEvent(tx, next, walletLoading, previousWalletLoad);
       let savedRule: RecurringRule | undefined;
@@ -1158,6 +1159,12 @@ export class CardNestStore {
   }
 
   addTransaction(transaction: CardTransaction): void {
+    if (transaction.paymentMethod === 'WALLET_LOADING') {
+      this.transactionWriteError.set(
+        'Record Wallet Loading through the atomic transaction editor with its wallet details.',
+      );
+      return;
+    }
     this.transactions.update((items) => {
       const updated = [transaction, ...items];
       this.cacheTransactions(updated);
@@ -1205,6 +1212,12 @@ export class CardNestStore {
   updateTransaction(updated: CardTransaction): boolean {
     const existing = this.transactions().find((transaction) => transaction.id === updated.id);
     if (!existing) return false;
+    if (existing.paymentMethod === 'WALLET_LOADING' || updated.paymentMethod === 'WALLET_LOADING') {
+      this.transactionWriteError.set(
+        'Edit this funding debit through Wallet Loading so its linked wallet credit can be validated atomically.',
+      );
+      return false;
+    }
     if (existing.sourceBalanceApplied === false && updated.cardId !== existing.cardId)
       updated = { ...updated, sourceBalanceApplied: true };
     if (existing.splitGroupId) {
@@ -1235,6 +1248,12 @@ export class CardNestStore {
   deleteTransaction(transactionId: string): boolean {
     const existing = this.transactions().find((transaction) => transaction.id === transactionId);
     if (!existing) return false;
+    if (existing.paymentMethod === 'WALLET_LOADING') {
+      this.transactionWriteError.set(
+        'Delete this funding debit from Transactions so its linked wallet activity is refreshed.',
+      );
+      return false;
+    }
     if (existing.splitGroupId) {
       void this.deleteRecordedTransaction(transactionId).catch((error: unknown) =>
         this.transactionWriteError.set(
@@ -1295,6 +1314,10 @@ export class CardNestStore {
   async duplicateTransaction(transactionId: string): Promise<CardTransaction | null> {
     const existing = this.transactions().find((transaction) => transaction.id === transactionId);
     if (!existing) return null;
+    if (existing.paymentMethod === 'WALLET_LOADING')
+      throw new Error(
+        'Duplicate the real wallet-load funding debit manually with a new wallet event.',
+      );
     const timestamp = new Date().toISOString();
     const key = `duplicate:${transactionId}`;
     const duplicate: CardTransaction = this.pendingTransactionDrafts.get(key) ?? {
@@ -1476,6 +1499,7 @@ export class CardNestStore {
       if (
         !original ||
         !eligiblePaymentMember(original) ||
+        original.paymentMethod === 'WALLET_LOADING' ||
         original.emiPlanId ||
         original.recurringRuleId ||
         (await readPaymentGroups(tx)).some((group) => group.memberIds.includes(transactionId))
@@ -3434,6 +3458,9 @@ export class CardNestStore {
         event.updatedAt,
       ],
     );
+    await assertChronologicalConsumerWalletLedger(tx, input.walletId);
+    if (previous && previous.walletId !== input.walletId)
+      await assertChronologicalConsumerWalletLedger(tx, previous.walletId);
   }
 
   private async persistTransaction(transaction: CardTransaction): Promise<void> {
@@ -3443,12 +3470,24 @@ export class CardNestStore {
     if (result.fundingChanged) await this.loadTransfers();
   }
 
-  private async writeTransaction(tx: DatabaseSession, transaction: CardTransaction) {
+  private async writeTransaction(
+    tx: DatabaseSession,
+    transaction: CardTransaction,
+    allowWalletLoadEdit = false,
+  ) {
     const [stored] = await tx.query<{ payload: string }>(
       'SELECT payload FROM card_transactions WHERE id = ?',
       [transaction.id],
     );
     const previous = stored ? (JSON.parse(stored.payload) as CardTransaction) : null;
+    const [walletLoad] = await tx.query<{ id: string }>(
+      "SELECT id FROM consumer_wallet_events WHERE event_type='FUNDED_LOAD' AND source_transaction_id=?",
+      [transaction.id],
+    );
+    if (walletLoad && !allowWalletLoadEdit)
+      throw new Error(
+        'Edit this funding debit through Wallet Loading so its linked wallet credit can be validated atomically.',
+      );
     const wallets = await this.readStoredSources(tx);
     const settings = await this.readTrackingSettings(tx);
     const now = new Date().toISOString();
@@ -3675,8 +3714,8 @@ export class CardNestStore {
     const wallets = await this.readStoredSources(tx);
     const settings = await this.readTrackingSettings(tx);
     const previous = row ? (JSON.parse(row.payload) as CardTransaction) : null;
-    const [walletLoad] = await tx.query<{ id: string }>(
-      "SELECT id FROM consumer_wallet_events WHERE event_type='FUNDED_LOAD' AND source_transaction_id=?",
+    const [walletLoad] = await tx.query<{ id: string; wallet_id: string }>(
+      "SELECT id,wallet_id FROM consumer_wallet_events WHERE event_type='FUNDED_LOAD' AND source_transaction_id=?",
       [id],
     );
     if (walletLoad) {
@@ -3689,6 +3728,7 @@ export class CardNestStore {
           'This wallet load has already been spent or returned; reverse linked wallet activity first.',
         );
       await tx.run('DELETE FROM consumer_wallet_events WHERE id=?', [walletLoad.id]);
+      await assertChronologicalConsumerWalletLedger(tx, walletLoad.wallet_id);
     }
     applyWalletTransaction(wallets, previous, -1);
     reverseBalanceEffect(wallets, previous?.balanceEffect, settings);

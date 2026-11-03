@@ -583,6 +583,44 @@ describe('Durable first-run data, additive read migration and private portable b
       INSERT INTO sms_candidates(id,provider_id,event_at,kind,state,payload,updated_at) VALUES('synthetic-pending','2','2026-10-02','PURCHASE','PENDING','{"evidence":"Synthetic pending evidence"}','before');
       INSERT INTO sms_reconciliation VALUES('synthetic-binding','synthetic-read','synthetic-transaction','IMPORT',12345,'before');`);
   }
+  async function installWalletLoadTestCard(store: CardNestStore) {
+    const card = {
+      id: 'wallet-load-boundary-card',
+      nickname: 'Synthetic boundary card',
+      issuerName: 'Fictional Bank',
+      lastDigits: '4321',
+      network: 'VISA' as const,
+      theme: 'green',
+      statementDay: 1,
+      dueDateMode: 'DAYS_AFTER_STATEMENT' as const,
+      daysAfterStatement: 20,
+      adjustDueDateOnWeekend: false,
+      currencyCode: 'INR',
+      openingBalanceMinor: 0,
+      remindToSettle: false,
+      annualFeeEnabled: false,
+      emergencyPhones: [],
+      supportEmails: [],
+      archived: false,
+      createdAt: '2026-10-01T00:00:00.000Z',
+      updatedAt: '2026-10-01T00:00:00.000Z',
+    };
+    await database.run(
+      'INSERT INTO credit_cards(id,nickname,issuer_name,last_digits,network,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)',
+      [
+        card.id,
+        card.nickname,
+        card.issuerName,
+        card.lastDigits,
+        card.network,
+        JSON.stringify(card),
+        card.createdAt,
+        card.updatedAt,
+      ],
+    );
+    store.cards.set([card]);
+    return card;
+  }
   it('saves funded wallet loads atomically with their real source debit and protects consumed provenance', async () => {
     await database.initialise();
     const store = TestBed.inject(CardNestStore);
@@ -711,6 +749,26 @@ describe('Durable first-run data, additive read migration and private portable b
     ).toEqual([{ wallet_id: alternateWallet.id }]);
     await save(5000);
     expect(rows('SELECT id FROM card_transactions WHERE id=?', [transaction.id])).toHaveLength(1);
+    const storedLoadTransaction = rows('SELECT payload FROM card_transactions WHERE id=?', [
+      transaction.id,
+    ]);
+    expect(store.updateTransaction({ ...transaction, merchant: 'Unsafe direct update' })).toBe(
+      false,
+    );
+    expect(store.transactionWriteError()).toContain('through Wallet Loading');
+    expect(rows('SELECT payload FROM card_transactions WHERE id=?', [transaction.id])).toEqual(
+      storedLoadTransaction,
+    );
+    expect(store.deleteTransaction(transaction.id)).toBe(false);
+    expect(store.transactionWriteError()).toContain('Delete this funding debit from Transactions');
+    await expect(store.duplicateTransaction(transaction.id)).rejects.toThrow(
+      'wallet-load funding debit',
+    );
+    store.addTransaction({ ...transaction, id: 'unsafe-wallet-load-copy' });
+    await database.atomic(async () => undefined);
+    expect(
+      rows('SELECT id FROM card_transactions WHERE id=?', ['unsafe-wallet-load-copy']),
+    ).toEqual([]);
     expect(
       rows(
         'SELECT amount_minor,debit_amount_minor,fee_minor FROM consumer_wallet_events WHERE source_transaction_id=?',
@@ -762,6 +820,10 @@ describe('Durable first-run data, additive read migration and private portable b
     await expect(store.deleteRecordedTransaction(transaction.id)).rejects.toThrow(
       'already been spent or returned',
     );
+    expect(store.deleteTransaction(transaction.id)).toBe(false);
+    await database.atomic(async () => undefined);
+    await Promise.resolve();
+    expect(store.transactionWriteError()).toContain('Delete this funding debit from Transactions');
     expect(rows('SELECT id FROM card_transactions WHERE id=?', [transaction.id])).toHaveLength(1);
     expect(
       rows('SELECT amount_minor FROM consumer_wallet_events WHERE source_transaction_id=?', [
@@ -803,6 +865,202 @@ describe('Durable first-run data, additive read migration and private portable b
     await store.refreshPaymentLedger();
     await wallets.reloadFinancialHistory();
     expect(wallets.events().some((event) => event.id === unconsumedLoad.id)).toBe(false);
+  });
+  it('rejects a Nov 1 funded load that would displace a Nov 3 purchase from its Nov 2 credit', async () => {
+    await database.initialise();
+    const store = TestBed.inject(CardNestStore);
+    await store.initialisePreferences();
+    const wallets = TestBed.inject(ConsumerWalletService);
+    await wallets.initialise();
+    const creditedWallet = await wallets.registerWallet({ providerId: 'amazon-pay' });
+    const otherWallet = await wallets.registerWallet({ providerId: 'paytm-wallet' });
+    await wallets.addWalletCredit({
+      id: 'nov-2-manual-credit',
+      walletId: creditedWallet.id,
+      amountMinor: 10000,
+      eventType: 'MANUAL_CREDIT',
+      eventDate: '2026-11-02',
+    });
+    await wallets.recordWalletPurchase({
+      id: 'nov-3-wallet-purchase',
+      walletId: creditedWallet.id,
+      amountMinor: 5000,
+      eventDate: '2026-11-03',
+      categoryId: 'other',
+    });
+    const card = await installWalletLoadTestCard(store);
+    const loadTransaction: CardTransaction = {
+      id: 'nov-1-funding-debit',
+      cardId: card.id,
+      type: 'PURCHASE',
+      amountMinor: 10000,
+      currencyCode: 'INR',
+      transactionDate: '2026-11-01',
+      categoryId: 'other',
+      merchant: 'Synthetic wallet funding',
+      attachmentIds: [],
+      paymentMethod: 'WALLET_LOADING',
+      createdAt: '2026-11-01T10:00:00.000Z',
+      updatedAt: '2026-11-01T10:00:00.000Z',
+    };
+    const saveLoad = (walletId: string) =>
+      store.saveManualTransaction(loadTransaction, '', false, undefined, '', {
+        walletId,
+        loadedAmountMinor: 10000,
+      });
+
+    await expect(saveLoad(creditedWallet.id)).rejects.toThrow('audited FIFO allocations');
+    expect(rows('SELECT id FROM card_transactions WHERE id=?', [loadTransaction.id])).toEqual([]);
+    expect(
+      rows('SELECT id FROM consumer_wallet_events WHERE source_transaction_id=?', [
+        loadTransaction.id,
+      ]),
+    ).toEqual([]);
+    expect(
+      rows(
+        'SELECT credit_event_id,allocated_minor FROM consumer_wallet_event_allocations WHERE debit_event_id=?',
+        ['nov-3-wallet-purchase'],
+      ),
+    ).toEqual([{ credit_event_id: 'nov-2-manual-credit', allocated_minor: 5000 }]);
+
+    await saveLoad(otherWallet.id);
+    await expect(saveLoad(creditedWallet.id)).rejects.toThrow('audited FIFO allocations');
+    expect(
+      rows('SELECT wallet_id FROM consumer_wallet_events WHERE source_transaction_id=?', [
+        loadTransaction.id,
+      ]),
+    ).toEqual([{ wallet_id: otherWallet.id }]);
+    expect(
+      rows('SELECT card_id,transaction_date FROM card_transactions WHERE id=?', [
+        loadTransaction.id,
+      ]),
+    ).toEqual([{ card_id: card.id, transaction_date: '2026-11-01' }]);
+  });
+  it('permits a safe past-dated funded load after an existing purchase without changing its allocation', async () => {
+    await database.initialise();
+    const store = TestBed.inject(CardNestStore);
+    await store.initialisePreferences();
+    const wallets = TestBed.inject(ConsumerWalletService);
+    await wallets.initialise();
+    const wallet = await wallets.registerWallet({ providerId: 'amazon-pay' });
+    const today = indiaTodayIso();
+    const creditDate = addCalendarDays(today, -4);
+    const purchaseDate = addCalendarDays(today, -3);
+    const loadDate = addCalendarDays(today, -2);
+    await wallets.addWalletCredit({
+      id: 'safe-backdated-manual-credit',
+      walletId: wallet.id,
+      amountMinor: 10000,
+      eventType: 'MANUAL_CREDIT',
+      eventDate: creditDate,
+    });
+    await wallets.recordWalletPurchase({
+      id: 'safe-backdated-purchase',
+      walletId: wallet.id,
+      amountMinor: 5000,
+      eventDate: purchaseDate,
+      categoryId: 'other',
+    });
+    const card = await installWalletLoadTestCard(store);
+    const transaction: CardTransaction = {
+      id: 'safe-backdated-load-debit',
+      cardId: card.id,
+      type: 'PURCHASE',
+      amountMinor: 10000,
+      currencyCode: 'INR',
+      transactionDate: loadDate,
+      categoryId: 'other',
+      attachmentIds: [],
+      paymentMethod: 'WALLET_LOADING',
+      createdAt: `${loadDate}T10:00:00.000Z`,
+      updatedAt: `${loadDate}T10:00:00.000Z`,
+    };
+    await store.saveManualTransaction(transaction, '', false, undefined, '', {
+      walletId: wallet.id,
+      loadedAmountMinor: 10000,
+    });
+    expect(
+      rows(
+        'SELECT credit_event_id,allocated_minor FROM consumer_wallet_event_allocations WHERE debit_event_id=?',
+        ['safe-backdated-purchase'],
+      ),
+    ).toEqual([{ credit_event_id: 'safe-backdated-manual-credit', allocated_minor: 5000 }]);
+    expect(
+      rows('SELECT id FROM consumer_wallet_events WHERE source_transaction_id=?', [transaction.id]),
+    ).toHaveLength(1);
+  });
+  it('rejects a same-day load-time edit that would displace an existing wallet purchase allocation', async () => {
+    await database.initialise();
+    const store = TestBed.inject(CardNestStore);
+    await store.initialisePreferences();
+    const wallets = TestBed.inject(ConsumerWalletService);
+    await wallets.initialise();
+    const wallet = await wallets.registerWallet({ providerId: 'amazon-pay' });
+    const untimedCredit = await wallets.addWalletCredit({
+      id: 'same-day-manual-credit',
+      walletId: wallet.id,
+      amountMinor: 10000,
+      eventType: 'MANUAL_CREDIT',
+      eventDate: '2026-11-02',
+      memo: 'early lot',
+    });
+    const timedCredit = { ...untimedCredit, eventTime: '11:00' };
+    await database.run('UPDATE consumer_wallet_events SET event_time=?,payload=? WHERE id=?', [
+      '11:00',
+      JSON.stringify(timedCredit),
+      timedCredit.id,
+    ]);
+    await wallets.recordWalletPurchase({
+      id: 'same-day-wallet-purchase-before-load',
+      walletId: wallet.id,
+      amountMinor: 5000,
+      eventDate: '2026-11-02',
+      eventTime: '12:00',
+      categoryId: 'other',
+    });
+    const card = await installWalletLoadTestCard(store);
+    const transaction: CardTransaction = {
+      id: 'same-day-load-debit',
+      cardId: card.id,
+      type: 'PURCHASE',
+      amountMinor: 10000,
+      currencyCode: 'INR',
+      transactionDate: '2026-11-02',
+      transactionTime: '13:00',
+      categoryId: 'other',
+      attachmentIds: [],
+      paymentMethod: 'WALLET_LOADING',
+      createdAt: '2026-11-02T13:00:00.000Z',
+      updatedAt: '2026-11-02T13:00:00.000Z',
+    };
+    const save = (next: CardTransaction) =>
+      store.saveManualTransaction(next, '', false, undefined, '', {
+        walletId: wallet.id,
+        loadedAmountMinor: 10000,
+      });
+    await save(transaction);
+    await wallets.recordWalletPurchase({
+      id: 'same-day-wallet-purchase-after-load',
+      walletId: wallet.id,
+      amountMinor: 10000,
+      eventDate: '2026-11-02',
+      eventTime: '14:00',
+      categoryId: 'other',
+    });
+    await expect(
+      store.saveManualTransaction(transaction, '', false, undefined, '', {
+        walletId: wallet.id,
+        loadedAmountMinor: 4000,
+      }),
+    ).rejects.toThrow('already been spent or returned');
+    await expect(save({ ...transaction, transactionTime: '09:00' })).rejects.toThrow(
+      'audited FIFO allocations',
+    );
+    expect(
+      rows('SELECT event_time FROM consumer_wallet_events WHERE source_transaction_id=?', [
+        transaction.id,
+      ]),
+    ).toEqual([{ event_time: '13:00' }]);
   });
   it('does not let a future wallet credit fund a backdated purchase', async () => {
     await database.initialise();
