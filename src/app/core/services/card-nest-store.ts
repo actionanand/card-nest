@@ -303,6 +303,7 @@ export class CardNestStore {
   private readonly database = inject(SqliteDatabase);
   private readonly environment = inject(APP_ENVIRONMENT);
   private dataWasCleared = false;
+  private walletReturnTransactionIds = new Set<string>();
   readonly cards = signal<readonly CreditCard[]>([]);
   readonly transactions = signal<readonly CardTransaction[]>([]);
   readonly paymentGroups = signal<readonly PaymentGroup[]>([]);
@@ -1146,6 +1147,24 @@ export class CardNestStore {
     }
   }
 
+  async writeWalletReturnCredit(
+    tx: DatabaseSession,
+    transaction: CardTransaction,
+  ): Promise<{ transaction: CardTransaction; sources: PaymentSource[] }> {
+    if (transaction.type !== 'CREDIT' || transaction.paymentMethod === 'WALLET_LOADING')
+      throw new Error('A wallet return must be recorded as a Bank credit.');
+    const sources = await this.readStoredSources(tx);
+    if (!sources.some((source) => source.id === transaction.cardId && source.kind === 'DEBIT'))
+      throw new Error('Choose an active registered Bank/UPI account.');
+    const [existing] = await tx.query<{ id: string }>(
+      'SELECT id FROM card_transactions WHERE id=?',
+      [transaction.id],
+    );
+    if (existing) throw new Error('This Bank return credit ID is already in use.');
+    const saved = await this.writeTransaction(tx, transaction);
+    return { transaction: saved.persisted, sources: saved.wallets };
+  }
+
   async deleteRecordedTransaction(id: string): Promise<void> {
     const result = await this.database.atomic((tx) => this.removeTransactionInSession(tx, id));
     this.publishStoredBalances(result.wallets);
@@ -1178,7 +1197,9 @@ export class CardNestStore {
   acceptCommittedImport(
     transaction: CardTransaction | null,
     sources: readonly PaymentSource[],
+    walletReturnTransactionId?: string,
   ): void {
+    if (walletReturnTransactionId) this.walletReturnTransactionIds.add(walletReturnTransactionId);
     if (transaction)
       this.transactions.update((items) => {
         const next = [transaction, ...items.filter((item) => item.id !== transaction.id)];
@@ -1212,6 +1233,12 @@ export class CardNestStore {
   updateTransaction(updated: CardTransaction): boolean {
     const existing = this.transactions().find((transaction) => transaction.id === updated.id);
     if (!existing) return false;
+    if (this.walletReturnTransactionIds.has(updated.id)) {
+      this.transactionWriteError.set(
+        'This Bank credit is linked to a UPI Lite return and cannot be edited independently.',
+      );
+      return false;
+    }
     if (existing.paymentMethod === 'WALLET_LOADING' || updated.paymentMethod === 'WALLET_LOADING') {
       this.transactionWriteError.set(
         'Edit this funding debit through Wallet Loading so its linked wallet credit can be validated atomically.',
@@ -1248,6 +1275,12 @@ export class CardNestStore {
   deleteTransaction(transactionId: string): boolean {
     const existing = this.transactions().find((transaction) => transaction.id === transactionId);
     if (!existing) return false;
+    if (this.walletReturnTransactionIds.has(transactionId)) {
+      this.transactionWriteError.set(
+        'This Bank credit is linked to a UPI Lite return and cannot be deleted independently.',
+      );
+      return false;
+    }
     if (existing.paymentMethod === 'WALLET_LOADING') {
       this.transactionWriteError.set(
         'Delete this funding debit from Transactions so its linked wallet activity is refreshed.',
@@ -2596,6 +2629,7 @@ export class CardNestStore {
 
   async deleteAllData(): Promise<void> {
     await this.database.deleteAllData();
+    this.walletReturnTransactionIds.clear();
     this.cards.set([]);
     this.transactions.set([]);
     this.paymentGroups.set([]);
@@ -3225,6 +3259,16 @@ export class CardNestStore {
 
   private async loadTransactions(): Promise<void> {
     await this.refreshPaymentGroups();
+    const returnTransactions = await this.database.query<{ source_transaction_id: string }>(
+      `SELECT source_transaction_id FROM consumer_wallet_events
+       WHERE event_type='UPI_LITE_RETURN' AND source_transaction_id IS NOT NULL
+       UNION
+       SELECT existing_bank_transaction_id AS source_transaction_id
+       FROM consumer_wallet_return_links WHERE existing_bank_transaction_id IS NOT NULL`,
+    );
+    this.walletReturnTransactionIds = new Set(
+      returnTransactions.map((row) => row.source_transaction_id),
+    );
     const rows = await this.database.query<{ payload: string }>(
       'SELECT payload FROM card_transactions ORDER BY transaction_date DESC, created_at DESC',
     );
@@ -3475,6 +3519,7 @@ export class CardNestStore {
     transaction: CardTransaction,
     allowWalletLoadEdit = false,
   ) {
+    await this.assertTransactionNotWalletReturnLinked(tx, transaction.id);
     const [stored] = await tx.query<{ payload: string }>(
       'SELECT payload FROM card_transactions WHERE id = ?',
       [transaction.id],
@@ -3532,6 +3577,25 @@ export class CardNestStore {
     const fundingChanged = await this.syncCardFunding(tx, wallets, settings, persisted, now);
     if (wallets.length) await this.writeStoredSources(tx, wallets);
     return { wallets, fundingChanged, persisted };
+  }
+
+  private async assertTransactionNotWalletReturnLinked(
+    tx: DatabaseSession,
+    transactionId: string,
+  ): Promise<void> {
+    const [linkedReturn] = await tx.query<{ id: string }>(
+      `SELECT id FROM consumer_wallet_events
+       WHERE event_type='UPI_LITE_RETURN' AND source_transaction_id=?
+       UNION ALL
+       SELECT return_event_id AS id FROM consumer_wallet_return_links
+       WHERE existing_bank_transaction_id=?
+       LIMIT 1`,
+      [transactionId, transactionId],
+    );
+    if (linkedReturn)
+      throw new Error(
+        'This Bank credit is linked to a UPI Lite return and cannot be changed independently.',
+      );
   }
 
   private async upsertTransactionRow(
@@ -3707,6 +3771,7 @@ export class CardNestStore {
   }
 
   private async removeTransactionInSession(tx: DatabaseSession, id: string) {
+    await this.assertTransactionNotWalletReturnLinked(tx, id);
     const [row] = await tx.query<{ payload: string }>(
       'SELECT payload FROM card_transactions WHERE id=?',
       [id],

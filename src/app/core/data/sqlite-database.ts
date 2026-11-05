@@ -71,12 +71,12 @@ const BACKUP_TABLES = [
   'source_transfers',
   'source_balance_adjustments',
   'consumer_wallets',
+  'consumer_wallet_events',
+  'consumer_wallet_event_allocations',
   'consumer_wallet_return_links',
   'consumer_wallet_credit_provenance',
   'consumer_wallet_expense_reversals',
   'consumer_wallet_split_members',
-  'consumer_wallet_events',
-  'consumer_wallet_event_allocations',
 ] as const;
 
 const DELETE_TABLES = [

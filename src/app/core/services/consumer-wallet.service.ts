@@ -847,20 +847,22 @@ export class ConsumerWalletService {
           (existing.eventTime ?? '') !== (input.eventTime ?? '') ||
           link?.wallet_id !== input.walletId ||
           link?.bank_source_id !== bank.id ||
-          (input.existingBankTransactionId !== undefined &&
-            link?.existing_bank_transaction_id !== input.existingBankTransactionId) ||
+          (link?.existing_bank_transaction_id ?? undefined) !==
+            (input.existingBankTransactionId ?? undefined) ||
           (link?.reference ?? undefined) !== reference ||
           (link?.note ?? undefined) !== note
         )
           throw new Error('This return ID was already used for a different financial event.');
         const allocations = await this.readEventAllocations(tx, existing.id);
-        return { event: existing, allocations, sources };
+        return { event: existing, allocations, sources, postedBankTransaction: null };
       }
 
       const existingBankTransaction = await this.resolveExistingBankCredit(tx, bank, {
         ...input,
         reference,
       });
+      const bankTransactionId =
+        existingBankTransaction?.id ?? `wallet-return-bank-credit-${input.id}`;
 
       const event: ConsumerWalletEvent = {
         id: input.id,
@@ -870,6 +872,7 @@ export class ConsumerWalletService {
         eventTime: input.eventTime,
         amountMinor: input.amountMinor,
         balanceDeltaMinor: -input.amountMinor,
+        sourceTransactionId: bankTransactionId,
         returnSourceId: bank.id,
         memo: note,
         createdAt: timestamp,
@@ -879,37 +882,34 @@ export class ConsumerWalletService {
       if (historicalBalance < input.amountMinor)
         throw new Error('Return exceeds the available historical UPI Lite balance.');
 
-      let balanceEffect: CardTransaction['balanceEffect'];
+      let balanceEffect = existingBankTransaction?.balanceEffect;
+      let postedBankTransaction: CardTransaction | null = null;
       if (!existingBankTransaction) {
         if (
           !input.balanceTiming &&
           needsBaselineConfirmation(bank, settings, input.eventDate, input.eventTime)
         )
           throw new Error(TIMING_QUESTION);
-        const bankCredit = applyBankCashTransaction(
-          sources,
-          null,
-          {
-            id: `wallet-return-bank-credit-${input.id}`,
-            cardId: bank.id,
-            type: 'CREDIT',
-            amountMinor: input.amountMinor,
-            currencyCode: 'INR',
-            transactionDate: input.eventDate,
-            transactionTime: input.eventTime,
-            merchant: `UPI Lite return${reference ? ` · Ref ${reference}` : ''}`,
-            categoryId: 'contra-expenses',
-            origin: 'MANUAL',
-            balanceTiming: input.balanceTiming,
-            balanceTimingAt: input.balanceTiming ? timestamp : undefined,
-            attachmentIds: [],
-            createdAt: timestamp,
-            updatedAt: timestamp,
-          },
-          settings,
-          timestamp,
-        );
-        balanceEffect = bankCredit.balanceEffect;
+        const bankCredit = await this.store.writeWalletReturnCredit(tx, {
+          id: bankTransactionId,
+          cardId: bank.id,
+          type: 'CREDIT',
+          amountMinor: input.amountMinor,
+          currencyCode: 'INR',
+          transactionDate: input.eventDate,
+          transactionTime: input.eventTime,
+          merchant: `UPI Lite return${reference ? ` · Ref ${reference}` : ''}`,
+          categoryId: 'contra-expenses',
+          origin: 'MANUAL',
+          balanceTiming: input.balanceTiming,
+          balanceTimingAt: input.balanceTiming ? timestamp : undefined,
+          attachmentIds: [],
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        });
+        postedBankTransaction = bankCredit.transaction;
+        sources = bankCredit.sources;
+        balanceEffect = bankCredit.transaction.balanceEffect;
       }
 
       await this.insertEvent(tx, event);
@@ -986,14 +986,13 @@ export class ConsumerWalletService {
           returnLink.createdAt,
         ],
       );
-      if (balanceEffect) await this.writePreference(tx, 'payment_sources', JSON.stringify(sources));
-      return { event, allocations, sources, balanceEffect };
+      return { event, allocations, sources, postedBankTransaction };
     });
-    if (
-      result.balanceEffect ||
-      !this.store.paymentSources().some((source) => source.id === input.bankSourceId)
-    )
-      this.store.paymentSources.set(result.sources);
+    this.store.acceptCommittedImport(
+      result.postedBankTransaction,
+      result.sources,
+      result.event.sourceTransactionId,
+    );
     this.publishEventWrite(result.event, result.allocations);
     return result.event;
   }
@@ -1199,53 +1198,33 @@ export class ConsumerWalletService {
       'amountMinor' | 'eventDate' | 'reference' | 'existingBankTransactionId'
     >,
   ): Promise<CardTransaction | undefined> {
-    const rows = await tx.query<{ id: string; payload: string }>(
-      `SELECT id,payload FROM card_transactions
-       WHERE type='CREDIT' AND json_extract(payload,'$.cardId')=?`,
-      [bank.id],
-    );
-    const credits = rows.map((row) => ({
-      id: row.id,
-      transaction: JSON.parse(row.payload) as CardTransaction,
-    }));
-    let existing: CardTransaction | undefined;
-    if (input.existingBankTransactionId) {
-      existing = credits.find((item) => item.id === input.existingBankTransactionId)?.transaction;
-      if (!existing) throw new Error('The selected Bank/UPI credit does not match this return.');
-    } else if (input.reference) {
-      const referenced = credits.filter((item) => item.transaction.reference === input.reference);
-      if (referenced.length > 1)
-        throw new Error(
-          'More than one Bank/UPI credit has this reference; choose the exact receipt.',
-        );
-      if (referenced.length === 1) existing = referenced[0].transaction;
-      else if (
-        credits.some(
-          (item) =>
-            item.transaction.amountMinor === input.amountMinor &&
-            item.transaction.transactionDate === input.eventDate,
-        )
-      )
-        throw new Error('An existing Bank/UPI credit has different reference details.');
-    } else {
-      const matching = credits.filter(
-        (item) =>
-          item.transaction.amountMinor === input.amountMinor &&
-          item.transaction.transactionDate === input.eventDate,
+    if (!input.existingBankTransactionId) {
+      const rows = await tx.query<{ payload: string }>(
+        `SELECT payload FROM card_transactions
+         WHERE type='CREDIT' AND json_extract(payload,'$.cardId')=?
+           AND amount_minor=? AND transaction_date=?`,
+        [bank.id, input.amountMinor, input.eventDate],
       );
-      if (matching.length > 1)
+      const candidates = rows
+        .map((row) => JSON.parse(row.payload) as CardTransaction)
+        .filter((transaction) => !input.reference || transaction.reference === input.reference);
+      if (candidates.length)
         throw new Error(
-          'More than one Bank/UPI credit matches; choose the exact existing receipt.',
+          'A Bank/UPI credit may already represent this return. Select it explicitly or enter a distinct reference.',
         );
-      if (matching.length === 1) existing = matching[0].transaction;
+      return undefined;
     }
+    const [row] = await tx.query<{ payload: string }>(
+      "SELECT payload FROM card_transactions WHERE id=? AND type='CREDIT'",
+      [input.existingBankTransactionId],
+    );
+    const existing = row ? (JSON.parse(row.payload) as CardTransaction) : undefined;
     if (
-      existing &&
-      (existing.cardId !== bank.id ||
-        existing.type !== 'CREDIT' ||
-        existing.amountMinor !== input.amountMinor ||
-        existing.transactionDate !== input.eventDate ||
-        (input.reference && existing.reference !== input.reference))
+      !existing ||
+      existing.cardId !== bank.id ||
+      existing.amountMinor !== input.amountMinor ||
+      existing.transactionDate !== input.eventDate ||
+      (input.reference && existing.reference !== input.reference)
     )
       throw new Error('The selected Bank/UPI credit does not match this return.');
     if (existing) {

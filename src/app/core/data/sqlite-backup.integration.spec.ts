@@ -1270,38 +1270,40 @@ describe('Durable first-run data, additive read migration and private portable b
       eventType: 'MANUAL_CREDIT',
       eventDate: addCalendarDays(today, -4),
     });
-    const fundedLoad = {
-      id: 'return-test-funded-load',
+    const loadCreatedAt = new Date().toISOString();
+    const loadTransaction: CardTransaction = {
+      id: 'return-test-load-transaction',
+      cardId: bank.id,
+      type: 'PURCHASE',
+      amountMinor: 6500,
+      currencyCode: 'INR',
+      transactionDate: addCalendarDays(today, -3),
+      transactionTime: '10:00',
+      categoryId: 'other',
+      merchant: 'Synthetic UPI Lite load',
+      attachmentIds: [],
+      paymentMethod: 'WALLET_LOADING',
+      origin: 'MANUAL',
+      createdAt: loadCreatedAt,
+      updatedAt: loadCreatedAt,
+    };
+    await store.saveManualTransaction(loadTransaction, '', false, undefined, '', {
       walletId: wallet.id,
-      eventType: 'FUNDED_LOAD',
-      eventDate: addCalendarDays(today, -3),
-      amountMinor: 6000,
-      balanceDeltaMinor: 6000,
       loadedAmountMinor: 6000,
+    });
+    await wallets.reloadFinancialHistory();
+    const fundedLoad = wallets
+      .events()
+      .find((event) => event.sourceTransactionId === loadTransaction.id)!;
+    expect(fundedLoad).toMatchObject({
+      eventType: 'FUNDED_LOAD',
+      amountMinor: 6000,
+      loadedAmountMinor: 6000,
+      debitAmountMinor: 6500,
       feeMinor: 500,
       fundingSourceKind: 'BANK',
       fundingSourceId: bank.id,
-      createdAt: `${addCalendarDays(today, -3)}T10:00:00.000Z`,
-      updatedAt: `${addCalendarDays(today, -3)}T10:00:00.000Z`,
-    };
-    await database.run(
-      'INSERT INTO consumer_wallet_events(id,wallet_id,event_type,event_date,amount_minor,balance_delta_minor,loaded_amount_minor,fee_minor,funding_source_kind,funding_source_id,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
-      [
-        fundedLoad.id,
-        fundedLoad.walletId,
-        fundedLoad.eventType,
-        fundedLoad.eventDate,
-        fundedLoad.amountMinor,
-        fundedLoad.balanceDeltaMinor,
-        fundedLoad.loadedAmountMinor,
-        fundedLoad.feeMinor,
-        fundedLoad.fundingSourceKind,
-        fundedLoad.fundingSourceId,
-        JSON.stringify(fundedLoad),
-        fundedLoad.createdAt,
-        fundedLoad.updatedAt,
-      ],
-    );
+    });
     const input = {
       id: 'return-test-event',
       walletId: wallet.id,
@@ -1333,6 +1335,9 @@ describe('Durable first-run data, additive read migration and private portable b
     expect(rows('SELECT id FROM consumer_wallet_events WHERE id=?', [input.id])).toEqual([]);
 
     const confirmedInput = { ...input, confirmationKey: preview.confirmationKey };
+    const bankSourcesBeforeFailure = rows(
+      "SELECT encrypted_value FROM app_preferences WHERE key='payment_sources'",
+    );
     sql.exec(
       `CREATE TRIGGER fail_return_link BEFORE INSERT ON consumer_wallet_return_links
        BEGIN SELECT RAISE(ABORT,'synthetic return link failure'); END`,
@@ -1347,6 +1352,14 @@ describe('Durable first-run data, additive read migration and private portable b
     expect(
       rows('SELECT * FROM consumer_wallet_expense_reversals WHERE return_event_id=?', [input.id]),
     ).toEqual([]);
+    expect(
+      rows('SELECT id FROM card_transactions WHERE id=?', [
+        `wallet-return-bank-credit-${input.id}`,
+      ]),
+    ).toEqual([]);
+    expect(rows("SELECT encrypted_value FROM app_preferences WHERE key='payment_sources'")).toEqual(
+      bankSourcesBeforeFailure,
+    );
     expect(store.paymentSources().find((source) => source.id === bank.id)?.balanceMinor).toBe(
       50000,
     );
@@ -1358,24 +1371,33 @@ describe('Durable first-run data, additive read migration and private portable b
       eventType: 'UPI_LITE_RETURN',
       amountMinor: 8000,
       balanceDeltaMinor: -8000,
+      sourceTransactionId: `wallet-return-bank-credit-${input.id}`,
     });
     expect(
       rows(
-        'SELECT credit_event_id,allocated_minor,expense_reversal_minor FROM consumer_wallet_event_allocations WHERE debit_event_id=? ORDER BY created_at,id',
+        'SELECT credit_event_id,allocated_minor,expense_reversal_minor FROM consumer_wallet_event_allocations WHERE debit_event_id=?',
         [input.id],
       ),
-    ).toEqual([
-      {
-        credit_event_id: 'return-test-manual-credit',
-        allocated_minor: 4000,
-        expense_reversal_minor: 0,
-      },
-      {
-        credit_event_id: fundedLoad.id,
-        allocated_minor: 4000,
-        expense_reversal_minor: 4000,
-      },
-    ]);
+    ).toHaveLength(2);
+    expect(
+      rows(
+        'SELECT credit_event_id,allocated_minor,expense_reversal_minor FROM consumer_wallet_event_allocations WHERE debit_event_id=?',
+        [input.id],
+      ),
+    ).toEqual(
+      expect.arrayContaining([
+        {
+          credit_event_id: 'return-test-manual-credit',
+          allocated_minor: 4000,
+          expense_reversal_minor: 0,
+        },
+        {
+          credit_event_id: fundedLoad.id,
+          allocated_minor: 4000,
+          expense_reversal_minor: 4000,
+        },
+      ]),
+    );
     expect(
       rows(
         'SELECT credit_event_id,funded_load_event_id,reversed_minor FROM consumer_wallet_expense_reversals WHERE return_event_id=?',
@@ -1390,16 +1412,29 @@ describe('Durable first-run data, additive read migration and private portable b
     ]);
     expect(
       rows(
-        'SELECT bank_source_id,reference,note FROM consumer_wallet_return_links WHERE return_event_id=?',
+        'SELECT bank_source_id,existing_bank_transaction_id,reference,note FROM consumer_wallet_return_links WHERE return_event_id=?',
         [input.id],
       ),
     ).toEqual([
       {
         bank_source_id: bank.id,
+        existing_bank_transaction_id: null,
         reference: input.reference,
         note: input.note,
       },
     ]);
+    const bankReturnRows = rows('SELECT payload FROM card_transactions WHERE id=?', [
+      `wallet-return-bank-credit-${input.id}`,
+    ]);
+    expect(bankReturnRows).toHaveLength(1);
+    expect(JSON.parse(String(bankReturnRows[0]['payload']))).toMatchObject({
+      cardId: bank.id,
+      type: 'CREDIT',
+      amountMinor: input.amountMinor,
+      categoryId: 'contra-expenses',
+      origin: 'MANUAL',
+      balanceEffect: { sourceId: bank.id, deltaMinor: input.amountMinor },
+    });
     expect(store.paymentSources().find((source) => source.id === bank.id)?.balanceMinor).toBe(
       58000,
     );
@@ -1410,6 +1445,220 @@ describe('Durable first-run data, additive read migration and private portable b
     expect(store.paymentSources().find((source) => source.id === bank.id)?.balanceMinor).toBe(
       58000,
     );
+  });
+  it('links only an explicitly selected Bank credit without posting or applying a duplicate', async () => {
+    await database.initialise();
+    const store = TestBed.inject(CardNestStore);
+    await store.initialisePreferences();
+    const wallets = TestBed.inject(ConsumerWalletService);
+    await wallets.initialise();
+    const bank = await store.addBankAccount({ institution: 'ICICI Bank', lastDigits: '419' });
+    await store.enableBankTracking({ [bank.id]: 50000 });
+    const wallet = await wallets.registerWallet({ providerId: 'upi-lite' });
+    const today = indiaTodayIso();
+    const eventDate = addCalendarDays(today, 1);
+    await wallets.addWalletCredit({
+      id: 'existing-return-wallet-credit',
+      walletId: wallet.id,
+      amountMinor: 5000,
+      eventType: 'MANUAL_CREDIT',
+      eventDate: today,
+    });
+    const existingCredit: CardTransaction = {
+      id: 'existing-upi-return-bank-credit',
+      cardId: bank.id,
+      type: 'CREDIT',
+      amountMinor: 5000,
+      currencyCode: 'INR',
+      transactionDate: eventDate,
+      categoryId: 'contra-expenses',
+      reference: 'EXISTING-RETURN-RECEIPT',
+      origin: 'MANUAL',
+      attachmentIds: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    await store.saveManualTransaction(existingCredit);
+    const balanceAfterExistingCredit = store
+      .paymentSources()
+      .find((source) => source.id === bank.id)?.balanceMinor;
+    expect(balanceAfterExistingCredit).toBe(55000);
+    const input = {
+      id: 'explicit-existing-return-event',
+      walletId: wallet.id,
+      bankSourceId: bank.id,
+      amountMinor: 5000,
+      eventDate,
+      eventTime: '10:00',
+      reference: existingCredit.reference,
+    };
+    await expect(wallets.previewUpiLiteReturn(input)).rejects.toThrow(
+      'Select it explicitly or enter a distinct reference',
+    );
+    const preview = await wallets.previewUpiLiteReturn({
+      ...input,
+      existingBankTransactionId: existingCredit.id,
+    });
+    expect(preview.existingBankTransactionId).toBe(existingCredit.id);
+    const returned = await wallets.recordUpiLiteReturn({
+      ...input,
+      existingBankTransactionId: existingCredit.id,
+      confirmationKey: preview.confirmationKey,
+    });
+
+    expect(returned.sourceTransactionId).toBe(existingCredit.id);
+    expect(
+      rows(
+        'SELECT existing_bank_transaction_id FROM consumer_wallet_return_links WHERE return_event_id=?',
+        [input.id],
+      ),
+    ).toEqual([{ existing_bank_transaction_id: existingCredit.id }]);
+    expect(
+      rows(
+        "SELECT id FROM card_transactions WHERE type='CREDIT' AND json_extract(payload,'$.cardId')=?",
+        [bank.id],
+      ),
+    ).toEqual([{ id: existingCredit.id }]);
+    expect(store.updateTransaction({ ...existingCredit, merchant: 'Unsafe linked edit' })).toBe(
+      false,
+    );
+    expect(store.transactionWriteError()).toContain('linked to a UPI Lite return');
+    expect(store.deleteTransaction(existingCredit.id)).toBe(false);
+    expect(rows('SELECT id FROM card_transactions WHERE id=?', [existingCredit.id])).toHaveLength(
+      1,
+    );
+    expect(store.paymentSources().find((source) => source.id === bank.id)?.balanceMinor).toBe(
+      balanceAfterExistingCredit,
+    );
+  });
+  it('preserves promotional and funded-load FIFO order and rejects ineligible returns', async () => {
+    await database.initialise();
+    const store = TestBed.inject(CardNestStore);
+    await store.initialisePreferences();
+    const wallets = TestBed.inject(ConsumerWalletService);
+    await wallets.initialise();
+    const bank = await store.addBankAccount({ institution: 'ICICI Bank', lastDigits: '419' });
+    await store.enableBankTracking({ [bank.id]: 50000 });
+    const wallet = await wallets.registerWallet({ providerId: 'upi-lite' });
+    const today = indiaTodayIso();
+    const saveFundedLoad = async (id: string, eventDate: string) => {
+      const createdAt = new Date().toISOString();
+      await store.saveManualTransaction(
+        {
+          id,
+          cardId: bank.id,
+          type: 'PURCHASE',
+          amountMinor: 6500,
+          currencyCode: 'INR',
+          transactionDate: eventDate,
+          transactionTime: '10:00',
+          categoryId: 'other',
+          attachmentIds: [],
+          paymentMethod: 'WALLET_LOADING',
+          origin: 'MANUAL',
+          createdAt,
+          updatedAt: createdAt,
+        },
+        '',
+        false,
+        undefined,
+        '',
+        { walletId: wallet.id, loadedAmountMinor: 6000 },
+      );
+    };
+    const recordReturn = async (id: string, amountMinor: number, eventDate: string) => {
+      const input = {
+        id,
+        walletId: wallet.id,
+        bankSourceId: bank.id,
+        amountMinor,
+        eventDate,
+        eventTime: '10:00',
+      };
+      const preview = await wallets.previewUpiLiteReturn(input);
+      const returned = await wallets.recordUpiLiteReturn({
+        ...input,
+        confirmationKey: preview.confirmationKey,
+      });
+      return { preview, returned };
+    };
+
+    await wallets.addWalletCredit({
+      id: 'promo-before-load',
+      walletId: wallet.id,
+      amountMinor: 4000,
+      eventType: 'PROMOTIONAL_CREDIT',
+      eventDate: addCalendarDays(today, -8),
+    });
+    await saveFundedLoad('load-after-promo', addCalendarDays(today, -7));
+    const promoFirst = await recordReturn('return-promo-first', 10000, addCalendarDays(today, -6));
+    expect(promoFirst.preview).toMatchObject({
+      fundedPrincipalReversalMinor: 6000,
+      nonFundedReturnMinor: 4000,
+      remainingWalletBalanceMinor: 0,
+      attributions: [
+        { creditEventId: 'promo-before-load', allocatedMinor: 4000, expenseReversalMinor: 0 },
+        { allocatedMinor: 6000, expenseReversalMinor: 6000 },
+      ],
+    });
+
+    await saveFundedLoad('load-before-promo', addCalendarDays(today, -4));
+    await wallets.addWalletCredit({
+      id: 'promo-after-load',
+      walletId: wallet.id,
+      amountMinor: 4000,
+      eventType: 'PROMOTIONAL_CREDIT',
+      eventDate: addCalendarDays(today, -3),
+    });
+    const loadFirst = await recordReturn('return-load-first', 8000, addCalendarDays(today, -2));
+    expect(loadFirst.preview).toMatchObject({
+      fundedPrincipalReversalMinor: 6000,
+      nonFundedReturnMinor: 2000,
+      remainingWalletBalanceMinor: 2000,
+      attributions: [
+        { allocatedMinor: 6000, expenseReversalMinor: 6000 },
+        { creditEventId: 'promo-after-load', allocatedMinor: 2000, expenseReversalMinor: 0 },
+      ],
+    });
+    const fundedLoadRows = rows(
+      "SELECT amount_minor,loaded_amount_minor,fee_minor FROM consumer_wallet_events WHERE event_type='FUNDED_LOAD' AND wallet_id=? ORDER BY event_date",
+      [wallet.id],
+    );
+    expect(fundedLoadRows).toEqual([
+      { amount_minor: 6000, loaded_amount_minor: 6000, fee_minor: 500 },
+      { amount_minor: 6000, loaded_amount_minor: 6000, fee_minor: 500 },
+    ]);
+    expect(store.paymentSources().find((source) => source.id === bank.id)?.balanceMinor).toBe(
+      50000,
+    );
+
+    const invalidBankInput = {
+      id: 'invalid-return-bank',
+      walletId: wallet.id,
+      bankSourceId: 'source-cash',
+      amountMinor: 1000,
+      eventDate: addCalendarDays(today, 1),
+      confirmationKey: '',
+    };
+    await expect(wallets.recordUpiLiteReturn(invalidBankInput)).rejects.toThrow(
+      'Choose an active registered Bank/UPI account',
+    );
+    await wallets.archiveWallet(wallet.id);
+    await expect(
+      wallets.recordUpiLiteReturn({
+        ...invalidBankInput,
+        id: 'archived-return-wallet',
+        bankSourceId: bank.id,
+      }),
+    ).rejects.toThrow('active registered consumer wallet');
+    await wallets.setEnabled(false);
+    await expect(
+      wallets.recordUpiLiteReturn({
+        ...invalidBankInput,
+        id: 'disabled-return-wallet',
+        bankSourceId: bank.id,
+      }),
+    ).rejects.toThrow('Wallets is off');
   });
   beforeEach(() => {
     vi.clearAllMocks();
@@ -1549,8 +1798,19 @@ describe('Durable first-run data, additive read migration and private portable b
         balanceDeltaMinor: -10000,
         fundingSourceKind: 'BANK',
         returnSourceId: 'backup-favourite-bank',
+        sourceTransactionId: 'backup-return-bank-credit',
         createdAt: '2026-10-23T10:00:00Z',
         updatedAt: '2026-10-23T10:00:00Z',
+      },
+      {
+        id: 'backup-refund-credit',
+        walletId: upiLite.id,
+        eventType: 'REFUND',
+        eventDate: '2026-10-24',
+        amountMinor: 5000,
+        balanceDeltaMinor: 5000,
+        createdAt: '2026-10-24T11:00:00Z',
+        updatedAt: '2026-10-24T11:00:00Z',
       },
       {
         id: 'backup-manual-credit',
@@ -1564,6 +1824,33 @@ describe('Durable first-run data, additive read migration and private portable b
       },
     ];
     await database.atomic(async (tx) => {
+      await tx.run(
+        'INSERT INTO card_transactions(id,card_id,category_id,type,amount_minor,currency_code,transaction_date,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)',
+        [
+          'backup-return-bank-credit',
+          null,
+          'contra-expenses',
+          'CREDIT',
+          10000,
+          'INR',
+          '2026-10-23',
+          JSON.stringify({
+            id: 'backup-return-bank-credit',
+            cardId: 'backup-favourite-bank',
+            type: 'CREDIT',
+            amountMinor: 10000,
+            currencyCode: 'INR',
+            transactionDate: '2026-10-23',
+            categoryId: 'contra-expenses',
+            origin: 'MANUAL',
+            attachmentIds: [],
+            createdAt: '2026-10-23T10:00:00Z',
+            updatedAt: '2026-10-23T10:00:00Z',
+          }),
+          '2026-10-23T10:00:00Z',
+          '2026-10-23T10:00:00Z',
+        ],
+      );
       for (const event of eventRows)
         await tx.run(
           'INSERT INTO consumer_wallet_events(id,wallet_id,event_type,event_date,amount_minor,balance_delta_minor,loaded_amount_minor,fee_minor,funding_source_kind,funding_source_id,source_transaction_id,return_source_id,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
@@ -1600,6 +1887,49 @@ describe('Durable first-run data, additive read migration and private portable b
         'INSERT INTO consumer_wallet_event_allocations(id,debit_event_id,credit_event_id,allocated_minor,expense_reversal_minor,created_at) VALUES(?,?,?,?,?,?)',
         ['backup-return-allocation', 'backup-upi-return', 'backup-upi-load', 10000, 10000, 'now'],
       );
+      await tx.run(
+        'INSERT INTO consumer_wallet_return_links(return_event_id,wallet_id,bank_source_id,existing_bank_transaction_id,balance_effect,reference,note,created_at) VALUES(?,?,?,?,?,?,?,?)',
+        [
+          'backup-upi-return',
+          upiLite.id,
+          'backup-favourite-bank',
+          null,
+          JSON.stringify({
+            sourceId: 'backup-favourite-bank',
+            deltaMinor: 10000,
+            appliedAt: '2026-10-23T10:00:00Z',
+          }),
+          'BACKUP-RETURN-REF',
+          'Synthetic backup return',
+          '2026-10-23T10:00:00Z',
+        ],
+      );
+      await tx.run(
+        'INSERT INTO consumer_wallet_expense_reversals(return_event_id,credit_event_id,funded_load_event_id,reversed_minor,created_at) VALUES(?,?,?,?,?)',
+        ['backup-upi-return', 'backup-upi-load', 'backup-upi-load', 10000, 'now'],
+      );
+      await tx.run(
+        'INSERT INTO consumer_wallet_credit_provenance(credit_event_id,source_credit_event_id,allocated_minor,created_at) VALUES(?,?,?,?)',
+        ['backup-refund-credit', 'backup-upi-load', 5000, 'now'],
+      );
+      await tx.run(
+        'INSERT INTO transaction_split_groups(id,original_amount_minor,created_at,kind,anchor_transaction_id,title,currency_code,bill_total_minor,updated_at) VALUES(?,?,?,?,?,?,?,?,?)',
+        [
+          'backup-wallet-split-group',
+          5000,
+          'now',
+          'PAYMENTS',
+          null,
+          'Synthetic mixed split',
+          'INR',
+          5000,
+          'now',
+        ],
+      );
+      await tx.run(
+        'INSERT INTO consumer_wallet_split_members(group_id,wallet_event_id,member_kind,member_order,created_at) VALUES(?,?,?,?,?)',
+        ['backup-wallet-split-group', 'backup-wallet-purchase', 'WALLET_PURCHASE', 1, 'now'],
+      );
     });
 
     const utilities = TestBed.inject(UtilitiesService);
@@ -1628,6 +1958,20 @@ describe('Durable first-run data, additive read migration and private portable b
     const expectedWallets = rows('SELECT * FROM consumer_wallets ORDER BY id');
     const expectedEvents = rows('SELECT * FROM consumer_wallet_events ORDER BY id');
     const expectedAllocations = rows('SELECT * FROM consumer_wallet_event_allocations ORDER BY id');
+    const expectedReturnLinks = rows(
+      'SELECT * FROM consumer_wallet_return_links ORDER BY return_event_id',
+    );
+    const expectedReversals = rows(
+      'SELECT * FROM consumer_wallet_expense_reversals ORDER BY return_event_id,credit_event_id,funded_load_event_id',
+    );
+    const expectedCreditProvenance = rows(
+      'SELECT * FROM consumer_wallet_credit_provenance ORDER BY credit_event_id,source_credit_event_id',
+    );
+    const expectedWalletSplitMembers = rows(
+      'SELECT * FROM consumer_wallet_split_members ORDER BY group_id,member_order',
+    );
+    const expectedSplitGroups = rows('SELECT * FROM transaction_split_groups ORDER BY id');
+    const expectedCardTransactions = rows('SELECT * FROM card_transactions ORDER BY id');
     const expectedSources = store.paymentSources();
     const expectedRecharges = rows('SELECT * FROM mobile_recharges ORDER BY id');
     vi.stubGlobal('crypto', webcrypto);
@@ -1636,13 +1980,46 @@ describe('Durable first-run data, additive read migration and private portable b
       const backups = TestBed.inject(BackupService);
       const backup = await backups.create('synthetic-wallet-roundtrip-passphrase');
       expect(backup.contents).not.toContain('Synthetic funded wallet');
-      await database.run('DELETE FROM consumer_wallet_event_allocations');
-      await database.run('DELETE FROM consumer_wallet_events');
-      await database.run('DELETE FROM consumer_wallets');
-      await database.run('DELETE FROM mobile_recharges');
+      expect(rows('PRAGMA foreign_keys')).toEqual([{ foreign_keys: 1 }]);
+      expect(rows('PRAGMA foreign_key_check')).toEqual([]);
       await database.run(
-        "UPDATE app_preferences SET encrypted_value='[]' WHERE key='payment_sources'",
+        "UPDATE consumer_wallet_events SET notes='mutated after backup' WHERE id='backup-upi-return'",
       );
+      const preRestoreEvents = rows('SELECT * FROM consumer_wallet_events ORDER BY id');
+      const preRestoreLinks = rows(
+        'SELECT * FROM consumer_wallet_return_links ORDER BY return_event_id',
+      );
+      sql.exec(
+        `CREATE TRIGGER fail_wallet_relation_restore BEFORE INSERT ON consumer_wallet_return_links
+         BEGIN SELECT RAISE(ABORT,'synthetic wallet relation restore failure'); END`,
+      );
+      await expect(
+        backups.restore(backup.contents, 'synthetic-wallet-roundtrip-passphrase'),
+      ).rejects.toThrow('synthetic wallet relation restore failure');
+      expect(rows('SELECT * FROM consumer_wallet_events ORDER BY id')).toEqual(preRestoreEvents);
+      expect(rows('SELECT * FROM consumer_wallet_return_links ORDER BY return_event_id')).toEqual(
+        preRestoreLinks,
+      );
+      expect(rows('SELECT * FROM consumer_wallet_event_allocations ORDER BY id')).toEqual(
+        expectedAllocations,
+      );
+      expect(
+        rows(
+          'SELECT * FROM consumer_wallet_expense_reversals ORDER BY return_event_id,credit_event_id,funded_load_event_id',
+        ),
+      ).toEqual(expectedReversals);
+      expect(
+        rows(
+          'SELECT * FROM consumer_wallet_credit_provenance ORDER BY credit_event_id,source_credit_event_id',
+        ),
+      ).toEqual(expectedCreditProvenance);
+      expect(
+        rows('SELECT * FROM consumer_wallet_split_members ORDER BY group_id,member_order'),
+      ).toEqual(expectedWalletSplitMembers);
+      expect(rows('SELECT * FROM card_transactions ORDER BY id')).toEqual(expectedCardTransactions);
+      expect(rows('PRAGMA foreign_key_check')).toEqual([]);
+      sql.exec('DROP TRIGGER fail_wallet_relation_restore');
+
       await backups.restore(backup.contents, 'synthetic-wallet-roundtrip-passphrase');
       await store.initialisePreferences();
       await wallets.initialise();
@@ -1653,6 +2030,27 @@ describe('Durable first-run data, additive read migration and private portable b
       expect(rows('SELECT * FROM consumer_wallet_event_allocations ORDER BY id')).toEqual(
         expectedAllocations,
       );
+      expect(rows('SELECT * FROM consumer_wallet_return_links ORDER BY return_event_id')).toEqual(
+        expectedReturnLinks,
+      );
+      expect(
+        rows(
+          'SELECT * FROM consumer_wallet_expense_reversals ORDER BY return_event_id,credit_event_id,funded_load_event_id',
+        ),
+      ).toEqual(expectedReversals);
+      expect(
+        rows(
+          'SELECT * FROM consumer_wallet_credit_provenance ORDER BY credit_event_id,source_credit_event_id',
+        ),
+      ).toEqual(expectedCreditProvenance);
+      expect(
+        rows('SELECT * FROM consumer_wallet_split_members ORDER BY group_id,member_order'),
+      ).toEqual(expectedWalletSplitMembers);
+      expect(rows('SELECT * FROM transaction_split_groups ORDER BY id')).toEqual(
+        expectedSplitGroups,
+      );
+      expect(rows('SELECT * FROM card_transactions ORDER BY id')).toEqual(expectedCardTransactions);
+      expect(rows('PRAGMA foreign_key_check')).toEqual([]);
       expect(wallets.featureState()).toBe('DISABLED');
       expect(wallets.showWalletNavigation()).toBe(true);
       expect(wallets.wallets().find((wallet) => wallet.id === upiLite.id)?.archived).toBe(true);
