@@ -333,10 +333,35 @@ export interface ConsumerWalletEvent {
   readonly merchant?: string;
   readonly memo?: string;
   readonly notes?: string;
+  readonly attachmentIds?: readonly string[];
   readonly paymentMethod?: SmsPaymentMethod;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
+
+export type ConsumerWalletActivityClassification =
+  | 'SPENDING_ALREADY_COUNTED'
+  | 'BALANCE_CREDIT_ONLY'
+  | 'BALANCE_ADJUSTMENT'
+  | 'RETURN_TO_BANK'
+  | 'CANCELLATION';
+
+export type FinancialActivity =
+  | {
+      readonly kind: 'CARD_TRANSACTION';
+      readonly key: string;
+      readonly date: string;
+      readonly transaction: CardTransaction;
+      readonly classification: 'CARD_OR_BANK_LEDGER';
+    }
+  | {
+      readonly kind: 'CONSUMER_WALLET_EVENT';
+      readonly key: string;
+      readonly date: string;
+      readonly event: ConsumerWalletEvent;
+      readonly classification: ConsumerWalletActivityClassification;
+      readonly consolidatedExpenseContributionMinor: 0;
+    };
 
 /** FIFO provenance consumed by a wallet debit; not a card payment-group relationship. */
 export interface ConsumerWalletEventAllocation {

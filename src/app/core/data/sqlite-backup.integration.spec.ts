@@ -64,6 +64,201 @@ vi.mock('@capacitor-community/sqlite', () => ({
 describe('Durable first-run data, additive read migration and private portable backups', () => {
   let sql: DatabaseSyncType;
   let database: SqliteDatabase;
+  it('demonstrates v17 root ordering cannot retain refund-of-refund allocation segment order', async () => {
+    await database.initialise();
+    const store = TestBed.inject(CardNestStore);
+    await store.initialisePreferences();
+    const wallets = TestBed.inject(ConsumerWalletService);
+    await wallets.initialise();
+    const bank = await store.addBankAccount({ institution: 'ICICI Bank', lastDigits: '419' });
+    const wallet = await wallets.registerWallet({ providerId: 'upi-lite' });
+    const today = indiaTodayIso();
+    const events = [
+      {
+        id: 'lineage-promo',
+        eventType: 'PROMOTIONAL_CREDIT',
+        amountMinor: 6000,
+        balanceDeltaMinor: 6000,
+      },
+      {
+        id: 'lineage-first-purchase',
+        eventType: 'PURCHASE',
+        amountMinor: 6000,
+        balanceDeltaMinor: -6000,
+      },
+      {
+        id: 'lineage-new-load',
+        eventType: 'FUNDED_LOAD',
+        amountMinor: 6000,
+        balanceDeltaMinor: 6000,
+      },
+      {
+        id: 'lineage-first-refund',
+        eventType: 'REFUND',
+        amountMinor: 6000,
+        balanceDeltaMinor: 6000,
+      },
+      {
+        id: 'lineage-second-purchase',
+        eventType: 'PURCHASE',
+        amountMinor: 10000,
+        balanceDeltaMinor: -10000,
+      },
+      {
+        id: 'lineage-second-refund',
+        eventType: 'REFUND',
+        amountMinor: 10000,
+        balanceDeltaMinor: 10000,
+      },
+    ];
+    await database.atomic(async (tx) => {
+      for (const [index, value] of events.entries()) {
+        const eventDate = addCalendarDays(today, index - 7);
+        const event = {
+          ...value,
+          walletId: wallet.id,
+          eventDate,
+          createdAt: `${eventDate}T10:00:00Z`,
+          updatedAt: `${eventDate}T10:00:00Z`,
+        };
+        await tx.run(
+          'INSERT INTO consumer_wallet_events(id,wallet_id,event_type,event_date,amount_minor,balance_delta_minor,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)',
+          [
+            event.id,
+            wallet.id,
+            event.eventType,
+            eventDate,
+            event.amountMinor,
+            event.balanceDeltaMinor,
+            JSON.stringify(event),
+            event.createdAt,
+            event.updatedAt,
+          ],
+        );
+      }
+      for (const [debit, credit, amount] of [
+        ['lineage-first-purchase', 'lineage-promo', 6000],
+        ['lineage-second-purchase', 'lineage-new-load', 6000],
+        ['lineage-second-purchase', 'lineage-first-refund', 4000],
+      ] as const) {
+        await tx.run(
+          'INSERT INTO consumer_wallet_event_allocations(id,debit_event_id,credit_event_id,allocated_minor,expense_reversal_minor,created_at) VALUES(?,?,?,?,?,?)',
+          [`${debit}:${credit}`, debit, credit, amount, 0, 'now'],
+        );
+      }
+      for (const [refund, root, amount] of [
+        ['lineage-first-refund', 'lineage-promo', 6000],
+        ['lineage-second-refund', 'lineage-new-load', 6000],
+        ['lineage-second-refund', 'lineage-promo', 4000],
+      ] as const) {
+        await tx.run(
+          'INSERT INTO consumer_wallet_credit_provenance(credit_event_id,source_credit_event_id,allocated_minor,created_at) VALUES(?,?,?,?)',
+          [refund, root, amount, 'now'],
+        );
+      }
+    });
+    const preview = await wallets.previewUpiLiteReturn({
+      id: 'lineage-return-preview',
+      walletId: wallet.id,
+      bankSourceId: bank.id,
+      amountMinor: 8000,
+      eventDate: today,
+      eventTime: '10:00',
+    });
+    expect(preview.attributions).toMatchObject([
+      { creditEventId: 'lineage-first-refund', allocatedMinor: 2000, expenseReversalMinor: 0 },
+      { creditEventId: 'lineage-second-refund', allocatedMinor: 6000, expenseReversalMinor: 2000 },
+    ]);
+    expect(preview.fundedPrincipalReversalMinor).toBe(2000);
+    expect(preview.fundedPrincipalReversalMinor).not.toBe(6000);
+  });
+  it('previews and confirms wallet purchases without fabricating a card or bank debit', async () => {
+    await database.initialise();
+    const store = TestBed.inject(CardNestStore);
+    await store.initialisePreferences();
+    const wallets = TestBed.inject(ConsumerWalletService);
+    await wallets.initialise();
+    const wallet = await wallets.registerWallet({ providerId: 'amazon-pay' });
+    const today = indiaTodayIso();
+    await wallets.addWalletCredit({
+      id: 'purchase-preview-credit',
+      walletId: wallet.id,
+      amountMinor: 30000,
+      eventType: 'MANUAL_CREDIT',
+      eventDate: addCalendarDays(today, -2),
+    });
+    const input = {
+      id: 'confirmed-wallet-purchase',
+      walletId: wallet.id,
+      amountMinor: 10000,
+      eventDate: today,
+      eventTime: '10:00',
+      categoryId: 'other',
+      merchant: 'Synthetic wallet merchant',
+      notes: 'Synthetic receipt purchase',
+      attachmentIds: ['data:image/png;base64,aGVsbG8='],
+    };
+    const beforeTransactions = rows('SELECT * FROM card_transactions ORDER BY id');
+    const preview = await wallets.previewWalletPurchase(input);
+    expect(preview).toMatchObject({
+      balanceBeforeMinor: 30000,
+      balanceAfterMinor: 20000,
+      allocations: [{ creditEventId: 'purchase-preview-credit', allocatedMinor: 10000 }],
+    });
+    expect(rows('SELECT id FROM consumer_wallet_events WHERE id=?', [input.id])).toEqual([]);
+    await expect(
+      wallets.recordWalletPurchase({
+        ...input,
+        amountMinor: 20000,
+        confirmationKey: preview.confirmationKey,
+      }),
+    ).rejects.toThrow('Review the purchase again');
+    expect(rows('SELECT id FROM consumer_wallet_events WHERE id=?', [input.id])).toEqual([]);
+    const purchase = await wallets.recordWalletPurchase({
+      ...input,
+      confirmationKey: preview.confirmationKey,
+    });
+    expect(purchase.attachmentIds).toEqual(input.attachmentIds);
+    expect(wallets.balances().get(wallet.id)).toBe(20000);
+    expect(rows('SELECT * FROM card_transactions ORDER BY id')).toEqual(beforeTransactions);
+    await expect(
+      wallets.recordWalletPurchase({ ...input, confirmationKey: preview.confirmationKey }),
+    ).resolves.toEqual(purchase);
+    expect(rows('SELECT id FROM consumer_wallet_events WHERE id=?', [input.id])).toHaveLength(1);
+    expect(
+      rows('SELECT allocated_minor FROM consumer_wallet_event_allocations WHERE debit_event_id=?', [
+        input.id,
+      ]),
+    ).toEqual([{ allocated_minor: 10000 }]);
+    await expect(
+      wallets.recordWalletPurchase({ ...input, merchant: 'Different merchant' }),
+    ).rejects.toThrow('different purchase');
+    await expect(
+      wallets.previewWalletPurchase({
+        ...input,
+        id: 'invalid-wallet-category',
+        categoryId: 'missing-category',
+      }),
+    ).rejects.toThrow('active transaction category');
+    await expect(
+      wallets.previewWalletPurchase({
+        ...input,
+        id: 'future-funded-purchase',
+        eventDate: addCalendarDays(today, -3),
+      }),
+    ).rejects.toThrow('historical wallet balance');
+    await expect(
+      wallets.previewWalletPurchase({ ...input, id: 'excess-wallet-purchase', amountMinor: 40000 }),
+    ).rejects.toThrow('historical wallet balance');
+    await wallets.archiveWallet(wallet.id);
+    await expect(
+      wallets.previewWalletPurchase({ ...input, id: 'archived-wallet-purchase' }),
+    ).rejects.toThrow('active registered consumer wallet');
+    await wallets.setEnabled(false);
+    await expect(
+      wallets.recordWalletPurchase({ ...input, id: 'disabled-wallet-purchase' }),
+    ).rejects.toThrow('Wallets is off');
+  });
   it('initializes Wallets from legacy FASTag data but preserves explicit OFF', async () => {
     await database.initialise();
     const store = TestBed.inject(CardNestStore);
@@ -1064,6 +1259,7 @@ describe('Durable first-run data, additive read migration and private portable b
   });
   it('does not let a future wallet credit fund a backdated purchase', async () => {
     await database.initialise();
+    await TestBed.inject(CardNestStore).initialisePreferences();
     const wallets = TestBed.inject(ConsumerWalletService);
     await wallets.initialise();
     const wallet = await wallets.registerWallet({ providerId: 'amazon-pay' });
@@ -1114,6 +1310,7 @@ describe('Durable first-run data, additive read migration and private portable b
   });
   it('accepts a safe backdated balance correction without changing later FIFO provenance', async () => {
     await database.initialise();
+    await TestBed.inject(CardNestStore).initialisePreferences();
     const wallets = TestBed.inject(ConsumerWalletService);
     await wallets.initialise();
     const wallet = await wallets.registerWallet({ providerId: 'amazon-pay' });
@@ -1150,6 +1347,7 @@ describe('Durable first-run data, additive read migration and private portable b
   });
   it('rejects a backdated correction that would change an audited downstream FIFO allocation', async () => {
     await database.initialise();
+    await TestBed.inject(CardNestStore).initialisePreferences();
     const wallets = TestBed.inject(ConsumerWalletService);
     await wallets.initialise();
     const wallet = await wallets.registerWallet({ providerId: 'amazon-pay' });
@@ -1196,6 +1394,7 @@ describe('Durable first-run data, additive read migration and private portable b
   });
   it('rejects a backdated correction that would make a later purchase historically negative', async () => {
     await database.initialise();
+    await TestBed.inject(CardNestStore).initialisePreferences();
     const wallets = TestBed.inject(ConsumerWalletService);
     await wallets.initialise();
     const wallet = await wallets.registerWallet({ providerId: 'amazon-pay' });

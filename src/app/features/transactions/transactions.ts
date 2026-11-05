@@ -19,15 +19,20 @@ import { Capacitor } from '@capacitor/core';
 import {
   BalanceTiming,
   CardTransaction,
+  ConsumerWalletActivityClassification,
   ConsumerWalletEvent,
   EmiPlan,
+  FinancialActivity,
   RecurringRule,
   SourceTransfer,
   TransactionType,
   WalletLoadingDetails,
 } from '../../core/models/domain';
 import { CardNestStore } from '../../core/services/card-nest-store';
-import { ConsumerWalletService } from '../../core/services/consumer-wallet.service';
+import {
+  ConsumerWalletService,
+  WalletPurchasePreview,
+} from '../../core/services/consumer-wallet.service';
 import {
   eligibleWalletLoadingDestinations,
   resolveWalletLoadAmounts,
@@ -75,31 +80,31 @@ import {
 } from '../../core/services/source-balance';
 import { SourceMovementDialog } from '../../shared/source-movement-dialog';
 import { ProfileModal } from '../../shared/profile-modal';
+import { consumerWalletProviderLabel } from '../wallets/consumer-wallet-providers';
 
 type GroupingMode = 'MONTH' | 'CYCLE' | 'STATEMENT';
-type TransactionTypeFilter = TransactionType | 'ALL' | 'WITH_IMAGE';
+type TransactionTypeFilter =
+  | TransactionType
+  | 'ALL'
+  | 'WITH_IMAGE'
+  | 'WALLET_PURCHASE'
+  | 'WALLET_REFUND'
+  | 'WALLET_CREDIT'
+  | 'WALLET_RETURN'
+  | 'WALLET_ADJUSTMENT';
 type RepeatChoice = 'NONE' | 'INFINITE' | `${number}`;
 type EmiKind = 'NO_COST' | 'STANDARD';
 type EmiStartMode = 'THIS_MONTH' | 'NEXT_MONTH' | 'CUSTOM';
-
-type ActivityProjectionItem =
-  | {
-      readonly kind: 'CARD_TRANSACTION';
-      readonly id: string;
-      readonly date: string;
-      readonly transaction: CardTransaction;
-    }
-  | {
-      readonly kind: 'CONSUMER_WALLET_EVENT';
-      readonly id: string;
-      readonly date: string;
-      readonly event: ConsumerWalletEvent;
-    };
+type PayFromSelection =
+  | { readonly kind: 'CARD'; readonly id: string }
+  | { readonly kind: 'BANK_UPI' }
+  | { readonly kind: 'PAYMENT_SOURCE'; readonly id: string }
+  | { readonly kind: 'CONSUMER_WALLET'; readonly walletId: string };
 
 interface SelectedFilterSource {
   readonly id: string;
   readonly label: string;
-  readonly kind: 'CARD' | 'PAYMENT_SOURCE';
+  readonly kind: 'CARD' | 'PAYMENT_SOURCE' | 'CONSUMER_WALLET';
 }
 interface TransactionFilterDraft {
   readonly search: string;
@@ -109,9 +114,12 @@ interface TransactionFilterDraft {
   readonly grouping: GroupingMode;
   readonly hideCredits: boolean;
   readonly creditCardsOnly: boolean;
+  readonly fromDate: string;
+  readonly toDate: string;
 }
 const TRANSACTION_PAGE_SIZE = 200;
 const MAX_RECEIPT_BYTES = 1_000_000;
+const CONSUMER_WALLET_SOURCE_PREFIX = 'consumer-wallet:';
 
 function sanitizedMoneyInput(value: string): string {
   const numeric = value.replace(/[^0-9.]/g, '');
@@ -150,6 +158,7 @@ export class TransactionsPage {
   private readonly calendarClock = inject(DeviceCalendarClock);
   readonly store = inject(CardNestStore);
   readonly consumerWallets = inject(ConsumerWalletService);
+  readonly walletProviderLabel = consumerWalletProviderLabel;
   recordedTime(transaction: CardTransaction): string {
     return recordedTransactionTime(
       transaction.transactionTime,
@@ -182,6 +191,12 @@ export class TransactionsPage {
   private deactivateResolver: ((allow: boolean) => void) | null = null;
   private discardClosesEditor = false;
   readonly detailTransactionId = signal<string | null>(null);
+  readonly detailWalletEventId = signal<string | null>(null);
+  readonly detailWalletEvent = computed(
+    () =>
+      this.consumerWallets.events().find((event) => event.id === this.detailWalletEventId()) ??
+      null,
+  );
   readonly detailTransaction = computed(
     () => this.store.transactions().find((item) => item.id === this.detailTransactionId()) ?? null,
   );
@@ -232,7 +247,8 @@ export class TransactionsPage {
       this.combineOpen() ||
       this.showForm() ||
       this.showSplitForm() ||
-      this.detailTransaction()
+      this.detailTransaction() ||
+      this.detailWalletEvent()
     ) {
       event.preventDefault();
       this.closeOverlays();
@@ -311,6 +327,9 @@ export class TransactionsPage {
   readonly payFromOpen = signal(false);
   readonly payFromSearch = signal('');
   readonly payFromBankMode = signal(false);
+  readonly walletPurchasePreview = signal<WalletPurchasePreview | null>(null);
+  readonly walletPurchaseApprovedFor = signal('');
+  readonly walletPurchaseEventId = signal('');
   readonly filtersOpen = signal(false);
   readonly filterDraft = signal<TransactionFilterDraft | null>(null);
   readonly actionMenuId = signal<string | null>(null);
@@ -326,6 +345,8 @@ export class TransactionsPage {
   readonly typeFilter = signal<TransactionTypeFilter>('ALL');
   readonly sourceFilter = signal(this.requestedSourceId ?? 'ALL');
   readonly categoryFilter = signal('ALL');
+  readonly fromDate = signal('');
+  readonly toDate = signal('');
   readonly grouping = signal<GroupingMode>('MONTH');
   readonly effectiveGrouping = computed<GroupingMode>(() => {
     if (this.isCreditCardSelected()) return 'STATEMENT';
@@ -340,6 +361,10 @@ export class TransactionsPage {
   readonly selectedFilterSource = computed<SelectedFilterSource | null>(() => {
     const id = this.sourceFilter();
     if (id === 'ALL') return null;
+    if (id.startsWith(CONSUMER_WALLET_SOURCE_PREFIX)) {
+      const walletId = id.slice(CONSUMER_WALLET_SOURCE_PREFIX.length);
+      return { id: walletId, label: this.consumerWalletName(walletId), kind: 'CONSUMER_WALLET' };
+    }
     const card = this.store.cards().find((item) => item.id === id);
     if (card) return { id, label: card.nickname, kind: 'CARD' };
     const source = this.store.paymentSources().find((item) => item.id === id);
@@ -373,7 +398,9 @@ export class TransactionsPage {
       Number(this.categoryFilter() !== 'ALL') +
       Number(this.grouping() !== 'MONTH') +
       Number(this.hideCredits()) +
-      Number(this.creditCardsOnly()),
+      Number(this.creditCardsOnly()) +
+      Number(Boolean(this.fromDate())) +
+      Number(Boolean(this.toDate())),
   );
   readonly repeatOptions = Array.from({ length: 36 }, (_, index) => index + 1);
   readonly types: readonly { value: TransactionType; label: string }[] = [
@@ -402,6 +429,11 @@ export class TransactionsPage {
     { value: 'ALL', label: 'All transaction types' },
     ...this.types,
     { value: 'WITH_IMAGE', label: 'With image' },
+    { value: 'WALLET_PURCHASE', label: 'Wallet purchase' },
+    { value: 'WALLET_REFUND', label: 'Wallet refund' },
+    { value: 'WALLET_CREDIT', label: 'Wallet credit' },
+    { value: 'WALLET_RETURN', label: 'UPI Lite return' },
+    { value: 'WALLET_ADJUSTMENT', label: 'Wallet adjustment' },
   ];
   readonly groupingOptions = computed<readonly AppSelectOption[]>(() => [
     {
@@ -452,6 +484,7 @@ export class TransactionsPage {
             : source.institution || 'Bank/UPI'
           : [source.lastDigits, source.institution || source.kind].filter(Boolean).join(' · '),
     })),
+    ...this.consumerWalletSourceOptions(),
   ]);
   readonly alphabeticalPaymentSources = computed(() =>
     [...this.store.activePaymentSources()].sort((left, right) =>
@@ -532,6 +565,28 @@ export class TransactionsPage {
       return terms.every((term) => searchable.includes(term));
     });
   });
+  readonly searchedPayFromConsumerWallets = computed(() => {
+    if (
+      !this.consumerWallets.enabled() ||
+      this.editingId() ||
+      this.form.controls.type.value !== 'PURCHASE' ||
+      this.editingArchivedCard()
+    )
+      return [];
+    const terms = this.payFromSearch().trim().toLowerCase().split(/\s+/).filter(Boolean);
+    return this.consumerWallets.activeWallets().filter((wallet) => {
+      const searchable =
+        `${consumerWalletProviderLabel(wallet.providerId)} ${wallet.customName ?? ''} ${wallet.nickname ?? ''}`.toLowerCase();
+      return terms.every((term) => searchable.includes(term));
+    });
+  });
+  readonly consumerWalletSourceOptions = computed<readonly AppSelectOption[]>(() =>
+    this.consumerWallets.wallets().map((wallet) => ({
+      value: `${CONSUMER_WALLET_SOURCE_PREFIX}${wallet.id}`,
+      label: `${wallet.nickname || wallet.customName || consumerWalletProviderLabel(wallet.providerId)}${wallet.archived ? ' · Archived' : ''}`,
+      detail: `${consumerWalletProviderLabel(wallet.providerId)} · ${this.money(this.consumerWallets.balances().get(wallet.id) ?? 0, 'INR')}`,
+    })),
+  );
   readonly bankAccountOptions = computed<readonly AppSelectOption[]>(() => {
     const selectedId = this.form.controls.cardId.value;
     const sources = this.store
@@ -552,6 +607,7 @@ export class TransactionsPage {
       nonNullable: true,
       validators: [Validators.required],
     }),
+    consumerWalletId: new FormControl('', { nonNullable: true }),
     type: new FormControl<TransactionType>(
       this.route.snapshot.queryParamMap.get('payment') === 'true' ? 'PAYMENT' : 'PURCHASE',
       { nonNullable: true, validators: [Validators.required] },
@@ -561,6 +617,7 @@ export class TransactionsPage {
       nonNullable: true,
       validators: [Validators.required],
     }),
+    transactionTime: new FormControl('', { nonNullable: true }),
     categoryId: new FormControl('other', {
       nonNullable: true,
       validators: [Validators.required],
@@ -593,6 +650,7 @@ export class TransactionsPage {
   baselineTimingNeeded(): boolean {
     this.formChanges();
     const value = this.form.getRawValue();
+    if (value.consumerWalletId) return false;
     const existing = this.store.transactions().find((item) => item.id === this.editingId());
     if (
       existing &&
@@ -924,6 +982,8 @@ export class TransactionsPage {
       .filter(
         (item) =>
           !item.emiCancelled &&
+          (!this.fromDate() || item.transactionDate >= this.fromDate()) &&
+          (!this.toDate() || item.transactionDate <= this.toDate()) &&
           (!item.emiInstallmentNumber ||
             item.emiInstallmentNumber === 1 ||
             item.transactionDate.slice(0, 7) <= currentMonth) &&
@@ -997,28 +1057,50 @@ export class TransactionsPage {
   readonly visibleTotal = computed(() =>
     this.filtered().reduce((sum, item) => sum - transactionEffect(item), 0),
   );
-  readonly activityProjection = computed<readonly ActivityProjectionItem[]>(() => {
-    const items: ActivityProjectionItem[] = this.filtered().map((transaction) => ({
+  readonly activityProjection = computed<readonly FinancialActivity[]>(() => {
+    const items: FinancialActivity[] = this.filtered().map((transaction) => ({
       kind: 'CARD_TRANSACTION',
-      id: transaction.id,
+      key: `card:${transaction.id}`,
       date: transaction.transactionDate,
       transaction,
+      classification: 'CARD_OR_BANK_LEDGER',
     }));
     const term = this.search().trim().toLocaleLowerCase();
-    if (this.sourceFilter() === 'ALL' && !this.creditCardsOnly())
+    if (!this.creditCardsOnly())
       for (const event of this.consumerWallets.events()) {
-        if (event.eventType === 'FUNDED_LOAD') continue;
+        if (event.eventType === 'FUNDED_LOAD' && this.sourceFilter() === 'ALL') continue;
+        if (
+          this.sourceFilter() !== 'ALL' &&
+          this.sourceFilter() !== `${CONSUMER_WALLET_SOURCE_PREFIX}${event.walletId}`
+        )
+          continue;
+        if (this.fromDate() && event.eventDate < this.fromDate()) continue;
+        if (this.toDate() && event.eventDate > this.toDate()) continue;
+        const type = this.typeFilter();
+        const matchesType =
+          type === 'ALL' ||
+          (type === 'WITH_IMAGE' && !!event.attachmentIds?.length) ||
+          ((type === 'PURCHASE' || type === 'WALLET_PURCHASE') && event.eventType === 'PURCHASE') ||
+          ((type === 'REFUND' || type === 'WALLET_REFUND') && event.eventType === 'REFUND') ||
+          (type === 'WALLET_RETURN' && event.eventType === 'UPI_LITE_RETURN') ||
+          (type === 'WALLET_CREDIT' &&
+            ['MANUAL_CREDIT', 'PROMOTIONAL_CREDIT'].includes(event.eventType)) ||
+          (type === 'WALLET_ADJUSTMENT' &&
+            ['BALANCE_CORRECTION', 'UNKNOWN_BALANCE', 'REVERSAL'].includes(event.eventType));
+        if (!matchesType) continue;
         if (this.hideCredits() && event.balanceDeltaMinor > 0) continue;
         if (this.categoryFilter() !== 'ALL' && event.categoryId !== this.categoryFilter()) continue;
         const wallet = this.consumerWallets.wallets().find((item) => item.id === event.walletId);
         const searchable =
-          `${wallet?.nickname ?? wallet?.customName ?? wallet?.providerId ?? ''} ${event.merchant ?? ''} ${event.memo ?? ''} ${event.notes ?? ''} ${event.eventType}`.toLocaleLowerCase();
+          `${wallet?.nickname ?? ''} ${wallet?.customName ?? ''} ${consumerWalletProviderLabel(wallet?.providerId ?? '')} ${event.merchant ?? ''} ${event.memo ?? ''} ${event.notes ?? ''} ${event.eventType} ${this.categoryName(event.categoryId ?? '')} ${(event.amountMinor / 100).toFixed(2)}`.toLocaleLowerCase();
         if (term && !searchable.includes(term)) continue;
         items.push({
           kind: 'CONSUMER_WALLET_EVENT',
-          id: event.id,
+          key: `wallet:${event.id}`,
           date: event.eventDate,
           event,
+          classification: this.walletActivityClassification(event),
+          consolidatedExpenseContributionMinor: 0,
         });
       }
     return items.sort(
@@ -1027,18 +1109,38 @@ export class TransactionsPage {
         (right.kind === 'CONSUMER_WALLET_EVENT' ? (right.event.eventTime ?? '') : '').localeCompare(
           left.kind === 'CONSUMER_WALLET_EVENT' ? (left.event.eventTime ?? '') : '',
         ) ||
-        right.id.localeCompare(left.id),
+        (right.kind === 'CARD_TRANSACTION'
+          ? right.transaction.createdAt
+          : right.event.createdAt
+        ).localeCompare(
+          left.kind === 'CARD_TRANSACTION' ? left.transaction.createdAt : left.event.createdAt,
+        ) ||
+        right.key.localeCompare(left.key),
     );
   });
   readonly projectedWalletActivities = computed(() =>
     this.activityProjection().filter(
-      (item): item is Extract<ActivityProjectionItem, { kind: 'CONSUMER_WALLET_EVENT' }> =>
+      (item): item is Extract<FinancialActivity, { kind: 'CONSUMER_WALLET_EVENT' }> =>
         item.kind === 'CONSUMER_WALLET_EVENT',
     ),
   );
+  private walletActivityClassification(
+    event: ConsumerWalletEvent,
+  ): ConsumerWalletActivityClassification {
+    if (event.eventType === 'PURCHASE') return 'SPENDING_ALREADY_COUNTED';
+    if (['REFUND', 'MANUAL_CREDIT', 'PROMOTIONAL_CREDIT'].includes(event.eventType))
+      return 'BALANCE_CREDIT_ONLY';
+    if (event.eventType === 'REVERSAL') return 'CANCELLATION';
+    if (event.eventType === 'UPI_LITE_RETURN') return 'RETURN_TO_BANK';
+    return 'BALANCE_ADJUSTMENT';
+  }
   consumerWalletName(walletId: string): string {
     const wallet = this.consumerWallets.wallets().find((item) => item.id === walletId);
-    return wallet?.nickname || wallet?.customName || wallet?.providerId || 'Consumer wallet';
+    return (
+      wallet?.nickname ||
+      wallet?.customName ||
+      consumerWalletProviderLabel(wallet?.providerId ?? '')
+    );
   }
   consumerWalletEventLabel(event: ConsumerWalletEvent): string {
     return event.eventType
@@ -1089,11 +1191,43 @@ export class TransactionsPage {
       group.transactions.push(transaction);
       grouped.set(period.key, group);
     }
+    const walletGroups = new Map<
+      string,
+      Extract<FinancialActivity, { kind: 'CONSUMER_WALLET_EVENT' }>[]
+    >();
+    for (const activity of this.projectedWalletActivities()) {
+      const period = this.periodForDate(activity.date);
+      walletGroups.set(period.key, [...(walletGroups.get(period.key) ?? []), activity]);
+      if (!grouped.has(period.key))
+        grouped.set(period.key, { label: period.label, transactions: [] });
+    }
     return [...grouped.entries()]
       .sort(([left], [right]) => right.localeCompare(left))
       .map(([key, group]) => ({
         key,
         label: group.label,
+        activities: [
+          ...group.transactions.map((transaction): FinancialActivity => ({
+            kind: 'CARD_TRANSACTION',
+            key: `card:${transaction.id}`,
+            date: transaction.transactionDate,
+            transaction,
+            classification: 'CARD_OR_BANK_LEDGER',
+          })),
+          ...(walletGroups.get(key) ?? []),
+        ].sort(
+          (left, right) =>
+            right.date.localeCompare(left.date) ||
+            (right.kind === 'CARD_TRANSACTION'
+              ? (right.transaction.transactionTime ?? '')
+              : (right.event.eventTime ?? '')
+            ).localeCompare(
+              left.kind === 'CARD_TRANSACTION'
+                ? (left.transaction.transactionTime ?? '')
+                : (left.event.eventTime ?? ''),
+            ) ||
+            right.key.localeCompare(left.key),
+        ),
         transactions: group.transactions.sort(
           (a, b) =>
             b.transactionDate.localeCompare(a.transactionDate) ||
@@ -1119,6 +1253,10 @@ export class TransactionsPage {
   });
 
   constructor() {
+    this.form.valueChanges.pipe(takeUntilDestroyed()).subscribe(() => {
+      this.walletPurchasePreview.set(null);
+      this.walletPurchaseApprovedFor.set('');
+    });
     for (const control of [
       this.form.controls.cardId,
       this.form.controls.amount,
@@ -1234,6 +1372,10 @@ export class TransactionsPage {
   goToSelectedSource(): void {
     const selected = this.selectedFilterSource();
     if (!selected) return;
+    if (selected.kind === 'CONSUMER_WALLET') {
+      void this.router.navigate(['/wallets'], { queryParams: { wallet: selected.id } });
+      return;
+    }
     if (selected.kind === 'CARD') {
       void this.router.navigate(['/cards'], { queryParams: { open: selected.id } });
       return;
@@ -1423,6 +1565,26 @@ export class TransactionsPage {
     }
   }
   selectPayFrom(id: string): void {
+    if (id.startsWith(CONSUMER_WALLET_SOURCE_PREFIX)) {
+      const walletId = id.slice(CONSUMER_WALLET_SOURCE_PREFIX.length);
+      const wallet = this.consumerWallets.activeWallets().find((item) => item.id === walletId);
+      if (
+        !wallet ||
+        !this.consumerWallets.enabled() ||
+        this.form.controls.type.value !== 'PURCHASE'
+      )
+        return;
+      this.form.controls.consumerWalletId.setValue(wallet.id);
+      this.form.controls.cardId.setValue('', { emitEvent: false });
+      this.form.controls.cardId.clearValidators();
+      this.form.controls.cardId.updateValueAndValidity({ emitEvent: false });
+      this.form.controls.archivedSourceReassignmentConfirmedFor.setValue('');
+      this.payFromBankMode.set(false);
+      this.revalidateWalletLoadSelection();
+      this.payFromOpen.set(false);
+      this.payFromSearch.set('');
+      return;
+    }
     if (
       this.editingArchivedCard() &&
       (id === 'BANK_SOURCE' || !this.store.activeCards().some((card) => card.id === id))
@@ -1435,7 +1597,10 @@ export class TransactionsPage {
       const current = sources.find((source) => source.id === currentId);
       const primary = sources.find((source) => source.isPrimaryBank);
       const selected = current ?? primary ?? sources[0];
+      this.form.controls.consumerWalletId.setValue('');
+      this.form.controls.cardId.setValidators(Validators.required);
       this.form.controls.cardId.setValue(selected.id);
+      this.form.controls.cardId.updateValueAndValidity({ emitEvent: false });
       this.form.controls.cardId.markAsDirty();
       this.form.controls.archivedSourceReassignmentConfirmedFor.setValue('');
       this.payFromBankMode.set(true);
@@ -1444,8 +1609,11 @@ export class TransactionsPage {
       this.payFromSearch.set('');
       return;
     }
+    this.form.controls.consumerWalletId.setValue('');
+    this.form.controls.cardId.setValidators(Validators.required);
     this.payFromBankMode.set(false);
     this.form.controls.cardId.setValue(id);
+    this.form.controls.cardId.updateValueAndValidity({ emitEvent: false });
     this.form.controls.cardId.markAsDirty();
     this.form.controls.archivedSourceReassignmentConfirmedFor.setValue('');
     this.revalidateWalletLoadSelection();
@@ -1455,7 +1623,10 @@ export class TransactionsPage {
   selectBankAccount(id: string): void {
     if (this.editingArchivedCard()) return;
     if (!this.bankAccountOptions().some((option) => option.value === id)) return;
+    this.form.controls.consumerWalletId.setValue('');
+    this.form.controls.cardId.setValidators(Validators.required);
     this.form.controls.cardId.setValue(id);
+    this.form.controls.cardId.updateValueAndValidity({ emitEvent: false });
     this.form.controls.cardId.markAsDirty();
     this.form.controls.archivedSourceReassignmentConfirmedFor.setValue('');
     this.revalidateWalletLoadSelection();
@@ -1474,6 +1645,13 @@ export class TransactionsPage {
     this.payFromSearch.set((event.target as HTMLInputElement).value);
   }
   selectedSourceLabel(): string {
+    const walletId = this.form.controls.consumerWalletId.value;
+    if (walletId) {
+      const wallet = this.consumerWallets.wallets().find((item) => item.id === walletId);
+      if (wallet)
+        return `${consumerWalletProviderLabel(wallet.providerId)} · ${wallet.nickname || wallet.customName || 'Wallet'} · ${this.money(this.consumerWallets.balances().get(wallet.id) ?? 0, 'INR')} available`;
+      return 'Select an active consumer wallet';
+    }
     if (this.payFromBankMode()) return 'Bank/UPI';
     const id = this.form.controls.cardId.value;
     const card = this.store.cards().find((item) => item.id === id && !item.deletedAt);
@@ -1484,6 +1662,16 @@ export class TransactionsPage {
         ? `${source.institution || 'Bank/UPI'} · ${source.nickname}${source.lastDigits ? ` · ${displayBankAccountSuffix(source.lastDigits)}` : ''}`
         : `${source.nickname}${source.lastDigits ? ` · ${source.lastDigits}` : ''}`;
     return 'Select source';
+  }
+  private payFromSelection(): PayFromSelection | null {
+    const walletId = this.form.controls.consumerWalletId.value;
+    if (walletId) return { kind: 'CONSUMER_WALLET', walletId };
+    if (this.payFromBankMode()) return { kind: 'BANK_UPI' };
+    const id = this.form.controls.cardId.value;
+    if (this.store.cards().some((card) => card.id === id)) return { kind: 'CARD', id };
+    if (this.store.paymentSources().some((source) => source.id === id))
+      return { kind: 'PAYMENT_SOURCE', id };
+    return null;
   }
   selectedSourceIsArchived(): boolean {
     const previous = this.store.transactions().find((item) => item.id === this.editingId());
@@ -1504,6 +1692,7 @@ export class TransactionsPage {
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
     this.closeDetails();
     this.editingId.set(transaction.id);
+    this.form.controls.cardId.setValidators(Validators.required);
     const walletLoad = this.consumerWallets
       .events()
       .find(
@@ -1512,9 +1701,11 @@ export class TransactionsPage {
       );
     this.form.reset({
       cardId: transaction.cardId,
+      consumerWalletId: '',
       type: transaction.type,
       amount: String(transaction.amountMinor / 100),
       transactionDate: transaction.transactionDate,
+      transactionTime: transaction.transactionTime ?? '',
       categoryId: transaction.categoryId,
       merchant: transaction.merchant ?? '',
       notes: transaction.notes ?? '',
@@ -1563,6 +1754,12 @@ export class TransactionsPage {
   }
   transactionTypeChanged(type: TransactionType): void {
     if (this.form.controls.type.value !== type) this.form.controls.type.setValue(type);
+    if (type !== 'PURCHASE' && this.form.controls.consumerWalletId.value) {
+      this.form.controls.consumerWalletId.setValue('');
+      this.form.controls.cardId.setValidators(Validators.required);
+      this.form.controls.cardId.setValue(this.defaultSourceId(), { emitEvent: false });
+      this.form.controls.cardId.updateValueAndValidity({ emitEvent: false });
+    }
     this.form.controls.preserveLegacy.setValue(false);
     this.form.controls.unlinkConfirmed.setValue(false);
     this.form.controls.relatedTransactionId.setValue('');
@@ -1611,14 +1808,22 @@ export class TransactionsPage {
   }
 
   openDetails(transaction: CardTransaction): void {
+    this.detailWalletEventId.set(null);
     this.detailTransactionId.set(transaction.id);
     this.closeMenus();
   }
 
   closeDetails(): void {
+    this.detailWalletEventId.set(null);
     this.detailTransactionId.set(null);
     this.showEmiForm.set(false);
     this.showSplitForm.set(false);
+  }
+
+  openWalletDetails(event: ConsumerWalletEvent): void {
+    this.detailTransactionId.set(null);
+    this.detailWalletEventId.set(event.id);
+    this.closeMenus();
   }
 
   relatedTransaction(transaction: CardTransaction): CardTransaction | null {
@@ -1941,7 +2146,7 @@ export class TransactionsPage {
       this.showSplitForm.set(false);
       return;
     }
-    if (this.detailTransactionId()) {
+    if (this.detailTransactionId() || this.detailWalletEventId()) {
       this.closeDetails();
       return;
     }
@@ -2000,6 +2205,8 @@ export class TransactionsPage {
       grouping: this.grouping(),
       hideCredits: this.hideCredits(),
       creditCardsOnly: this.creditCardsOnly(),
+      fromDate: this.fromDate(),
+      toDate: this.toDate(),
     });
     this.filtersOpen.set(true);
   }
@@ -2017,7 +2224,7 @@ export class TransactionsPage {
     if (
       value === 'ALL' ||
       value === 'WITH_IMAGE' ||
-      this.types.some((item) => item.value === value)
+      this.typeFilterOptions.some((item) => item.value === value)
     )
       this.updateFilterDraft('type', value as TransactionTypeFilter);
   }
@@ -2045,6 +2252,8 @@ export class TransactionsPage {
       grouping: 'MONTH',
       hideCredits: false,
       creditCardsOnly: false,
+      fromDate: '',
+      toDate: '',
     });
   }
   applyFilterDraft(): void {
@@ -2057,6 +2266,8 @@ export class TransactionsPage {
     this.grouping.set(draft.grouping);
     this.hideCredits.set(draft.hideCredits);
     this.creditCardsOnly.set(draft.creditCardsOnly);
+    this.fromDate.set(draft.fromDate);
+    this.toDate.set(draft.toDate);
     this.closeFilterPopup();
     this.resetVisibleTransactions();
   }
@@ -2228,6 +2439,8 @@ export class TransactionsPage {
     this.grouping.set('MONTH');
     this.hideCredits.set(false);
     this.creditCardsOnly.set(false);
+    this.fromDate.set('');
+    this.toDate.set('');
     this.resetVisibleTransactions();
     this.closeMenus();
   }
@@ -2303,6 +2516,11 @@ export class TransactionsPage {
 
   async save(): Promise<void> {
     if (this.saving()) return;
+    const selection = this.payFromSelection();
+    if (selection?.kind === 'CONSUMER_WALLET') {
+      await this.saveConsumerWalletPurchase(selection.walletId);
+      return;
+    }
     this.form.markAllAsTouched();
     const amountMinor = parseMoneyToMinor(this.form.controls.amount.value);
     if (amountMinor === null || amountMinor <= 0) {
@@ -2521,8 +2739,74 @@ export class TransactionsPage {
     }
   }
 
+  confirmWalletPurchaseApproval(event: Event): void {
+    const preview = this.walletPurchasePreview();
+    this.walletPurchaseApprovedFor.set(
+      preview && (event.target as HTMLInputElement).checked ? preview.confirmationKey : '',
+    );
+  }
+
+  private async saveConsumerWalletPurchase(walletId: string): Promise<void> {
+    this.form.markAllAsTouched();
+    const value = this.form.getRawValue();
+    const amountMinor = parseMoneyToMinor(value.amount);
+    if (this.editingId() || value.type !== 'PURCHASE' || value.repeat !== 'NONE') {
+      this.snackbar.show('Record each wallet purchase separately as a purchase.', 'WARNING');
+      return;
+    }
+    if (amountMinor === null || amountMinor <= 0 || this.form.invalid) {
+      this.form.controls.amount.setErrors({ money: true });
+      return;
+    }
+    if (!this.walletPurchaseEventId()) this.walletPurchaseEventId.set(crypto.randomUUID());
+    const input = {
+      id: this.walletPurchaseEventId(),
+      walletId,
+      amountMinor,
+      eventDate: value.transactionDate,
+      eventTime: value.transactionTime || undefined,
+      categoryId: value.categoryId,
+      merchant: value.merchant,
+      notes: value.notes,
+      attachmentIds: this.receiptPreviews(),
+    };
+    this.saving.set(true);
+    try {
+      const preview = await this.consumerWallets.previewWalletPurchase(input);
+      if (this.walletPurchaseApprovedFor() !== preview.confirmationKey) {
+        this.walletPurchasePreview.set(preview);
+        this.walletPurchaseApprovedFor.set('');
+        return;
+      }
+      await this.consumerWallets.recordWalletPurchase({
+        ...input,
+        confirmationKey: preview.confirmationKey,
+      });
+      this.resetForm(this.defaultSourceId());
+      this.saving.set(false);
+      this.closeFormImmediately();
+      this.snackbar.show('Wallet purchase recorded.');
+    } catch (error: unknown) {
+      this.walletPurchasePreview.set(null);
+      this.walletPurchaseApprovedFor.set('');
+      this.snackbar.show(
+        error instanceof Error ? error.message : 'Unable to record wallet purchase.',
+        'WARNING',
+      );
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
   private periodFor(transaction: CardTransaction): { key: string; label: string } {
     return this.periodForMode(transaction, this.effectiveGrouping());
+  }
+
+  private periodForDate(date: string): { key: string; label: string } {
+    return this.periodForMode(
+      { transactionDate: date, cardId: '' } as CardTransaction,
+      this.effectiveGrouping() === 'STATEMENT' ? 'MONTH' : this.effectiveGrouping(),
+    );
   }
 
   private statementMonthFor(transaction: CardTransaction): string | null {
@@ -2612,14 +2896,20 @@ export class TransactionsPage {
 
   private resetForm(sourceId: string): void {
     this.pendingCardRecurringIdentity = null;
+    this.walletPurchaseEventId.set(crypto.randomUUID());
+    this.walletPurchasePreview.set(null);
+    this.walletPurchaseApprovedFor.set('');
+    this.form.controls.cardId.setValidators(Validators.required);
     this.categoryOverridden.set(false);
     this.receiptPreviews.set([]);
     this.receiptDraftDirty.set(false);
     this.form.reset({
       cardId: sourceId,
+      consumerWalletId: '',
       type: 'PURCHASE',
       amount: '',
       transactionDate: this.calendarClock.calendar().dateIso,
+      transactionTime: '',
       categoryId: 'other',
       merchant: '',
       notes: '',

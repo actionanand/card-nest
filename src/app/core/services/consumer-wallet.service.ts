@@ -6,6 +6,7 @@ import {
   compareConsumerWalletEvents,
   ConsumerWalletEventPosition,
   planConsumerWalletDebit,
+  persistConsumerWalletDebitPlan,
 } from '../data/consumer-wallet-ledger';
 import {
   ConsumerWallet,
@@ -52,6 +53,20 @@ export interface WalletPurchaseInput {
   readonly categoryId: string;
   readonly merchant?: string;
   readonly notes?: string;
+  readonly attachmentIds?: readonly string[];
+  readonly confirmationKey?: string;
+}
+
+export interface WalletPurchasePreview {
+  readonly walletId: string;
+  readonly amountMinor: number;
+  readonly balanceBeforeMinor: number;
+  readonly balanceAfterMinor: number;
+  readonly allocations: readonly {
+    readonly creditEventId: string;
+    readonly allocatedMinor: number;
+  }[];
+  readonly confirmationKey: string;
 }
 
 export interface UpiLiteReturnInput {
@@ -112,6 +127,26 @@ function upiLiteReturnConfirmationKey(
       item.allocatedMinor,
       item.expenseReversalMinor,
     ]),
+  ]);
+}
+
+function walletPurchaseConfirmationKey(
+  input: WalletPurchaseInput,
+  balanceAfterMinor: number,
+  allocations: readonly { readonly creditEventId: string; readonly allocatedMinor: number }[],
+): string {
+  return JSON.stringify([
+    input.id,
+    input.walletId,
+    input.amountMinor,
+    input.eventDate,
+    input.eventTime ?? '',
+    input.categoryId,
+    input.merchant?.trim() ?? '',
+    input.notes?.trim() ?? '',
+    input.attachmentIds ?? [],
+    balanceAfterMinor,
+    allocations.map((allocation) => [allocation.creditEventId, allocation.allocatedMinor]),
   ]);
 }
 
@@ -508,13 +543,16 @@ export class ConsumerWalletService {
   }
 
   async recordWalletPurchase(input: WalletPurchaseInput): Promise<ConsumerWalletEvent> {
-    if (!Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0)
+    if (!input.id.trim() || !Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0)
       throw new Error('Enter a positive wallet purchase amount.');
-    this.assertWalletDate(input.eventDate);
+    if (!validTransferDate(input.eventDate, input.eventTime))
+      throw new Error('Enter a valid wallet purchase date and time.');
     if (!input.categoryId.trim()) throw new Error('Choose a transaction category.');
+    this.assertWalletAttachments(input.attachmentIds);
     const result = await this.database.atomic(async (tx) => {
       await this.assertWalletsEnabled(tx);
       await this.assertActiveWallet(tx, input.walletId);
+      await this.assertWalletCategory(tx, input.categoryId);
       const duplicate = await this.readIdempotentEvent(
         tx,
         input.id,
@@ -523,8 +561,18 @@ export class ConsumerWalletService {
         input.amountMinor,
         input.eventDate,
       );
-      if (duplicate)
-        return { event: duplicate, allocations: [] as ConsumerWalletEventAllocation[] };
+      if (duplicate) {
+        if (
+          (duplicate.eventTime ?? '') !== (input.eventTime ?? '') ||
+          duplicate.categoryId !== input.categoryId ||
+          (duplicate.merchant ?? '') !== (input.merchant?.trim().slice(0, 100) ?? '') ||
+          (duplicate.notes ?? '') !== (input.notes?.trim().slice(0, 500) ?? '') ||
+          JSON.stringify(duplicate.attachmentIds ?? []) !==
+            JSON.stringify(input.attachmentIds ?? [])
+        )
+          throw new Error('This wallet purchase ID was already used for a different purchase.');
+        return { event: duplicate, allocations: await this.readEventAllocations(tx, duplicate.id) };
+      }
       const timestamp = new Date().toISOString();
       const event: ConsumerWalletEvent = {
         id: input.id,
@@ -537,19 +585,102 @@ export class ConsumerWalletService {
         categoryId: input.categoryId,
         merchant: input.merchant?.trim().slice(0, 100) || undefined,
         notes: input.notes?.trim().slice(0, 500) || undefined,
+        attachmentIds: input.attachmentIds ? [...input.attachmentIds] : undefined,
         createdAt: timestamp,
         updatedAt: timestamp,
       };
       const historicalBalance = await this.balanceIn(tx, input.walletId, event);
       if (historicalBalance < input.amountMinor)
         throw new Error('Purchase exceeds the available historical wallet balance.');
+      const plan = await planConsumerWalletDebit(tx, event, input.amountMinor);
+      const allocations = plan.map((item) => ({
+        creditEventId: item.creditEvent.id,
+        allocatedMinor: item.allocatedMinor,
+      }));
+      const confirmationKey = walletPurchaseConfirmationKey(
+        input,
+        historicalBalance - input.amountMinor,
+        allocations,
+      );
+      if (input.confirmationKey && input.confirmationKey !== confirmationKey)
+        throw new Error('Wallet balance or FIFO attribution changed. Review the purchase again.');
       await this.insertEvent(tx, event);
-      const allocations = await allocateConsumerWalletDebit(tx, event, input.amountMinor);
+      const persistedAllocations = await persistConsumerWalletDebitPlan(tx, event, plan);
       await assertChronologicalConsumerWalletLedger(tx, input.walletId);
-      return { event, allocations };
+      return { event, allocations: persistedAllocations };
     });
     this.publishEventWrite(result.event, result.allocations);
     return result.event;
+  }
+
+  async previewWalletPurchase(
+    input: Omit<WalletPurchaseInput, 'confirmationKey'>,
+  ): Promise<WalletPurchasePreview> {
+    if (!input.id.trim() || !Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0)
+      throw new Error('Enter a positive wallet purchase amount.');
+    if (!validTransferDate(input.eventDate, input.eventTime))
+      throw new Error('Enter a valid wallet purchase date and time.');
+    if (!input.categoryId.trim()) throw new Error('Choose a transaction category.');
+    this.assertWalletAttachments(input.attachmentIds);
+    return this.database.atomic(async (tx) => {
+      await this.assertWalletsEnabled(tx);
+      await this.assertActiveWallet(tx, input.walletId);
+      await this.assertWalletCategory(tx, input.categoryId);
+      const duplicate = await this.readIdempotentEvent(
+        tx,
+        input.id,
+        input.walletId,
+        'PURCHASE',
+        input.amountMinor,
+        input.eventDate,
+      );
+      if (duplicate) throw new Error('This wallet purchase ID has already been used.');
+      const timestamp = new Date().toISOString();
+      const event: ConsumerWalletEvent = {
+        id: input.id,
+        walletId: input.walletId,
+        eventType: 'PURCHASE',
+        eventDate: input.eventDate,
+        eventTime: input.eventTime,
+        amountMinor: input.amountMinor,
+        balanceDeltaMinor: -input.amountMinor,
+        categoryId: input.categoryId,
+        merchant: input.merchant?.trim().slice(0, 100) || undefined,
+        notes: input.notes?.trim().slice(0, 500) || undefined,
+        attachmentIds: input.attachmentIds ? [...input.attachmentIds] : undefined,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      };
+      const balanceBeforeMinor = await this.balanceIn(tx, input.walletId, event);
+      if (balanceBeforeMinor < input.amountMinor)
+        throw new Error('Purchase exceeds the available historical wallet balance.');
+      const plan = await planConsumerWalletDebit(tx, event, input.amountMinor);
+      const allocations = plan.map((item) => ({
+        creditEventId: item.creditEvent.id,
+        allocatedMinor: item.allocatedMinor,
+      }));
+      const previewAllocations: ConsumerWalletEventAllocation[] = plan.map((item, index) => ({
+        id: `wallet-purchase-preview:${index}:${item.creditEvent.id}`,
+        debitEventId: event.id,
+        creditEventId: item.creditEvent.id,
+        allocatedMinor: item.allocatedMinor,
+        expenseReversalMinor: 0,
+        createdAt: timestamp,
+      }));
+      await assertChronologicalConsumerWalletLedger(tx, input.walletId, {
+        additionalEvents: [event],
+        additionalAllocations: previewAllocations,
+      });
+      const balanceAfterMinor = balanceBeforeMinor - input.amountMinor;
+      return {
+        walletId: input.walletId,
+        amountMinor: input.amountMinor,
+        balanceBeforeMinor,
+        balanceAfterMinor,
+        allocations,
+        confirmationKey: walletPurchaseConfirmationKey(input, balanceAfterMinor, allocations),
+      };
+    });
   }
 
   private async classifyReturnAllocation(
@@ -1151,6 +1282,26 @@ export class ConsumerWalletService {
       throw new Error(
         'Wallets is off. Enable Wallets in Settings before changing consumer wallets.',
       );
+  }
+
+  private async assertWalletCategory(tx: DatabaseSession, categoryId: string): Promise<void> {
+    const [category] = await tx.query<{ id: string; archived: number }>(
+      'SELECT id,archived FROM categories WHERE id=?',
+      [categoryId],
+    );
+    if (!category || category.archived !== 0)
+      throw new Error('Choose an active transaction category.');
+  }
+
+  private assertWalletAttachments(attachmentIds: readonly string[] | undefined): void {
+    if (!attachmentIds) return;
+    if (attachmentIds.length > 10)
+      throw new Error('A wallet purchase can include up to 10 receipt images.');
+    for (const attachment of attachmentIds) {
+      const match = /^data:image\/(?:jpeg|png|webp|gif);base64,([a-z0-9+/=]+)$/i.exec(attachment);
+      if (!match || Math.floor((match[1].length * 3) / 4) > 1_000_000)
+        throw new Error('Wallet receipt images must be valid images no larger than 1 MB.');
+    }
   }
 
   private assertWalletDate(value: string): void {

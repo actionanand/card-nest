@@ -279,6 +279,36 @@
                       </button>
                     }
                   }
+                  @if (searchedPayFromConsumerWallets().length) {
+                    <p class="pay-from-group">Consumer Wallets</p>
+                    @for (wallet of searchedPayFromConsumerWallets(); track wallet.id) {
+                      <button
+                        type="button"
+                        class="pay-from-option consumer-wallet-option"
+                        [class.selected]="form.controls.consumerWalletId.value === wallet.id"
+                        role="option"
+                        [attr.aria-selected]="form.controls.consumerWalletId.value === wallet.id"
+                        (click)="selectPayFrom('consumer-wallet:' + wallet.id)"
+                      >
+                        <app-icon name="sources" class="pay-from-option__icon" />
+                        <span class="pay-from-option__name">
+                          {{
+                            wallet.nickname ||
+                              wallet.customName ||
+                              walletProviderLabel(wallet.providerId)
+                          }}
+                        </span>
+                        <span class="pay-from-option__detail">
+                          {{ walletProviderLabel(wallet.providerId) }} ·
+                          {{ money(consumerWallets.balances().get(wallet.id) ?? 0, 'INR') }}
+                          available
+                        </span>
+                        @if (form.controls.consumerWalletId.value === wallet.id) {
+                          <app-icon name="success" class="pay-from-option__check" />
+                        }
+                      </button>
+                    }
+                  }
                 </div>
               </div>
             }
@@ -300,6 +330,9 @@
               [value]="form.controls.transactionDate.value"
               (valueChange)="setTransactionDate($event)"
             />
+            @if (form.controls.consumerWalletId.value) {
+              <label>Time (optional)<input formControlName="transactionTime" type="time" /></label>
+            }
             @if (baselineTimingNeeded()) {
               <fieldset class="full baseline-timing">
                 <legend>
@@ -395,91 +428,93 @@
                 autocomplete="off"
                 placeholder="Where did you spend?"
             /></label>
-            <app-select-picker
-              label="Payment method (optional)"
-              [options]="manualPaymentMethods()"
-              [value]="form.controls.paymentMethod.value"
-              (valueChange)="setManualPaymentMethod($event)"
-            />
-            @if (form.controls.paymentMethod.value === 'WALLET_LOADING') {
+            @if (!form.controls.consumerWalletId.value) {
               <app-select-picker
-                label="Consumer wallet"
-                [options]="walletLoadWalletOptions()"
-                [value]="form.controls.walletId.value"
-                (valueChange)="setWalletLoadDestination($event)"
+                label="Payment method (optional)"
+                [options]="manualPaymentMethods()"
+                [value]="form.controls.paymentMethod.value"
+                (valueChange)="setManualPaymentMethod($event)"
               />
-              <label
-                >Amount credited<input
-                  formControlName="walletLoadedAmount"
-                  inputmode="decimal"
-                  autocomplete="off"
-                  placeholder="Same as debit"
-              /></label>
-              @if (walletLoadSummary(); as summary) {
-                <fieldset class="full wallet-load-summary">
-                  <legend>Review wallet load</legend>
-                  <dl>
-                    <div>
-                      <dt>Funding source</dt>
-                      <dd>{{ summary.fundingSource }}</dd>
-                    </div>
-                    <div>
-                      <dt>Destination</dt>
-                      <dd>{{ summary.walletName }}</dd>
-                    </div>
-                    <div>
-                      <dt>Debited</dt>
-                      <dd>{{ money(summary.debitAmountMinor, 'INR') }}</dd>
-                    </div>
-                    <div>
-                      <dt>Credited</dt>
-                      <dd>{{ money(summary.loadedAmountMinor, 'INR') }}</dd>
-                    </div>
-                    <div>
-                      <dt>Included fee</dt>
-                      <dd>{{ money(summary.feeMinor, 'INR') }}</dd>
-                    </div>
-                  </dl>
-                  <p>
-                    The full debit is counted as an expense; wallet credit is not counted again.
-                  </p>
-                  <label>
-                    <input
-                      type="checkbox"
-                      [checked]="
-                        form.controls.walletLoadConfirmedFor.value === summary.confirmationKey
-                      "
-                      (change)="confirmWalletLoad($event)"
-                    />
-                    I approve this wallet load.
-                  </label>
-                </fieldset>
-              }
-            }
-            @if (manualPaymentDetail(form.controls.paymentMethod.value); as detail) {
-              <app-select-picker
-                [label]="detail.label"
-                [options]="detail.options"
-                [value]="form.controls.paymentMethodDetail.value"
-                (valueChange)="setManualPaymentDetail($event)"
-              />
-              @if (form.controls.paymentMethod.value === 'UPI') {
+              @if (form.controls.paymentMethod.value === 'WALLET_LOADING') {
+                <app-select-picker
+                  label="Consumer wallet"
+                  [options]="walletLoadWalletOptions()"
+                  [value]="form.controls.walletId.value"
+                  (valueChange)="setWalletLoadDestination($event)"
+                />
                 <label
-                  >Other UPI app (optional)<input
-                    formControlName="paymentMethodCustom"
-                    maxlength="80"
-                    (input)="customManualPayment()"
+                  >Amount credited<input
+                    formControlName="walletLoadedAmount"
+                    inputmode="decimal"
+                    autocomplete="off"
+                    placeholder="Same as debit"
                 /></label>
+                @if (walletLoadSummary(); as summary) {
+                  <fieldset class="full wallet-load-summary">
+                    <legend>Review wallet load</legend>
+                    <dl>
+                      <div>
+                        <dt>Funding source</dt>
+                        <dd>{{ summary.fundingSource }}</dd>
+                      </div>
+                      <div>
+                        <dt>Destination</dt>
+                        <dd>{{ summary.walletName }}</dd>
+                      </div>
+                      <div>
+                        <dt>Debited</dt>
+                        <dd>{{ money(summary.debitAmountMinor, 'INR') }}</dd>
+                      </div>
+                      <div>
+                        <dt>Credited</dt>
+                        <dd>{{ money(summary.loadedAmountMinor, 'INR') }}</dd>
+                      </div>
+                      <div>
+                        <dt>Included fee</dt>
+                        <dd>{{ money(summary.feeMinor, 'INR') }}</dd>
+                      </div>
+                    </dl>
+                    <p>
+                      The full debit is counted as an expense; wallet credit is not counted again.
+                    </p>
+                    <label>
+                      <input
+                        type="checkbox"
+                        [checked]="
+                          form.controls.walletLoadConfirmedFor.value === summary.confirmationKey
+                        "
+                        (change)="confirmWalletLoad($event)"
+                      />
+                      I approve this wallet load.
+                    </label>
+                  </fieldset>
+                }
               }
+              @if (manualPaymentDetail(form.controls.paymentMethod.value); as detail) {
+                <app-select-picker
+                  [label]="detail.label"
+                  [options]="detail.options"
+                  [value]="form.controls.paymentMethodDetail.value"
+                  (valueChange)="setManualPaymentDetail($event)"
+                />
+                @if (form.controls.paymentMethod.value === 'UPI') {
+                  <label
+                    >Other UPI app (optional)<input
+                      formControlName="paymentMethodCustom"
+                      maxlength="80"
+                      (input)="customManualPayment()"
+                  /></label>
+                }
+              }
+              <label class="full"
+                >Payment comment (optional)<textarea
+                  formControlName="smsAdditionalComment"
+                  maxlength="500"
+                  rows="2"
+                ></textarea>
+              </label>
             }
-            <label class="full"
-              >Payment comment (optional)<textarea
-                formControlName="smsAdditionalComment"
-                maxlength="500"
-                rows="2"
-              ></textarea>
-            </label>
-            @if (!editingId()) {
+            @if (!editingId() && !form.controls.consumerWalletId.value) {
               <app-select-picker
                 label="Repeat monthly"
                 hint="The entry is added on the same date to the selected payment source."
@@ -491,26 +526,28 @@
             <label class="full"
               >Notes<textarea formControlName="notes" placeholder="Optional details"></textarea>
             </label>
-            <label class="tax-option full">
-              <input type="checkbox" formControlName="taxIncluded" />
-              <span
-                ><strong>Tax included</strong
-                ><small>Track tax, handling, or other charges within the total.</small></span
-              >
-            </label>
-            @if (form.controls.taxIncluded.value) {
-              <label class="full">
-                Tax and other charges included in total
-                <input formControlName="taxAmount" inputmode="decimal" placeholder="0.00" />
-                @if (form.controls.taxAmount.invalid) {
-                  <small>Enter a charge smaller than the transaction total.</small>
-                }
+            @if (!form.controls.consumerWalletId.value) {
+              <label class="tax-option full">
+                <input type="checkbox" formControlName="taxIncluded" />
+                <span
+                  ><strong>Tax included</strong
+                  ><small>Track tax, handling, or other charges within the total.</small></span
+                >
               </label>
-              @if (taxBreakdown(); as breakdown) {
-                <p class="tax-breakdown full">
-                  {{ money(breakdown.baseMinor, 'INR') }} purchase +
-                  {{ money(breakdown.taxMinor, 'INR') }} tax &amp; charges
-                </p>
+              @if (form.controls.taxIncluded.value) {
+                <label class="full">
+                  Tax and other charges included in total
+                  <input formControlName="taxAmount" inputmode="decimal" placeholder="0.00" />
+                  @if (form.controls.taxAmount.invalid) {
+                    <small>Enter a charge smaller than the transaction total.</small>
+                  }
+                </label>
+                @if (taxBreakdown(); as breakdown) {
+                  <p class="tax-breakdown full">
+                    {{ money(breakdown.baseMinor, 'INR') }} purchase +
+                    {{ money(breakdown.taxMinor, 'INR') }} tax &amp; charges
+                  </p>
+                }
               }
             }
             <div class="attachment full">
@@ -547,11 +584,48 @@
               }
               <small>Images remain private on the device and are limited to 1 MB each.</small>
             </div>
+            @if (form.controls.consumerWalletId.value) {
+              <fieldset class="full wallet-load-summary">
+                <legend>Wallet purchase</legend>
+                <p>Wallet spending - already counted when loaded</p>
+                @if (walletPurchasePreview(); as preview) {
+                  <dl>
+                    <div>
+                      <dt>Historical balance before</dt>
+                      <dd>{{ money(preview.balanceBeforeMinor, 'INR') }}</dd>
+                    </div>
+                    <div>
+                      <dt>Purchase</dt>
+                      <dd>{{ money(preview.amountMinor, 'INR') }}</dd>
+                    </div>
+                    <div>
+                      <dt>Balance after</dt>
+                      <dd>{{ money(preview.balanceAfterMinor, 'INR') }}</dd>
+                    </div>
+                  </dl>
+                  <label>
+                    <input
+                      type="checkbox"
+                      [checked]="walletPurchaseApprovedFor() === preview.confirmationKey"
+                      [disabled]="saving()"
+                      (change)="confirmWalletPurchaseApproval($event)"
+                    />
+                    I approve this wallet purchase.
+                  </label>
+                }
+              </fieldset>
+            }
           </div>
           <div class="form-actions">
             <button class="btn" type="button" (click)="closeForm()">Cancel</button>
             <button class="btn btn-primary" type="submit" [disabled]="saving()">
-              {{ editingId() ? 'Update transaction' : 'Save transaction' }}
+              {{
+                form.controls.consumerWalletId.value && !walletPurchaseApprovedFor()
+                  ? 'Review wallet purchase'
+                  : editingId()
+                    ? 'Update transaction'
+                    : 'Save transaction'
+              }}
             </button>
           </div>
         </form>
@@ -613,6 +687,18 @@
           [value]="filterDraft()?.category ?? 'ALL'"
           (valueChange)="updateFilterDraft('category', $event)"
         />
+        <label
+          >From date<input
+            type="date"
+            [value]="filterDraft()?.fromDate ?? ''"
+            (input)="updateFilterDraft('fromDate', $any($event.target).value)"
+        /></label>
+        <label
+          >To date<input
+            type="date"
+            [value]="filterDraft()?.toDate ?? ''"
+            (input)="updateFilterDraft('toDate', $any($event.target).value)"
+        /></label>
         <app-select-picker
           label="Grouping cycle"
           [options]="groupingOptions()"
@@ -652,8 +738,8 @@
   <section class="ledger-summary panel" aria-label="Visible transaction summary">
     <div>
       <small
-        >{{ filtered().length }} visible
-        {{ filtered().length === 1 ? 'transaction' : 'transactions' }}</small
+        >{{ activityProjection().length }} visible
+        {{ activityProjection().length === 1 ? 'activity' : 'activities' }}</small
       >
       <strong [class.credit]="visibleTotal() >= 0">{{ signedMoney(visibleTotal()) }}</strong>
       @if (selectedFilterSource(); as selected) {
@@ -710,51 +796,6 @@
   </section>
 
   <section class="month-ledger" aria-label="Transactions grouped by period">
-    @if (projectedWalletActivities().length) {
-      <details class="panel month-group wallet-activity-group">
-        <summary>
-          <span>Consumer wallet activity ({{ projectedWalletActivities().length }})</span>
-          <strong>Wallet balance movements</strong>
-          <app-icon name="chevron_right" />
-        </summary>
-        <div class="month-entries">
-          @for (activity of projectedWalletActivities(); track activity.id) {
-            @let event = activity.event;
-            <article>
-              <span class="transaction-open-button transfer-row">
-                <span
-                  class="tx-icon"
-                  [class.credit]="event.balanceDeltaMinor > 0"
-                  aria-hidden="true"
-                >
-                  <app-icon name="sources" />
-                </span>
-                <span class="tx-main">
-                  <strong>{{ event.merchant || consumerWalletEventLabel(event) }}</strong>
-                  <small
-                    >{{ consumerWalletName(event.walletId) }} ·
-                    {{ consumerWalletEventLabel(event) }}</small
-                  >
-                  @if (event.categoryId) {
-                    <small>{{ categoryName(event.categoryId) }}</small>
-                  }
-                  @if (event.memo || event.notes) {
-                    <small>{{ event.memo || event.notes }}</small>
-                  }
-                </span>
-                <span class="tx-date">
-                  <span>{{ event.eventDate | appDate }}</span>
-                  <small>{{ event.eventTime?.slice(0, 5) || 'Wallet' }}</small>
-                </span>
-                <strong class="tx-amount" [class.credit]="event.balanceDeltaMinor > 0">
-                  {{ event.balanceDeltaMinor > 0 ? '+' : '−' }}{{ money(event.amountMinor, 'INR') }}
-                </strong>
-              </span>
-            </article>
-          }
-        </div>
-      </details>
-    }
     @if (visibleTransfers().length) {
       <details class="panel month-group transfer-group">
         <summary>
@@ -824,103 +865,144 @@
           <app-icon name="chevron_right" />
         </summary>
         <div class="month-entries">
-          @for (transaction of group.transactions; track transaction.id) {
-            @let transactionCategory = category(transaction.categoryId);
-            <article [class.menu-open]="actionMenuId() === transaction.id">
-              <button
-                class="transaction-open-button"
-                type="button"
-                (click)="openDetails(transaction)"
-                aria-label="View details for {{ transaction.merchant || 'transaction' }}"
-              >
-                <span
-                  class="tx-icon"
-                  [class.credit]="transaction.type === 'PAYMENT'"
-                  [style.--category-colour]="transactionCategory?.colour || '#28684e'"
-                  aria-hidden="true"
-                >
-                  <app-icon
-                    [name]="
-                      transaction.type === 'PAYMENT'
-                        ? 'incoming'
-                        : transactionCategory?.icon || 'category'
-                    "
-                  />
-                </span>
-                <span class="tx-main">
-                  <strong>{{ transactionTitle(transaction) }}</strong>
-                  <small class="tx-source-desktop"
-                    >{{ categoryName(transaction.categoryId) }} ·
-                    {{ store.sourceDetail(transaction.cardId) }}</small
-                  >
-                  @if (fundedWalletLoad(transaction.id); as load) {
-                    <small class="wallet-load-provenance">
-                      Wallet load · {{ consumerWalletName(load.walletId) }} ·
-                      {{ money(load.loadedAmountMinor ?? load.amountMinor, 'INR') }} credited
-                    </small>
-                  }
-                  <small class="tx-source-mobile">
-                    <span class="tx-date-pill">{{ transaction.transactionDate | appDate }}</span>
-                    <span class="tx-mobile-source">{{
-                      mobileSourceDetail(transaction.cardId)
-                    }}</span>
-                  </small>
-                  @if (transaction.emiPlanId) {
-                    <span class="repeat-badge"><app-icon name="schedule" /> EMI</span>
-                  } @else if (transaction.recurringRuleId) {
-                    <span class="repeat-badge"
-                      ><app-icon name="repeat" /> Repeat
-                      {{ recurringProgressLabel(transaction) }}</span
-                    >
-                  }
-                  @if (recordedTime(transaction); as time) {
-                    <small class="tx-recorded-time"><app-icon name="schedule" />{{ time }}</small>
-                  }
-                </span>
-                <span class="tx-date">
-                  <span>{{ transaction.transactionDate | appDate }}</span
-                  ><small>{{ typeLabel(transaction) }}</small>
-                </span>
-                <strong class="tx-amount" [class.credit]="isCredit(transaction)"
-                  >{{ isCredit(transaction) ? '+' : '−'
-                  }}{{ money(transaction.amountMinor, transaction.currencyCode) }}</strong
-                >
-              </button>
-              <div class="transaction-menu-anchor" data-action-menu>
+          @for (activity of group.activities; track activity.key) {
+            @if (activity.kind === 'CARD_TRANSACTION') {
+              @let transaction = activity.transaction;
+              @let transactionCategory = category(transaction.categoryId);
+              <article [class.menu-open]="actionMenuId() === transaction.id">
                 <button
-                  class="menu-button"
+                  class="transaction-open-button"
                   type="button"
-                  (click)="toggleActionMenu($event, transaction.id)"
-                  [attr.aria-expanded]="actionMenuId() === transaction.id"
-                  aria-label="Actions for {{ transaction.merchant || 'transaction' }}"
+                  (click)="openDetails(transaction)"
+                  aria-label="View details for {{ transaction.merchant || 'transaction' }}"
                 >
-                  <app-icon name="more" />
-                </button>
-                @if (actionMenuId() === transaction.id) {
-                  <div class="action-menu" [class.menu-up]="actionMenuOpensUp()" role="menu">
-                    <button type="button" role="menuitem" (click)="edit(transaction)">
-                      <app-icon name="edit" /> Edit transaction
-                    </button>
-                    @if (canDuplicate(transaction)) {
-                      <button type="button" role="menuitem" (click)="duplicate(transaction)">
-                        <app-icon name="duplicate" /> Duplicate transaction
-                      </button>
-                    }
-                    <button type="button" role="menuitem" (click)="goToSource(transaction)">
-                      <app-icon name="go_to_source" /> Go to payment source
-                    </button>
-                    <button
-                      class="danger-item"
-                      type="button"
-                      role="menuitem"
-                      (click)="delete(transaction)"
+                  <span
+                    class="tx-icon"
+                    [class.credit]="transaction.type === 'PAYMENT'"
+                    [style.--category-colour]="transactionCategory?.colour || '#28684e'"
+                    aria-hidden="true"
+                  >
+                    <app-icon
+                      [name]="
+                        transaction.type === 'PAYMENT'
+                          ? 'incoming'
+                          : transactionCategory?.icon || 'category'
+                      "
+                    />
+                  </span>
+                  <span class="tx-main">
+                    <strong>{{ transactionTitle(transaction) }}</strong>
+                    <small class="tx-source-desktop"
+                      >{{ categoryName(transaction.categoryId) }} ·
+                      {{ store.sourceDetail(transaction.cardId) }}</small
                     >
-                      <app-icon name="delete" /> Delete transaction
-                    </button>
-                  </div>
-                }
-              </div>
-            </article>
+                    @if (fundedWalletLoad(transaction.id); as load) {
+                      <small class="wallet-load-provenance">
+                        Wallet load · {{ consumerWalletName(load.walletId) }} ·
+                        {{ money(load.loadedAmountMinor ?? load.amountMinor, 'INR') }} credited
+                      </small>
+                    }
+                    <small class="tx-source-mobile">
+                      <span class="tx-date-pill">{{ transaction.transactionDate | appDate }}</span>
+                      <span class="tx-mobile-source">{{
+                        mobileSourceDetail(transaction.cardId)
+                      }}</span>
+                    </small>
+                    @if (transaction.emiPlanId) {
+                      <span class="repeat-badge"><app-icon name="schedule" /> EMI</span>
+                    } @else if (transaction.recurringRuleId) {
+                      <span class="repeat-badge"
+                        ><app-icon name="repeat" /> Repeat
+                        {{ recurringProgressLabel(transaction) }}</span
+                      >
+                    }
+                    @if (recordedTime(transaction); as time) {
+                      <small class="tx-recorded-time"><app-icon name="schedule" />{{ time }}</small>
+                    }
+                  </span>
+                  <span class="tx-date">
+                    <span>{{ transaction.transactionDate | appDate }}</span
+                    ><small>{{ typeLabel(transaction) }}</small>
+                  </span>
+                  <strong class="tx-amount" [class.credit]="isCredit(transaction)"
+                    >{{ isCredit(transaction) ? '+' : '−'
+                    }}{{ money(transaction.amountMinor, transaction.currencyCode) }}</strong
+                  >
+                </button>
+                <div class="transaction-menu-anchor" data-action-menu>
+                  <button
+                    class="menu-button"
+                    type="button"
+                    (click)="toggleActionMenu($event, transaction.id)"
+                    [attr.aria-expanded]="actionMenuId() === transaction.id"
+                    aria-label="Actions for {{ transaction.merchant || 'transaction' }}"
+                  >
+                    <app-icon name="more" />
+                  </button>
+                  @if (actionMenuId() === transaction.id) {
+                    <div class="action-menu" [class.menu-up]="actionMenuOpensUp()" role="menu">
+                      <button type="button" role="menuitem" (click)="edit(transaction)">
+                        <app-icon name="edit" /> Edit transaction
+                      </button>
+                      @if (canDuplicate(transaction)) {
+                        <button type="button" role="menuitem" (click)="duplicate(transaction)">
+                          <app-icon name="duplicate" /> Duplicate transaction
+                        </button>
+                      }
+                      <button type="button" role="menuitem" (click)="goToSource(transaction)">
+                        <app-icon name="go_to_source" /> Go to payment source
+                      </button>
+                      <button
+                        class="danger-item"
+                        type="button"
+                        role="menuitem"
+                        (click)="delete(transaction)"
+                      >
+                        <app-icon name="delete" /> Delete transaction
+                      </button>
+                    </div>
+                  }
+                </div>
+              </article>
+            } @else {
+              @let event = activity.event;
+              <article>
+                <button
+                  class="transaction-open-button"
+                  type="button"
+                  (click)="openWalletDetails(event)"
+                  [attr.aria-label]="'View ' + (event.merchant || consumerWalletEventLabel(event))"
+                >
+                  <span
+                    class="tx-icon"
+                    [class.credit]="event.balanceDeltaMinor > 0"
+                    aria-hidden="true"
+                    ><app-icon name="sources"
+                  /></span>
+                  <span class="tx-main">
+                    <strong>{{ event.merchant || consumerWalletEventLabel(event) }}</strong>
+                    <small
+                      >{{ consumerWalletName(event.walletId) }} ·
+                      {{ consumerWalletEventLabel(event) }}</small
+                    >
+                    @if (event.eventType === 'PURCHASE') {
+                      <small>Wallet spending - already counted when loaded</small>
+                    }
+                    @if (event.attachmentIds?.length) {
+                      <small>Receipt attached</small>
+                    }
+                  </span>
+                  <span class="tx-date"
+                    ><span>{{ event.eventDate | appDate }}</span
+                    ><small>{{ event.eventTime || 'Wallet' }}</small></span
+                  >
+                  <strong class="tx-amount" [class.credit]="event.balanceDeltaMinor > 0"
+                    >{{ event.balanceDeltaMinor > 0 ? '+' : '−'
+                    }}{{ money(event.amountMinor, 'INR') }}</strong
+                  >
+                </button>
+              </article>
+            }
           }
         </div>
       </details>
@@ -940,6 +1022,56 @@
     }
   </section>
 </div>
+
+@if (detailWalletEvent(); as event) {
+  <app-profile-modal
+    [title]="event.merchant || consumerWalletEventLabel(event)"
+    (closed)="closeDetails()"
+  >
+    <div class="detail-amount" [class.credit]="event.balanceDeltaMinor > 0">
+      {{ event.balanceDeltaMinor > 0 ? '+' : '−' }}{{ money(event.amountMinor, 'INR') }}
+    </div>
+    <dl class="detail-grid">
+      <div>
+        <dt>Wallet</dt>
+        <dd>{{ consumerWalletName(event.walletId) }}</dd>
+      </div>
+      <div>
+        <dt>Activity type</dt>
+        <dd>{{ consumerWalletEventLabel(event) }}</dd>
+      </div>
+      <div>
+        <dt>Date</dt>
+        <dd>{{ event.eventDate | appDate }} {{ event.eventTime || '' }}</dd>
+      </div>
+      <div>
+        <dt>Category</dt>
+        <dd>{{ categoryName(event.categoryId || '') }}</dd>
+      </div>
+      @if (event.eventType === 'PURCHASE') {
+        <div class="detail-wide">
+          <dt>Expense classification</dt>
+          <dd>Wallet spending - already counted when loaded</dd>
+        </div>
+      }
+      @if (event.notes || event.memo) {
+        <div class="detail-wide">
+          <dt>Notes</dt>
+          <dd>{{ event.notes || event.memo }}</dd>
+        </div>
+      }
+    </dl>
+    @if (event.attachmentIds?.length) {
+      <section class="detail-receipts" aria-label="Wallet receipt images">
+        @for (receipt of event.attachmentIds; track receipt) {
+          <a [href]="receipt" target="_blank" rel="noopener"
+            ><img [src]="receipt" alt="Receipt attached to wallet purchase"
+          /></a>
+        }
+      </section>
+    }
+  </app-profile-modal>
+}
 
 @if (detailTransaction(); as transaction) {
   <div
