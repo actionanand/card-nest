@@ -1,6 +1,7 @@
 import { CardTransaction, ConsumerWalletEvent } from '../models/domain';
 import {
   informationalWalletSpending,
+  netInformationalWalletSpending,
   projectConsolidatedSpending,
   sumConsolidatedSpending,
 } from './financial-spending';
@@ -144,5 +145,38 @@ describe('consolidated financial projection', () => {
     expect(sumConsolidatedSpending(entries, '2026-01-01', '2026-12-31')).toBe(-30000);
     expect(sumConsolidatedSpending(entries)).toBe(2000);
     expect(sumConsolidatedSpending(entries, '2025-12-25', '2026-01-24')).toBe(2000);
+  });
+  it('reports net informational wallet spending by actual purchase, refund and cancellation dates', () => {
+    const purchase = event('wallet-buy', 'PURCHASE', {
+      eventDate: '2026-10-31',
+      amountMinor: 20000,
+      balanceDeltaMinor: -20000,
+    });
+    const refund = event('wallet-refund', 'REFUND', {
+      eventDate: '2026-11-02',
+      amountMinor: 5000,
+      balanceDeltaMinor: 5000,
+      reversalOfEventId: purchase.id,
+    });
+    const cancellation = event('wallet-cancel', 'REVERSAL', {
+      eventDate: '2026-11-03',
+      amountMinor: 5000,
+      balanceDeltaMinor: 5000,
+      reversalOfEventId: purchase.id,
+    });
+    const unlinked = event('unlinked-refund', 'REFUND', {
+      eventDate: '2026-11-04',
+      amountMinor: 9000,
+      balanceDeltaMinor: 9000,
+    });
+    const events = [purchase, refund, cancellation, unlinked];
+
+    expect(informationalWalletSpending(events, '2026-10-01', '2026-10-31')).toBe(20000);
+    expect(netInformationalWalletSpending(events, '2026-10-01', '2026-10-31')).toBe(20000);
+    expect(netInformationalWalletSpending(events, '2026-11-01', '2026-11-30')).toBe(-10000);
+    expect(netInformationalWalletSpending([refund, cancellation], '2026-11-01', '2026-11-30')).toBe(
+      -10000,
+    );
+    expect(netInformationalWalletSpending(events, '2026-10-25', '2026-11-24')).toBe(10000);
   });
 });

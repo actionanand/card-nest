@@ -3,7 +3,7 @@ import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angula
 import { Category } from '../../core/models/domain';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import {
-  informationalWalletSpending,
+  netInformationalWalletSpending,
   sumConsolidatedSpending,
 } from '../../core/services/financial-spending';
 import { formatMoney, parseMoneyToMinor } from '../../core/services/money';
@@ -88,7 +88,7 @@ export class CategorySpendingPage {
   });
   readonly spentMinor = computed(() => sumConsolidatedSpending(this.transactions()));
   readonly walletSpendingMinor = computed(() =>
-    informationalWalletSpending(
+    netInformationalWalletSpending(
       this.store.walletFinancialEvents(),
       this.period().startDate,
       this.period().endDate,

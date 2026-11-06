@@ -163,6 +163,100 @@ describe('Combine payments controls', () => {
     );
     fixture.destroy();
   });
+  it.each([false, true])(
+    'paginates 25 wallet payments and excludes refunds from payment count (mixed card member: %s)',
+    async (includeCard) => {
+      const purchases: ConsumerWalletEvent[] = Array.from({ length: 25 }, (_, index) => ({
+        id: `wallet-payment-${index}`,
+        walletId: 'wallet',
+        eventType: 'PURCHASE',
+        eventDate: '2026-10-26',
+        amountMinor: 1000,
+        balanceDeltaMinor: -1000,
+        createdAt: `2026-10-26T10:${String(index).padStart(2, '0')}:00Z`,
+        updatedAt: '2026-10-26T10:00:00Z',
+      }));
+      const refund: ConsumerWalletEvent = {
+        ...purchases[0],
+        id: 'wallet-payment-refund',
+        eventType: 'REFUND',
+        amountMinor: 500,
+        balanceDeltaMinor: 500,
+        reversalOfEventId: purchases[0].id,
+        createdAt: '2026-10-27T10:00:00Z',
+      };
+      walletService.events.set([...purchases, refund]);
+      walletService.wallets.set([
+        {
+          id: 'wallet',
+          providerId: 'amazon',
+          nickname: 'Amazon Pay',
+          kind: 'STANDARD',
+          archived: false,
+          createdAt: 'before',
+          updatedAt: 'before',
+        },
+      ]);
+      const memberIds = includeCard ? ['first'] : [];
+      const walletMembers: PaymentGroup['walletMembers'] = [
+        ...purchases.map((event, index) => ({
+          groupId: 'large-wallet-group',
+          walletEventId: event.id,
+          memberKind: 'WALLET_PURCHASE' as const,
+          memberOrder: index + 1,
+          createdAt: 'before',
+        })),
+        {
+          groupId: 'large-wallet-group',
+          walletEventId: refund.id,
+          memberKind: 'WALLET_REFUND',
+          memberOrder: 26,
+          createdAt: 'later',
+        },
+      ];
+      const group: PaymentGroup = {
+        id: 'large-wallet-group',
+        kind: 'PAYMENTS',
+        anchorId: includeCard ? 'first' : null,
+        title: 'Large wallet payment group',
+        currency: 'INR',
+        billTotalMinor: null,
+        createdAt: 'before',
+        updatedAt: 'before',
+        memberIds,
+        walletMembers,
+      };
+      store.paymentGroups.set([group]);
+      store.transactions.set(includeCard ? [first] : []);
+      const fixture = TestBed.createComponent(PaymentGroupsPanel);
+      fixture.componentRef.setInput('groupId', group.id);
+      fixture.detectChanges();
+      await fixture.whenStable();
+      const page = fixture.componentInstance;
+      page.step.set(2);
+      fixture.detectChanges();
+      expect(page.paymentCount(group)).toBe(25 + (includeCard ? 1 : 0));
+      expect(page.refundCount(group)).toBe(1);
+      const summary = fixture.nativeElement.querySelector(
+        '.group-management summary',
+      ) as HTMLElement;
+      expect(summary.textContent).toContain(`${25 + (includeCard ? 1 : 0)} current payments`);
+      expect(summary.textContent).toContain('1 refunds in history');
+      summary.click();
+      fixture.detectChanges();
+      const showMore = [...fixture.nativeElement.querySelectorAll('button')].find((button) =>
+        button.textContent?.includes('Show more members'),
+      ) as HTMLButtonElement | undefined;
+      expect(showMore).toBeDefined();
+      showMore!.click();
+      fixture.detectChanges();
+      expect(fixture.nativeElement.querySelectorAll('.group-member')).toHaveLength(
+        26 + (includeCard ? 1 : 0),
+      );
+      fixture.destroy();
+    },
+    30000,
+  );
   it('explains the empty state and offers the normal Add Transaction action', async () => {
     store.transactions.set([]);
     store.paymentGroups.set([]);

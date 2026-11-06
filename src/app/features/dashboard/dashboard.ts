@@ -14,7 +14,7 @@ import {
   spendingContribution,
   transactionLabel,
 } from '../../core/services/money';
-import { informationalWalletSpending } from '../../core/services/financial-spending';
+import { netInformationalWalletSpending } from '../../core/services/financial-spending';
 import { AppIcon } from '../../shared/app-icon';
 import { AppDatePipe } from '../../core/services/date-format.service';
 import { CardNetworkLogo } from '../../shared/card-network-logo';
@@ -62,7 +62,7 @@ export class DashboardPage {
   });
   readonly walletSpendingMinor = computed(() => {
     const cycle = this.store.currentIncomePeriod();
-    return informationalWalletSpending(
+    return netInformationalWalletSpending(
       this.store.walletFinancialEvents(),
       cycle.cycleStartDate,
       cycle.cycleEndDate,

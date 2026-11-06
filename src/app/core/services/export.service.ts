@@ -14,7 +14,7 @@ import { CardNestStore } from './card-nest-store';
 import { ConsumerWalletService } from './consumer-wallet.service';
 import { formatMoney, spendingContribution, transactionEffect, transactionLabel } from './money';
 import {
-  informationalWalletSpending,
+  netInformationalWalletSpending,
   ConsolidatedSpendingEntry,
   sumConsolidatedSpending,
 } from './financial-spending';
@@ -249,9 +249,9 @@ export class ExportService {
         { label: 'Tracked income', value: this.money(totalIncome) },
         { label: 'Expense', value: this.money(totalSpent) },
         {
-          label: 'Informational wallet purchases',
+          label: 'Net wallet spending (informational)',
           value: this.money(
-            informationalWalletSpending(
+            netInformationalWalletSpending(
               this.store.walletFinancialEvents(),
               cycles[0]?.startDate,
               cycles.at(-1)?.endDate,
@@ -503,12 +503,16 @@ export class ExportService {
         right.id.localeCompare(left.id),
     );
     return {
-      title: 'Consumer wallet activity (not additional consolidated spending)',
+      title: 'Consumer wallet activity (balance movement; wallet spending is informational)',
       stats: [
         { label: 'Entries', value: String(ordered.length) },
         {
           label: 'Net wallet balance movement',
           value: this.money(ordered.reduce((total, event) => total + event.balanceDeltaMinor, 0)),
+        },
+        {
+          label: 'Net wallet spending (informational)',
+          value: this.money(netInformationalWalletSpending(ordered)),
         },
         { label: 'Additional consolidated expense', value: this.money(0) },
       ],

@@ -11,7 +11,11 @@ import {
 } from '@angular/core';
 import { FormControl, ReactiveFormsModule } from '@angular/forms';
 import { CardNestStore } from '../../core/services/card-nest-store';
-import { eligiblePaymentMember } from '../../core/services/payment-groups';
+import {
+  eligiblePaymentMember,
+  paymentGroupHistoryCount,
+  paymentGroupPaymentCount,
+} from '../../core/services/payment-groups';
 import { formatMoney, parseMoneyToMinor } from '../../core/services/money';
 import { CardTransaction, PaymentGroup } from '../../core/models/domain';
 import { ConsumerWalletService } from '../../core/services/consumer-wallet.service';
@@ -127,8 +131,10 @@ interface PaymentMemberChoice {
               @if (group(); as current) {
                 <details class="group-management">
                   <summary>
-                    Manage {{ current.memberIds.length + current.walletMembers.length }} current
-                    payments
+                    Manage {{ paymentCount(current) }} current payments
+                    @if (refundCount(current)) {
+                      · {{ refundCount(current) }} refunds in history
+                    }
                   </summary>
                   @for (entry of preview().slice(0, memberLimit()); track entry.id) {
                     @if (isCurrentMember(current, entry.id)) {
@@ -145,7 +151,7 @@ interface PaymentMemberChoice {
                       </div>
                     }
                   }
-                  @if (memberLimit() < current.memberIds.length) {
+                  @if (memberLimit() < historyCount(current)) {
                     <button class="btn" type="button" (click)="memberLimit.set(memberLimit() + 20)">
                       Show more members
                     </button>
@@ -441,7 +447,7 @@ export class PaymentGroupsPanel {
     ...this.store.paymentGroups().map((group) => ({
       value: `GROUP:${group.id}`,
       label: group.title || 'Payment group',
-      detail: `${group.memberIds.length + group.walletMembers.length} payments · ${group.createdAt.slice(0, 10)} · ${this.groupSummary(group)}`,
+      detail: `${this.paymentCount(group)} payments${this.refundCount(group) ? ` · ${this.refundCount(group)} refunds` : ''} · ${group.createdAt.slice(0, 10)} · ${this.groupSummary(group)}`,
     })),
     ...this.memberChoices().map((entry) => ({
       value: entry.key,
@@ -563,6 +569,15 @@ export class PaymentGroupsPanel {
         : [];
     });
     return [...cardEntries, ...walletEntries].join(' · ');
+  }
+  paymentCount(group: PaymentGroup): number {
+    return paymentGroupPaymentCount(group);
+  }
+  historyCount(group: PaymentGroup): number {
+    return paymentGroupHistoryCount(group);
+  }
+  refundCount(group: PaymentGroup): number {
+    return group.walletMembers.filter((member) => member.memberKind === 'WALLET_REFUND').length;
   }
   isCurrentMember(group: PaymentGroup, id: string): boolean {
     return (

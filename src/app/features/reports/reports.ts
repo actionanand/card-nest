@@ -3,7 +3,10 @@ import { ExportPeriod } from '../../core/models/export';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { displayBankAccountSuffix } from '../../core/services/bank-account-identifier';
 import { ExportService } from '../../core/services/export.service';
-import { informationalWalletSpending, sumConsolidatedSpending } from '../../core/services/financial-spending';
+import {
+  netInformationalWalletSpending,
+  sumConsolidatedSpending,
+} from '../../core/services/financial-spending';
 import { formatMoney } from '../../core/services/money';
 import { bankCashTracked, isBankOrCash } from '../../core/services/source-balance';
 import { AppIcon } from '../../shared/app-icon';
@@ -161,7 +164,7 @@ export class ReportsPage {
   );
   readonly walletSpending = computed(() => {
     const cycles = this.selectedReportCycles();
-    return informationalWalletSpending(
+    return netInformationalWalletSpending(
       this.store.walletFinancialEvents(),
       cycles[0]?.startDate,
       cycles.at(-1)?.endDate,

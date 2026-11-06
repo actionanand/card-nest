@@ -67,7 +67,7 @@ import {
 } from './billing-cycle';
 import { calculateOutstanding, transactionEffect } from './money';
 import {
-  informationalWalletSpending,
+  netInformationalWalletSpending,
   projectConsolidatedSpending,
   sumConsolidatedSpending,
 } from './financial-spending';
@@ -447,7 +447,7 @@ export class CardNestStore {
       unbilledMinor: Math.max(0, outstandingMinor - statementDueMinor),
       availableCreditMinor: Math.max(0, totalCredit - outstandingMinor),
       monthlySpendMinor,
-      walletSpendingMinor: informationalWalletSpending(
+      walletSpendingMinor: netInformationalWalletSpending(
         this.walletFinancialEvents(),
         budgetCycle.cycleStartDate,
         budgetCycle.cycleEndDate,

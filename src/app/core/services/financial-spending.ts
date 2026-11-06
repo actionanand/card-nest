@@ -128,3 +128,21 @@ export function informationalWalletSpending(
     0,
   );
 }
+
+export function netInformationalWalletSpending(
+  walletEvents: readonly ConsumerWalletEvent[],
+  startDate?: string,
+  endDate?: string,
+): number {
+  return walletEvents.reduce((sum, event) => {
+    if (
+      (startDate !== undefined && event.eventDate < startDate) ||
+      (endDate !== undefined && event.eventDate > endDate)
+    )
+      return sum;
+    if (event.eventType === 'PURCHASE') return sum + event.amountMinor;
+    if ((event.eventType === 'REFUND' || event.eventType === 'REVERSAL') && event.reversalOfEventId)
+      return sum - event.amountMinor;
+    return sum;
+  }, 0);
+}

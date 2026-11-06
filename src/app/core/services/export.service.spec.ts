@@ -318,6 +318,10 @@ describe('ExportService own-account movements', () => {
       formatMoney(0, 'INR'),
       formatMoney(0, 'INR'),
     ]);
+    expect(
+      walletSection.stats?.find((item) => item.label === 'Net wallet spending (informational)')
+        ?.value,
+    ).toBe(formatMoney(6000, 'INR'));
   });
   it('exports durable UPI Lite funded-principal reversals as dated expense contributions', () => {
     const loadDebit: CardTransaction = {

@@ -65,6 +65,38 @@ describe('Logical payment groups with real SQLite constraints', () => {
       throw error;
     }
   }
+  async function addWalletPurchaseRefundHistory(
+    refundType: 'REFUND' | 'REVERSAL' = 'REFUND',
+  ): Promise<void> {
+    await tx.run(
+      "INSERT INTO consumer_wallets(id,provider_id,wallet_kind,payload,created_at,updated_at) VALUES('wallet','amazon','STANDARD','{}','before','before')",
+    );
+    for (const [id, eventType, date, amount, delta, reversal] of [
+      ['wallet-load', 'FUNDED_LOAD', '2026-10-25', 30000, 30000, null],
+      ['wallet-purchase', 'PURCHASE', '2026-10-26', 20000, -20000, null],
+      ['wallet-refund', refundType, '2026-10-27', 5000, 5000, 'wallet-purchase'],
+    ] as const)
+      await tx.run(
+        'INSERT INTO consumer_wallet_events(id,wallet_id,event_type,event_date,amount_minor,balance_delta_minor,reversal_of_event_id,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)',
+        [id, 'wallet', eventType, date, amount, delta, reversal, '{}', date, date],
+      );
+    await tx.run(
+      'INSERT INTO consumer_wallet_credit_provenance(credit_event_id,source_credit_event_id,allocated_minor,created_at) VALUES(?,?,?,?)',
+      ['wallet-refund', 'wallet-load', 5000, 'later'],
+    );
+    await tx.run(
+      'INSERT INTO consumer_wallet_credit_provenance_segments(id,credit_event_id,segment_order,root_credit_event_id,source_purchase_event_id,amount_minor,created_at) VALUES(?,?,?,?,?,?,?)',
+      [
+        'wallet-refund:segment:0',
+        'wallet-refund',
+        0,
+        'wallet-load',
+        'wallet-purchase',
+        5000,
+        'later',
+      ],
+    );
+  }
   beforeEach(() => {
     sql = new DatabaseSync(':memory:');
     sql.exec('PRAGMA foreign_keys=ON');
@@ -158,18 +190,10 @@ describe('Logical payment groups with real SQLite constraints', () => {
     expect(ledger()).toHaveLength(2);
     expect(rows('PRAGMA foreign_key_check')).toEqual([]);
   });
-  it('keeps wallet refunds attached to a mixed-group purchase and prevents unsafe unlinking', async () => {
+  it('dissolves an undersized group when unlinking a refunded wallet purchase and preserves its history', async () => {
     add('card-member', 10000);
-    await tx.run(
-      "INSERT INTO consumer_wallets(id,provider_id,wallet_kind,payload,created_at,updated_at) VALUES('wallet','amazon','STANDARD','{}','before','before')",
-    );
-    await tx.run(
-      "INSERT INTO consumer_wallet_events(id,wallet_id,event_type,event_date,amount_minor,balance_delta_minor,payload,created_at,updated_at) VALUES('wallet-purchase','wallet','PURCHASE','2026-10-26',20000,-20000,'{}','before','before')",
-    );
+    await addWalletPurchaseRefundHistory();
     const groupId = await atomic(() => attachPaymentGroup(tx, ['card-member'], 'wallet-purchase'));
-    await tx.run(
-      "INSERT INTO consumer_wallet_events(id,wallet_id,event_type,event_date,amount_minor,balance_delta_minor,reversal_of_event_id,payload,created_at,updated_at) VALUES('wallet-refund','wallet','REFUND','2026-10-27',5000,5000,'wallet-purchase','{}','later','later')",
-    );
     await atomic(() =>
       linkWalletRefundToPaymentGroup(tx, 'wallet-purchase', 'wallet-refund', 'later'),
     );
@@ -180,15 +204,102 @@ describe('Logical payment groups with real SQLite constraints', () => {
       ['wallet-purchase', 'WALLET_PURCHASE'],
       ['wallet-refund', 'WALLET_REFUND'],
     ]);
-    await expect(atomic(() => detachPaymentGroup(tx, 'wallet-purchase'))).rejects.toThrow(
-      'related wallet refund',
-    );
-    await atomic(() => detachPaymentGroup(tx, groupId, true));
+    await atomic(() => detachPaymentGroup(tx, 'WALLET:wallet-purchase'));
+    expect(await readPaymentGroups(tx)).toEqual([]);
     expect(rows('SELECT id FROM consumer_wallet_events ORDER BY id')).toEqual([
+      { id: 'wallet-load' },
       { id: 'wallet-purchase' },
       { id: 'wallet-refund' },
     ]);
+    expect(rows('SELECT * FROM consumer_wallet_credit_provenance')).toHaveLength(1);
+    expect(rows('SELECT * FROM consumer_wallet_credit_provenance_segments')).toHaveLength(1);
+    expect(groupId).toBeTruthy();
+    expect(rows('PRAGMA foreign_key_check')).toEqual([]);
+  });
+  it('dissolves below two actual payments when unlinking the card member, preserving wallet refund provenance', async () => {
+    add('card-member', 10000);
+    await addWalletPurchaseRefundHistory();
+    await atomic(() => attachPaymentGroup(tx, ['card-member'], 'wallet-purchase'));
+    await atomic(() =>
+      linkWalletRefundToPaymentGroup(tx, 'wallet-purchase', 'wallet-refund', 'later'),
+    );
+
+    await atomic(() => detachPaymentGroup(tx, 'card-member'));
+
     expect(await readPaymentGroups(tx)).toEqual([]);
+    expect(rows('SELECT id FROM card_transactions')).toEqual([{ id: 'card-member' }]);
+    expect(rows('SELECT id FROM consumer_wallet_events')).toHaveLength(3);
+    expect(rows('SELECT * FROM consumer_wallet_credit_provenance')).toHaveLength(1);
+    expect(rows('SELECT * FROM consumer_wallet_credit_provenance_segments')).toHaveLength(1);
+    expect(rows('PRAGMA foreign_key_check')).toEqual([]);
+  });
+  it('dissolves below two actual payments when unlinking the wallet member after its refund relationship', async () => {
+    add('card-member', 10000);
+    await addWalletPurchaseRefundHistory();
+    await atomic(() => attachPaymentGroup(tx, ['card-member'], 'wallet-purchase'));
+
+    await atomic(() => detachPaymentGroup(tx, 'WALLET:wallet-refund'));
+    expect((await readPaymentGroups(tx))[0].walletMembers).toEqual([
+      expect.objectContaining({ walletEventId: 'wallet-purchase', memberKind: 'WALLET_PURCHASE' }),
+    ]);
+    await atomic(() => detachPaymentGroup(tx, 'WALLET:wallet-purchase'));
+
+    expect(await readPaymentGroups(tx)).toEqual([]);
+    expect(rows('SELECT id FROM card_transactions')).toHaveLength(1);
+    expect(rows('SELECT id FROM consumer_wallet_events')).toHaveLength(3);
+    expect(rows('SELECT * FROM consumer_wallet_credit_provenance')).toHaveLength(1);
+    expect(rows('SELECT * FROM consumer_wallet_credit_provenance_segments')).toHaveLength(1);
+    expect(rows('PRAGMA foreign_key_check')).toEqual([]);
+  });
+  it.each(['REFUND', 'REVERSAL'] as const)(
+    'does not count %s history as a second payment when unlinking another wallet purchase',
+    async (refundType) => {
+      await addWalletPurchaseRefundHistory(refundType);
+      await tx.run(
+        "INSERT INTO consumer_wallet_events(id,wallet_id,event_type,event_date,amount_minor,balance_delta_minor,payload,created_at,updated_at) VALUES('second-wallet-payment','wallet','PURCHASE','2026-10-26',10000,-10000,'{}','before','before')",
+      );
+      await atomic(() =>
+        attachPaymentGroup(tx, [], 'WALLET:wallet-purchase', {}, ['second-wallet-payment']),
+      );
+      const beforeEvents = rows('SELECT * FROM consumer_wallet_events ORDER BY id');
+      const beforeSegments = rows('SELECT * FROM consumer_wallet_credit_provenance_segments');
+
+      await atomic(() => detachPaymentGroup(tx, 'WALLET:second-wallet-payment'));
+
+      expect(await readPaymentGroups(tx)).toEqual([]);
+      expect(rows('SELECT * FROM consumer_wallet_events ORDER BY id')).toEqual(beforeEvents);
+      expect(rows('SELECT * FROM consumer_wallet_credit_provenance_segments')).toEqual(
+        beforeSegments,
+      );
+      expect(rows('PRAGMA foreign_key_check')).toEqual([]);
+    },
+  );
+  it('unlinks a purchase and its refund memberships while preserving two actual card payments and their anchor', async () => {
+    add('first-card', 10000);
+    add('second-card', 5000);
+    await addWalletPurchaseRefundHistory();
+    const groupId = await atomic(() =>
+      attachPaymentGroup(tx, ['second-card'], 'first-card', {}, ['wallet-purchase']),
+    );
+    const beforeEvents = rows('SELECT * FROM consumer_wallet_events ORDER BY id');
+    const beforeSegments = rows('SELECT * FROM consumer_wallet_credit_provenance_segments');
+
+    await atomic(() => detachPaymentGroup(tx, 'WALLET:wallet-purchase'));
+
+    const [group] = await readPaymentGroups(tx);
+    expect(group.id).toBe(groupId);
+    expect(group.anchorId).toBe('first-card');
+    expect(group.memberIds).toEqual(['first-card', 'second-card']);
+    expect(group.walletMembers).toEqual([]);
+    expect(
+      rows('SELECT original_amount_minor FROM transaction_split_groups')[0][
+        'original_amount_minor'
+      ],
+    ).toBe(15000);
+    expect(rows('SELECT * FROM consumer_wallet_events ORDER BY id')).toEqual(beforeEvents);
+    expect(rows('SELECT * FROM consumer_wallet_credit_provenance_segments')).toEqual(
+      beforeSegments,
+    );
     expect(rows('PRAGMA foreign_key_check')).toEqual([]);
   });
   it('does not use a colliding card transaction as the anchor of an explicit wallet target', async () => {

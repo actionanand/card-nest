@@ -80,6 +80,21 @@ export interface PaymentGroupEdits {
   billTotalMinor?: number | null;
 }
 
+export function paymentGroupPaymentCount(
+  group: Pick<PaymentGroup, 'memberIds' | 'walletMembers'>,
+): number {
+  return (
+    group.memberIds.length +
+    group.walletMembers.filter((member) => member.memberKind === 'WALLET_PURCHASE').length
+  );
+}
+
+export function paymentGroupHistoryCount(
+  group: Pick<PaymentGroup, 'memberIds' | 'walletMembers'>,
+): number {
+  return group.memberIds.length + group.walletMembers.length;
+}
+
 export async function linkWalletRefundToPaymentGroup(
   tx: DatabaseSession,
   purchaseEventId: string,
@@ -166,8 +181,6 @@ export async function attachPaymentGroup(
       ...walletEventIds,
     ]),
   ];
-  if (ids.length + walletIds.length < 2)
-    throw new Error('A payment group needs at least two distinct payments.');
   const entries = ids.map((id) => {
     const item = ledger.find((row) => row.id === id);
     if (!item || !eligiblePaymentMember(item))
@@ -228,6 +241,8 @@ export async function attachPaymentGroup(
       throw new Error('A wallet payment already belongs to another group.');
     walletPurchases.push(event);
   }
+  if (entries.length + walletPurchases.length < 2)
+    throw new Error('A payment group needs at least two distinct payments.');
   const primaryAnchor = anchor ?? entries[0];
   const currency = primaryAnchor?.currencyCode ?? 'INR';
   if (entries.some((entry) => entry.currencyCode !== currency))
@@ -346,7 +361,10 @@ export async function detachPaymentGroup(
   );
   const remaining = group.memberIds.filter((id) => id !== transactionId);
   const walletMembers = group.walletMembers;
-  const clear = dissolve || remaining.length + walletMembers.length < 2;
+  const remainingPayments =
+    remaining.length +
+    walletMembers.filter((member) => member.memberKind === 'WALLET_PURCHASE').length;
+  const clear = dissolve || remainingPayments < 2;
   const removed = clear ? group.memberIds : [transactionId];
   for (const id of removed) {
     const item = ledger.find((row) => row.id === id);
@@ -397,26 +415,29 @@ export async function detachWalletPaymentGroup(
     row.walletMembers.some((member) => member.walletEventId === walletEventId),
   );
   if (!group) return;
+  const removedIds = new Set([walletEventId]);
   const member = group.walletMembers.find((item) => item.walletEventId === walletEventId);
   if (member?.memberKind === 'WALLET_PURCHASE') {
-    const [dependentRefund] = await tx.query<{ id: string }>(
-      `SELECT m.wallet_event_id AS id FROM consumer_wallet_split_members m
+    const refunds = await tx.query<{ wallet_event_id: string }>(
+      `SELECT m.wallet_event_id FROM consumer_wallet_split_members m
        JOIN consumer_wallet_events e ON e.id=m.wallet_event_id
-       WHERE m.group_id=? AND m.member_kind='WALLET_REFUND' AND e.reversal_of_event_id=? LIMIT 1`,
+       WHERE m.group_id=? AND m.member_kind='WALLET_REFUND' AND e.reversal_of_event_id=?`,
       [group.id, walletEventId],
     );
-    if (dependentRefund)
-      throw new Error(
-        'Unlink the related wallet refund before removing its purchase from the group.',
-      );
+    for (const refund of refunds) removedIds.add(refund.wallet_event_id);
   }
-  await tx.run('DELETE FROM consumer_wallet_split_members WHERE wallet_event_id=?', [
-    walletEventId,
-  ]);
+  for (const id of removedIds)
+    await tx.run(
+      'DELETE FROM consumer_wallet_split_members WHERE group_id=? AND wallet_event_id=?',
+      [group.id, id],
+    );
   const remainingWalletMembers = group.walletMembers.filter(
-    (item) => item.walletEventId !== walletEventId,
+    (item) => !removedIds.has(item.walletEventId),
   );
-  if (group.memberIds.length + remainingWalletMembers.length < 2) {
+  const remainingPayments =
+    group.memberIds.length +
+    remainingWalletMembers.filter((item) => item.memberKind === 'WALLET_PURCHASE').length;
+  if (remainingPayments < 2) {
     await tx.run('DELETE FROM transaction_split_members WHERE group_id=?', [group.id]);
     await tx.run('DELETE FROM consumer_wallet_split_members WHERE group_id=?', [group.id]);
     const ledger = (
