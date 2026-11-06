@@ -493,9 +493,12 @@ export class SqliteDatabase {
   private async deleteDataOlderThanUnqueued(cutoffIso: string): Promise<number> {
     if (!this.ready()) throw new Error('SQLite database is unavailable.');
     await prunePlatformDiscovery(cutoffIso);
+    const protectedMixedPayments = `SELECT m.transaction_id FROM transaction_split_members m
+      WHERE m.group_id IN (SELECT group_id FROM consumer_wallet_split_members)`;
+    const prunable = `transaction_date < '${cutoffIso}' AND id NOT IN (${protectedMixedPayments})`;
     const countResult = await CapacitorSQLite.query({
       database: this.databaseName,
-      statement: 'SELECT COUNT(*) AS count FROM card_transactions WHERE transaction_date < ?',
+      statement: `SELECT COUNT(*) AS count FROM card_transactions WHERE transaction_date < ? AND id NOT IN (${protectedMixedPayments})`,
       values: [cutoffIso],
     });
     const removed = Number(countResult.values?.[0]?.['count'] ?? 0);
@@ -505,30 +508,39 @@ export class SqliteDatabase {
       statements: `
         UPDATE sms_candidates SET payload = NULL WHERE event_at < '${cutoffIso}';
         UPDATE consumer_wallet_events
-           SET source_transaction_id=NULL,
+           SET debit_amount_minor=COALESCE(debit_amount_minor,(
+                 SELECT amount_minor FROM card_transactions WHERE id=consumer_wallet_events.source_transaction_id
+               )),
+               source_transaction_id=NULL,
                payload=CASE WHEN json_valid(payload)
-                 THEN json_remove(payload,'$.sourceTransactionId','$.merchant','$.memo','$.notes')
+                 THEN json_set(
+                   json_remove(payload,'$.sourceTransactionId','$.merchant','$.memo','$.notes'),
+                   '$.debitAmountMinor',
+                   COALESCE(json_extract(payload,'$.debitAmountMinor'),(
+                     SELECT amount_minor FROM card_transactions WHERE id=consumer_wallet_events.source_transaction_id
+                   ))
+                 )
                  ELSE payload END
          WHERE source_transaction_id IN (
-           SELECT id FROM card_transactions WHERE transaction_date < '${cutoffIso}'
+           SELECT id FROM card_transactions WHERE ${prunable}
          );
         INSERT INTO sms_sync_state(key,value) VALUES ('retention_cutoff','${cutoffIso}') ON CONFLICT(key) DO UPDATE SET value=excluded.value;
         DELETE FROM transaction_links
-         WHERE transaction_id IN (SELECT id FROM card_transactions WHERE transaction_date < '${cutoffIso}')
-            OR related_transaction_id IN (SELECT id FROM card_transactions WHERE transaction_date < '${cutoffIso}');
+        WHERE transaction_id IN (SELECT id FROM card_transactions WHERE ${prunable})
+          OR related_transaction_id IN (SELECT id FROM card_transactions WHERE ${prunable});
         DELETE FROM transaction_split_members
-         WHERE transaction_id IN (SELECT id FROM card_transactions WHERE transaction_date < '${cutoffIso}');
+         WHERE transaction_id IN (SELECT id FROM card_transactions WHERE ${prunable});
         DELETE FROM emi_installments
          WHERE emi_plan_id IN (
            SELECT id FROM emi_plans
-            WHERE transaction_id IN (SELECT id FROM card_transactions WHERE transaction_date < '${cutoffIso}')
+            WHERE transaction_id IN (SELECT id FROM card_transactions WHERE ${prunable})
          );
         DELETE FROM emi_plans
-         WHERE transaction_id IN (SELECT id FROM card_transactions WHERE transaction_date < '${cutoffIso}');
+         WHERE transaction_id IN (SELECT id FROM card_transactions WHERE ${prunable});
         DELETE FROM attachments
-         WHERE transaction_id IN (SELECT id FROM card_transactions WHERE transaction_date < '${cutoffIso}');
+         WHERE transaction_id IN (SELECT id FROM card_transactions WHERE ${prunable});
         DELETE FROM source_transfers WHERE transfer_date < '${cutoffIso}';
-        DELETE FROM card_transactions WHERE transaction_date < '${cutoffIso}';
+        DELETE FROM card_transactions WHERE ${prunable};
         DELETE FROM transaction_split_groups
          WHERE id NOT IN (SELECT DISTINCT group_id FROM transaction_split_members)
            AND id NOT IN (SELECT DISTINCT group_id FROM consumer_wallet_split_members);

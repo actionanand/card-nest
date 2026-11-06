@@ -9,6 +9,7 @@ import {
   SmsPaymentMethod,
   SmsPaymentMethodDetail,
   TransactionType,
+  WalletLoadingDetails,
 } from '../../core/models/domain';
 import { purchaseCompatible } from './sms-purchase-matching';
 import { matchesTransactionType } from '../../core/services/money';
@@ -116,6 +117,8 @@ export interface ApprovalEdits {
   paymentMethodDetail?: SmsPaymentMethodDetail;
   paymentMethodCustom?: string;
   smsAdditionalComment?: string;
+  walletLoading?: WalletLoadingDetails;
+  walletLoadingApproved?: boolean;
 }
 export interface PurchaseReviewDraft {
   categoryOverridden?: boolean;
@@ -313,7 +316,8 @@ export const BANK_EVIDENCE_KINDS: readonly SmsKind[] = [
   'LOAN_DEBIT',
 ];
 
-export type BankPurpose = 'PURCHASE' | 'INCOME' | 'TRANSFER' | 'CARD_SETTLEMENT' | 'LOAN_REPAYMENT';
+export type BankPurpose =
+  'PURCHASE' | 'WALLET_LOADING' | 'INCOME' | 'TRANSFER' | 'CARD_SETTLEMENT' | 'LOAN_REPAYMENT';
 
 export function isBankEvidence(item: SmsEvidence | null | undefined): item is SmsEvidence {
   return !!item && BANK_EVIDENCE_KINDS.includes(item.kind) && !suspectEvidence(item);
@@ -342,7 +346,7 @@ export function bankPurposes(
     item.kind === 'LOAN_DEBIT' ||
     item.purposeHint === 'CARD_REPAYMENT' ||
     item.purposeHint === 'LOAN_REPAYMENT';
-  const purposes: BankPurpose[] = repayment ? [] : ['PURCHASE'];
+  const purposes: BankPurpose[] = repayment ? [] : ['PURCHASE', 'WALLET_LOADING'];
   if (
     bankTrackingEnabled(settings) &&
     item.kind !== 'LOAN_DEBIT' &&

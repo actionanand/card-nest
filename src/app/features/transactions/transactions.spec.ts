@@ -1,0 +1,277 @@
+import { TestBed, ComponentFixture } from '@angular/core/testing';
+import { provideRouter } from '@angular/router';
+import { ConsumerWalletEvent } from '../../core/models/domain';
+import { SqliteDatabase } from '../../core/data/sqlite-database';
+import { CardNestStore } from '../../core/services/card-nest-store';
+import { ConsumerWalletService } from '../../core/services/consumer-wallet.service';
+import { TransactionsPage } from './transactions';
+
+describe('Transactions wallet purchase approval and lifecycle UI', () => {
+  let fixture: ComponentFixture<TransactionsPage>;
+  let page: TransactionsPage;
+  let wallets: ConsumerWalletService;
+  const purchase: ConsumerWalletEvent = {
+    id: 'wallet-purchase',
+    walletId: 'wallet',
+    eventType: 'PURCHASE',
+    eventDate: '2026-10-20',
+    amountMinor: 20000,
+    balanceDeltaMinor: -20000,
+    merchant: 'Synthetic shop',
+    categoryId: 'other',
+    notes: 'Original note',
+    createdAt: '2026-10-20T10:00:00Z',
+    updatedAt: '2026-10-20T10:00:00Z',
+  };
+  const submit = () => new Event('submit', { cancelable: true });
+  const click = (label: string) => {
+    const button = [...(fixture.nativeElement as HTMLElement).querySelectorAll('button')].find(
+      (item) => item.textContent?.trim() === label,
+    );
+    expect(button).toBeDefined();
+    button!.click();
+    fixture.detectChanges();
+  };
+  beforeEach(() => {
+    TestBed.configureTestingModule({
+      providers: [provideRouter([]), { provide: SqliteDatabase, useValue: { ready: () => false } }],
+    });
+    wallets = TestBed.inject(ConsumerWalletService);
+    const store = TestBed.inject(CardNestStore);
+    store.cards.set([]);
+    store.transactions.set([]);
+    wallets.wallets.set([
+      {
+        id: 'wallet',
+        providerId: 'amazon-pay',
+        kind: 'STANDARD',
+        nickname: 'Synthetic wallet',
+        archived: false,
+        createdAt: '2026-10-01',
+        updatedAt: '2026-10-01',
+      },
+    ]);
+    wallets.featureState.set('ENABLED');
+    wallets.events.set([purchase]);
+    fixture = TestBed.createComponent(TransactionsPage);
+    page = fixture.componentInstance;
+    fixture.detectChanges();
+    vi.spyOn(wallets, 'previewWalletPurchaseRefund').mockImplementation(async (input) => ({
+      walletId: purchase.walletId,
+      purchaseEventId: purchase.id,
+      amountMinor: input.amountMinor,
+      alreadyRefundedMinor: page.walletRefundTotalMinor(purchase.id),
+      refundableRemainingMinor: page.walletRefundableMinor(purchase) - input.amountMinor,
+      provenanceSegments: [],
+      confirmationKey: JSON.stringify(input),
+    }));
+    vi.spyOn(wallets, 'recordWalletPurchaseRefund').mockImplementation(async (input) => {
+      const refund: ConsumerWalletEvent = {
+        id: input.id,
+        walletId: purchase.walletId,
+        eventType: 'REFUND',
+        reversalOfEventId: purchase.id,
+        amountMinor: input.amountMinor,
+        balanceDeltaMinor: input.amountMinor,
+        eventDate: input.eventDate,
+        createdAt: '2026-11-06T10:00:00Z',
+        updatedAt: '2026-11-06T10:00:00Z',
+      };
+      wallets.events.update((events) => [...events, refund]);
+      return refund;
+    });
+    vi.spyOn(wallets, 'previewWalletPurchaseCancellation').mockImplementation(async (input) => ({
+      walletId: purchase.walletId,
+      purchaseEventId: purchase.id,
+      amountMinor: input.amountMinor,
+      alreadyRefundedMinor: 0,
+      refundableRemainingMinor: 0,
+      provenanceSegments: [],
+      confirmationKey: 'cancel-reviewed',
+    }));
+    vi.spyOn(wallets, 'cancelWalletPurchase').mockResolvedValue({
+      ...purchase,
+      id: 'cancel',
+      eventType: 'REVERSAL',
+      balanceDeltaMinor: purchase.amountMinor,
+      reversalOfEventId: purchase.id,
+    });
+  });
+  afterEach(() => {
+    fixture.destroy();
+    vi.restoreAllMocks();
+  });
+
+  it('opens wallet details and shows informational classification and remaining refund value', () => {
+    page.openWalletDetails(purchase);
+    fixture.detectChanges();
+    expect(fixture.nativeElement.textContent).toContain('Synthetic shop');
+    expect(fixture.nativeElement.textContent).toContain('already counted when loaded');
+    expect(fixture.nativeElement.textContent).toContain('Remaining refundable');
+    expect(page.walletRefundableMinor(purchase)).toBe(20000);
+  });
+  it.each([20000, 5000])(
+    'previews and explicitly approves a %i-minor refund, once',
+    async (amount) => {
+      page.openWalletDetails(purchase);
+      page.openWalletRefund(purchase);
+      page.walletRefundForm.controls.amount.setValue(String(amount / 100));
+      await page.saveWalletRefund(submit());
+      fixture.detectChanges();
+      expect(wallets.recordWalletPurchaseRefund).not.toHaveBeenCalled();
+      expect(fixture.nativeElement.textContent).toContain('Review wallet refund');
+      const approval = fixture.nativeElement.querySelector(
+        '.wallet-form input[type="checkbox"]',
+      ) as HTMLInputElement;
+      approval.click();
+      fixture.detectChanges();
+      await Promise.all([page.saveWalletRefund(submit()), page.saveWalletRefund(submit())]);
+      fixture.detectChanges();
+      expect(wallets.recordWalletPurchaseRefund).toHaveBeenCalledOnce();
+      expect(page.walletRefundableMinor(purchase)).toBe(20000 - amount);
+      await page.saveWalletRefund(submit());
+      expect(wallets.recordWalletPurchaseRefund).toHaveBeenCalledOnce();
+    },
+  );
+  it.each(['amount', 'eventDate'] as const)(
+    'invalidates refund approval when %s changes',
+    async (field) => {
+      page.openWalletRefund(purchase);
+      await page.saveWalletRefund(submit());
+      fixture.detectChanges();
+      (
+        fixture.nativeElement.querySelector(
+          '.wallet-form input[type="checkbox"]',
+        ) as HTMLInputElement
+      ).click();
+      expect(page.walletRefundApprovedFor()).not.toBe('');
+      page.walletRefundForm.controls[field].setValue(field === 'amount' ? '50' : '2026-11-05');
+      fixture.detectChanges();
+      expect(page.walletRefundApprovedFor()).toBe('');
+      await page.saveWalletRefund(submit());
+      expect(wallets.recordWalletPurchaseRefund).not.toHaveBeenCalled();
+    },
+  );
+  it('renders one cancellation dialog and cancelling it makes no financial write', () => {
+    page.openWalletDetails(purchase);
+    fixture.detectChanges();
+    click('Cancel purchase');
+    expect(fixture.nativeElement.querySelectorAll('app-confirmation-dialog')).toHaveLength(1);
+    const cancel = fixture.nativeElement.querySelector(
+      '.confirmation-actions .btn',
+    ) as HTMLButtonElement;
+    cancel.click();
+    fixture.detectChanges();
+    expect(page.walletCancellationCandidate()).toBeNull();
+    expect(wallets.cancelWalletPurchase).not.toHaveBeenCalled();
+  });
+  it('confirms cancellation once and prevents concurrent confirmation', async () => {
+    page.requestWalletCancellation(purchase);
+    fixture.detectChanges();
+    await Promise.all([page.confirmWalletCancellation(), page.confirmWalletCancellation()]);
+    fixture.detectChanges();
+    expect(wallets.cancelWalletPurchase).toHaveBeenCalledOnce();
+    expect(page.walletCancellationCandidate()).toBeNull();
+  });
+  it('preserves archived history and disables financial actions when Wallets is off', () => {
+    wallets.wallets.update((items) => items.map((wallet) => ({ ...wallet, archived: true })));
+    wallets.featureState.set('DISABLED');
+    page.openWalletDetails(purchase);
+    fixture.detectChanges();
+    expect(fixture.nativeElement.textContent).toContain('Synthetic wallet');
+    const buttons = fixture.nativeElement.querySelectorAll(
+      '.detail-actions button',
+    ) as NodeListOf<HTMLButtonElement>;
+    expect([...buttons].every((button) => button.disabled)).toBe(true);
+    page.openWalletRefund(purchase);
+    page.requestWalletCancellation(purchase);
+    expect(page.walletRefundPurchaseId()).toBe('');
+    expect(page.walletCancellationCandidate()).toBeNull();
+  });
+  it('shows earlier refunds and the remaining refundable amount', () => {
+    const refund: ConsumerWalletEvent = {
+      ...purchase,
+      id: 'partial',
+      eventType: 'REFUND',
+      amountMinor: 5000,
+      balanceDeltaMinor: 5000,
+      reversalOfEventId: purchase.id,
+    };
+    wallets.events.update((events) => [...events, refund]);
+    page.openWalletDetails(refund);
+    fixture.detectChanges();
+    expect(fixture.nativeElement.textContent).toContain('Total refunded');
+    expect(page.walletRefundTotalMinor(purchase.id)).toBe(5000);
+    expect(page.walletRefundableMinor(purchase)).toBe(15000);
+  });
+  it('loads metadata and financial fields into the wallet edit form without changing identity', () => {
+    page.editWalletPurchase(purchase);
+    fixture.detectChanges();
+    expect(page.walletPurchaseEditId()).toBe(purchase.id);
+    expect(page.form.getRawValue()).toMatchObject({
+      merchant: purchase.merchant,
+      notes: purchase.notes,
+      amount: '200',
+      transactionDate: purchase.eventDate,
+      consumerWalletId: purchase.walletId,
+      cardId: '',
+    });
+    page.form.patchValue({ notes: 'Edited', amount: '150', transactionDate: '2026-10-21' });
+    expect(page.walletPurchaseApprovedFor()).toBe('');
+  });
+  it.each(['metadata', 'amount/date'])(
+    'requires approval before saving %s wallet purchase edits',
+    async (kind) => {
+      const preview = vi
+        .spyOn(wallets, 'previewWalletPurchaseEdit')
+        .mockImplementation(async (input) => ({
+          walletId: input.walletId,
+          amountMinor: input.amountMinor,
+          balanceBeforeMinor: 50000,
+          balanceAfterMinor: 50000 - input.amountMinor,
+          allocations: [],
+          confirmationKey: JSON.stringify(input),
+        }));
+      const update = vi.spyOn(wallets, 'updateWalletPurchase').mockResolvedValue(purchase);
+      page.editWalletPurchase(purchase);
+      page.form.patchValue(
+        kind === 'metadata'
+          ? { merchant: 'Edited shop', notes: 'Edited note' }
+          : { amount: '150', transactionDate: '2026-10-21' },
+      );
+      fixture.detectChanges();
+      await page.save();
+      fixture.detectChanges();
+      expect(preview).toHaveBeenCalledOnce();
+      expect(update).not.toHaveBeenCalled();
+      const approval = fixture.nativeElement.querySelector(
+        'fieldset.wallet-load-summary input[type="checkbox"]',
+      ) as HTMLInputElement;
+      expect(approval).not.toBeNull();
+      approval.click();
+      fixture.detectChanges();
+      await page.save();
+      fixture.detectChanges();
+      expect(update).toHaveBeenCalledOnce();
+      expect(update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: purchase.id,
+          walletId: purchase.walletId,
+          ...(kind === 'metadata'
+            ? { merchant: 'Edited shop', notes: 'Edited note' }
+            : { amountMinor: 15000, eventDate: '2026-10-21' }),
+        }),
+      );
+    },
+  );
+  it('consumes Android Back to close wallet details without any mutation', () => {
+    page.openWalletDetails(purchase);
+    fixture.detectChanges();
+    const back = new Event('cardnest:back', { cancelable: true });
+    window.dispatchEvent(back);
+    fixture.detectChanges();
+    expect(back.defaultPrevented).toBe(true);
+    expect(page.detailWalletEvent()).toBeNull();
+    expect(wallets.recordWalletPurchaseRefund).not.toHaveBeenCalled();
+  });
+});

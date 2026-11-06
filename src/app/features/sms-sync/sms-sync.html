@@ -164,9 +164,15 @@
     @if (notice()) {
       <p class="feedback" role="status">{{ notice() }}</p>
     }
-    @if (retryRestoredFilterRefresh() || retryFilterRefresh()) {
+    @if (
+      retryRestoredFilterRefresh() || retryFilterRefresh() || sync.walletHistoryRefreshNeeded()
+    ) {
       <button class="btn" type="button" [disabled]="loading()" (click)="retryReviewInboxRefresh()">
-        Retry inbox refresh
+        {{
+          sync.walletHistoryRefreshNeeded()
+            ? 'Retry wallet and inbox refresh'
+            : 'Retry inbox refresh'
+        }}
       </button>
     }
     <section
@@ -895,6 +901,43 @@
                   ></textarea>
                 </label>
               }
+              @if (candidate.kind === 'PURCHASE' && canOfferWalletLoading()) {
+                <fieldset class="wallet-loading-review">
+                  <legend>Wallet Loading (optional)</legend>
+                  <label class="check">
+                    <input
+                      type="checkbox"
+                      [checked]="editor.controls.walletLoading.value"
+                      (change)="setCardWalletLoadingFromEvent($event)"
+                    />
+                    <span>This debit explicitly funded a consumer wallet</span>
+                  </label>
+                  @if (editor.controls.walletLoading.value) {
+                    <app-select-picker
+                      label="Consumer wallet destination"
+                      formControlName="walletDestination"
+                      [options]="walletLoadingOptions()"
+                      [searchable]="true"
+                    />
+                    <label
+                      >Amount loaded into wallet (INR)<input
+                        formControlName="walletLoadedAmount"
+                        inputmode="decimal"
+                        required
+                    /></label>
+                    <p class="muted">{{ walletLoadingSummary('CARD') }}</p>
+                    <label class="check">
+                      <input
+                        type="checkbox"
+                        [checked]="walletLoadingApproved('CARD')"
+                        [disabled]="!walletLoadingFormValid('CARD')"
+                        (change)="confirmWalletLoading('CARD', $event)"
+                      />
+                      <span>I confirm this debit successfully loaded the selected wallet.</span>
+                    </label>
+                  }
+                </fieldset>
+              }
               @if (candidate.kind === 'REFUND') {
                 <app-select-picker
                   label="Original purchase (optional)"
@@ -1069,7 +1112,16 @@
                   >
                 }
               </details>
-              <button class="btn btn-primary" type="submit" [disabled]="saving() || !editor.valid">
+              <button
+                class="btn btn-primary"
+                type="submit"
+                [disabled]="
+                  saving() ||
+                  !editor.valid ||
+                  (editor.controls.walletLoading.value &&
+                    (!walletLoadingFormValid('CARD') || !walletLoadingApproved('CARD')))
+                "
+              >
                 {{
                   editor.controls.existing.value
                     ? 'Approve match existing'
@@ -1172,7 +1224,11 @@
                   rows="2"
                 ></textarea>
               </label>
-              @if (bankPurpose() === 'PURCHASE' || bankPurpose() === 'INCOME') {
+              @if (
+                bankPurpose() === 'PURCHASE' ||
+                bankPurpose() === 'WALLET_LOADING' ||
+                bankPurpose() === 'INCOME'
+              ) {
                 <app-select-picker
                   label="Category"
                   [value]="bankEditor.controls.category.value"
@@ -1180,6 +1236,33 @@
                   [options]="categoryOptions()"
                   [searchable]="true"
                 />
+              }
+              @if (bankPurpose() === 'WALLET_LOADING') {
+                <fieldset class="wallet-loading-review">
+                  <legend>Confirm wallet funding details</legend>
+                  <app-select-picker
+                    label="Consumer wallet destination"
+                    formControlName="walletDestination"
+                    [options]="walletLoadingOptions()"
+                    [searchable]="true"
+                  />
+                  <label
+                    >Amount loaded into wallet (INR)<input
+                      formControlName="walletLoadedAmount"
+                      inputmode="decimal"
+                      required
+                  /></label>
+                  <p class="muted">{{ walletLoadingSummary('BANK') }}</p>
+                  <label class="check">
+                    <input
+                      type="checkbox"
+                      [checked]="walletLoadingApproved('BANK')"
+                      [disabled]="!walletLoadingFormValid('BANK')"
+                      (change)="confirmWalletLoading('BANK', $event)"
+                    />
+                    <span>I confirm this debit successfully loaded the selected wallet.</span>
+                  </label>
+                </fieldset>
               }
               @if (bankPurpose() === 'TRANSFER') {
                 <app-select-picker
@@ -1287,6 +1370,8 @@
                 [disabled]="
                   saving() ||
                   !bankPurpose() ||
+                  (bankPurpose() === 'WALLET_LOADING' &&
+                    (!walletLoadingFormValid('BANK') || !walletLoadingApproved('BANK'))) ||
                   (bankTimingNeeded() && !bankEditor.controls.timing.value)
                 "
               >

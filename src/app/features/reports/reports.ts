@@ -3,7 +3,8 @@ import { ExportPeriod } from '../../core/models/export';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { displayBankAccountSuffix } from '../../core/services/bank-account-identifier';
 import { ExportService } from '../../core/services/export.service';
-import { formatMoney, spendingContribution } from '../../core/services/money';
+import { informationalWalletSpending, sumConsolidatedSpending } from '../../core/services/financial-spending';
+import { formatMoney } from '../../core/services/money';
 import { bankCashTracked, isBankOrCash } from '../../core/services/source-balance';
 import { AppIcon } from '../../shared/app-icon';
 import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
@@ -35,7 +36,8 @@ export class ReportsPage {
   readonly availableCycles = computed<readonly ReportCycle[]>(() => {
     const current = this.cycleForOffset(0);
     const datedRecords = [
-      ...this.store.transactions().map((item) => item.transactionDate),
+      ...this.store.consolidatedSpending().map((item) => item.date),
+      ...this.store.walletFinancialEvents().map((event) => event.eventDate),
       ...this.store.incomeHistory().map((item) => item.cycleStartDate),
     ].filter(Boolean);
     const earliestCycle = this.cycleContaining(datedRecords.sort()[0] ?? current.startDate);
@@ -146,12 +148,25 @@ export class ReportsPage {
           item.transactionDate <= lastCycle.endDate,
       );
   });
-  readonly expenses = computed(() =>
-    this.periodTransactions().filter((item) => spendingContribution(item) !== 0),
-  );
+  readonly expenses = computed(() => {
+    const cycles = this.selectedReportCycles();
+    const startDate = cycles[0]?.startDate;
+    const endDate = cycles.at(-1)?.endDate ?? startDate;
+    return this.store
+      .consolidatedSpending()
+      .filter((entry) => entry.date >= startDate && entry.date <= endDate);
+  });
   readonly totalSpent = computed(() =>
-    this.expenses().reduce((sum, item) => sum + spendingContribution(item), 0),
+    sumConsolidatedSpending(this.expenses()),
   );
+  readonly walletSpending = computed(() => {
+    const cycles = this.selectedReportCycles();
+    return informationalWalletSpending(
+      this.store.walletFinancialEvents(),
+      cycles[0]?.startDate,
+      cycles.at(-1)?.endDate,
+    );
+  });
   readonly incomingPayments = computed(() =>
     this.periodTransactions()
       .filter((item) => item.type === 'PAYMENT')
@@ -160,13 +175,18 @@ export class ReportsPage {
   readonly nonCardSpent = computed(() => {
     const sourceIds = new Set(this.store.paymentSources().map((source) => source.id));
     return this.expenses()
-      .filter((item) => sourceIds.has(item.cardId))
-      .reduce((sum, item) => sum + spendingContribution(item), 0);
+      .filter((item) => sourceIds.has(item.sourceId))
+      .reduce((sum, item) => sum + item.amountMinor, 0);
   });
   readonly recurringAndEmi = computed(() =>
     this.expenses()
-      .filter((item) => item.recurringRuleId || item.emiPlanId)
-      .reduce((sum, item) => sum + spendingContribution(item), 0),
+      .filter((item) => {
+        const transaction = this.store
+          .transactions()
+          .find((entry) => entry.id === item.sourceTransactionId);
+        return !!transaction?.recurringRuleId || !!transaction?.emiPlanId;
+      })
+      .reduce((sum, item) => sum + item.amountMinor, 0),
   );
   readonly loanCommitments = computed(() =>
     this.selectedReportCycles().reduce(
@@ -234,20 +254,20 @@ export class ReportsPage {
       .map((category) => {
         const amount = this.expenses()
           .filter((item) => item.categoryId === category.id)
-          .reduce((sum, item) => sum + spendingContribution(item), 0);
+          .reduce((sum, item) => sum + item.amountMinor, 0);
         return { ...category, amount, percent: total ? Math.round((amount / total) * 100) : 0 };
       })
       .filter((item) => item.amount !== 0)
       .sort((a, b) => b.amount - a.amount);
   });
   readonly bySource = computed(() =>
-    [...this.store.activeCards(), ...this.store.activePaymentSources()]
+    [...this.store.cards(), ...this.store.paymentSources()]
       .map((source) => ({
         id: source.id,
         name: `${source.nickname}${'lastDigits' in source && source.lastDigits ? ` ${'kind' in source && source.kind === 'DEBIT' ? displayBankAccountSuffix(source.lastDigits) : source.lastDigits}` : ''}`,
         amount: this.expenses()
-          .filter((item) => item.cardId === source.id)
-          .reduce((sum, item) => sum + spendingContribution(item), 0),
+          .filter((item) => item.sourceId === source.id)
+          .reduce((sum, item) => sum + item.amountMinor, 0),
       }))
       .filter((item) => item.amount !== 0)
       .sort((a, b) => b.amount - a.amount),
@@ -271,14 +291,9 @@ export class ReportsPage {
             (item) => item.cycleStartDate === cycle.startDate || item.periodKey === cycle.key,
           )?.amountMinor ?? (cycle.offset === 0 ? this.store.monthlyIncomeMinor() : 0);
       const expense = this.store
-        .transactions()
-        .filter(
-          (item) =>
-            item.transactionDate >= cycle.startDate &&
-            item.transactionDate <= cycle.endDate &&
-            spendingContribution(item) !== 0,
-        )
-        .reduce((sum, item) => sum + spendingContribution(item), 0);
+        .consolidatedSpending()
+        .filter((item) => item.date >= cycle.startDate && item.date <= cycle.endDate)
+        .reduce((sum, item) => sum + item.amountMinor, 0);
       return { ...cycle, income, expense, remaining: income - expense };
     }),
   );
@@ -293,15 +308,14 @@ export class ReportsPage {
     const categoryId = this.selectedCategoryId();
     return this.selectedReportCycles().map((cycle) =>
       this.store
-        .transactions()
+        .consolidatedSpending()
         .filter(
           (item) =>
             item.categoryId === categoryId &&
-            item.transactionDate >= cycle.startDate &&
-            item.transactionDate <= cycle.endDate &&
-            spendingContribution(item) !== 0,
+            item.date >= cycle.startDate &&
+            item.date <= cycle.endDate,
         )
-        .reduce((sum, item) => sum + spendingContribution(item) / 100, 0),
+          .reduce((sum, item) => sum + item.amountMinor / 100, 0),
     );
   });
 

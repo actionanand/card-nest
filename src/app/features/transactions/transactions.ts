@@ -23,6 +23,7 @@ import {
   ConsumerWalletEvent,
   EmiPlan,
   FinancialActivity,
+  PaymentGroup,
   RecurringRule,
   SourceTransfer,
   TransactionType,
@@ -50,7 +51,7 @@ import {
 } from '../../core/services/money';
 import { eligiblePaymentMember } from '../../core/services/payment-groups';
 import { PaymentGroupsPanel } from './payment-groups-panel';
-import { PaymentBreakdown } from '../../shared/payment-breakdown';
+import { PaymentBreakdown, WalletGroupBreakdownEntry } from '../../shared/payment-breakdown';
 import {
   composeSmsApprovalNotes,
   paymentMethodDetailConfig,
@@ -219,8 +220,62 @@ export class TransactionsPage {
   }
   readonly transactionEditor = viewChild<ElementRef<HTMLElement>>('transactionEditor');
   private editorReturnFocus: HTMLElement | null = null;
-  groupTotal(ids: readonly string[]): number {
-    return this.groupEntries(ids).reduce((sum, item) => sum + item.amountMinor, 0);
+  groupTotal(group: PaymentGroup): number {
+    const cardTotal = this.groupEntries(group.memberIds).reduce(
+      (sum, item) => sum + item.amountMinor,
+      0,
+    );
+    const walletTotal = group.walletMembers
+      .filter((member) => member.memberKind === 'WALLET_PURCHASE')
+      .reduce(
+        (sum, member) =>
+          sum +
+          (this.consumerWallets.events().find((event) => event.id === member.walletEventId)
+            ?.amountMinor ?? 0),
+        0,
+      );
+    return cardTotal + walletTotal;
+  }
+  groupRefundTotal(group: PaymentGroup): number {
+    return group.walletMembers
+      .filter((member) => member.memberKind === 'WALLET_REFUND')
+      .reduce(
+        (sum, member) =>
+          sum +
+          (this.consumerWallets.events().find((event) => event.id === member.walletEventId)
+            ?.amountMinor ?? 0),
+        0,
+      );
+  }
+  groupMemberCount(group: PaymentGroup): number {
+    return (
+      group.memberIds.length +
+      group.walletMembers.filter((member) => member.memberKind === 'WALLET_PURCHASE').length
+    );
+  }
+  groupDisplayEntries(
+    group: PaymentGroup,
+  ): readonly (CardTransaction | WalletGroupBreakdownEntry)[] {
+    return [
+      ...this.groupEntries(group.memberIds),
+      ...group.walletMembers.flatMap((member) => {
+        const event = this.consumerWallets
+          .events()
+          .find((item) => item.id === member.walletEventId);
+        return event
+          ? [
+              {
+                id: event.id,
+                kind: member.memberKind,
+                eventDate: event.eventDate,
+                amountMinor: event.amountMinor,
+                walletLabel: this.consumerWalletName(event.walletId),
+                eventLabel: this.consumerWalletEventLabel(event),
+              },
+            ]
+          : [];
+      }),
+    ];
   }
   trapEditorFocus(event: KeyboardEvent): void {
     if (event.key !== 'Tab' || document.querySelector('app-select-picker dialog[open]')) return;
@@ -257,18 +312,33 @@ export class TransactionsPage {
   }
   readonly combineOpen = signal(false);
   readonly manageGroupId = signal('');
+  readonly pendingPaymentGroupId = signal('');
   openCombine(transaction?: CardTransaction): void {
     this.closeDetails();
     this.manageGroupId.set(transaction?.splitGroupId ?? '');
     this.combineOpen.set(true);
   }
+  openPaymentGroup(groupId: string): void {
+    this.closeDetails();
+    this.manageGroupId.set(groupId);
+    this.combineOpen.set(true);
+  }
+  openWalletPaymentGroup(event: ConsumerWalletEvent): void {
+    const group = this.store
+      .paymentGroups()
+      .find((item) => item.walletMembers.some((member) => member.walletEventId === event.id));
+    this.openPaymentGroup(group?.id ?? `WALLET:${event.id}`);
+  }
   closeCombine(): void {
     this.combineOpen.set(false);
     queueMicrotask(() => document.getElementById('combine-payments')?.focus());
   }
-  openAddAfterCombine(): void {
+  openAddAfterCombine(groupId = ''): void {
     this.closeCombine();
-    globalThis.setTimeout(() => this.openAdd());
+    globalThis.setTimeout(() => {
+      this.openAdd();
+      this.pendingPaymentGroupId.set(groupId);
+    });
   }
   groupEntries(ids: readonly string[]): readonly CardTransaction[] {
     return this.store.transactions().filter((entry) => ids.includes(entry.id));
@@ -1344,16 +1414,25 @@ export class TransactionsPage {
       ? (this.store.paymentGroups?.() ?? []).filter(
           (group) =>
             group.kind === 'PAYMENTS' &&
-            group.memberIds.length > 1 &&
-            group.memberIds.every((id) => this.filtered().some((entry) => entry.id === id)),
+            this.groupMemberCount(group) > 1 &&
+            group.memberIds.every((id) => this.filtered().some((entry) => entry.id === id)) &&
+            group.walletMembers.every((member) =>
+              this.projectedWalletEvents().some((event) => event.id === member.walletEventId),
+            ),
         )
       : [],
   );
   readonly pageableActivities = computed(() => {
     const groupedCardIds = new Set(this.logicalGroups().flatMap((group) => group.memberIds));
-    return this.activityProjection().filter(
-      (activity) =>
-        activity.kind !== 'CARD_TRANSACTION' || !groupedCardIds.has(activity.transaction.id),
+    const groupedWalletIds = new Set(
+      this.logicalGroups().flatMap((group) =>
+        group.walletMembers.map((member) => member.walletEventId),
+      ),
+    );
+    return this.activityProjection().filter((activity) =>
+      activity.kind === 'CARD_TRANSACTION'
+        ? !groupedCardIds.has(activity.transaction.id)
+        : !groupedWalletIds.has(activity.event.id),
     );
   });
   readonly visibleActivities = computed(() =>
@@ -2916,7 +2995,11 @@ export class TransactionsPage {
       try {
         await this.store.saveManualTransaction(
           transaction,
-          value.type === 'ADJUSTMENT' && !value.preserveLegacy ? value.relatedTransactionId : '',
+          value.type === 'ADJUSTMENT' && !value.preserveLegacy
+            ? value.relatedTransactionId
+            : value.type === 'PURCHASE'
+              ? this.pendingPaymentGroupId()
+              : '',
           value.unlinkConfirmed,
           persistedCardRecurrence ? recurringRule : undefined,
           value.archivedSourceReassignmentConfirmedFor,
@@ -2995,6 +3078,7 @@ export class TransactionsPage {
       merchant: value.merchant,
       notes: value.notes,
       attachmentIds: this.receiptPreviews(),
+      splitTargetId: this.pendingPaymentGroupId() || undefined,
     };
     this.saving.set(true);
     try {
@@ -3131,6 +3215,7 @@ export class TransactionsPage {
   }
 
   private resetForm(sourceId: string): void {
+    this.pendingPaymentGroupId.set('');
     this.pendingCardRecurringIdentity = null;
     this.walletPurchaseEditId.set(null);
     this.walletPurchaseEventId.set(crypto.randomUUID());

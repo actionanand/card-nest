@@ -60,9 +60,14 @@ describe('Bank/UPI review model', () => {
   it('offers purchase review for a plain debit even with tracking off, never auto-ledgered', () => {
     const item = evidence();
     expect(ledgerType(item)).toBeUndefined();
-    expect(bankPurposes(item, off)).toEqual(['PURCHASE']);
+    expect(bankPurposes(item, off)).toEqual(['PURCHASE', 'WALLET_LOADING']);
     expect(defaultBankPurpose(item, off)).toBe('PURCHASE');
-    expect(bankPurposes(item, on)).toEqual(['PURCHASE', 'TRANSFER', 'CARD_SETTLEMENT']);
+    expect(bankPurposes(item, on)).toEqual([
+      'PURCHASE',
+      'WALLET_LOADING',
+      'TRANSFER',
+      'CARD_SETTLEMENT',
+    ]);
   });
 
   it('never defaults credits, transfers or repayments to spending', () => {
@@ -71,7 +76,7 @@ describe('Bank/UPI review model', () => {
     expect(defaultBankPurpose(credit, on)).toBe('');
     const transfer = evidence({ kind: 'BANK_TRANSFER', purposeHint: 'ACCOUNT_TRANSFER' });
     expect(defaultBankPurpose(transfer, off)).toBe('');
-    expect(bankPurposes(transfer, off)).toEqual(['PURCHASE']);
+    expect(bankPurposes(transfer, off)).toEqual(['PURCHASE', 'WALLET_LOADING']);
     const card = evidence({ purposeHint: 'CARD_REPAYMENT' });
     expect(bankPurposes(card, off)).toEqual([]);
     expect(bankPurposes(card, on)).not.toContain('PURCHASE');

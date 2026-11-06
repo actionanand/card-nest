@@ -31,6 +31,7 @@ import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker
 import { SnackbarService } from '../../core/services/snackbar.service';
 import { lockDocumentScroll } from '../../shared/document-scroll-lock';
 import { CardNestStore } from '../../core/services/card-nest-store';
+import { ConsumerWalletService } from '../../core/services/consumer-wallet.service';
 import { indiaTodayIso } from '../../core/services/india-date';
 import { parseMoneyToMinor, matchesTransactionType } from '../../core/services/money';
 import { SmsReviewFilterRefreshError, SmsReviewService } from './sms-review.service';
@@ -80,6 +81,7 @@ import {
 
 const BANK_PURPOSE_LABELS: Record<BankPurpose, string> = {
   PURCHASE: 'Record Bank/UPI purchase',
+  WALLET_LOADING: 'Load a consumer wallet',
   INCOME: 'Record incoming money',
   TRANSFER: 'Transfer between my own accounts',
   CARD_SETTLEMENT: 'Credit-card payment from this bank',
@@ -138,6 +140,7 @@ const CANDIDATE_MENU_ITEM_HEIGHT = 44;
 export class SmsSyncPage {
   readonly sync = inject(SmsReviewService);
   readonly store = inject(CardNestStore);
+  readonly consumerWallets = inject(ConsumerWalletService);
   private readonly route = inject(ActivatedRoute, { optional: true });
   private readonly requestedReviewId = this.route?.snapshot.queryParamMap.get('review') ?? '';
   private readonly snackbar = inject(SnackbarService);
@@ -538,7 +541,15 @@ export class SmsSyncPage {
     }
   }
   async retryReviewInboxRefresh(): Promise<void> {
-    if (!(this.retryRestoredFilterRefresh() || this.retryFilterRefresh()) || this.loading()) return;
+    if (
+      !(
+        this.retryRestoredFilterRefresh() ||
+        this.retryFilterRefresh() ||
+        this.sync.walletHistoryRefreshNeeded()
+      ) ||
+      this.loading()
+    )
+      return;
     try {
       await this.run(() => this.sync.refresh());
       if (!this.error()) {
@@ -585,7 +596,8 @@ export class SmsSyncPage {
 
   purchaseReviewActive(bank = false): boolean {
     return bank
-      ? !!this.bankItem() && this.bankEditor.controls.purpose.value === 'PURCHASE'
+      ? !!this.bankItem() &&
+          ['PURCHASE', 'WALLET_LOADING'].includes(this.bankEditor.controls.purpose.value)
       : this.selected()?.kind === 'PURCHASE';
   }
 
@@ -826,6 +838,9 @@ export class SmsSyncPage {
     paymentMethod: new FormControl('NONE', { nonNullable: true }),
     paymentMethodDetail: new FormControl('', { nonNullable: true }),
     paymentMethodCustom: new FormControl('', { nonNullable: true }),
+    walletLoading: new FormControl(false, { nonNullable: true }),
+    walletDestination: new FormControl('', { nonNullable: true }),
+    walletLoadedAmount: new FormControl('', { nonNullable: true }),
     smsAdditionalComment: new FormControl('', {
       nonNullable: true,
       validators: [Validators.maxLength(500)],
@@ -1024,8 +1039,11 @@ export class SmsSyncPage {
       nonNullable: true,
       validators: [Validators.maxLength(500)],
     }),
+    walletDestination: new FormControl('', { nonNullable: true }),
+    walletLoadedAmount: new FormControl('', { nonNullable: true }),
   });
   private readonly bankEditorChanges = toSignal(this.bankEditor.valueChanges);
+  readonly walletLoadingApprovalKey = signal('');
   readonly bankItem = computed(() => {
     const item = this.selected()?.item;
     return isBankEvidence(item) ? item : null;
@@ -1038,15 +1056,108 @@ export class SmsSyncPage {
     this.bankEditorChanges();
     return this.bankEditor.controls.purpose.value;
   });
+  walletLoadingOptions(): readonly AppSelectOption[] {
+    return [
+      { value: '', label: 'Choose destination wallet' },
+      ...this.consumerWallets.activeWallets().map((wallet) => ({
+        value: wallet.id,
+        label: wallet.nickname || wallet.customName || wallet.providerId,
+        detail: `${wallet.kind === 'UPI_LITE' ? 'UPI Lite' : 'Consumer wallet'} · ${this.money(this.consumerWallets.balances().get(wallet.id) ?? 0)}`,
+      })),
+    ];
+  }
+  canOfferWalletLoading(): boolean {
+    return this.consumerWallets.enabled() && this.consumerWallets.activeWallets().length > 0;
+  }
+  private walletLoadingFingerprint(mode: 'CARD' | 'BANK'): string {
+    const form = mode === 'CARD' ? this.editor : this.bankEditor;
+    const value = form.getRawValue();
+    const sourceId = mode === 'CARD' ? value.source : value.source;
+    const amountMinor = parseMoneyToMinor(value.amount);
+    const loadedAmountMinor = parseMoneyToMinor(value.walletLoadedAmount);
+    const item = this.selected()?.item;
+    if (!item || !sourceId || !amountMinor || !loadedAmountMinor || !value.walletDestination)
+      return '';
+    return JSON.stringify([
+      mode,
+      item.id,
+      sourceId,
+      amountMinor,
+      value.transactionDate,
+      item.eventTimeExplicit ? item.eventTime : '',
+      item.reference ?? '',
+      value.walletDestination,
+      loadedAmountMinor,
+    ]);
+  }
+  walletLoadingApproved(mode: 'CARD' | 'BANK'): boolean {
+    return (
+      !!this.walletLoadingApprovalKey() &&
+      this.walletLoadingApprovalKey() === this.walletLoadingFingerprint(mode)
+    );
+  }
+  walletLoadingFormValid(mode: 'CARD' | 'BANK'): boolean {
+    const form = mode === 'CARD' ? this.editor : this.bankEditor;
+    const value = form.getRawValue();
+    const debit = parseMoneyToMinor(value.amount);
+    const loaded = parseMoneyToMinor(value.walletLoadedAmount);
+    return (
+      this.consumerWallets.enabled() &&
+      this.consumerWallets
+        .activeWallets()
+        .some((wallet) => wallet.id === value.walletDestination) &&
+      !!value.source &&
+      !!debit &&
+      !!loaded &&
+      loaded <= debit &&
+      !!this.walletLoadingFingerprint(mode)
+    );
+  }
+  confirmWalletLoading(mode: 'CARD' | 'BANK', event: Event): void {
+    const checked = (event.target as HTMLInputElement).checked;
+    this.walletLoadingApprovalKey.set(checked ? this.walletLoadingFingerprint(mode) : '');
+  }
+  walletLoadingSummary(mode: 'CARD' | 'BANK'): string {
+    const form = mode === 'CARD' ? this.editor : this.bankEditor;
+    const value = form.getRawValue();
+    const sourceId = value.source;
+    const debitMinor = parseMoneyToMinor(value.amount);
+    const loadedMinor = parseMoneyToMinor(value.walletLoadedAmount);
+    const wallet = this.consumerWallets
+      .wallets()
+      .find((item) => item.id === value.walletDestination);
+    if (!sourceId || !debitMinor || !loadedMinor || !wallet)
+      return 'Complete the source, wallet and both amounts.';
+    const item = this.selected()?.item;
+    const eventTime = item?.eventTimeExplicit ? item.eventTime : 'time unavailable';
+    const merchant =
+      mode === 'CARD'
+        ? this.editor.controls.merchant.value
+        : this.bankEditor.controls.description.value;
+    return `${this.store.sourceDetail(sourceId)} debit ${this.money(debitMinor)} on ${value.transactionDate} at ${eventTime}; ${this.money(loadedMinor)} loaded into ${wallet.nickname || wallet.customName || wallet.providerId}; included fee/difference ${this.money(debitMinor - loadedMinor)}. Merchant: ${merchant || 'not supplied'}. Reference: ${item?.reference || 'not supplied'}.`;
+  }
+  setCardWalletLoading(enabled: boolean): void {
+    this.editor.controls.walletLoading.setValue(enabled);
+    this.walletLoadingApprovalKey.set('');
+    if (!enabled) {
+      this.editor.controls.walletDestination.setValue('');
+      this.editor.controls.walletLoadedAmount.setValue('');
+    }
+  }
+  setCardWalletLoadingFromEvent(event: Event): void {
+    if (event.target instanceof HTMLInputElement) this.setCardWalletLoading(event.target.checked);
+  }
   bankPurposeOptions(): readonly AppSelectOption[] {
     const item = this.bankItem();
     if (!item) return [];
     return [
       { value: '', label: 'Choose how to record this message' },
-      ...bankPurposes(item, this.store.bankCashTracking()).map((purpose) => ({
-        value: purpose,
-        label: BANK_PURPOSE_LABELS[purpose],
-      })),
+      ...bankPurposes(item, this.store.bankCashTracking())
+        .filter((purpose) => purpose !== 'WALLET_LOADING' || this.canOfferWalletLoading())
+        .map((purpose) => ({
+          value: purpose,
+          label: BANK_PURPOSE_LABELS[purpose],
+        })),
     ];
   }
   paymentMethodDetailOptions(method: string): readonly AppSelectOption[] {
@@ -1350,6 +1461,14 @@ export class SmsSyncPage {
           allowSeparate: value.separate,
           splitTargetId: value.splitTarget || undefined,
           baselineTiming: value.timing || undefined,
+          walletLoading:
+            value.purpose === 'WALLET_LOADING'
+              ? {
+                  walletId: value.walletDestination,
+                  loadedAmountMinor: parseMoneyToMinor(value.walletLoadedAmount) ?? 0,
+                }
+              : undefined,
+          walletLoadingApproved: this.walletLoadingApproved('BANK'),
           ...annotation,
         });
         this.notice.set(this.sync.notice() || 'Bank event approved and saved.');
@@ -1379,6 +1498,11 @@ export class SmsSyncPage {
       existing: '',
       existingTransfer: '',
     });
+    this.walletLoadingApprovalKey.set('');
+    if (value !== 'WALLET_LOADING') {
+      this.bankEditor.controls.walletDestination.setValue('');
+      this.bankEditor.controls.walletLoadedAmount.setValue('');
+    }
   }
   matchReason(candidate: SmsCandidate): string {
     if (candidate.item && suspectEvidence(candidate.item))
@@ -1542,6 +1666,12 @@ export class SmsSyncPage {
   });
   constructor() {
     const destroyRef = inject(DestroyRef);
+    this.editor.valueChanges
+      .pipe(takeUntilDestroyed(destroyRef))
+      .subscribe(() => this.walletLoadingApprovalKey.set(''));
+    this.bankEditor.valueChanges
+      .pipe(takeUntilDestroyed(destroyRef))
+      .subscribe(() => this.walletLoadingApprovalKey.set(''));
     let restoredRequestedReview = false;
     effect(() => {
       if (!this.requestedReviewId || restoredRequestedReview) return;
@@ -2117,6 +2247,13 @@ export class SmsSyncPage {
       this.error.set('Choose a source and enter a positive amount.');
       return;
     }
+    if (
+      value.walletLoading &&
+      (!this.walletLoadingFormValid('CARD') || !this.walletLoadingApproved('CARD'))
+    ) {
+      this.error.set('Review and explicitly approve the Wallet Loading summary before saving.');
+      return;
+    }
     let annotation;
     try {
       annotation = this.annotationFrom(this.editor, 'CARD');
@@ -2145,6 +2282,13 @@ export class SmsSyncPage {
             fundingSourceId: value.funding || undefined,
             fundingTiming: value.fundingTiming || undefined,
             splitTargetId: value.splitTarget || undefined,
+            walletLoading: value.walletLoading
+              ? {
+                  walletId: value.walletDestination,
+                  loadedAmountMinor: parseMoneyToMinor(value.walletLoadedAmount) ?? 0,
+                }
+              : undefined,
+            walletLoadingApproved: value.walletLoading ? this.walletLoadingApproved('CARD') : false,
             ...annotation,
           },
         );

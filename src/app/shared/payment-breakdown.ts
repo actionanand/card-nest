@@ -7,28 +7,28 @@ import { formatMoney } from '../core/services/money';
   selector: 'app-payment-breakdown',
   template: `
     <section aria-label="Payment breakdown">
-      <strong>{{ entries().length }} recorded payments · {{ money(total()) }} total</strong>
+      <strong>{{ payments().length }} payments · {{ money(total()) }} paid</strong>
       <ul>
-        @for (entry of entries().slice(0, limit()); track entry.id) {
+        @for (entry of displayEntries().slice(0, limit()); track entry.id) {
           <li>
-            <span
-              >{{ entry.transactionDate }} · {{ entry.merchant || 'Purchase' }}<br />{{
-                store.sourceDetail(entry.cardId)
-              }}</span
-            ><strong>{{ money(entry.amountMinor) }}</strong>
+            <span>{{ entry.date }} · {{ entry.label }}<br />{{ entry.source }}</span>
+            <strong>{{ money(entry.amountMinor) }}</strong>
           </li>
         }
       </ul>
-      @if (limit() < entries().length) {
+      @if (limit() < displayEntries().length) {
         <button type="button" class="btn" (click)="limit.set(limit() + 20)">
           Show more payments
         </button>
       }
       @if (additionalMinor() !== 0) {
         <p>
-          Payment change: {{ money(additionalMinor()) }} · Updated total:
-          {{ money(total() + additionalMinor()) }}
+          Payment change: {{ money(additionalMinor()) }} · Updated paid:
+          {{ money(grossPaid() + additionalMinor()) }}
         </p>
+      }
+      @if (refundsTotal() > 0) {
+        <p>Wallet refunds: {{ money(refundsTotal()) }} · Net paid: {{ money(netPaid()) }}</p>
       }
       @if (billTotalMinor() !== null) {
         <p>
@@ -86,15 +86,56 @@ import { formatMoney } from '../core/services/money';
 })
 export class PaymentBreakdown {
   readonly store = inject(CardNestStore);
-  readonly entries = input.required<readonly CardTransaction[]>();
+  readonly entries = input.required<readonly (CardTransaction | WalletGroupBreakdownEntry)[]>();
   readonly billTotalMinor = input<number | null>(null);
   readonly additionalMinor = input(0);
   readonly limit = signal(20);
-  readonly total = computed(() =>
-    this.entries().reduce((sum, entry) => sum + entry.amountMinor, 0),
+  readonly displayEntries = computed(() =>
+    this.entries().map((entry) =>
+      'kind' in entry
+        ? {
+            id: entry.id,
+            date: entry.eventDate,
+            label:
+              entry.eventLabel ??
+              (entry.kind === 'WALLET_REFUND' ? 'Wallet refund' : 'Wallet purchase'),
+            source: entry.walletLabel,
+            amountMinor: entry.kind === 'WALLET_REFUND' ? -entry.amountMinor : entry.amountMinor,
+          }
+        : {
+            id: entry.id,
+            date: entry.transactionDate,
+            label: entry.merchant || 'Purchase',
+            source: this.store.sourceDetail(entry.cardId),
+            amountMinor: entry.amountMinor,
+          },
+    ),
   );
+  readonly payments = computed(() =>
+    this.displayEntries().filter((entry) => entry.amountMinor > 0),
+  );
+  readonly refundsTotal = computed(
+    () =>
+      -this.displayEntries()
+        .filter((entry) => entry.amountMinor < 0)
+        .reduce((sum, entry) => sum + entry.amountMinor, 0),
+  );
+  readonly grossPaid = computed(() =>
+    this.payments().reduce((sum, entry) => sum + entry.amountMinor, 0),
+  );
+  readonly netPaid = computed(() => this.grossPaid() - this.refundsTotal());
+  readonly total = computed(() => this.grossPaid());
   readonly difference = computed(
-    () => (this.billTotalMinor() ?? 0) - this.total() - this.additionalMinor(),
+    () => (this.billTotalMinor() ?? 0) - this.grossPaid() - this.additionalMinor(),
   );
   readonly money = (value: number) => formatMoney(value, 'INR');
+}
+
+export interface WalletGroupBreakdownEntry {
+  readonly id: string;
+  readonly kind: 'WALLET_PURCHASE' | 'WALLET_REFUND';
+  readonly eventDate: string;
+  readonly amountMinor: number;
+  readonly walletLabel: string;
+  readonly eventLabel?: string;
 }

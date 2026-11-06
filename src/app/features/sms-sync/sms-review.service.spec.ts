@@ -8,8 +8,15 @@ import { Capacitor } from '@capacitor/core';
 import { DATABASE_MIGRATIONS } from '../../core/data/migrations';
 import { DatabaseSession, SqliteDatabase } from '../../core/data/sqlite-database';
 import { CardNestStore } from '../../core/services/card-nest-store';
+import { ConsumerWalletService } from '../../core/services/consumer-wallet.service';
 import { AppLockService } from '../../core/services/app-lock.service';
-import { CardTransaction, CreditCard, PaymentSource } from '../../core/models/domain';
+import {
+  CardTransaction,
+  CreditCard,
+  ConsumerWalletEvent,
+  PaymentSource,
+  WalletLoadingDetails,
+} from '../../core/models/domain';
 import { SmsReviewFilterRefreshError, SmsReviewService } from './sms-review.service';
 import { defaultReviewFilters, SMS_REVIEW_FILTERS_KEY } from './sms-review-filters';
 import { matchExisting } from './sms-matching';
@@ -53,6 +60,14 @@ describe('SMS approved import integrity', () => {
   const sources = signal<readonly PaymentSource[]>([]);
   const transactions = signal<readonly CardTransaction[]>([]);
   const lock = { locked: signal(false), foreground: signal(true) };
+  const consumerWalletService = {
+    events: signal<readonly ConsumerWalletEvent[]>([]),
+    allocations: signal<readonly []>([]),
+    wallets: signal<readonly []>([]),
+    enabled: signal(false),
+    balances: signal(new Map<string, number>()),
+    reloadFinancialHistory: vi.fn().mockResolvedValue(undefined),
+  };
   const store = {
     cards: signal([card]),
     paymentSources: sources,
@@ -70,6 +85,61 @@ describe('SMS approved import integrity', () => {
       sources.set(wallets);
     },
     acceptCommittedStatement: vi.fn(),
+    acceptCommittedTransfer: vi.fn(),
+    saveApprovedWalletLoad: async (
+      tx: DatabaseSession,
+      transaction: CardTransaction,
+      input: WalletLoadingDetails,
+    ) => {
+      if (transaction.type !== 'PURCHASE' || transaction.paymentMethod !== 'WALLET_LOADING')
+        throw new Error('Invalid wallet load transaction.');
+      const now = new Date().toISOString();
+      const event: ConsumerWalletEvent = {
+        id: `sms-wallet-load-${transaction.id}`,
+        walletId: input.walletId,
+        eventType: 'FUNDED_LOAD',
+        eventDate: transaction.transactionDate,
+        eventTime: transaction.transactionTime,
+        amountMinor: input.loadedAmountMinor,
+        balanceDeltaMinor: input.loadedAmountMinor,
+        debitAmountMinor: transaction.amountMinor,
+        loadedAmountMinor: input.loadedAmountMinor,
+        feeMinor: transaction.amountMinor - input.loadedAmountMinor,
+        fundingSourceKind: store.cards().some((card) => card.id === transaction.cardId)
+          ? 'CARD'
+          : 'BANK',
+        fundingSourceId: transaction.cardId,
+        sourceTransactionId: transaction.id,
+        fundingCategoryId: transaction.categoryId,
+        merchant: transaction.merchant,
+        createdAt: now,
+        updatedAt: now,
+      };
+      await tx.run(
+        `INSERT INTO consumer_wallet_events(id,wallet_id,event_type,event_date,event_time,amount_minor,balance_delta_minor,debit_amount_minor,loaded_amount_minor,fee_minor,funding_source_kind,funding_source_id,source_transaction_id,funding_category_id,merchant,payload,created_at,updated_at)
+         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        [
+          event.id,
+          event.walletId,
+          event.eventType,
+          event.eventDate,
+          event.eventTime ?? null,
+          event.amountMinor,
+          event.balanceDeltaMinor,
+          event.debitAmountMinor,
+          event.loadedAmountMinor,
+          event.feeMinor,
+          event.fundingSourceKind,
+          event.fundingSourceId,
+          event.sourceTransactionId,
+          event.fundingCategoryId,
+          event.merchant ?? null,
+          JSON.stringify(event),
+          now,
+          now,
+        ],
+      );
+    },
   };
   function rows<T extends Record<string, unknown>>(
     statement: string,
@@ -130,6 +200,7 @@ describe('SMS approved import integrity', () => {
         provideRouter([]),
         SmsReviewService,
         { provide: CardNestStore, useValue: store },
+        { provide: ConsumerWalletService, useValue: consumerWalletService },
         { provide: AppLockService, useValue: lock },
         {
           provide: SqliteDatabase,
@@ -170,6 +241,313 @@ describe('SMS approved import integrity', () => {
   afterEach(() => {
     sql.close();
     vi.restoreAllMocks();
+  });
+  it('approves a Bank SMS Wallet Loading once with the full debit, loaded principal and included fee', async () => {
+    const bank: PaymentSource = {
+      id: 'sms-bank',
+      nickname: 'Everyday',
+      institution: 'ICICI Bank',
+      kind: 'DEBIT',
+      lastDigits: '1234',
+      noLimit: true,
+      autoLoad: false,
+      archived: false,
+    };
+    const candidate = stage(
+      evidence({
+        kind: 'BANK_DEBIT',
+        amountMinor: 32000,
+        issuer: 'ICICI Bank',
+        accountDigits: '1234',
+        direction: 'DEBIT',
+      }),
+    );
+    sources.set([bank]);
+    run(
+      'INSERT INTO consumer_wallets(id,provider_id,wallet_kind,payload,created_at,updated_at) VALUES(?,?,?,?,?,?)',
+      [
+        'sms-wallet',
+        'amazon',
+        'STANDARD',
+        JSON.stringify({
+          id: 'sms-wallet',
+          providerId: 'amazon',
+          kind: 'STANDARD',
+          archived: false,
+        }),
+        'before',
+        'before',
+      ],
+    );
+    run('INSERT INTO app_preferences(key,encrypted_value) VALUES(?,?)', [
+      'consumer_wallets_feature_state',
+      'ENABLED',
+    ]);
+    run('INSERT INTO app_preferences(key,encrypted_value) VALUES(?,?)', [
+      'payment_sources',
+      JSON.stringify([bank]),
+    ]);
+
+    const approval = {
+      purpose: 'WALLET_LOADING' as const,
+      sourceId: bank.id,
+      amountMinor: 32000,
+      description: 'Wallet top-up',
+      transactionDate: candidate.item!.eventDate,
+      walletLoading: { walletId: 'sms-wallet', loadedAmountMinor: 30000 },
+      walletLoadingApproved: true,
+    };
+    vi.spyOn(service, 'refresh').mockImplementation(async () => {
+      if (service.walletHistoryRefreshNeeded()) {
+        await consumerWalletService.reloadFinancialHistory();
+        service.walletHistoryRefreshNeeded.set(false);
+      }
+    });
+    await service.approveBank(candidate, approval);
+    await service.approveBank(candidate, approval);
+
+    expect(count('card_transactions')).toBe(1);
+    expect(count('consumer_wallet_events')).toBe(1);
+    expect(count('sms_reconciliation')).toBe(1);
+    expect(consumerWalletService.reloadFinancialHistory).toHaveBeenCalledOnce();
+    expect(rows('SELECT state FROM sms_candidates')[0]['state']).toBe('IMPORTED');
+    const debit = JSON.parse(
+      String(rows('SELECT payload FROM card_transactions')[0]['payload']),
+    ) as CardTransaction;
+    expect(debit).toMatchObject({
+      amountMinor: 32000,
+      type: 'PURCHASE',
+      paymentMethod: 'WALLET_LOADING',
+    });
+    expect(
+      rows(
+        'SELECT amount_minor,loaded_amount_minor,fee_minor,source_transaction_id FROM consumer_wallet_events',
+      )[0],
+    ).toMatchObject({
+      amount_minor: 30000,
+      loaded_amount_minor: 30000,
+      fee_minor: 2000,
+      source_transaction_id: debit.id,
+    });
+    expect(rows('PRAGMA foreign_key_check')).toEqual([]);
+  });
+  it('rolls back the Bank debit and SMS reconciliation if the wallet load write fails', async () => {
+    const bank: PaymentSource = {
+      id: 'sms-bank',
+      nickname: 'Everyday',
+      institution: 'ICICI Bank',
+      kind: 'DEBIT',
+      lastDigits: '1234',
+      noLimit: true,
+      autoLoad: false,
+      archived: false,
+    };
+    const candidate = stage(
+      evidence({
+        kind: 'BANK_DEBIT',
+        amountMinor: 32000,
+        issuer: 'ICICI Bank',
+        accountDigits: '1234',
+        direction: 'DEBIT',
+      }),
+    );
+    sources.set([bank]);
+    run(
+      'INSERT INTO consumer_wallets(id,provider_id,wallet_kind,payload,created_at,updated_at) VALUES(?,?,?,?,?,?)',
+      ['sms-wallet', 'amazon', 'STANDARD', '{}', 'before', 'before'],
+    );
+    run('INSERT INTO app_preferences(key,encrypted_value) VALUES(?,?)', [
+      'consumer_wallets_feature_state',
+      'ENABLED',
+    ]);
+    run('INSERT INTO app_preferences(key,encrypted_value) VALUES(?,?)', [
+      'payment_sources',
+      JSON.stringify([bank]),
+    ]);
+    run(
+      "CREATE TRIGGER fail_wallet_load BEFORE INSERT ON consumer_wallet_events BEGIN SELECT RAISE(ABORT,'Synthetic wallet load failure'); END",
+    );
+
+    await expect(
+      service.approveBank(candidate, {
+        purpose: 'WALLET_LOADING',
+        sourceId: bank.id,
+        amountMinor: 32000,
+        description: 'Wallet top-up',
+        transactionDate: candidate.item!.eventDate,
+        walletLoading: { walletId: 'sms-wallet', loadedAmountMinor: 30000 },
+        walletLoadingApproved: true,
+      }),
+    ).rejects.toThrow('Synthetic wallet load failure');
+
+    expect(count('card_transactions')).toBe(0);
+    expect(count('consumer_wallet_events')).toBe(0);
+    expect(count('sms_reconciliation')).toBe(0);
+    expect(rows('SELECT state,transaction_id FROM sms_candidates')[0]).toMatchObject({
+      state: 'PENDING',
+      transaction_id: null,
+    });
+  });
+  it('requires matching or separate confirmation when a Bank Wallet Loading SMS may duplicate a debit', async () => {
+    const bank: PaymentSource = {
+      id: 'sms-bank',
+      nickname: 'Everyday',
+      institution: 'ICICI Bank',
+      kind: 'DEBIT',
+      lastDigits: '1234',
+      noLimit: true,
+      autoLoad: false,
+      archived: false,
+    };
+    const candidate = stage(
+      evidence({
+        kind: 'BANK_DEBIT',
+        amountMinor: 32000,
+        issuer: 'ICICI Bank',
+        accountDigits: '1234',
+        direction: 'DEBIT',
+      }),
+    );
+    const existing: CardTransaction = {
+      id: 'existing-bank-debit',
+      cardId: bank.id,
+      type: 'PURCHASE',
+      amountMinor: 32000,
+      currencyCode: 'INR',
+      transactionDate: candidate.item!.eventDate,
+      categoryId: 'other',
+      attachmentIds: [],
+      createdAt: '2026-10-18T12:00:00Z',
+      updatedAt: '2026-10-18T12:00:00Z',
+    };
+    sources.set([bank]);
+    transactions.set([existing]);
+    run(
+      'INSERT INTO card_transactions(id,card_id,category_id,type,amount_minor,currency_code,transaction_date,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)',
+      [
+        existing.id,
+        null,
+        existing.categoryId,
+        existing.type,
+        existing.amountMinor,
+        existing.currencyCode,
+        existing.transactionDate,
+        JSON.stringify(existing),
+        existing.createdAt,
+        existing.updatedAt,
+      ],
+    );
+    run(
+      "INSERT INTO consumer_wallets(id,provider_id,wallet_kind,payload,created_at,updated_at) VALUES('sms-wallet','amazon','STANDARD','{}','before','before')",
+    );
+    run(
+      "INSERT INTO app_preferences(key,encrypted_value) VALUES('consumer_wallets_feature_state','ENABLED')",
+    );
+    run('INSERT INTO app_preferences(key,encrypted_value) VALUES(?,?)', [
+      'payment_sources',
+      JSON.stringify([bank]),
+    ]);
+    const approval = {
+      purpose: 'WALLET_LOADING' as const,
+      sourceId: bank.id,
+      amountMinor: 32000,
+      description: 'Wallet top-up',
+      transactionDate: candidate.item!.eventDate,
+      walletLoading: { walletId: 'sms-wallet', loadedAmountMinor: 30000 },
+      walletLoadingApproved: true,
+    };
+
+    await expect(service.approveBank(candidate, approval)).rejects.toThrow(
+      'Possible existing transaction',
+    );
+    expect(count('consumer_wallet_events')).toBe(0);
+    expect(count('sms_reconciliation')).toBe(0);
+    await service.approveBank(candidate, { ...approval, existingId: existing.id });
+
+    expect(count('card_transactions')).toBe(1);
+    expect(count('consumer_wallet_events')).toBe(1);
+    expect(rows('SELECT target_id FROM sms_reconciliation')[0]['target_id']).toBe(existing.id);
+  });
+  it('approves a credit-card debit SMS as Wallet Loading once with the approved loaded amount', async () => {
+    const candidate = stage(evidence({ amountMinor: 45000 }));
+    run(
+      'INSERT INTO consumer_wallets(id,provider_id,wallet_kind,payload,created_at,updated_at) VALUES(?,?,?,?,?,?)',
+      ['card-load-wallet', 'amazon', 'STANDARD', '{}', 'before', 'before'],
+    );
+    run('INSERT INTO app_preferences(key,encrypted_value) VALUES(?,?)', [
+      'consumer_wallets_feature_state',
+      'ENABLED',
+    ]);
+
+    const edits = {
+      walletLoading: { walletId: 'card-load-wallet', loadedAmountMinor: 40000 },
+      walletLoadingApproved: true,
+    };
+    await service.approve(
+      candidate,
+      card.id,
+      45000,
+      'Wallet top-up',
+      '',
+      'PENDING',
+      false,
+      '',
+      0,
+      edits,
+    );
+    await service.approve(
+      candidate,
+      card.id,
+      45000,
+      'Wallet top-up',
+      '',
+      'PENDING',
+      false,
+      '',
+      0,
+      edits,
+    );
+
+    expect(count('card_transactions')).toBe(1);
+    expect(count('consumer_wallet_events')).toBe(1);
+    expect(count('sms_reconciliation')).toBe(1);
+    const debit = JSON.parse(
+      String(rows('SELECT payload FROM card_transactions')[0]['payload']),
+    ) as CardTransaction;
+    expect(debit).toMatchObject({
+      cardId: card.id,
+      amountMinor: 45000,
+      type: 'PURCHASE',
+      paymentMethod: 'WALLET_LOADING',
+    });
+    expect(
+      rows(
+        'SELECT amount_minor,fee_minor,funding_source_kind,source_transaction_id FROM consumer_wallet_events',
+      )[0],
+    ).toMatchObject({
+      amount_minor: 40000,
+      fee_minor: 5000,
+      funding_source_kind: 'CARD',
+      source_transaction_id: debit.id,
+    });
+  });
+  it('rejects unapproved or over-debit card Wallet Loading before inserting any transaction', async () => {
+    const candidate = stage(evidence());
+    await expect(
+      service.approve(candidate, card.id, 45000, 'Wallet top-up', '', 'PENDING', false, '', 0, {
+        walletLoading: { walletId: 'wallet', loadedAmountMinor: 30000 },
+        walletLoadingApproved: false,
+      }),
+    ).rejects.toThrow('approve Wallet Loading');
+    await expect(
+      service.approve(candidate, card.id, 45000, 'Wallet top-up', '', 'PENDING', false, '', 0, {
+        walletLoading: { walletId: 'wallet', loadedAmountMinor: 45001 },
+        walletLoadingApproved: true,
+      }),
+    ).rejects.toThrow('approve Wallet Loading');
+    expect(count('card_transactions')).toBe(0);
+    expect(count('consumer_wallet_events')).toBe(0);
+    expect(count('sms_reconciliation')).toBe(0);
   });
   it('dismisses durably with exact Undo and guards against concurrent resolution and repeated Undo', async () => {
     const candidate = stage(evidence());

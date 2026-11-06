@@ -2,7 +2,12 @@ import { DatabaseSync as DatabaseSyncType, SQLInputValue } from 'node:sqlite';
 import { DATABASE_MIGRATIONS } from '../data/migrations';
 import { DatabaseSession } from '../data/sqlite-database';
 import { CardTransaction } from '../models/domain';
-import { attachPaymentGroup, detachPaymentGroup, readPaymentGroups } from './payment-groups';
+import {
+  attachPaymentGroup,
+  detachPaymentGroup,
+  linkWalletRefundToPaymentGroup,
+  readPaymentGroups,
+} from './payment-groups';
 import { calculateNetSpending } from './money';
 
 const { DatabaseSync } = process.getBuiltinModule('node:sqlite') as typeof import('node:sqlite');
@@ -125,6 +130,87 @@ describe('Logical payment groups with real SQLite constraints', () => {
     await atomic(() => detachPaymentGroup(tx, group, true));
     expect(ledger()).toHaveLength(6);
     expect(await readPaymentGroups(tx)).toHaveLength(1);
+  });
+  it('projects typed wallet purchase members without treating their IDs as card transactions', async () => {
+    add('card-member', 10000);
+    add('second-card-member', 5000);
+    await tx.run(
+      "INSERT INTO consumer_wallets(id,provider_id,wallet_kind,payload,created_at,updated_at) VALUES('wallet','amazon','STANDARD','{}','before','before')",
+    );
+    await tx.run(
+      "INSERT INTO consumer_wallet_events(id,wallet_id,event_type,event_date,amount_minor,balance_delta_minor,payload,created_at,updated_at) VALUES('wallet-purchase','wallet','PURCHASE','2026-10-26',20000,-20000,'{}','before','before')",
+    );
+    const groupId = await atomic(() =>
+      attachPaymentGroup(tx, ['second-card-member'], 'card-member', {}, ['wallet-purchase']),
+    );
+
+    const [group] = await readPaymentGroups(tx);
+    expect(group.memberIds).toEqual(['card-member', 'second-card-member']);
+    expect(group.walletMembers).toEqual([
+      {
+        groupId,
+        walletEventId: 'wallet-purchase',
+        memberKind: 'WALLET_PURCHASE',
+        memberOrder: 1,
+        createdAt: expect.any(String),
+      },
+    ]);
+    expect(ledger()).toHaveLength(2);
+    expect(rows('PRAGMA foreign_key_check')).toEqual([]);
+  });
+  it('keeps wallet refunds attached to a mixed-group purchase and prevents unsafe unlinking', async () => {
+    add('card-member', 10000);
+    await tx.run(
+      "INSERT INTO consumer_wallets(id,provider_id,wallet_kind,payload,created_at,updated_at) VALUES('wallet','amazon','STANDARD','{}','before','before')",
+    );
+    await tx.run(
+      "INSERT INTO consumer_wallet_events(id,wallet_id,event_type,event_date,amount_minor,balance_delta_minor,payload,created_at,updated_at) VALUES('wallet-purchase','wallet','PURCHASE','2026-10-26',20000,-20000,'{}','before','before')",
+    );
+    const groupId = await atomic(() => attachPaymentGroup(tx, ['card-member'], 'wallet-purchase'));
+    await tx.run(
+      "INSERT INTO consumer_wallet_events(id,wallet_id,event_type,event_date,amount_minor,balance_delta_minor,reversal_of_event_id,payload,created_at,updated_at) VALUES('wallet-refund','wallet','REFUND','2026-10-27',5000,5000,'wallet-purchase','{}','later','later')",
+    );
+    await atomic(() =>
+      linkWalletRefundToPaymentGroup(tx, 'wallet-purchase', 'wallet-refund', 'later'),
+    );
+
+    const [group] = await readPaymentGroups(tx);
+    expect(group.id).toBe(groupId);
+    expect(group.walletMembers.map((member) => [member.walletEventId, member.memberKind])).toEqual([
+      ['wallet-purchase', 'WALLET_PURCHASE'],
+      ['wallet-refund', 'WALLET_REFUND'],
+    ]);
+    await expect(atomic(() => detachPaymentGroup(tx, 'wallet-purchase'))).rejects.toThrow(
+      'related wallet refund',
+    );
+    await atomic(() => detachPaymentGroup(tx, groupId, true));
+    expect(rows('SELECT id FROM consumer_wallet_events ORDER BY id')).toEqual([
+      { id: 'wallet-purchase' },
+      { id: 'wallet-refund' },
+    ]);
+    expect(await readPaymentGroups(tx)).toEqual([]);
+    expect(rows('PRAGMA foreign_key_check')).toEqual([]);
+  });
+  it('does not use a colliding card transaction as the anchor of an explicit wallet target', async () => {
+    add('same-id', 99900);
+    add('chosen-card', 10000);
+    await tx.run(
+      "INSERT INTO consumer_wallets(id,provider_id,wallet_kind,payload,created_at,updated_at) VALUES('wallet','amazon','STANDARD','{}','before','before')",
+    );
+    await tx.run(
+      "INSERT INTO consumer_wallet_events(id,wallet_id,event_type,event_date,amount_minor,balance_delta_minor,payload,created_at,updated_at) VALUES('same-id','wallet','PURCHASE','2026-10-26',20000,-20000,'{}','before','before')",
+    );
+    const groupId = await atomic(() => attachPaymentGroup(tx, ['chosen-card'], 'WALLET:same-id'));
+    const [group] = await readPaymentGroups(tx);
+    expect(group.id).toBe(groupId);
+    expect(group.anchorId).toBe('chosen-card');
+    expect(group.memberIds).toEqual(['chosen-card']);
+    expect(group.walletMembers.map((member) => member.walletEventId)).toEqual(['same-id']);
+    expect(ledger().find((item) => item.id === 'same-id')?.splitGroupId).toBeUndefined();
+    await atomic(() => detachPaymentGroup(tx, 'WALLET:same-id'));
+    expect(await readPaymentGroups(tx)).toEqual([]);
+    expect(ledger()).toHaveLength(2);
+    expect(rows('SELECT id FROM consumer_wallet_events')).toHaveLength(1);
   });
   it.each([
     { type: 'REFUND' as const },

@@ -19,6 +19,7 @@ import {
   SourceTransfer,
   ConsumerWallet,
   ConsumerWalletEvent,
+  ConsumerWalletExpenseReversal,
   WalletLoadingDetails,
 } from '../models/domain';
 import { DatabaseSession, SqliteDatabase } from '../data/sqlite-database';
@@ -64,7 +65,12 @@ import {
   statementDateFor,
   toIsoDate,
 } from './billing-cycle';
-import { calculateNetSpending, calculateOutstanding, transactionEffect } from './money';
+import { calculateOutstanding, transactionEffect } from './money';
+import {
+  informationalWalletSpending,
+  projectConsolidatedSpending,
+  sumConsolidatedSpending,
+} from './financial-spending';
 import {
   attachPaymentGroup,
   detachPaymentGroup,
@@ -307,6 +313,8 @@ export class CardNestStore {
   readonly cards = signal<readonly CreditCard[]>([]);
   readonly transactions = signal<readonly CardTransaction[]>([]);
   readonly paymentGroups = signal<readonly PaymentGroup[]>([]);
+  readonly walletFinancialEvents = signal<readonly ConsumerWalletEvent[]>([]);
+  readonly walletExpenseReversals = signal<readonly ConsumerWalletExpenseReversal[]>([]);
   readonly transactionWriteError = signal('');
   readonly initialisationWarning = signal('');
   readonly categories = signal<readonly Category[]>(CATEGORIES);
@@ -399,12 +407,25 @@ export class CardNestStore {
   readonly activePaymentSources = computed(() =>
     this.paymentSources().filter((source) => !source.archived),
   );
+  readonly consolidatedSpending = computed(() =>
+    projectConsolidatedSpending(
+      this.transactions(),
+      this.walletFinancialEvents(),
+      this.walletExpenseReversals(),
+    ),
+  );
+
+  acceptWalletFinancialHistory(
+    events: readonly ConsumerWalletEvent[],
+    reversals: readonly ConsumerWalletExpenseReversal[],
+  ): void {
+    this.walletFinancialEvents.set(events);
+    this.walletExpenseReversals.set(reversals);
+  }
 
   readonly dashboard = computed<DashboardSnapshot>(() => {
     const reference = new Date();
-    const calendar = this.currentFinancialCalendar(reference);
     const cards = this.activeCards();
-    const transactions = this.transactions();
     const outstandingMinor = cards.reduce(
       (sum, card) => sum + Math.max(0, this.cardOutstanding(card.id, reference)),
       0,
@@ -414,9 +435,11 @@ export class CardNestStore {
       0,
     );
     const totalCredit = cards.reduce((sum, card) => sum + (card.creditLimitMinor ?? 0), 0);
-    const month = calendar.monthIso;
-    const monthlySpendMinor = calculateNetSpending(
-      transactions.filter((item) => item.transactionDate.startsWith(month)),
+    const budgetCycle = this.currentIncomePeriod();
+    const monthlySpendMinor = sumConsolidatedSpending(
+      this.consolidatedSpending(),
+      budgetCycle.cycleStartDate,
+      budgetCycle.cycleEndDate,
     );
     return {
       outstandingMinor,
@@ -424,6 +447,11 @@ export class CardNestStore {
       unbilledMinor: Math.max(0, outstandingMinor - statementDueMinor),
       availableCreditMinor: Math.max(0, totalCredit - outstandingMinor),
       monthlySpendMinor,
+      walletSpendingMinor: informationalWalletSpending(
+        this.walletFinancialEvents(),
+        budgetCycle.cycleStartDate,
+        budgetCycle.cycleEndDate,
+      ),
       remainingBudgetMinor: Math.max(0, this.monthlyBudgetMinor() - monthlySpendMinor),
       utilisationPercent:
         totalCredit === 0 ? 0 : Math.round((outstandingMinor / totalCredit) * 1000) / 10,
@@ -893,11 +921,14 @@ export class CardNestStore {
 
   async combinePayments(
     ids: readonly string[],
-    targetId = ids[0],
+    targetId = ids[0] ?? '',
     edits: PaymentGroupEdits = {},
+    walletEventIds: readonly string[] = [],
   ): Promise<string> {
     if (!this.database.ready()) throw new Error('Database is not ready.');
-    const id = await this.database.atomic((tx) => attachPaymentGroup(tx, ids, targetId, edits));
+    const id = await this.database.atomic((tx) =>
+      attachPaymentGroup(tx, ids, targetId, edits, walletEventIds),
+    );
     await this.loadTransactions();
     return id;
   }
@@ -1126,7 +1157,8 @@ export class CardNestStore {
           next.id,
         ]);
       }
-      if (targetId && next.type === 'ADJUSTMENT') await attachPaymentGroup(tx, [next.id], targetId);
+      if (targetId && (next.type === 'ADJUSTMENT' || next.type === 'PURCHASE'))
+        await attachPaymentGroup(tx, [next.id], targetId);
       return { ...saved, savedRule };
     });
     // The durable write is now complete. Publish the exact committed row even if a later read fails.
@@ -2672,8 +2704,14 @@ export class CardNestStore {
     const cutoff = new Date();
     cutoff.setFullYear(cutoff.getFullYear() - years);
     const cutoffIso = toIsoDate(cutoff);
+    const mixedPaymentIds = new Set(
+      this.paymentGroups()
+        .filter((group) => group.walletMembers.length > 0)
+        .flatMap((group) => group.memberIds),
+    );
     const removedTransactions = this.transactions().filter(
-      (transaction) => transaction.transactionDate < cutoffIso,
+      (transaction) =>
+        transaction.transactionDate < cutoffIso && !mixedPaymentIds.has(transaction.id),
     );
     const removedIds = new Set(removedTransactions.map((transaction) => transaction.id));
     const balanceForwardByCard = new Map<string, number>();
@@ -3374,6 +3412,43 @@ export class CardNestStore {
 
   private cacheTransactions(transactions: readonly CardTransaction[]): void {
     writeCachedTransactions(transactions);
+  }
+
+  async saveApprovedWalletLoad(
+    tx: DatabaseSession,
+    transaction: CardTransaction,
+    input: WalletLoadingDetails,
+  ): Promise<void> {
+    if (transaction.type !== 'PURCHASE' || transaction.paymentMethod !== 'WALLET_LOADING')
+      throw new Error('An approved wallet load must be a wallet-loading purchase debit.');
+    const [groupMember] = await tx.query<{ group_id: string }>(
+      'SELECT group_id FROM transaction_split_members WHERE transaction_id=?',
+      [transaction.id],
+    );
+    if (groupMember)
+      throw new Error(
+        'Unlink this purchase from its payment group before classifying it as Wallet Loading.',
+      );
+    const [existing] = await tx.query<{ id: string; payload: string }>(
+      "SELECT id,payload FROM consumer_wallet_events WHERE event_type='FUNDED_LOAD' AND source_transaction_id=?",
+      [transaction.id],
+    );
+    if (existing) {
+      const load = JSON.parse(existing.payload) as ConsumerWalletEvent;
+      if (
+        load.walletId !== input.walletId ||
+        load.amountMinor !== input.loadedAmountMinor ||
+        load.debitAmountMinor !== transaction.amountMinor ||
+        load.fundingSourceId !== transaction.cardId ||
+        load.eventDate !== transaction.transactionDate ||
+        (load.eventTime ?? '') !== (transaction.transactionTime ?? '')
+      )
+        throw new Error(
+          'This source debit already funds a different wallet load. Review its original Wallet Loading details.',
+        );
+      return;
+    }
+    await this.saveWalletLoadEvent(tx, transaction, input, null);
   }
 
   private async saveWalletLoadEvent(

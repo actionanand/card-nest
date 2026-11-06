@@ -14,6 +14,7 @@ import {
   spendingContribution,
   transactionLabel,
 } from '../../core/services/money';
+import { informationalWalletSpending } from '../../core/services/financial-spending';
 import { AppIcon } from '../../shared/app-icon';
 import { AppDatePipe } from '../../core/services/date-format.service';
 import { CardNetworkLogo } from '../../shared/card-network-logo';
@@ -58,6 +59,14 @@ export class DashboardPage {
     const spend = this.snapshot().monthlySpendMinor;
     if (!this.hasBudget() || !Number.isFinite(spend)) return 0;
     return Math.max(0, Math.min(100, Math.round((spend / this.store.monthlyBudgetMinor()) * 100)));
+  });
+  readonly walletSpendingMinor = computed(() => {
+    const cycle = this.store.currentIncomePeriod();
+    return informationalWalletSpending(
+      this.store.walletFinancialEvents(),
+      cycle.cycleStartDate,
+      cycle.cycleEndDate,
+    );
   });
 
   readonly breakdownView = signal<BreakdownView | null>(null);

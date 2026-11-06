@@ -2,7 +2,11 @@ import { Component, ElementRef, computed, effect, inject, signal, viewChild } fr
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { Category } from '../../core/models/domain';
 import { CardNestStore } from '../../core/services/card-nest-store';
-import { formatMoney, parseMoneyToMinor, spendingContribution } from '../../core/services/money';
+import {
+  informationalWalletSpending,
+  sumConsolidatedSpending,
+} from '../../core/services/financial-spending';
+import { formatMoney, parseMoneyToMinor } from '../../core/services/money';
 import { SnackbarService } from '../../core/services/snackbar.service';
 import { AppIcon } from '../../shared/app-icon';
 import { AppDatePipe } from '../../core/services/date-format.service';
@@ -57,9 +61,10 @@ export class CategorySpendingPage {
   );
   readonly periods = computed(() => {
     const candidates = Array.from({ length: 120 }, (_, index) => this.periodForOffset(index));
-    const transactionDates = this.store
-      .transactions()
-      .map((transaction) => transaction.transactionDate);
+    const transactionDates = [
+      ...this.store.consolidatedSpending().map((entry) => entry.date),
+      ...this.store.walletFinancialEvents().map((event) => event.eventDate),
+    ];
     const incomePeriods = new Set(this.store.incomeHistory().map((income) => income.periodKey));
     const available = candidates.filter(
       (period) =>
@@ -78,16 +83,16 @@ export class CategorySpendingPage {
   readonly transactions = computed(() => {
     const period = this.period();
     return this.store
-      .transactions()
-      .filter(
-        (transaction) =>
-          transaction.transactionDate >= period.startDate &&
-          transaction.transactionDate <= period.endDate &&
-          spendingContribution(transaction) !== 0,
-      );
+      .consolidatedSpending()
+      .filter((entry) => entry.date >= period.startDate && entry.date <= period.endDate);
   });
-  readonly spentMinor = computed(() =>
-    this.transactions().reduce((sum, transaction) => sum + spendingContribution(transaction), 0),
+  readonly spentMinor = computed(() => sumConsolidatedSpending(this.transactions()));
+  readonly walletSpendingMinor = computed(() =>
+    informationalWalletSpending(
+      this.store.walletFinancialEvents(),
+      this.period().startDate,
+      this.period().endDate,
+    ),
   );
   readonly incomeMinor = computed(
     () =>
@@ -111,12 +116,9 @@ export class CategorySpendingPage {
       )
       .map((category) => {
         const transactions = this.transactions().filter(
-          (transaction) => transaction.categoryId === category.id,
+          (entry) => entry.categoryId === category.id,
         );
-        const spent = transactions.reduce(
-          (sum, transaction) => sum + spendingContribution(transaction),
-          0,
-        );
+        const spent = sumConsolidatedSpending(transactions);
         const limit = category.showLimit ? category.monthlyLimitMinor : undefined;
         return {
           category,

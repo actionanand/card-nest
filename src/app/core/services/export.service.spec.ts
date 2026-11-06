@@ -1,9 +1,10 @@
 import { TestBed } from '@angular/core/testing';
-import { signal } from '@angular/core';
+import { computed, signal } from '@angular/core';
 import {
   CardTransaction,
   ConsumerWallet,
   ConsumerWalletEvent,
+  ConsumerWalletExpenseReversal,
   SourceTransfer,
 } from '../models/domain';
 import { ExportDocument } from '../models/export';
@@ -12,6 +13,7 @@ import { ExportService } from './export.service';
 import { ConsumerWalletService } from './consumer-wallet.service';
 import { SnackbarService } from './snackbar.service';
 import { formatMoney } from './money';
+import { projectConsolidatedSpending } from './financial-spending';
 
 /** Fictional accounts and amounts only. */
 describe('ExportService own-account movements', () => {
@@ -88,15 +90,27 @@ describe('ExportService own-account movements', () => {
   let service: ExportService;
   let csv: ReturnType<typeof vi.fn>;
   let pdf: ReturnType<typeof vi.fn>;
+  const transactionEntries = signal<readonly CardTransaction[]>([]);
+  const walletEventEntries = signal<readonly ConsumerWalletEvent[]>([]);
+  const reversalEntries = signal<readonly ConsumerWalletExpenseReversal[]>([]);
+  const consolidatedSpending = computed(() =>
+    projectConsolidatedSpending(transactionEntries(), walletEventEntries(), reversalEntries()),
+  );
 
   beforeEach(() => {
+    transactionEntries.set([]);
+    walletEventEntries.set([]);
+    reversalEntries.set([]);
     TestBed.configureTestingModule({
       providers: [
         {
           provide: CardNestStore,
           useValue: {
             transfers: signal(transfers),
-            transactions: signal([]),
+            transactions: transactionEntries,
+            walletFinancialEvents: walletEventEntries,
+            walletExpenseReversals: reversalEntries,
+            consolidatedSpending,
             incomeHistory: signal([]),
             categories: signal([]),
             budgetCycleStartDay: () => 1,
@@ -304,5 +318,93 @@ describe('ExportService own-account movements', () => {
       formatMoney(0, 'INR'),
       formatMoney(0, 'INR'),
     ]);
+  });
+  it('exports durable UPI Lite funded-principal reversals as dated expense contributions', () => {
+    const loadDebit: CardTransaction = {
+      ...payment,
+      id: 'wallet-load-debit',
+      cardId: 'bank',
+      type: 'PURCHASE',
+      amountMinor: 32000,
+      transactionDate: '2026-10-12',
+      categoryId: 'other',
+    };
+    const bankReturn: CardTransaction = {
+      ...payment,
+      id: 'bank-return-credit',
+      cardId: 'bank',
+      type: 'CREDIT',
+      amountMinor: 10000,
+      transactionDate: '2026-11-03',
+      categoryId: 'contra-expenses',
+    };
+    const fundedLoad: ConsumerWalletEvent = {
+      id: 'funded-load',
+      walletId: 'amazon-wallet',
+      eventType: 'FUNDED_LOAD',
+      eventDate: '2026-10-12',
+      amountMinor: 30000,
+      balanceDeltaMinor: 30000,
+      debitAmountMinor: 32000,
+      fundingSourceId: 'bank',
+      fundingCategoryId: 'other',
+      sourceTransactionId: loadDebit.id,
+      createdAt: '2026-10-12T10:00:00Z',
+      updatedAt: '2026-10-12T10:00:00Z',
+    };
+    const returnEvent: ConsumerWalletEvent = {
+      id: 'upi-return',
+      walletId: 'amazon-wallet',
+      eventType: 'UPI_LITE_RETURN',
+      eventDate: '2026-11-03',
+      amountMinor: 10000,
+      balanceDeltaMinor: -10000,
+      sourceTransactionId: bankReturn.id,
+      returnSourceId: 'bank',
+      createdAt: '2026-11-03T10:00:00Z',
+      updatedAt: '2026-11-03T10:00:00Z',
+    };
+    transactionEntries.set([loadDebit, bankReturn]);
+    walletEventEntries.set([fundedLoad, returnEvent]);
+    reversalEntries.set([
+      {
+        returnEventId: returnEvent.id,
+        creditEventId: fundedLoad.id,
+        fundedLoadEventId: fundedLoad.id,
+        reversedMinor: 6000,
+        createdAt: '2026-11-03T10:00:00Z',
+      },
+    ]);
+    const range = { range: { startDate: '2026-10-01', endDate: '2026-11-30' }, sourceId: 'ALL' };
+
+    service.exportTransactionSelection(
+      'CSV',
+      [loadDebit, bankReturn],
+      'Oct-Nov',
+      '2026-10-11',
+      range,
+      [fundedLoad, returnEvent],
+    );
+    const csvContent = String(csv.mock.calls[0][0]);
+    expect(csvContent).toContain('UPI Lite funded-principal return');
+    expect(csvContent).toContain('Expense reversal');
+    expect(csvContent).toContain('-60.00');
+
+    service.exportTransactionSelection(
+      'PDF',
+      [loadDebit, bankReturn],
+      'Oct-Nov',
+      '2026-10-11',
+      range,
+      [fundedLoad, returnEvent],
+    );
+    const document = pdf.mock.calls[0][0] as ExportDocument;
+    expect(document.summary.find((item) => item.label === 'Net merchant spending')?.value).toBe(
+      formatMoney(26000, 'INR'),
+    );
+    const reversalSection = document.sections.find((section) =>
+      section.title.includes('Wallet-derived consolidated expense contributions'),
+    );
+    expect(reversalSection?.rows[0].cells).toContain(formatMoney(-6000, 'INR'));
   });
 });

@@ -144,6 +144,7 @@ export interface PaymentGroup {
   createdAt: string;
   updatedAt: string;
   memberIds: readonly string[];
+  walletMembers: readonly ConsumerWalletSplitMember[];
 }
 
 export type BalanceTiming = 'AFTER_BASELINE' | 'INCLUDED_IN_BASELINE';
@@ -560,6 +561,7 @@ export interface DashboardSnapshot {
   unbilledMinor: Money;
   availableCreditMinor: Money;
   monthlySpendMinor: Money;
+  walletSpendingMinor: Money;
   remainingBudgetMinor?: Money;
   utilisationPercent: number;
 }

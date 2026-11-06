@@ -22,6 +22,11 @@ import {
 } from '../models/domain';
 import { APP_ENVIRONMENT } from './app-environment';
 import { CardNestStore } from './card-nest-store';
+import {
+  attachPaymentGroup,
+  linkWalletRefundToPaymentGroup,
+  readPaymentGroups,
+} from './payment-groups';
 import { indiaTodayIso } from './india-date';
 import {
   applyBankCashTransaction,
@@ -56,6 +61,7 @@ export interface WalletPurchaseInput {
   readonly notes?: string;
   readonly attachmentIds?: readonly string[];
   readonly confirmationKey: string;
+  readonly splitTargetId?: string;
 }
 
 export interface WalletPurchasePreview {
@@ -177,6 +183,7 @@ function walletPurchaseConfirmationKey(
     input.merchant?.trim() ?? '',
     input.notes?.trim() ?? '',
     input.attachmentIds ?? [],
+    input.splitTargetId ?? '',
     balanceAfterMinor,
     allocations.map((allocation) => [allocation.creditEventId, allocation.allocatedMinor]),
   ]);
@@ -243,6 +250,7 @@ export class ConsumerWalletService {
   readonly wallets = signal<readonly ConsumerWallet[]>([]);
   readonly events = signal<readonly ConsumerWalletEvent[]>([]);
   readonly allocations = signal<readonly ConsumerWalletEventAllocation[]>([]);
+  readonly expenseReversals = signal<readonly ConsumerWalletExpenseReversal[]>([]);
   readonly featureState = signal<WalletsFeatureState>('NEVER_CONFIGURED');
   readonly loading = signal(false);
   readonly loadError = signal<string | null>(null);
@@ -324,6 +332,13 @@ export class ConsumerWalletService {
           expense_reversal_minor: number;
           created_at: string;
         }>('SELECT * FROM consumer_wallet_event_allocations ORDER BY created_at,id');
+        const expenseReversals = await tx.query<{
+          return_event_id: string;
+          credit_event_id: string;
+          funded_load_event_id: string;
+          reversed_minor: number;
+          created_at: string;
+        }>('SELECT * FROM consumer_wallet_expense_reversals ORDER BY created_at');
         return {
           featureState,
           wallets: wallets.map((row) => JSON.parse(row.payload) as ConsumerWallet),
@@ -336,12 +351,21 @@ export class ConsumerWalletService {
             expenseReversalMinor: row.expense_reversal_minor,
             createdAt: row.created_at,
           })),
+          expenseReversals: expenseReversals.map((row) => ({
+            returnEventId: row.return_event_id,
+            creditEventId: row.credit_event_id,
+            fundedLoadEventId: row.funded_load_event_id,
+            reversedMinor: row.reversed_minor,
+            createdAt: row.created_at,
+          })),
         };
       });
       this.featureState.set(state.featureState);
       this.wallets.set(state.wallets);
       this.events.set(state.events);
       this.allocations.set(state.allocations);
+      this.expenseReversals.set(state.expenseReversals);
+      this.store.acceptWalletFinancialHistory(state.events, state.expenseReversals);
       this.setupIntent.set(null);
     } catch (error: unknown) {
       this.loadError.set(
@@ -647,7 +671,11 @@ export class ConsumerWalletService {
         );
         if (input.confirmationKey !== expectedKey)
           throw new Error('Wallet balance or FIFO attribution changed. Review the purchase again.');
-        return { event: duplicate, allocations: existingAllocations };
+        return {
+          event: duplicate,
+          allocations: existingAllocations,
+          groups: await readPaymentGroups(tx),
+        };
       }
       const timestamp = new Date().toISOString();
       const event: ConsumerWalletEvent = {
@@ -683,9 +711,12 @@ export class ConsumerWalletService {
       await this.insertEvent(tx, event);
       const persistedAllocations = await persistConsumerWalletDebitPlan(tx, event, plan);
       await assertChronologicalConsumerWalletLedger(tx, input.walletId);
-      return { event, allocations: persistedAllocations };
+      if (input.splitTargetId)
+        await attachPaymentGroup(tx, [], input.splitTargetId, {}, [event.id]);
+      return { event, allocations: persistedAllocations, groups: await readPaymentGroups(tx) };
     });
     this.publishEventWrite(result.event, result.allocations);
+    this.store.paymentGroups.set(result.groups);
     return result.event;
   }
 
@@ -1227,7 +1258,13 @@ export class ConsumerWalletService {
           (duplicate.notes ?? '') !== (input.notes?.trim().slice(0, 500) ?? '')
         )
           throw new Error('This refund ID was already used for a different financial event.');
-        return { event: duplicate };
+        await linkWalletRefundToPaymentGroup(
+          tx,
+          input.purchaseEventId,
+          duplicate.id,
+          duplicate.createdAt,
+        );
+        return { event: duplicate, groups: await readPaymentGroups(tx) };
       }
       const { purchase, alreadyRefundedMinor, segments, remainingMinor } =
         await this.readWalletRefundState(tx, {
@@ -1255,6 +1292,7 @@ export class ConsumerWalletService {
       if (!Number.isSafeInteger(balanceBeforeMinor + input.amountMinor))
         throw new Error('Wallet balance would exceed the supported amount.');
       await this.insertEvent(tx, event);
+      await linkWalletRefundToPaymentGroup(tx, purchase.id, event.id, event.createdAt);
       const aggregate = new Map<string, number>();
       for (const segment of segments) {
         aggregate.set(
@@ -1281,9 +1319,10 @@ export class ConsumerWalletService {
         );
       }
       await assertChronologicalConsumerWalletLedger(tx, purchase.walletId);
-      return { event };
+      return { event, groups: await readPaymentGroups(tx) };
     });
     if (result.event.id === input.id) this.publishEventWrite(result.event, []);
+    this.store.paymentGroups.set(result.groups);
     return result.event;
   }
 
@@ -1699,7 +1738,28 @@ export class ConsumerWalletService {
         )
           throw new Error('This return ID was already used for a different financial event.');
         const allocations = await this.readEventAllocations(tx, existing.id);
-        return { event: existing, allocations, sources, postedBankTransaction: null };
+        const reversalRows = await tx.query<{
+          return_event_id: string;
+          credit_event_id: string;
+          funded_load_event_id: string;
+          reversed_minor: number;
+          created_at: string;
+        }>('SELECT * FROM consumer_wallet_expense_reversals WHERE return_event_id=?', [
+          existing.id,
+        ]);
+        return {
+          event: existing,
+          allocations,
+          sources,
+          postedBankTransaction: null,
+          expenseReversals: reversalRows.map((row) => ({
+            returnEventId: row.return_event_id,
+            creditEventId: row.credit_event_id,
+            fundedLoadEventId: row.funded_load_event_id,
+            reversedMinor: row.reversed_minor,
+            createdAt: row.created_at,
+          })),
+        };
       }
 
       const existingBankTransaction = await this.resolveExistingBankCredit(tx, bank, {
@@ -1831,7 +1891,7 @@ export class ConsumerWalletService {
           returnLink.createdAt,
         ],
       );
-      return { event, allocations, sources, postedBankTransaction };
+      return { event, allocations, sources, postedBankTransaction, expenseReversals: reversalRows };
     });
     this.store.acceptCommittedImport(
       result.postedBankTransaction,
@@ -1839,11 +1899,16 @@ export class ConsumerWalletService {
       result.event.sourceTransactionId,
     );
     this.publishEventWrite(result.event, result.allocations);
+    this.expenseReversals.update((rows) => [
+      ...rows.filter((row) => row.returnEventId !== result.event.id),
+      ...result.expenseReversals,
+    ]);
+    this.store.acceptWalletFinancialHistory(this.events(), this.expenseReversals());
     return result.event;
   }
 
   async reloadFinancialHistory(): Promise<void> {
-    const [events, allocations] = await Promise.all([
+    const [events, allocations, expenseReversals] = await Promise.all([
       this.database.query<{ payload: string }>(
         'SELECT payload FROM consumer_wallet_events ORDER BY event_date DESC,created_at DESC',
       ),
@@ -1855,6 +1920,13 @@ export class ConsumerWalletService {
         expense_reversal_minor: number;
         created_at: string;
       }>('SELECT * FROM consumer_wallet_event_allocations ORDER BY created_at,id'),
+      this.database.query<{
+        return_event_id: string;
+        credit_event_id: string;
+        funded_load_event_id: string;
+        reversed_minor: number;
+        created_at: string;
+      }>('SELECT * FROM consumer_wallet_expense_reversals ORDER BY created_at'),
     ]);
     this.events.set(events.map((row) => JSON.parse(row.payload) as ConsumerWalletEvent));
     this.allocations.set(
@@ -1866,6 +1938,18 @@ export class ConsumerWalletService {
         expenseReversalMinor: row.expense_reversal_minor,
         createdAt: row.created_at,
       })),
+    );
+    const mappedReversals = expenseReversals.map((row) => ({
+      returnEventId: row.return_event_id,
+      creditEventId: row.credit_event_id,
+      fundedLoadEventId: row.funded_load_event_id,
+      reversedMinor: row.reversed_minor,
+      createdAt: row.created_at,
+    }));
+    this.expenseReversals.set(mappedReversals);
+    this.store.acceptWalletFinancialHistory(
+      events.map((row) => JSON.parse(row.payload) as ConsumerWalletEvent),
+      mappedReversals,
     );
   }
 
@@ -1886,6 +1970,7 @@ export class ConsumerWalletService {
           !deletedIds.has(allocation.creditEventId) && !deletedIds.has(allocation.debitEventId),
       ),
     );
+    this.store.acceptWalletFinancialHistory(this.events(), this.expenseReversals());
   }
 
   async archiveWallet(walletId: string): Promise<void> {
@@ -2200,6 +2285,7 @@ export class ConsumerWalletService {
         ...allocations,
         ...items.filter((item) => !allocations.some((next) => next.id === item.id)),
       ]);
+    this.store.acceptWalletFinancialHistory(this.events(), this.expenseReversals());
   }
 
   private async completeSetup(tx: DatabaseSession, intentId: string | undefined): Promise<void> {

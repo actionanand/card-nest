@@ -5,13 +5,20 @@ import { SmsReviewFilterRefreshError, SmsReviewService } from './sms-review.serv
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { PurchaseReviewDraft, ScanStatus, SmsCandidate } from './sms-model';
 import axe from 'axe-core';
-import { CardTransaction, Category, CreditCard, PaymentSource } from '../../core/models/domain';
+import {
+  CardTransaction,
+  Category,
+  ConsumerWallet,
+  CreditCard,
+  PaymentSource,
+} from '../../core/models/domain';
 import { Router } from '@angular/router';
 import { By } from '@angular/platform-browser';
 import { AppSelectPicker } from '../../shared/app-select-picker';
 import { SnackbarService } from '../../core/services/snackbar.service';
 import { defaultReviewFilters } from './sms-review-filters';
 import { Capacitor } from '@capacitor/core';
+import { ConsumerWalletService } from '../../core/services/consumer-wallet.service';
 
 const demoCard: CreditCard = {
   id: 'demo-card',
@@ -33,6 +40,14 @@ const demoCard: CreditCard = {
   archived: false,
   createdAt: '2026-01-01',
   updatedAt: '2026-01-01',
+};
+const consumerWalletEnabled = signal(false);
+const consumerWalletList = signal<readonly ConsumerWallet[]>([]);
+const consumerWalletService = {
+  enabled: consumerWalletEnabled,
+  wallets: consumerWalletList,
+  activeWallets: computed(() => consumerWalletList().filter((wallet) => !wallet.archived)),
+  balances: computed(() => new Map(consumerWalletList().map((wallet) => [wallet.id, 0]))),
 };
 const demoCandidate = (): SmsCandidate => ({
   id: 'a'.repeat(64),
@@ -56,6 +71,119 @@ const demoCandidate = (): SmsCandidate => ({
 });
 
 describe('SMS review privacy and explicit approval UI', () => {
+  it('requires explicit Wallet Loading approval and resets it after a financial detail changes', async () => {
+    store.cards.set([demoCard]);
+    consumerWalletEnabled.set(true);
+    consumerWalletList.set([
+      {
+        id: 'amazon-wallet',
+        providerId: 'amazon',
+        kind: 'STANDARD',
+        archived: false,
+        createdAt: '2026-01-01',
+        updatedAt: '2026-01-01',
+      },
+    ]);
+    const candidate = demoCandidate();
+    candidates.set([candidate]);
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const page = fixture.componentInstance;
+    page.open(candidate);
+    page.setCardWalletLoading(true);
+    page.editor.controls.source.setValue(demoCard.id);
+    page.editor.controls.amount.setValue('100');
+    page.editor.controls.transactionDate.setValue(candidate.item!.eventDate);
+    page.editor.controls.walletDestination.setValue('amazon-wallet');
+    page.editor.controls.walletLoadedAmount.setValue('80');
+    fixture.detectChanges();
+
+    expect(page.walletLoadingFormValid('CARD')).toBe(true);
+    expect(page.walletLoadingApproved('CARD')).toBe(false);
+    const confirmation = fixture.nativeElement.querySelectorAll(
+      '.wallet-loading-review input[type="checkbox"]',
+    )[1] as HTMLInputElement;
+    confirmation.click();
+    fixture.detectChanges();
+    expect(page.walletLoadingApproved('CARD')).toBe(true);
+    expect(fixture.nativeElement.textContent).toContain('included fee/difference');
+
+    page.editor.controls.walletLoadedAmount.setValue('75');
+    fixture.detectChanges();
+    expect(page.walletLoadingApproved('CARD')).toBe(false);
+    expect(sync.approve).not.toHaveBeenCalled();
+    fixture.destroy();
+  }, 30000);
+  it('offers Wallet Loading explicitly for Bank debit SMS without preselecting it', async () => {
+    consumerWalletEnabled.set(true);
+    consumerWalletList.set([
+      {
+        id: 'amazon-wallet',
+        providerId: 'amazon',
+        kind: 'STANDARD',
+        archived: false,
+        createdAt: '2026-01-01',
+        updatedAt: '2026-01-01',
+      },
+    ]);
+    const bank: PaymentSource = {
+      id: 'wallet-bank',
+      nickname: 'Everyday',
+      institution: 'ICICI Bank',
+      kind: 'DEBIT',
+      lastDigits: '1234',
+      noLimit: true,
+      autoLoad: false,
+      archived: false,
+    };
+    store.paymentSources.set([bank]);
+    const candidate = demoCandidate();
+    candidate.kind = 'BANK_DEBIT';
+    candidate.item = {
+      ...candidate.item!,
+      kind: 'BANK_DEBIT',
+      issuer: 'ICICI Bank',
+      accountDigits: '1234',
+      direction: 'DEBIT',
+    };
+    candidates.set([candidate]);
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const page = fixture.componentInstance;
+    page.open(candidate);
+    fixture.detectChanges();
+
+    expect(page.bankPurposeOptions().map((option) => option.value)).toContain('WALLET_LOADING');
+    expect(page.bankEditor.controls.purpose.value).toBe('PURCHASE');
+    page.setBankPurpose('WALLET_LOADING');
+    fixture.detectChanges();
+    expect(page.purchaseReviewActive(true)).toBe(true);
+    expect(fixture.nativeElement.textContent).toContain('Confirm wallet funding details');
+    expect(sync.approveBank).not.toHaveBeenCalled();
+    fixture.destroy();
+  });
+  it('offers refresh-only retry after a committed wallet load refresh is pending', async () => {
+    sync.walletHistoryRefreshNeeded.set(true);
+    sync.refresh.mockImplementation(async () => {
+      sync.walletHistoryRefreshNeeded.set(false);
+    });
+    const fixture = TestBed.createComponent(SmsSyncPage);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const button = [...fixture.nativeElement.querySelectorAll('button')].find((item) =>
+      item.textContent?.includes('Retry wallet and inbox refresh'),
+    ) as HTMLButtonElement | undefined;
+    expect(button).toBeDefined();
+    button!.click();
+    await fixture.whenStable();
+    expect(sync.refresh).toHaveBeenCalled();
+    expect(sync.approve).not.toHaveBeenCalled();
+    expect(sync.approveBank).not.toHaveBeenCalled();
+    expect(sync.walletHistoryRefreshNeeded()).toBe(false);
+    fixture.destroy();
+  }, 30000);
   it('keeps Restore defaults beside Android Enable swipe and retains the enabled hint', async () => {
     vi.mocked(Capacitor.getPlatform).mockReturnValue('android');
     const fixture = TestBed.createComponent(SmsSyncPage);
@@ -383,6 +511,7 @@ describe('SMS review privacy and explicit approval UI', () => {
     busy: signal(false),
     reconciling: signal(false),
     verificationFailed: signal(false),
+    walletHistoryRefreshNeeded: signal(false),
     error: signal(''),
     duplicates: signal(0),
     total: signal(0),
@@ -485,6 +614,7 @@ describe('SMS review privacy and explicit approval UI', () => {
     sync.busy.set(false);
     sync.reconciling.set(false);
     sync.verificationFailed.set(false);
+    sync.walletHistoryRefreshNeeded.set(false);
     sync.total.set(0);
     sync.reviewPage.set(0);
     sync.unreadTotal.set(0);
@@ -496,6 +626,8 @@ describe('SMS review privacy and explicit approval UI', () => {
     ]);
     bankCashTracking.set({ enabled: false, askCardSettlementFunding: false });
     store.transactions.set([]);
+    consumerWalletEnabled.set(false);
+    consumerWalletList.set([]);
     store.loans.set([]);
     store.emiInstallments.set([]);
     swipePreference.set(false);
@@ -511,6 +643,7 @@ describe('SMS review privacy and explicit approval UI', () => {
           provide: CardNestStore,
           useValue: store,
         },
+        { provide: ConsumerWalletService, useValue: consumerWalletService },
       ],
     });
   });

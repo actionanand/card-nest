@@ -242,6 +242,103 @@ const HELP_TOPICS: readonly HelpTopic[] = [
     linkLabel: 'Manage payment sources',
   },
   {
+    id: 'consumer-wallets',
+    group: 'Cards & sources',
+    title: 'How do consumer wallets and Wallet Loading work?',
+    summary:
+      'Register a supported consumer wallet, then record each successful load from an eligible card or Bank/UPI source.',
+    steps: [
+      'Open Wallets and choose Add wallet. Register the provider and wallet type; UPI Lite must be loaded from a Bank/UPI account.',
+      'When recording a load, choose the actual debit source, the amount that reached the wallet, and the destination wallet.',
+      'If the source debit exceeds the wallet credit, the difference is recorded as an included fee. Review and approve the full summary before saving.',
+      'SMS Review may suggest a load, but it never classifies one automatically. Choose Wallet Loading, verify the source and destination, enter the loaded amount, and confirm.',
+    ],
+    tips: [
+      'FASTag registrations are separate from consumer wallets. Pluxee remains a meal-card source with its own accounting.',
+      'Archiving hides a wallet from new activity but keeps its history. Turning Wallets off also keeps history and backups.',
+    ],
+    keywords: [
+      'wallet',
+      'consumer wallet',
+      'wallet loading',
+      'top up',
+      'upi lite',
+      'sms review',
+      'fee',
+      'fastag',
+      'pluxee',
+    ],
+    link: '/wallets',
+    linkLabel: 'Open Wallets',
+  },
+  {
+    id: 'wallet-spending-counting',
+    group: 'Planning & insights',
+    title: 'Why are wallet purchases shown separately from spending?',
+    summary:
+      'A wallet load is counted when its card or Bank/UPI debit happens; later purchases use that already-counted value.',
+    steps: [
+      'The original debit used to load a wallet contributes to consolidated spending on its original date, including any recorded fee.',
+      'Wallet purchases reduce the wallet balance and appear as informational activity. They do not add the same money to spending a second time.',
+      'Wallet purchase refunds restore wallet value and retain their link to the original purchase; they do not automatically reverse the original load expense.',
+      'Mixed payment groups summarize the original bill and its real payment members. Grouping does not create another debit or expense.',
+    ],
+    keywords: [
+      'wallet spending',
+      'double count',
+      'consolidated spending',
+      'budget',
+      'split payment',
+      'refund',
+    ],
+    link: '/reports',
+    linkLabel: 'View reports',
+  },
+  {
+    id: 'upi-lite-return',
+    group: 'Cards & sources',
+    title: 'How does UPI Lite Return to Bank affect spending?',
+    summary:
+      'Returning UPI Lite value records a Bank receipt and reverses only the funded principal attributed to eligible loads.',
+    steps: [
+      'Choose an active UPI Lite wallet, the Bank/UPI account receiving the money, the amount, and the return date.',
+      'CardNest previews which earlier wallet credits fund the return. Funded principal may reduce spending on the return date; promotional, manual, and unknown-origin value does not.',
+      'The Bank receipt is linked to the wallet return, not treated as income. Included load fees remain counted unless an actual fee refund is recorded separately.',
+    ],
+    tips: [
+      'Wallet refunds and Return to Bank are different actions: a purchase refund restores wallet value; a return moves wallet value to a Bank/UPI account.',
+    ],
+    keywords: [
+      'upi lite',
+      'return to bank',
+      'funded principal',
+      'expense reversal',
+      'promotional',
+      'fee',
+    ],
+    link: '/wallets',
+    linkLabel: 'Review Wallets',
+  },
+  {
+    id: 'mixed-payment-groups',
+    group: 'Transactions',
+    title: 'How do mixed payment groups and wallet refunds work?',
+    summary:
+      'Combine recorded wallet, card, Bank/UPI, or cash payments to describe one bill without changing their financial records.',
+    steps: [
+      'Open Combine Payments, choose a recorded purchase or payment group, then select other completed payments, including wallet purchases.',
+      'Review the members, actual bill total, and any remaining or overpaid amount before explicitly saving the group.',
+      'Add later payments to the same group when they settle the same bill. Removing or dissolving a group keeps each underlying payment.',
+      'Refund wallet contributions through the wallet purchase refund workflow. The refund retains its original purchase and group history; card or Bank refunds use their own workflows.',
+    ],
+    tips: [
+      'A mixed group total is a bill summary, not another expense. Wallet purchases remain informational because the original wallet load was counted earlier.',
+    ],
+    keywords: ['mixed payment', 'split payment', 'wallet', 'cash', 'bank', 'refund', 'group'],
+    link: '/transactions',
+    linkLabel: 'Open Activity',
+  },
+  {
     id: 'categories-budgets',
     group: 'Planning & insights',
     title: 'How do categories and spending limits work?',

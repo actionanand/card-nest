@@ -54,27 +54,32 @@
     <app-payment-groups-panel
       [groupId]="manageGroupId()"
       (closed)="closeCombine()"
-      (addTransaction)="openAddAfterCombine()"
+      (addTransaction)="openAddAfterCombine($event)"
     />
   }
   @for (group of logicalGroups(); track group.id) {
     <details class="panel payment-group-summary">
       <summary>
         {{ group.title || 'Combined purchase' }} ·
-        {{ money(groupTotal(group.memberIds), group.currency) }} total ·
-        {{ group.memberIds.length }} payments
+        {{ money(groupTotal(group), group.currency) }} paid · {{ groupMemberCount(group) }} payments
       </summary>
       <app-payment-breakdown
-        [entries]="groupEntries(group.memberIds)"
+        [entries]="groupDisplayEntries(group)"
         [billTotalMinor]="group.billTotalMinor"
       />
-      <button class="btn" type="button" (click)="openCombine(groupEntries(group.memberIds)[0])">
+      <button class="btn" type="button" (click)="openPaymentGroup(group.id)">
         Manage payment group
       </button>
       @for (entry of groupEntries(group.memberIds); track entry.id) {
         <button class="btn" type="button" (click)="openDetails(entry)">
           View {{ store.sourceName(entry.cardId) }} payment
         </button>
+      }
+      @if (groupRefundTotal(group) > 0) {
+        <p>
+          Wallet refunds retained in group history:
+          {{ money(groupRefundTotal(group), group.currency) }}
+        </p>
       }
     </details>
   }
@@ -1073,6 +1078,10 @@
           <dt>Expense classification</dt>
           <dd>Wallet spending - already counted when loaded</dd>
         </div>
+        <div>
+          <dt>Total refunded</dt>
+          <dd>{{ money(walletRefundTotalMinor(event.id), 'INR') }}</dd>
+        </div>
       }
       @if (event.notes || event.memo) {
         <div class="detail-wide">
@@ -1109,6 +1118,14 @@
     }
     @if (event.eventType === 'PURCHASE') {
       <div class="detail-actions">
+        <button
+          class="btn"
+          type="button"
+          [disabled]="!consumerWallets.enabled()"
+          (click)="openWalletPaymentGroup(event)"
+        >
+          <app-icon name="plus" /> Combine payments
+        </button>
         <button
           class="btn"
           type="button"
@@ -1209,6 +1226,7 @@
       '. The original purchase and earlier refunds remain in history.'
     "
     confirmLabel="Cancel purchase"
+    [busy]="saving()"
     (confirmed)="confirmWalletCancellation()"
     (cancelled)="walletCancellationCandidate.set(null)"
   />
@@ -1348,14 +1366,14 @@
           </div>
         </section>
       }
-      @if (splitSiblings(transaction).length > 1) {
+      @if (paymentGroupDetails(transaction); as group) {
         <section class="detail-section">
-          <h3>{{ paymentGroupDetails(transaction)?.title || 'Split payments' }}</h3>
+          <h3>{{ group.title || 'Split payments' }}</h3>
           <app-payment-breakdown
-            [entries]="splitSiblings(transaction)"
-            [billTotalMinor]="paymentGroupDetails(transaction)?.billTotalMinor ?? null"
+            [entries]="groupDisplayEntries(group)"
+            [billTotalMinor]="group.billTotalMinor"
           />
-          <button class="btn" type="button" (click)="openCombine(transaction)">
+          <button class="btn" type="button" (click)="openPaymentGroup(group.id)">
             Manage payment group
           </button>
         </section>
@@ -1667,22 +1685,6 @@
     confirmLabel="Delete transaction"
     (confirmed)="confirmDelete()"
     (cancelled)="deleteCandidate.set(null)"
-  />
-}
-
-@if (walletCancellationCandidate(); as purchase) {
-  <app-confirmation-dialog
-    title="Cancel wallet purchase?"
-    [message]="
-      'This records an audited reversal and restores ' +
-      money(walletRefundableMinor(purchase), 'INR') +
-      ' remaining refundable value to ' +
-      consumerWalletName(purchase.walletId) +
-      '. The original purchase and prior refunds remain in history.'
-    "
-    confirmLabel="Cancel purchase"
-    (confirmed)="confirmWalletCancellation()"
-    (cancelled)="walletCancellationCandidate.set(null)"
   />
 }
 

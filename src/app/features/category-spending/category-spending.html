@@ -44,6 +44,10 @@
     <article class="panel balance" [class.negative]="remainingMinor() < 0">
       <small>Remaining</small><strong>{{ money(remainingMinor()) }}</strong>
     </article>
+    <article class="panel expense">
+      <small>Informational wallet purchases</small>
+      <strong>{{ money(walletSpendingMinor()) }}</strong>
+    </article>
   </section>
 
   <section class="panel overall-budget">
@@ -88,7 +92,7 @@
             /></span>
             <span
               ><strong>{{ row.category.name }}</strong
-              ><small>{{ row.transactions.length }} transactions</small></span
+              ><small>{{ row.transactions.length }} expense entries</small></span
             >
           </button>
           <div class="category-actions">
@@ -145,10 +149,10 @@
             @for (transaction of row.transactions; track transaction.id) {
               <div>
                 <span
-                  ><strong>{{ transaction.merchant || transaction.type }}</strong
+                  ><strong>{{ transaction.label }}</strong
                   ><small
-                    >{{ transaction.transactionDate | appDate }} ·
-                    {{ store.sourceName(transaction.cardId) }}</small
+                    >{{ transaction.date | appDate }} ·
+                    {{ store.sourceName(transaction.sourceId) }} · {{ transaction.kind }}</small
                   ></span
                 ><strong>{{ money(transaction.amountMinor) }}</strong>
               </div>

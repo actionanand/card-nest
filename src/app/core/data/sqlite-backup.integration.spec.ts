@@ -10,7 +10,8 @@ import {
   ConsumerWalletService,
   WALLETS_FEATURE_STATE_KEY,
 } from '../services/consumer-wallet.service';
-import { CardTransaction, PaymentSource } from '../models/domain';
+import { CardTransaction, CreditCard, PaymentSource } from '../models/domain';
+import { sumConsolidatedSpending } from '../services/financial-spending';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
@@ -64,6 +65,233 @@ vi.mock('@capacitor-community/sqlite', () => ({
 describe('Durable first-run data, additive read migration and private portable backups', () => {
   let sql: DatabaseSyncType;
   let database: SqliteDatabase;
+  it('approves Bank SMS wallet loading through the real store atomically and idempotently', async () => {
+    await database.initialise();
+    const store = TestBed.inject(CardNestStore);
+    await store.initialisePreferences();
+    const wallets = TestBed.inject(ConsumerWalletService);
+    await wallets.initialise();
+    const bank = await store.addBankAccount({ institution: 'ICICI Bank', lastDigits: '419' });
+    const wallet = await wallets.registerWallet({ providerId: 'amazon-pay' });
+    const today = indiaTodayIso();
+    const item: SmsEvidence = {
+      id: 'a'.repeat(64),
+      providerId: 'synthetic-bank',
+      parserVersion: 3,
+      kind: 'BANK_DEBIT',
+      direction: 'DEBIT',
+      issuer: 'ICICI Bank',
+      accountDigits: '419',
+      amountMinor: 32000,
+      currency: 'INR',
+      eventDate: today,
+      eventAt: `${today}T10:00:00Z`,
+      receivedAt: Date.parse(`${today}T10:00:00Z`),
+      dateFallback: false,
+      evidence: 'Synthetic wallet funding',
+    };
+    await database.run(
+      "INSERT INTO sms_candidates(id,provider_id,event_at,kind,state,payload,updated_at) VALUES(?,?,?,?,'PENDING',?,'now')",
+      [item.id, item.providerId, item.eventAt, item.kind, JSON.stringify(item)],
+    );
+    const candidate: SmsCandidate = {
+      id: item.id,
+      kind: item.kind,
+      eventAt: item.eventAt,
+      state: 'PENDING',
+      item,
+    };
+    const review = TestBed.inject(SmsReviewService);
+    vi.spyOn(review, 'refresh').mockResolvedValue();
+    const approval = {
+      purpose: 'WALLET_LOADING' as const,
+      sourceId: bank.id,
+      amountMinor: 32000,
+      description: 'Synthetic wallet funding',
+      transactionDate: today,
+      walletLoading: { walletId: wallet.id, loadedAmountMinor: 30000 },
+      walletLoadingApproved: true,
+    };
+    await review.approveBank(candidate, approval);
+    await review.approveBank(candidate, approval);
+    await wallets.reloadFinancialHistory();
+    expect(count('card_transactions')).toBe(1);
+    expect(count('consumer_wallet_events')).toBe(1);
+    expect(count('sms_reconciliation')).toBe(1);
+    expect(wallets.balances().get(wallet.id)).toBe(30000);
+    expect(wallets.events()[0]).toMatchObject({
+      eventType: 'FUNDED_LOAD',
+      debitAmountMinor: 32000,
+      loadedAmountMinor: 30000,
+      feeMinor: 2000,
+      sourceTransactionId: `sms-${item.id}`,
+      fundingSourceId: bank.id,
+    });
+    expect(sumConsolidatedSpending(store.consolidatedSpending())).toBe(32000);
+    expect(rows('PRAGMA foreign_key_check')).toEqual([]);
+  });
+  it('atomically records mixed wallet/card payments, adds a third payment, refunds and restores exact group history', async () => {
+    await database.initialise();
+    const store = TestBed.inject(CardNestStore);
+    await store.initialisePreferences();
+    const wallets = TestBed.inject(ConsumerWalletService);
+    await wallets.initialise();
+    const bank = await store.addBankAccount({ institution: 'ICICI Bank', lastDigits: '419' });
+    const wallet = await wallets.registerWallet({ providerId: 'amazon-pay' });
+    const today = indiaTodayIso();
+    const card: CreditCard = {
+      id: 'mixed-card',
+      nickname: 'Synthetic card',
+      issuerName: 'Fictional bank',
+      lastDigits: '1111',
+      network: 'VISA',
+      theme: 'green',
+      statementDay: 1,
+      dueDateMode: 'DAYS_AFTER_STATEMENT',
+      daysAfterStatement: 20,
+      adjustDueDateOnWeekend: false,
+      currencyCode: 'INR',
+      openingBalanceMinor: 0,
+      remindToSettle: false,
+      annualFeeEnabled: false,
+      emergencyPhones: [],
+      supportEmails: [],
+      archived: false,
+      createdAt: today,
+      updatedAt: today,
+    };
+    await database.run(
+      'INSERT INTO credit_cards(id,nickname,issuer_name,last_digits,network,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)',
+      [
+        card.id,
+        card.nickname,
+        card.issuerName,
+        card.lastDigits,
+        card.network,
+        JSON.stringify(card),
+        today,
+        today,
+      ],
+    );
+    store.cards.set([card]);
+    const ledgerEntry = (
+      id: string,
+      sourceId: string,
+      amountMinor: number,
+      date: string,
+    ): CardTransaction => ({
+      id,
+      cardId: sourceId,
+      type: 'PURCHASE',
+      amountMinor,
+      currencyCode: 'INR',
+      transactionDate: date,
+      categoryId: 'other',
+      merchant: 'Synthetic mixed bill',
+      attachmentIds: [],
+      createdAt: `${date}T10:00:00Z`,
+      updatedAt: `${date}T10:00:00Z`,
+    });
+    const loadDate = addCalendarDays(today, -6);
+    await store.saveManualTransaction(
+      { ...ledgerEntry('mixed-load', bank.id, 50000, loadDate), paymentMethod: 'WALLET_LOADING' },
+      '',
+      false,
+      undefined,
+      '',
+      { walletId: wallet.id, loadedAmountMinor: 50000 },
+    );
+    const purchaseDate = addCalendarDays(today, -4);
+    await store.saveManualTransaction(
+      ledgerEntry('mixed-card-purchase', card.id, 10000, purchaseDate),
+    );
+    const purchaseInput = {
+      id: 'mixed-wallet-purchase',
+      walletId: wallet.id,
+      amountMinor: 20000,
+      eventDate: purchaseDate,
+      categoryId: 'other',
+      merchant: 'Synthetic mixed bill',
+      attachmentIds: ['data:image/png;base64,Q2FyZE5lc3Q='],
+      splitTargetId: 'mixed-card-purchase',
+    };
+    const preview = await wallets.previewWalletPurchase(purchaseInput);
+    await wallets.recordWalletPurchase({
+      ...purchaseInput,
+      confirmationKey: preview.confirmationKey,
+    });
+    await store.refreshPaymentGroups();
+    const groupId = store.paymentGroups()[0].id;
+    expect(store.paymentGroups()[0].walletMembers[0].walletEventId).toBe(purchaseInput.id);
+    expect(
+      rows('SELECT original_amount_minor FROM transaction_split_groups')[0][
+        'original_amount_minor'
+      ],
+    ).toBe(30000);
+    await store.saveManualTransaction(
+      ledgerEntry('mixed-third-cash', 'source-cash', 5000, addCalendarDays(today, -3)),
+      groupId,
+    );
+    expect(store.paymentGroups()[0].id).toBe(groupId);
+    expect(store.paymentGroups()[0].memberIds).toHaveLength(2);
+    expect(
+      rows('SELECT original_amount_minor FROM transaction_split_groups')[0][
+        'original_amount_minor'
+      ],
+    ).toBe(35000);
+    const refundInput = {
+      id: 'mixed-wallet-refund',
+      purchaseEventId: purchaseInput.id,
+      amountMinor: 5000,
+      eventDate: addCalendarDays(today, -1),
+      reason: 'Synthetic partial refund',
+    };
+    const refundPreview = await wallets.previewWalletPurchaseRefund(refundInput);
+    await wallets.recordWalletPurchaseRefund({
+      ...refundInput,
+      confirmationKey: refundPreview.confirmationKey,
+    });
+    await wallets.reloadFinancialHistory();
+    await store.refreshPaymentGroups();
+    expect(wallets.balances().get(wallet.id)).toBe(35000);
+    expect(sumConsolidatedSpending(store.consolidatedSpending())).toBe(65000);
+    expect(
+      rows('SELECT allocated_minor FROM consumer_wallet_event_allocations WHERE debit_event_id=?', [
+        purchaseInput.id,
+      ]),
+    ).toHaveLength(1);
+    expect(store.paymentGroups()[0].walletMembers.map((member) => member.memberKind)).toEqual([
+      'WALLET_PURCHASE',
+      'WALLET_REFUND',
+    ]);
+    const expectedMembers = rows(
+      'SELECT * FROM consumer_wallet_split_members ORDER BY member_order',
+    );
+    const expectedAllocations = rows('SELECT * FROM consumer_wallet_event_allocations ORDER BY id');
+    const expectedSegments = rows(
+      'SELECT * FROM consumer_wallet_credit_provenance_segments ORDER BY id',
+    );
+    const backup = await database.exportBackupJson();
+    await database.deleteAllData();
+    await database.restoreBackupJson(backup);
+    await store.initialisePreferences();
+    await wallets.initialise();
+    expect(wallets.balances().get(wallet.id)).toBe(35000);
+    expect(sumConsolidatedSpending(store.consolidatedSpending())).toBe(65000);
+    expect(rows('SELECT * FROM consumer_wallet_split_members ORDER BY member_order')).toEqual(
+      expectedMembers,
+    );
+    expect(rows('SELECT * FROM consumer_wallet_event_allocations ORDER BY id')).toEqual(
+      expectedAllocations,
+    );
+    expect(rows('SELECT * FROM consumer_wallet_credit_provenance_segments ORDER BY id')).toEqual(
+      expectedSegments,
+    );
+    expect(wallets.events().find((event) => event.id === purchaseInput.id)?.attachmentIds).toEqual(
+      purchaseInput.attachmentIds,
+    );
+    expect(rows('PRAGMA foreign_key_check')).toEqual([]);
+  });
   it('preserves nested refund segment order through purchases and a later UPI Lite return', async () => {
     await database.initialise();
     const store = TestBed.inject(CardNestStore);
@@ -2816,7 +3044,7 @@ describe('Durable first-run data, additive read migration and private portable b
     await database.atomic(async (tx) => {
       for (const event of [load, purchaseEvent, returnEvent])
         await tx.run(
-          'INSERT INTO consumer_wallet_events(id,wallet_id,event_type,event_date,amount_minor,balance_delta_minor,loaded_amount_minor,fee_minor,funding_source_kind,funding_source_id,source_transaction_id,return_source_id,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+          'INSERT INTO consumer_wallet_events(id,wallet_id,event_type,event_date,amount_minor,balance_delta_minor,debit_amount_minor,loaded_amount_minor,fee_minor,funding_source_kind,funding_source_id,source_transaction_id,return_source_id,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
           [
             event.id,
             event.walletId,
@@ -2824,6 +3052,7 @@ describe('Durable first-run data, additive read migration and private portable b
             event.eventDate,
             event.amountMinor,
             event.balanceDeltaMinor,
+            'debitAmountMinor' in event ? event.debitAmountMinor : null,
             'loadedAmountMinor' in event ? event.loadedAmountMinor : null,
             'feeMinor' in event ? event.feeMinor : null,
             'fundingSourceKind' in event ? event.fundingSourceKind : null,
@@ -2842,6 +3071,10 @@ describe('Durable first-run data, additive read migration and private portable b
       await tx.run(
         'INSERT INTO consumer_wallet_event_allocations(id,debit_event_id,credit_event_id,allocated_minor,expense_reversal_minor,created_at) VALUES(?,?,?,?,?,?)',
         ['retained-return-allocation', returnEvent.id, load.id, 15000, 15000, 'now'],
+      );
+      await tx.run(
+        'INSERT INTO consumer_wallet_expense_reversals(return_event_id,credit_event_id,funded_load_event_id,reversed_minor,created_at) VALUES(?,?,?,?,?)',
+        [returnEvent.id, load.id, load.id, 15000, 'now'],
       );
     });
     const balanceBeforeRetention = Number(
@@ -2864,11 +3097,27 @@ describe('Durable first-run data, additive read migration and private portable b
     ) as Record<string, unknown>;
     expect(retainedPayload['merchant']).toBeUndefined();
     expect(retainedPayload['memo']).toBeUndefined();
+    expect(retainedPayload['debitAmountMinor']).toBe(50000);
+    expect(
+      rows('SELECT debit_amount_minor FROM consumer_wallet_events WHERE id=?', [load.id])[0][
+        'debit_amount_minor'
+      ],
+    ).toBe(50000);
     expect(count('consumer_wallet_events')).toBe(3);
     expect(count('consumer_wallet_event_allocations')).toBe(2);
+    expect(count('consumer_wallet_expense_reversals')).toBe(1);
     expect(
       rows('SELECT SUM(balance_delta_minor) AS balance FROM consumer_wallet_events')[0]['balance'],
     ).toBe(balanceBeforeRetention);
+    await wallets.reloadFinancialHistory();
+    store.transactions.set([]);
+    expect(sumConsolidatedSpending(store.consolidatedSpending(), '2018-01-01', '2018-12-31')).toBe(
+      50000,
+    );
+    expect(sumConsolidatedSpending(store.consolidatedSpending(), '2025-02-01', '2025-02-28')).toBe(
+      -15000,
+    );
+    expect(sumConsolidatedSpending(store.consolidatedSpending())).toBe(35000);
   });
 
   it('embeds supported receipt URL schemes into encrypted backups and restores media bytes', async () => {

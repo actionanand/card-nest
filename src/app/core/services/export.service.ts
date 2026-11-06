@@ -12,13 +12,12 @@ import {
 } from '../models/export';
 import { CardNestStore } from './card-nest-store';
 import { ConsumerWalletService } from './consumer-wallet.service';
+import { formatMoney, spendingContribution, transactionEffect, transactionLabel } from './money';
 import {
-  calculateNetSpending,
-  formatMoney,
-  spendingContribution,
-  transactionEffect,
-  transactionLabel,
-} from './money';
+  informationalWalletSpending,
+  ConsolidatedSpendingEntry,
+  sumConsolidatedSpending,
+} from './financial-spending';
 import { SnackbarService } from './snackbar.service';
 
 interface StatisticsCycleRange {
@@ -110,6 +109,7 @@ export class ExportService {
         `${left.transferDate}${left.transferTime ?? ''}`,
       ),
     );
+    const financialEntries = this.selectedFinancialEntries(transactions, walletEvents);
     if (format === 'CSV') {
       void this.deliverCsv(
         this.transactionsCsv(transactions, transfers, walletEvents),
@@ -139,7 +139,10 @@ export class ExportService {
         { label: 'Spent / charged', value: this.money(debits) },
         { label: 'Payments / credits', value: this.money(credits) },
         { label: 'Net outflow', value: this.money(debits - credits) },
-        { label: 'Net merchant spending', value: this.money(calculateNetSpending(transactions)) },
+        {
+          label: 'Net merchant spending',
+          value: this.money(sumConsolidatedSpending(financialEntries)),
+        },
         ...(transfers.length
           ? [
               {
@@ -153,6 +156,9 @@ export class ExportService {
       ],
       sections: [
         ...this.transactionSections(transactions),
+        ...(financialEntries.some((entry) => entry.kind !== 'SOURCE_TRANSACTION')
+          ? [this.financialContributionSection(financialEntries)]
+          : []),
         ...(walletEvents.length ? [this.walletActivitySection(walletEvents)] : []),
         ...(transfers.length ? [this.transferSection(transfers)] : []),
       ],
@@ -161,30 +167,20 @@ export class ExportService {
   }
 
   exportStatistics(period: ExportPeriod, selectedCycle?: StatisticsCycleRange): void {
-    const transactions = selectedCycle
-      ? this.store
-          .transactions()
-          .filter(
-            (item) =>
-              item.transactionDate >= selectedCycle.startDate &&
-              item.transactionDate <= selectedCycle.endDate,
-          )
-      : this.inPeriod(this.store.transactions(), period);
-    const expenses = transactions.filter((item) => spendingContribution(item) !== 0);
-    const totalSpent = expenses.reduce((sum, item) => sum + spendingContribution(item), 0);
     const cycles = selectedCycle ? [selectedCycle] : this.cycles(period);
+    const financialEntries = this.store
+      .consolidatedSpending()
+      .filter((entry) =>
+        cycles.some((cycle) => entry.date >= cycle.startDate && entry.date <= cycle.endDate),
+      );
+    const totalSpent = sumConsolidatedSpending(financialEntries);
     const cycleRows: ExportRow[] = cycles.map((cycle) => {
       const income =
         this.store
           .incomeHistory()
           .find((item) => item.periodKey === cycle.key || item.cycleStartDate === cycle.startDate)
           ?.amountMinor ?? (cycle.offset === 0 ? this.store.monthlyIncomeMinor() : 0);
-      const expense = expenses
-        .filter(
-          (item) =>
-            item.transactionDate >= cycle.startDate && item.transactionDate <= cycle.endDate,
-        )
-        .reduce((sum, item) => sum + spendingContribution(item), 0);
+      const expense = sumConsolidatedSpending(financialEntries, cycle.startDate, cycle.endDate);
       const remaining = income - expense;
       return {
         state: remaining < 0 ? 'warning' : 'normal',
@@ -203,13 +199,13 @@ export class ExportService {
     );
     const remaining = totalIncome - totalSpent;
     const categories = this.breakdown(
-      expenses,
+      financialEntries,
       (item) => this.categoryName(item.categoryId),
       totalSpent,
     );
     const sources = this.breakdown(
-      expenses,
-      (item) => this.store.sourceName(item.cardId),
+      financialEntries,
+      (item) => this.store.sourceName(item.sourceId),
       totalSpent,
     );
     const sections: ExportSection[] = [
@@ -231,16 +227,16 @@ export class ExportService {
       {
         title: 'Largest expenses',
         headers: ['Date', 'Merchant', 'Category', 'Source', 'Amount'],
-        rows: [...expenses]
-          .sort((left, right) => spendingContribution(right) - spendingContribution(left))
+        rows: [...financialEntries]
+          .sort((left, right) => right.amountMinor - left.amountMinor)
           .slice(0, 15)
           .map((item) => ({
             cells: [
-              this.displayDate(item.transactionDate),
-              item.merchant || transactionLabel(item),
+              this.displayDate(item.date),
+              item.label,
               this.categoryName(item.categoryId),
-              this.store.sourceName(item.cardId),
-              this.money(spendingContribution(item)),
+              this.store.sourceName(item.sourceId),
+              this.money(item.amountMinor),
             ],
           })),
       },
@@ -252,6 +248,16 @@ export class ExportService {
       summary: [
         { label: 'Tracked income', value: this.money(totalIncome) },
         { label: 'Expense', value: this.money(totalSpent) },
+        {
+          label: 'Informational wallet purchases',
+          value: this.money(
+            informationalWalletSpending(
+              this.store.walletFinancialEvents(),
+              cycles[0]?.startDate,
+              cycles.at(-1)?.endDate,
+            ),
+          ),
+        },
         { label: 'Remaining', value: this.money(remaining) },
         {
           label: 'Expense / income',
@@ -421,7 +427,7 @@ export class ExportService {
         event.balanceDeltaMinor >= 0 ? 'Wallet credit' : 'Wallet debit',
         'INR',
         event.notes ?? event.memo ?? '',
-        '',
+        this.walletPaymentGroupId(event.id),
         event.id,
         'Consumer Wallet',
         this.walletName(event.walletId),
@@ -430,6 +436,31 @@ export class ExportService {
         '0.00',
         event.reversalOfEventId ?? '',
       ]),
+      ...this.selectedFinancialEntries(transactions, walletEvents)
+        .filter((entry) => entry.kind !== 'SOURCE_TRANSACTION')
+        .map((entry) => [
+          entry.date,
+          '',
+          entry.label,
+          entry.kind === 'UPI_LITE_EXPENSE_REVERSAL'
+            ? 'Funded-principal expense reversal'
+            : 'Retained wallet-load expense',
+          this.categoryName(entry.categoryId),
+          this.store.sourceName(entry.sourceId),
+          this.store.sourceDetail(entry.sourceId),
+          (Math.abs(entry.amountMinor) / 100).toFixed(2),
+          entry.amountMinor < 0 ? 'Expense reversal' : 'Debit',
+          'INR',
+          '',
+          '',
+          entry.walletEventId ?? entry.id,
+          entry.kind,
+          this.store.sourceName(entry.sourceId),
+          entry.label,
+          '',
+          (entry.amountMinor / 100).toFixed(2),
+          '',
+        ]),
     ];
     return `\uFEFF${rows.map((row) => row.map((cell) => this.csvCell(cell)).join(',')).join('\r\n')}`;
   }
@@ -442,8 +473,26 @@ export class ExportService {
     return events.filter(
       (event) =>
         (!range || (event.eventDate >= range.startDate && event.eventDate <= range.endDate)) &&
-        (sourceId === 'ALL' || sourceId === `consumer-wallet:${event.walletId}`),
+        (sourceId === 'ALL' ||
+          sourceId === `consumer-wallet:${event.walletId}` ||
+          sourceId === event.fundingSourceId ||
+          sourceId === event.returnSourceId),
     );
+  }
+
+  private selectedFinancialEntries(
+    transactions: readonly CardTransaction[],
+    walletEvents: readonly ConsumerWalletEvent[],
+  ): readonly ConsolidatedSpendingEntry[] {
+    const transactionIds = new Set(transactions.map((item) => item.id));
+    const walletEventIds = new Set(walletEvents.map((item) => item.id));
+    return this.store
+      .consolidatedSpending()
+      .filter((entry) =>
+        entry.kind === 'SOURCE_TRANSACTION'
+          ? !!entry.sourceTransactionId && transactionIds.has(entry.sourceTransactionId)
+          : !!entry.walletEventId && walletEventIds.has(entry.walletEventId),
+      );
   }
 
   private walletActivitySection(events: readonly ConsumerWalletEvent[]): ExportSection {
@@ -472,6 +521,7 @@ export class ExportService {
         'Balance effect',
         'Consolidated expense',
         'Original purchase',
+        'Payment group',
       ],
       rows: ordered.map((event) => ({
         state: event.balanceDeltaMinor > 0 ? 'credit' : 'normal',
@@ -484,6 +534,42 @@ export class ExportService {
           `${event.balanceDeltaMinor >= 0 ? '+' : '-'}${this.money(Math.abs(event.balanceDeltaMinor))}`,
           this.money(0),
           event.reversalOfEventId ?? '',
+          this.walletPaymentGroupId(event.id),
+        ],
+      })),
+    };
+  }
+
+  private financialContributionSection(
+    entries: readonly ConsolidatedSpendingEntry[],
+  ): ExportSection {
+    const supplemental = entries.filter((entry) => entry.kind !== 'SOURCE_TRANSACTION');
+    return {
+      title: 'Wallet-derived consolidated expense contributions',
+      stats: [
+        { label: 'Entries', value: String(supplemental.length) },
+        {
+          label: 'Net contribution',
+          value: this.money(sumConsolidatedSpending(supplemental)),
+        },
+      ],
+      headers: [
+        'Date',
+        'Classification',
+        'Source',
+        'Category',
+        'Expense contribution',
+        'Linked record',
+      ],
+      rows: supplemental.map((entry) => ({
+        state: entry.amountMinor < 0 ? 'credit' : 'normal',
+        cells: [
+          this.displayDate(entry.date),
+          entry.label,
+          this.store.sourceName(entry.sourceId),
+          this.categoryName(entry.categoryId),
+          this.money(entry.amountMinor),
+          entry.walletEventId ?? entry.sourceTransactionId ?? entry.id,
         ],
       })),
     };
@@ -492,6 +578,16 @@ export class ExportService {
   private walletName(walletId: string): string {
     const wallet = this.consumerWallets.wallets().find((item) => item.id === walletId);
     return wallet?.nickname || wallet?.customName || wallet?.providerId || 'Consumer wallet';
+  }
+
+  private walletPaymentGroupId(walletEventId: string): string {
+    return (
+      this.store
+        .paymentGroups?.()
+        .find((group) =>
+          group.walletMembers.some((member) => member.walletEventId === walletEventId),
+        )?.id ?? ''
+    );
   }
 
   private walletEventLabel(event: ConsumerWalletEvent): string {
@@ -538,14 +634,14 @@ export class ExportService {
   }
 
   private breakdown(
-    transactions: readonly CardTransaction[],
-    nameFor: (transaction: CardTransaction) => string,
+    transactions: readonly ConsolidatedSpendingEntry[],
+    nameFor: (transaction: ConsolidatedSpendingEntry) => string,
     total: number,
   ): ExportRow[] {
     const amounts = new Map<string, number>();
     for (const transaction of transactions) {
       const name = nameFor(transaction);
-      amounts.set(name, (amounts.get(name) ?? 0) + spendingContribution(transaction));
+      amounts.set(name, (amounts.get(name) ?? 0) + transaction.amountMinor);
     }
     return [...amounts.entries()]
       .sort(([, left], [, right]) => right - left)

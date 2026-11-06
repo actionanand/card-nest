@@ -4,6 +4,7 @@ import { Service, computed, inject, signal } from '@angular/core';
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import { SqliteDatabase, DatabaseSession } from '../../core/data/sqlite-database';
 import { CardNestStore } from '../../core/services/card-nest-store';
+import { ConsumerWalletService } from '../../core/services/consumer-wallet.service';
 import { AppLockService } from '../../core/services/app-lock.service';
 import { indiaTodayIso } from '../../core/services/india-date';
 import { parseBankAccountIdentifier } from '../../core/services/bank-account-identifier';
@@ -18,6 +19,7 @@ import {
   SmsPaymentMethod,
   SmsPaymentMethodDetail,
   SourceTransfer,
+  WalletLoadingDetails,
   WalletBalanceReconciliation,
 } from '../../core/models/domain';
 import {
@@ -102,6 +104,8 @@ export interface BankApproval {
   paymentMethodDetail?: SmsPaymentMethodDetail;
   paymentMethodCustom?: string;
   smsAdditionalComment?: string;
+  walletLoading?: WalletLoadingDetails;
+  walletLoadingApproved?: boolean;
 }
 
 function hasAnnotationValues(annotation: ValidatedSmsPaymentAnnotation): boolean {
@@ -184,12 +188,14 @@ export class SmsReviewService {
   private readonly database = inject(SqliteDatabase);
   private readonly bankActivity = inject(BankActivityService);
   private readonly store = inject(CardNestStore);
+  private readonly consumerWallets = inject(ConsumerWalletService);
   readonly lock = inject(AppLockService);
   readonly status = signal<ScanStatus | null>(null);
   readonly candidates = signal<readonly SmsCandidate[]>([]);
   readonly busy = signal(false);
   readonly reconciling = signal(false);
   readonly verificationFailed = signal(false);
+  readonly walletHistoryRefreshNeeded = signal(false);
   private refreshQueue: Promise<void> = Promise.resolve();
   private pendingRefreshes = 0;
   readonly requestingPermission = signal(false);
@@ -565,6 +571,10 @@ export class SmsReviewService {
   }
   private async refreshSnapshot(revision: number): Promise<void> {
     this.assertUnlocked();
+    if (this.walletHistoryRefreshNeeded()) {
+      await this.consumerWallets.reloadFinancialHistory();
+      this.walletHistoryRefreshNeeded.set(false);
+    }
     await this.refreshAccess();
     await this.handoff();
     // Finish revalidating saved automatic links first. Any invalidated evidence is
@@ -1324,6 +1334,19 @@ export class SmsReviewService {
         throw new Error(
           'This notification is evidence only. Link or reconcile it explicitly; do not create spending.',
         );
+      if (
+        (edits.walletLoading &&
+          (type !== 'PURCHASE' ||
+            item.kind !== 'PURCHASE' ||
+            edits.walletLoadingApproved !== true ||
+            !!edits.splitTargetId ||
+            !edits.walletLoading.walletId.trim() ||
+            !Number.isSafeInteger(edits.walletLoading.loadedAmountMinor) ||
+            edits.walletLoading.loadedAmountMinor <= 0 ||
+            edits.walletLoading.loadedAmountMinor > amountMinor)) ||
+        (!edits.walletLoading && edits.walletLoadingApproved)
+      )
+        throw new Error('Review and approve Wallet Loading only for a separate purchase debit.');
       if (!Number.isSafeInteger(amountMinor) || amountMinor <= 0 || !sourceId)
         throw new Error('Choose source and a valid amount.');
       const card = this.store.cards().find((c) => c.id === sourceId && !c.deletedAt);
@@ -1564,8 +1587,10 @@ export class SmsReviewService {
               [JSON.stringify(sources)],
             );
           }
-        } else if (hasAnnotationValues(annotation)) {
+        } else if (hasAnnotationValues(annotation) || edits.walletLoading) {
           transaction = annotateSmsRecord(existing, annotation, false, now);
+          if (edits.walletLoading)
+            transaction = { ...transaction, paymentMethod: 'WALLET_LOADING' };
           await tx.run('UPDATE card_transactions SET payload=?,updated_at=? WHERE id=?', [
             JSON.stringify(transaction),
             now,
@@ -1699,6 +1724,7 @@ export class SmsReviewService {
           now,
           item.dateFallback ? ['SMS event date unavailable; received date used.'] : [],
         );
+        if (edits.walletLoading) transaction = { ...transaction, paymentMethod: 'WALLET_LOADING' };
         transaction.sourceBalanceApplied = !retainBalance;
         // A verified SMS balance already contains earlier events; applying one would double-count.
         if (!retainBalance && source && walletAnchorPosition(source, transaction) === 'BEFORE')
@@ -1746,6 +1772,11 @@ export class SmsReviewService {
             [JSON.stringify(sources)],
           );
         }
+      }
+      if (edits.walletLoading) {
+        if (!transaction)
+          throw new Error('The selected card debit could not be loaded as a wallet event.');
+        await this.store.saveApprovedWalletLoad(tx, transaction, edits.walletLoading);
       }
       if (edits.fundingSourceId) {
         if (type !== 'PAYMENT' || !card)
@@ -1996,6 +2027,7 @@ export class SmsReviewService {
     });
     if (result) {
       this.store.acceptCommittedImport(result.transaction, result.sources);
+      if (edits.walletLoading) this.walletHistoryRefreshNeeded.set(true);
       if (edits.splitTargetId) await this.store.refreshPaymentLedger();
       if (result.balanceAdjustment)
         this.store.acceptCommittedImport(result.balanceAdjustment, result.sources);
@@ -2149,6 +2181,19 @@ export class SmsReviewService {
       const settings = parseBankCashTracking(pref?.encrypted_value);
       if (!bankPurposes(item, settings).includes(approval.purpose))
         throw new Error('Choose how this bank message should be recorded.');
+      if (
+        (approval.purpose === 'WALLET_LOADING' &&
+          (!approval.walletLoading ||
+            approval.walletLoadingApproved !== true ||
+            !approval.walletLoading.walletId.trim() ||
+            !Number.isSafeInteger(approval.walletLoading.loadedAmountMinor) ||
+            approval.walletLoading.loadedAmountMinor <= 0 ||
+            approval.walletLoading.loadedAmountMinor > approval.amountMinor)) ||
+        (approval.purpose !== 'WALLET_LOADING' && approval.walletLoading)
+      )
+        throw new Error(
+          'Choose a wallet, loaded amount and confirm Wallet Loading before approval.',
+        );
       const direction = bankDirection(item);
       const amountMinor = approval.amountMinor;
       if (!Number.isSafeInteger(amountMinor) || amountMinor <= 0)
@@ -2219,8 +2264,15 @@ export class SmsReviewService {
         );
         if (claimed) throw new Error('That entry is already linked to another message.');
       };
-      if (approval.purpose === 'PURCHASE' || approval.purpose === 'INCOME') {
-        const type = approval.purpose === 'PURCHASE' ? 'PURCHASE' : 'CREDIT';
+      if (
+        approval.purpose === 'PURCHASE' ||
+        approval.purpose === 'WALLET_LOADING' ||
+        approval.purpose === 'INCOME'
+      ) {
+        const type =
+          approval.purpose === 'PURCHASE' || approval.purpose === 'WALLET_LOADING'
+            ? 'PURCHASE'
+            : 'CREDIT';
         if (type === 'PURCHASE' && item.reference) {
           if (
             ledger.some(
@@ -2277,8 +2329,17 @@ export class SmsReviewService {
           await assertUnclaimed(existing.id);
           targetId = linkedTransactionId = existing.id;
           state = 'MATCHED_EXISTING';
-          if (hasAnnotationValues(annotation)) {
-            transaction = annotateSmsRecord(existing, annotation, false, now);
+          if (approval.purpose === 'WALLET_LOADING' || hasAnnotationValues(annotation)) {
+            transaction = annotateSmsRecord(
+              approval.purpose === 'WALLET_LOADING'
+                ? { ...existing, paymentMethod: 'WALLET_LOADING' }
+                : existing,
+              annotation,
+              false,
+              now,
+            );
+            if (approval.purpose === 'WALLET_LOADING')
+              transaction = { ...transaction, paymentMethod: 'WALLET_LOADING' };
             await tx.run('UPDATE card_transactions SET payload=?,updated_at=? WHERE id=?', [
               JSON.stringify(transaction),
               now,
@@ -2383,8 +2444,15 @@ export class SmsReviewService {
             now,
             item.dateFallback ? ['SMS event date unavailable; received date used.'] : [],
           );
+          if (approval.purpose === 'WALLET_LOADING')
+            transaction = { ...transaction, paymentMethod: 'WALLET_LOADING' };
           await insertLedger(transaction, null);
           targetId = linkedTransactionId = transaction.id;
+        }
+        if (approval.purpose === 'WALLET_LOADING') {
+          if (!transaction)
+            throw new Error('The selected existing debit could not be loaded as a wallet event.');
+          await this.store.saveApprovedWalletLoad(tx, transaction, approval.walletLoading!);
         }
       } else if (approval.purpose === 'TRANSFER') {
         const other = sources.find(
@@ -2640,6 +2708,7 @@ export class SmsReviewService {
     });
     if (result) {
       this.store.acceptCommittedImport(result.transaction, result.sources);
+      if (approval.purpose === 'WALLET_LOADING') this.walletHistoryRefreshNeeded.set(true);
       if (approval.splitTargetId) await this.store.refreshPaymentLedger();
       this.store.acceptCommittedTransfer(result.transfer, result.sources);
     }
