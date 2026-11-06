@@ -31,6 +31,7 @@ import {
 import { CardNestStore } from '../../core/services/card-nest-store';
 import {
   ConsumerWalletService,
+  WalletPurchaseRefundPreview,
   WalletPurchasePreview,
 } from '../../core/services/consumer-wallet.service';
 import {
@@ -330,6 +331,24 @@ export class TransactionsPage {
   readonly walletPurchasePreview = signal<WalletPurchasePreview | null>(null);
   readonly walletPurchaseApprovedFor = signal('');
   readonly walletPurchaseEventId = signal('');
+  readonly walletPurchaseEditId = signal<string | null>(null);
+  readonly walletRefundPreview = signal<WalletPurchaseRefundPreview | null>(null);
+  readonly walletRefundApprovedFor = signal('');
+  readonly walletRefundPurchaseId = signal('');
+  readonly walletRefundEventId = signal('');
+  readonly walletRefundError = signal<string | null>(null);
+  readonly walletCancellationCandidate = signal<ConsumerWalletEvent | null>(null);
+  readonly walletRefundForm = new FormGroup({
+    amount: new FormControl('', { nonNullable: true, validators: [Validators.required] }),
+    eventDate: new FormControl(this.calendarClock.calendar().dateIso, {
+      nonNullable: true,
+      validators: [Validators.required],
+    }),
+    eventTime: new FormControl('', { nonNullable: true }),
+    reason: new FormControl('', { nonNullable: true, validators: [Validators.maxLength(160)] }),
+    reference: new FormControl('', { nonNullable: true, validators: [Validators.maxLength(100)] }),
+    notes: new FormControl('', { nonNullable: true, validators: [Validators.maxLength(500)] }),
+  });
   readonly filtersOpen = signal(false);
   readonly filterDraft = signal<TransactionFilterDraft | null>(null);
   readonly actionMenuId = signal<string | null>(null);
@@ -350,6 +369,7 @@ export class TransactionsPage {
   readonly grouping = signal<GroupingMode>('MONTH');
   readonly effectiveGrouping = computed<GroupingMode>(() => {
     if (this.isCreditCardSelected()) return 'STATEMENT';
+    if (this.sourceFilter().startsWith(CONSUMER_WALLET_SOURCE_PREFIX)) return 'MONTH';
     if (
       this.sourceFilter() !== 'ALL' &&
       this.store.paymentSources().some((source) => source.id === this.sourceFilter())
@@ -460,6 +480,7 @@ export class TransactionsPage {
     const draft = this.filterDraft();
     if (!draft) return this.effectiveGrouping();
     if (this.store.cards().some((card) => card.id === draft.source)) return 'STATEMENT';
+    if (draft.source.startsWith(CONSUMER_WALLET_SOURCE_PREFIX)) return 'MONTH';
     if (
       draft.source !== 'ALL' &&
       this.store.paymentSources().some((source) => source.id === draft.source)
@@ -1009,9 +1030,15 @@ export class TransactionsPage {
   });
   readonly exportMonthChoices = computed<readonly TransactionExportChoice[]>(() => {
     const grouped = new Map<string, CardTransaction[]>();
+    const walletGrouped = new Map<string, ConsumerWalletEvent[]>();
     for (const transaction of this.filtered()) {
       const key = transaction.transactionDate.slice(0, 7);
       grouped.set(key, [...(grouped.get(key) ?? []), transaction]);
+    }
+    for (const event of this.projectedWalletActivities().map((activity) => activity.event)) {
+      const key = event.eventDate.slice(0, 7);
+      walletGrouped.set(key, [...(walletGrouped.get(key) ?? []), event]);
+      if (!grouped.has(key)) grouped.set(key, []);
     }
     // A month that holds only own-account transfers is still exportable.
     for (const transfer of this.visibleTransfers()) {
@@ -1028,12 +1055,14 @@ export class TransactionsPage {
             new Date(year, month - 1, 1),
           ),
           transactions,
+          walletEvents: walletGrouped.get(value) ?? [],
         };
       });
   });
   readonly exportStatementChoices = computed<readonly TransactionExportChoice[]>(() => {
     const selectedSource = this.sourceFilter();
-    if (selectedSource === 'ALL') return [];
+    if (selectedSource === 'ALL' || selectedSource.startsWith(CONSUMER_WALLET_SOURCE_PREFIX))
+      return [];
     const selectedCard = this.store.cards().find((card) => card.id === selectedSource);
     const transactions = this.filtered();
     return Array.from({ length: 60 }, (_, offset) => {
@@ -1124,6 +1153,12 @@ export class TransactionsPage {
         item.kind === 'CONSUMER_WALLET_EVENT',
     ),
   );
+  readonly projectedWalletEvents = computed(() =>
+    this.projectedWalletActivities().map((activity) => activity.event),
+  );
+  readonly walletActivityBalanceMovement = computed(() =>
+    this.projectedWalletEvents().reduce((total, event) => total + event.balanceDeltaMinor, 0),
+  );
   private walletActivityClassification(
     event: ConsumerWalletEvent,
   ): ConsumerWalletActivityClassification {
@@ -1142,11 +1177,160 @@ export class TransactionsPage {
       consumerWalletProviderLabel(wallet?.providerId ?? '')
     );
   }
+  provenanceLabel(rootCreditEventId: string): string {
+    const event = this.consumerWallets.events().find((item) => item.id === rootCreditEventId);
+    return event
+      ? `${this.consumerWalletEventLabel(event)} · ${this.consumerWalletName(event.walletId)}`
+      : 'Unknown original wallet credit';
+  }
   consumerWalletEventLabel(event: ConsumerWalletEvent): string {
+    if (event.eventType === 'PURCHASE') return 'Wallet purchase';
+    if (event.eventType === 'REFUND') return 'Wallet refund';
+    if (event.eventType === 'REVERSAL') return 'Purchase cancellation';
+    if (event.eventType === 'UPI_LITE_RETURN') return 'UPI Lite return to Bank';
     return event.eventType
       .replaceAll('_', ' ')
       .toLocaleLowerCase()
       .replace(/^\w/, (value) => value.toUpperCase());
+  }
+  walletRefundableMinor(purchase: ConsumerWalletEvent): number {
+    return Math.max(0, purchase.amountMinor - this.walletRefundTotalMinor(purchase.id));
+  }
+  walletRefundTotalMinor(purchaseEventId: string): number {
+    return this.consumerWallets
+      .events()
+      .filter(
+        (event) =>
+          (event.eventType === 'REFUND' || event.eventType === 'REVERSAL') &&
+          event.reversalOfEventId === purchaseEventId,
+      )
+      .reduce((total, event) => total + event.amountMinor, 0);
+  }
+  relatedWalletPurchase(event: ConsumerWalletEvent): ConsumerWalletEvent | null {
+    return event.reversalOfEventId
+      ? (this.consumerWallets.events().find((item) => item.id === event.reversalOfEventId) ?? null)
+      : null;
+  }
+  openWalletRefund(purchase: ConsumerWalletEvent): void {
+    if (purchase.eventType !== 'PURCHASE' || !this.consumerWallets.enabled() || this.saving())
+      return;
+    this.walletRefundPurchaseId.set(purchase.id);
+    this.walletRefundEventId.set(crypto.randomUUID());
+    this.walletRefundPreview.set(null);
+    this.walletRefundApprovedFor.set('');
+    this.walletRefundError.set(null);
+    this.walletRefundForm.reset({
+      amount: (this.walletRefundableMinor(purchase) / 100).toFixed(2),
+      eventDate: this.calendarClock.calendar().dateIso,
+      eventTime: '',
+      reason: '',
+      reference: '',
+      notes: '',
+    });
+  }
+  closeWalletRefund(): void {
+    if (this.saving()) return;
+    this.walletRefundPurchaseId.set('');
+    this.walletRefundEventId.set('');
+    this.walletRefundPreview.set(null);
+    this.walletRefundApprovedFor.set('');
+    this.walletRefundError.set(null);
+  }
+  confirmWalletRefundApproval(event: Event): void {
+    const preview = this.walletRefundPreview();
+    this.walletRefundApprovedFor.set(
+      preview && (event.target as HTMLInputElement).checked ? preview.confirmationKey : '',
+    );
+  }
+  async saveWalletRefund(event: Event): Promise<void> {
+    event.preventDefault();
+    if (this.saving() || !this.consumerWallets.enabled()) return;
+    this.walletRefundForm.markAllAsTouched();
+    const amountMinor = parseMoneyToMinor(this.walletRefundForm.controls.amount.value);
+    const purchaseEventId = this.walletRefundPurchaseId();
+    if (
+      !purchaseEventId ||
+      amountMinor === null ||
+      amountMinor <= 0 ||
+      this.walletRefundForm.invalid
+    )
+      return;
+    const value = this.walletRefundForm.getRawValue();
+    const input = {
+      id: this.walletRefundEventId(),
+      purchaseEventId,
+      amountMinor,
+      eventDate: value.eventDate,
+      eventTime: value.eventTime || undefined,
+      reason: value.reason.trim() || undefined,
+      reference: value.reference.trim() || undefined,
+      notes: value.notes.trim() || undefined,
+    };
+    this.saving.set(true);
+    try {
+      const preview = await this.consumerWallets.previewWalletPurchaseRefund(input);
+      if (preview.confirmationKey !== this.walletRefundApprovedFor()) {
+        this.walletRefundPreview.set(preview);
+        this.walletRefundApprovedFor.set('');
+        return;
+      }
+      await this.consumerWallets.recordWalletPurchaseRefund({
+        ...input,
+        confirmationKey: preview.confirmationKey,
+      });
+      this.closeDetails();
+      this.walletRefundPurchaseId.set('');
+      this.walletRefundEventId.set('');
+      this.walletRefundPreview.set(null);
+      this.walletRefundApprovedFor.set('');
+      this.walletRefundError.set(null);
+      this.snackbar.show('Wallet refund recorded. No Bank or card credit was created.');
+    } catch (error: unknown) {
+      this.walletRefundError.set(
+        error instanceof Error ? error.message : 'Wallet refund could not be saved.',
+      );
+    } finally {
+      this.saving.set(false);
+    }
+  }
+  requestWalletCancellation(purchase: ConsumerWalletEvent): void {
+    if (purchase.eventType !== 'PURCHASE' || !this.consumerWallets.enabled() || this.saving())
+      return;
+    this.walletCancellationCandidate.set(purchase);
+  }
+  async confirmWalletCancellation(): Promise<void> {
+    const purchase = this.walletCancellationCandidate();
+    if (!purchase || this.saving() || !this.consumerWallets.enabled()) return;
+    const amountMinor = this.walletRefundableMinor(purchase);
+    if (!amountMinor) {
+      this.walletCancellationCandidate.set(null);
+      return;
+    }
+    const input = {
+      id: crypto.randomUUID(),
+      purchaseEventId: purchase.id,
+      amountMinor,
+      eventDate: this.calendarClock.calendar().dateIso,
+      reason: 'Purchase cancelled',
+    };
+    this.saving.set(true);
+    try {
+      const preview = await this.consumerWallets.previewWalletPurchaseCancellation(input);
+      await this.consumerWallets.cancelWalletPurchase({
+        ...input,
+        confirmationKey: preview.confirmationKey,
+      });
+      this.walletCancellationCandidate.set(null);
+      this.closeDetails();
+      this.snackbar.show('Purchase cancelled and remaining wallet value restored.');
+    } catch (error: unknown) {
+      this.snackbar.show(
+        error instanceof Error ? error.message : 'Purchase could not be cancelled.',
+        'WARNING',
+      );
+    } finally {
+      this.saving.set(false);
+    }
   }
   fundedWalletLoad(transactionId: string): ConsumerWalletEvent | undefined {
     return this.consumerWallets
@@ -1165,18 +1349,23 @@ export class TransactionsPage {
         )
       : [],
   );
+  readonly pageableActivities = computed(() => {
+    const groupedCardIds = new Set(this.logicalGroups().flatMap((group) => group.memberIds));
+    return this.activityProjection().filter(
+      (activity) =>
+        activity.kind !== 'CARD_TRANSACTION' || !groupedCardIds.has(activity.transaction.id),
+    );
+  });
+  readonly visibleActivities = computed(() =>
+    this.pageableActivities().slice(0, this.visibleLimit()),
+  );
   readonly visibleTransactions = computed(() =>
-    this.filtered()
-      .filter((entry) => !this.logicalGroups().some((group) => group.memberIds.includes(entry.id)))
-      .slice(0, this.visibleLimit()),
+    this.visibleActivities().flatMap((activity) =>
+      activity.kind === 'CARD_TRANSACTION' ? [activity.transaction] : [],
+    ),
   );
   readonly remainingTransactions = computed(() =>
-    Math.max(
-      0,
-      this.filtered().filter(
-        (entry) => !this.logicalGroups().some((group) => group.memberIds.includes(entry.id)),
-      ).length - this.visibleTransactions().length,
-    ),
+    Math.max(0, this.pageableActivities().length - this.visibleActivities().length),
   );
   readonly groups = computed(() => {
     const totals = new Map<string, number>();
@@ -1184,38 +1373,22 @@ export class TransactionsPage {
       const period = this.periodFor(transaction);
       totals.set(period.key, (totals.get(period.key) ?? 0) + -transactionEffect(transaction));
     }
-    const grouped = new Map<string, { label: string; transactions: CardTransaction[] }>();
-    for (const transaction of this.visibleTransactions()) {
-      const period = this.periodFor(transaction);
-      const group = grouped.get(period.key) ?? { label: period.label, transactions: [] };
-      group.transactions.push(transaction);
+    const grouped = new Map<string, { label: string; activities: FinancialActivity[] }>();
+    for (const activity of this.visibleActivities()) {
+      const period =
+        activity.kind === 'CARD_TRANSACTION'
+          ? this.periodFor(activity.transaction)
+          : this.periodForDate(activity.date);
+      const group = grouped.get(period.key) ?? { label: period.label, activities: [] };
+      group.activities.push(activity);
       grouped.set(period.key, group);
-    }
-    const walletGroups = new Map<
-      string,
-      Extract<FinancialActivity, { kind: 'CONSUMER_WALLET_EVENT' }>[]
-    >();
-    for (const activity of this.projectedWalletActivities()) {
-      const period = this.periodForDate(activity.date);
-      walletGroups.set(period.key, [...(walletGroups.get(period.key) ?? []), activity]);
-      if (!grouped.has(period.key))
-        grouped.set(period.key, { label: period.label, transactions: [] });
     }
     return [...grouped.entries()]
       .sort(([left], [right]) => right.localeCompare(left))
       .map(([key, group]) => ({
         key,
         label: group.label,
-        activities: [
-          ...group.transactions.map((transaction): FinancialActivity => ({
-            kind: 'CARD_TRANSACTION',
-            key: `card:${transaction.id}`,
-            date: transaction.transactionDate,
-            transaction,
-            classification: 'CARD_OR_BANK_LEDGER',
-          })),
-          ...(walletGroups.get(key) ?? []),
-        ].sort(
+        activities: group.activities.sort(
           (left, right) =>
             right.date.localeCompare(left.date) ||
             (right.kind === 'CARD_TRANSACTION'
@@ -1228,10 +1401,8 @@ export class TransactionsPage {
             ) ||
             right.key.localeCompare(left.key),
         ),
-        transactions: group.transactions.sort(
-          (a, b) =>
-            b.transactionDate.localeCompare(a.transactionDate) ||
-            (b.transactionTime ?? '').localeCompare(a.transactionTime ?? ''),
+        transactions: group.activities.flatMap((activity) =>
+          activity.kind === 'CARD_TRANSACTION' ? [activity.transaction] : [],
         ),
         totalMinor: totals.get(key) ?? 0,
       }));
@@ -1256,6 +1427,11 @@ export class TransactionsPage {
     this.form.valueChanges.pipe(takeUntilDestroyed()).subscribe(() => {
       this.walletPurchasePreview.set(null);
       this.walletPurchaseApprovedFor.set('');
+    });
+    this.walletRefundForm.valueChanges.pipe(takeUntilDestroyed()).subscribe(() => {
+      this.walletRefundPreview.set(null);
+      this.walletRefundApprovedFor.set('');
+      this.walletRefundError.set(null);
     });
     for (const control of [
       this.form.controls.cardId,
@@ -1331,6 +1507,7 @@ export class TransactionsPage {
   selectSourceFilter(id: string): void {
     this.sourceFilter.set(id);
     if (this.store.cards().some((card) => card.id === id)) this.grouping.set('STATEMENT');
+    else if (id.startsWith(CONSUMER_WALLET_SOURCE_PREFIX)) this.grouping.set('MONTH');
     else if (this.store.paymentSources().some((source) => source.id === id)) {
       this.grouping.set('CYCLE');
     }
@@ -1513,6 +1690,10 @@ export class TransactionsPage {
     this.closeWebCamera();
     this.showForm.set(false);
     this.editingId.set(null);
+    this.walletPurchaseEditId.set(null);
+    this.walletPurchaseEventId.set('');
+    this.walletPurchasePreview.set(null);
+    this.walletPurchaseApprovedFor.set('');
     this.receiptPreviews.set([]);
     this.receiptDraftDirty.set(false);
     const trigger = this.editorReturnFocus;
@@ -1824,6 +2005,47 @@ export class TransactionsPage {
     this.detailTransactionId.set(null);
     this.detailWalletEventId.set(event.id);
     this.closeMenus();
+  }
+
+  editWalletPurchase(event: ConsumerWalletEvent): void {
+    if (event.eventType !== 'PURCHASE' || this.saving()) return;
+    this.closeDetails();
+    this.walletPurchaseEditId.set(event.id);
+    this.walletPurchaseEventId.set(event.id);
+    this.form.controls.cardId.clearValidators();
+    this.form.controls.cardId.setValue('', { emitEvent: false });
+    this.form.controls.cardId.updateValueAndValidity({ emitEvent: false });
+    this.form.reset({
+      cardId: '',
+      consumerWalletId: event.walletId,
+      type: 'PURCHASE',
+      amount: String(event.amountMinor / 100),
+      transactionDate: event.eventDate,
+      transactionTime: event.eventTime ?? '',
+      categoryId: event.categoryId ?? 'other',
+      merchant: event.merchant ?? '',
+      notes: event.notes ?? '',
+      relatedTransactionId: '',
+      preserveLegacy: false,
+      unlinkConfirmed: false,
+      archivedSourceReassignmentConfirmedFor: '',
+      paymentMethod: 'NONE',
+      paymentMethodDetail: '',
+      walletId: '',
+      walletLoadedAmount: '',
+      walletLoadConfirmedFor: '',
+      paymentMethodCustom: '',
+      smsAdditionalComment: '',
+      taxIncluded: false,
+      taxAmount: '',
+      repeat: 'NONE',
+      balanceTiming: '',
+    });
+    this.receiptPreviews.set([...(event.attachmentIds ?? [])]);
+    this.receiptDraftDirty.set(false);
+    this.walletPurchasePreview.set(null);
+    this.walletPurchaseApprovedFor.set('');
+    this.showForm.set(true);
   }
 
   relatedTransaction(transaction: CardTransaction): CardTransaction | null {
@@ -2233,9 +2455,11 @@ export class TransactionsPage {
       if (!draft) return draft;
       const grouping = this.store.cards().some((card) => card.id === source)
         ? 'STATEMENT'
-        : this.store.paymentSources().some((item) => item.id === source)
-          ? 'CYCLE'
-          : draft.grouping;
+        : source.startsWith(CONSUMER_WALLET_SOURCE_PREFIX)
+          ? 'MONTH'
+          : this.store.paymentSources().some((item) => item.id === source)
+            ? 'CYCLE'
+            : draft.grouping;
       return { ...draft, source, grouping };
     });
   }
@@ -2750,6 +2974,7 @@ export class TransactionsPage {
     this.form.markAllAsTouched();
     const value = this.form.getRawValue();
     const amountMinor = parseMoneyToMinor(value.amount);
+    const editingWalletPurchaseId = this.walletPurchaseEditId();
     if (this.editingId() || value.type !== 'PURCHASE' || value.repeat !== 'NONE') {
       this.snackbar.show('Record each wallet purchase separately as a purchase.', 'WARNING');
       return;
@@ -2758,9 +2983,10 @@ export class TransactionsPage {
       this.form.controls.amount.setErrors({ money: true });
       return;
     }
-    if (!this.walletPurchaseEventId()) this.walletPurchaseEventId.set(crypto.randomUUID());
+    if (!editingWalletPurchaseId && !this.walletPurchaseEventId())
+      this.walletPurchaseEventId.set(crypto.randomUUID());
     const input = {
-      id: this.walletPurchaseEventId(),
+      id: editingWalletPurchaseId ?? this.walletPurchaseEventId(),
       walletId,
       amountMinor,
       eventDate: value.transactionDate,
@@ -2772,20 +2998,30 @@ export class TransactionsPage {
     };
     this.saving.set(true);
     try {
-      const preview = await this.consumerWallets.previewWalletPurchase(input);
+      const preview = editingWalletPurchaseId
+        ? await this.consumerWallets.previewWalletPurchaseEdit(input)
+        : await this.consumerWallets.previewWalletPurchase(input);
       if (this.walletPurchaseApprovedFor() !== preview.confirmationKey) {
         this.walletPurchasePreview.set(preview);
         this.walletPurchaseApprovedFor.set('');
         return;
       }
-      await this.consumerWallets.recordWalletPurchase({
-        ...input,
-        confirmationKey: preview.confirmationKey,
-      });
+      if (editingWalletPurchaseId)
+        await this.consumerWallets.updateWalletPurchase({
+          ...input,
+          confirmationKey: preview.confirmationKey,
+        });
+      else
+        await this.consumerWallets.recordWalletPurchase({
+          ...input,
+          confirmationKey: preview.confirmationKey,
+        });
       this.resetForm(this.defaultSourceId());
       this.saving.set(false);
       this.closeFormImmediately();
-      this.snackbar.show('Wallet purchase recorded.');
+      this.snackbar.show(
+        editingWalletPurchaseId ? 'Wallet purchase updated.' : 'Wallet purchase recorded.',
+      );
     } catch (error: unknown) {
       this.walletPurchasePreview.set(null);
       this.walletPurchaseApprovedFor.set('');
@@ -2896,6 +3132,7 @@ export class TransactionsPage {
 
   private resetForm(sourceId: string): void {
     this.pendingCardRecurringIdentity = null;
+    this.walletPurchaseEditId.set(null);
     this.walletPurchaseEventId.set(crypto.randomUUID());
     this.walletPurchasePreview.set(null);
     this.walletPurchaseApprovedFor.set('');

@@ -358,6 +358,36 @@
           [options]="walletActivityCategories()"
         />
         <label>Merchant or title<input formControlName="merchant" maxlength="100" /></label>
+        <label>Time (optional)<input formControlName="eventTime" type="time" /></label>
+        @if (walletActivityPurchasePreview(); as preview) {
+          <fieldset class="wallet-load-summary">
+            <legend>Review wallet purchase</legend>
+            <dl>
+              <div>
+                <dt>Balance before</dt>
+                <dd>{{ money(preview.balanceBeforeMinor) }}</dd>
+              </div>
+              <div>
+                <dt>Purchase</dt>
+                <dd>{{ money(preview.amountMinor) }}</dd>
+              </div>
+              <div>
+                <dt>Balance after</dt>
+                <dd>{{ money(preview.balanceAfterMinor) }}</dd>
+              </div>
+            </dl>
+            <p>Wallet spending - already counted when loaded.</p>
+            <label>
+              <input
+                type="checkbox"
+                [checked]="walletActivityPurchaseApprovedFor() === preview.confirmationKey"
+                [disabled]="saving()"
+                (change)="confirmWalletActivityPurchase($event)"
+              />
+              I approve this wallet purchase.
+            </label>
+          </fieldset>
+        }
       }
       <label>Date<input formControlName="eventDate" type="date" required /></label>
       <label>Note (optional)<input formControlName="memo" maxlength="200" /></label>
@@ -366,7 +396,14 @@
       }
       <div class="modal-actions">
         <button class="btn btn-primary" type="submit" [disabled]="saving()">
-          {{ saving() ? 'Saving…' : 'Record activity' }}
+          {{
+            saving()
+              ? 'Saving…'
+              : walletActivityForm.controls.kind.value === 'PURCHASE' &&
+                  !walletActivityPurchaseApprovedFor()
+                ? 'Review purchase'
+                : 'Record activity'
+          }}
         </button>
         <button class="btn" type="button" [disabled]="saving()" (click)="closeWalletActivity()">
           Cancel

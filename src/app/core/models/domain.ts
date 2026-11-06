@@ -334,6 +334,8 @@ export interface ConsumerWalletEvent {
   readonly memo?: string;
   readonly notes?: string;
   readonly attachmentIds?: readonly string[];
+  readonly reference?: string;
+  readonly refundReason?: string;
   readonly paymentMethod?: SmsPaymentMethod;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -388,6 +390,16 @@ export interface ConsumerWalletCreditProvenance {
   readonly creditEventId: string;
   readonly sourceCreditEventId: string;
   readonly allocatedMinor: Money;
+  readonly createdAt: string;
+}
+
+export interface ConsumerWalletCreditProvenanceSegment {
+  readonly id: string;
+  readonly creditEventId: string;
+  readonly segmentOrder: number;
+  readonly rootCreditEventId: string;
+  readonly sourcePurchaseEventId: string;
+  readonly amountMinor: Money;
   readonly createdAt: string;
 }
 

@@ -6,6 +6,7 @@ import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angula
 import { ConsumerWallet, PaymentSource } from '../../core/models/domain';
 import {
   ConsumerWalletService,
+  WalletPurchasePreview,
   UpiLiteReturnPreview,
 } from '../../core/services/consumer-wallet.service';
 import { CardNestStore } from '../../core/services/card-nest-store';
@@ -47,6 +48,8 @@ export class WalletsPage {
   readonly walletActivityId = signal<string | null>(null);
   readonly walletActivityEventId = signal('');
   readonly walletActivityError = signal<string | null>(null);
+  readonly walletActivityPurchasePreview = signal<WalletPurchasePreview | null>(null);
+  readonly walletActivityPurchaseApprovedFor = signal('');
   readonly returnWalletId = signal<string | null>(null);
   readonly returnEventId = signal('');
   readonly returnPreview = signal<UpiLiteReturnPreview | null>(null);
@@ -129,6 +132,7 @@ export class WalletsPage {
       nonNullable: true,
       validators: [Validators.required],
     }),
+    eventTime: new FormControl('', { nonNullable: true }),
     categoryId: new FormControl('other', { nonNullable: true }),
     merchant: new FormControl('', { nonNullable: true, validators: [Validators.maxLength(100)] }),
     memo: new FormControl('', { nonNullable: true, validators: [Validators.maxLength(200)] }),
@@ -191,6 +195,10 @@ export class WalletsPage {
   });
 
   constructor() {
+    this.walletActivityForm.valueChanges.pipe(takeUntilDestroyed()).subscribe(() => {
+      this.walletActivityPurchasePreview.set(null);
+      this.walletActivityPurchaseApprovedFor.set('');
+    });
     this.returnForm.valueChanges.pipe(takeUntilDestroyed()).subscribe(() => {
       this.returnPreview.set(null);
       this.returnApprovedFor.set('');
@@ -200,6 +208,9 @@ export class WalletsPage {
       .pipe(takeUntilDestroyed())
       .subscribe(() => this.returnForm.controls.balanceTiming.setValue('', { emitEvent: false }));
     this.route.queryParamMap.pipe(takeUntilDestroyed()).subscribe((params) => {
+      const selectedWalletId = params.get('wallet');
+      const selectedWallet = this.wallets.wallets().find((item) => item.id === selectedWalletId);
+      if (selectedWallet) this.showHistory(selectedWallet);
       const sourceId = params.get('source');
       const source = this.store
         .paymentSources()
@@ -659,6 +670,8 @@ export class WalletsPage {
   openWalletActivity(wallet: ConsumerWallet): void {
     if (!this.wallets.enabled() || this.saving()) return;
     this.walletActivityError.set(null);
+    this.walletActivityPurchasePreview.set(null);
+    this.walletActivityPurchaseApprovedFor.set('');
     this.walletActivityId.set(wallet.id);
     this.walletActivityEventId.set(crypto.randomUUID());
     this.walletActivityForm.reset({
@@ -675,6 +688,15 @@ export class WalletsPage {
     if (this.saving()) return;
     this.walletActivityId.set(null);
     this.walletActivityError.set(null);
+    this.walletActivityPurchasePreview.set(null);
+    this.walletActivityPurchaseApprovedFor.set('');
+  }
+
+  confirmWalletActivityPurchase(event: Event): void {
+    const preview = this.walletActivityPurchasePreview();
+    this.walletActivityPurchaseApprovedFor.set(
+      preview && (event.target as HTMLInputElement).checked ? preview.confirmationKey : '',
+    );
   }
 
   async saveWalletActivity(event: Event): Promise<void> {
@@ -697,17 +719,28 @@ export class WalletsPage {
     this.saving.set(true);
     this.walletActivityError.set(null);
     try {
-      if (value.kind === 'PURCHASE')
-        await this.wallets.recordWalletPurchase({
+      if (value.kind === 'PURCHASE') {
+        const input = {
           id: this.walletActivityEventId(),
           walletId: wallet.id,
           amountMinor,
           eventDate: value.eventDate,
+          eventTime: value.eventTime || undefined,
           categoryId: value.categoryId,
           merchant: value.merchant,
           notes: value.memo,
+        };
+        const preview = await this.wallets.previewWalletPurchase(input);
+        if (this.walletActivityPurchaseApprovedFor() !== preview.confirmationKey) {
+          this.walletActivityPurchasePreview.set(preview);
+          this.walletActivityPurchaseApprovedFor.set('');
+          return;
+        }
+        await this.wallets.recordWalletPurchase({
+          ...input,
+          confirmationKey: preview.confirmationKey,
         });
-      else if (value.kind === 'MANUAL_CREDIT' || value.kind === 'PROMOTIONAL_CREDIT')
+      } else if (value.kind === 'MANUAL_CREDIT' || value.kind === 'PROMOTIONAL_CREDIT')
         await this.wallets.addWalletCredit({
           id: this.walletActivityEventId(),
           walletId: wallet.id,

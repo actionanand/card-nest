@@ -36,6 +36,7 @@ export async function planConsumerWalletDebit(
   debit: ConsumerWalletEvent,
   amountMinor: number,
   classifyExpenseReversal: ExpenseReversalClassifier = async () => 0,
+  excludedDebitEventIds: ReadonlySet<string> = new Set<string>(),
 ): Promise<ConsumerWalletDebitAllocationPlan[]> {
   if (!Number.isSafeInteger(amountMinor) || amountMinor <= 0)
     throw new Error('Enter a valid wallet debit amount.');
@@ -64,7 +65,8 @@ export async function planConsumerWalletDebit(
     );
     const alreadyConsumed = priorAllocations.reduce((total, allocation) => {
       const priorDebit = JSON.parse(allocation.payload) as ConsumerWalletEvent;
-      return compareConsumerWalletEvents(priorDebit, debit) < 0
+      return !excludedDebitEventIds.has(priorDebit.id) &&
+        compareConsumerWalletEvents(priorDebit, debit) < 0
         ? total + allocation.allocated_minor
         : total;
     }, 0);
@@ -102,8 +104,15 @@ export async function allocateConsumerWalletDebit(
   debit: ConsumerWalletEvent,
   amountMinor: number,
   classifyExpenseReversal: ExpenseReversalClassifier = async () => 0,
+  excludedDebitEventIds: ReadonlySet<string> = new Set<string>(),
 ): Promise<ConsumerWalletEventAllocation[]> {
-  const plan = await planConsumerWalletDebit(tx, debit, amountMinor, classifyExpenseReversal);
+  const plan = await planConsumerWalletDebit(
+    tx,
+    debit,
+    amountMinor,
+    classifyExpenseReversal,
+    excludedDebitEventIds,
+  );
   return persistConsumerWalletDebitPlan(tx, debit, plan);
 }
 
@@ -145,14 +154,19 @@ export async function assertChronologicalConsumerWalletLedger(
   preview?: {
     readonly additionalEvents?: readonly ConsumerWalletEvent[];
     readonly additionalAllocations?: readonly ConsumerWalletEventAllocation[];
+    readonly replacedEventIds?: readonly string[];
+    readonly replacedDebitEventIds?: readonly string[];
   },
 ): Promise<void> {
+  const replacedEventIds = new Set(preview?.replacedEventIds ?? []);
+  const replacedDebitEventIds = new Set(preview?.replacedDebitEventIds ?? []);
   const rows = await tx.query<{ payload: string }>(
     'SELECT payload FROM consumer_wallet_events WHERE wallet_id=?',
     [walletId],
   );
   const events = rows
     .map((row) => JSON.parse(row.payload) as ConsumerWalletEvent)
+    .filter((event) => !replacedEventIds.has(event.id))
     .concat((preview?.additionalEvents ?? []).filter((event) => event.walletId === walletId))
     .sort(compareConsumerWalletEvents);
   const eventsById = new Map(events.map((event) => [event.id, event]));
@@ -172,7 +186,7 @@ export async function assertChronologicalConsumerWalletLedger(
   const allocatedByCredit = new Map<string, number>();
   let creditOverallocated = false;
   for (const allocation of [
-    ...allocationRows,
+    ...allocationRows.filter((allocation) => !replacedDebitEventIds.has(allocation.debit_event_id)),
     ...(preview?.additionalAllocations ?? []).map((allocation) => ({
       debit_event_id: allocation.debitEventId,
       credit_event_id: allocation.creditEventId,

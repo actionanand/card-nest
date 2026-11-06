@@ -75,18 +75,12 @@ const BACKUP_TABLES = [
   'consumer_wallet_event_allocations',
   'consumer_wallet_return_links',
   'consumer_wallet_credit_provenance',
+  'consumer_wallet_credit_provenance_segments',
   'consumer_wallet_expense_reversals',
   'consumer_wallet_split_members',
 ] as const;
 
 const DELETE_TABLES = [
-  'consumer_wallet_split_members',
-  'consumer_wallet_expense_reversals',
-  'consumer_wallet_credit_provenance',
-  'consumer_wallet_return_links',
-  'consumer_wallet_event_allocations',
-  'consumer_wallet_events',
-  'consumer_wallets',
   'category_catalog_state',
   'category_catalog_conflicts',
   'bank_activity_candidates',
@@ -396,6 +390,47 @@ export class SqliteDatabase {
     });
   }
 
+  private async deleteWalletDataInTransaction(): Promise<void> {
+    await CapacitorSQLite.execute({
+      database: this.databaseName,
+      transaction: false,
+      statements: [
+        'DELETE FROM consumer_wallet_split_members',
+        'DELETE FROM consumer_wallet_expense_reversals',
+        'DELETE FROM consumer_wallet_credit_provenance_segments',
+        'DELETE FROM consumer_wallet_credit_provenance',
+        'DELETE FROM consumer_wallet_return_links',
+        'DELETE FROM consumer_wallet_event_allocations',
+      ].join(';\n'),
+    });
+    const eventRows = await CapacitorSQLite.query({
+      database: this.databaseName,
+      statement: 'SELECT id,reversal_of_event_id FROM consumer_wallet_events',
+      values: [],
+    });
+    const orderedEvents = this.orderWalletEventsForRestore(
+      (eventRows.values ?? []) as Record<string, unknown>[],
+    );
+    await CapacitorSQLite.execute({
+      database: this.databaseName,
+      transaction: false,
+      statements: orderedEvents
+        .slice()
+        .reverse()
+        .map(
+          (event) =>
+            `DELETE FROM consumer_wallet_events WHERE id='${String(event['id']).replaceAll("'", "''")}'`,
+        )
+        .join(';\n'),
+    });
+    await CapacitorSQLite.run({
+      database: this.databaseName,
+      statement: 'DELETE FROM consumer_wallets',
+      values: [],
+      transaction: false,
+    });
+  }
+
   private repairLegacyPluginExport(value: Record<string, unknown>): void {
     if (!Array.isArray(value['tables'])) return;
 
@@ -431,14 +466,22 @@ export class SqliteDatabase {
 
   private async deleteAllDataUnqueued(): Promise<void> {
     if (!this.ready()) throw new Error('SQLite database is unavailable.');
-    await CapacitorSQLite.execute({
-      database: this.databaseName,
-      transaction: true,
-      statements: [
-        ...DELETE_TABLES.map((table) => `DELETE FROM ${table}`),
-        `INSERT INTO app_preferences VALUES ('${INITIAL_DATA_KEY}','CLEARED')`,
-      ].join(';\n'),
-    });
+    await CapacitorSQLite.beginTransaction({ database: this.databaseName });
+    try {
+      await this.deleteWalletDataInTransaction();
+      await CapacitorSQLite.execute({
+        database: this.databaseName,
+        transaction: false,
+        statements: [
+          ...DELETE_TABLES.map((table) => `DELETE FROM ${table}`),
+          `INSERT INTO app_preferences VALUES ('${INITIAL_DATA_KEY}','CLEARED')`,
+        ].join(';\n'),
+      });
+      await CapacitorSQLite.commitTransaction({ database: this.databaseName });
+    } catch (error: unknown) {
+      await CapacitorSQLite.rollbackTransaction({ database: this.databaseName });
+      throw error;
+    }
     if (this.isWeb) await CapacitorSQLite.saveToStore({ database: this.databaseName });
   }
 
@@ -602,23 +645,38 @@ export class SqliteDatabase {
 
     await CapacitorSQLite.beginTransaction({ database: this.databaseName });
     try {
+      await this.deleteWalletDataInTransaction();
       await CapacitorSQLite.execute({
         database: this.databaseName,
         transaction: false,
         statements: DELETE_TABLES.map((table) => `DELETE FROM ${table}`).join(';\n'),
       });
       let pendingInserts: { statement: string; values: unknown[] }[] = [];
+      let pendingTable = '';
       const flushInserts = async () => {
         if (!pendingInserts.length) return;
-        await CapacitorSQLite.executeSet({
-          database: this.databaseName,
-          set: pendingInserts,
-          transaction: false,
-        });
+        try {
+          await CapacitorSQLite.executeSet({
+            database: this.databaseName,
+            set: pendingInserts,
+            transaction: false,
+          });
+        } catch (error: unknown) {
+          const detail = error instanceof Error ? error.message : String(error);
+          throw new Error(`The backup table ${pendingTable} could not be restored. (${detail})`, {
+            cause: error,
+          });
+        }
         pendingInserts = [];
       };
       for (const table of BACKUP_TABLES) {
-        for (const original of backupTables.get(table) ?? []) {
+        pendingTable = table;
+        const tableRows = backupTables.get(table) ?? [];
+        const orderedRows =
+          table === 'consumer_wallet_events'
+            ? this.orderWalletEventsForRestore(tableRows)
+            : tableRows;
+        for (const original of orderedRows) {
           const row =
             table === 'sms_candidates' && !('read_at' in original)
               ? {
@@ -640,6 +698,7 @@ export class SqliteDatabase {
           });
           if (pendingInserts.length >= 250) await flushInserts();
         }
+        await flushInserts();
       }
       await flushInserts();
       if (options.reconcile !== false) {
@@ -702,6 +761,43 @@ export class SqliteDatabase {
     }
     if (this.isWeb) await CapacitorSQLite.saveToStore({ database: this.databaseName });
     if (options.clearDiscovery !== false) await this.clearPlatformDiscoveryAfterCommit();
+  }
+
+  private orderWalletEventsForRestore(
+    rows: readonly Record<string, unknown>[],
+  ): readonly Record<string, unknown>[] {
+    const byId = new Map(
+      rows.filter((row) => typeof row['id'] === 'string').map((row) => [String(row['id']), row]),
+    );
+    const visiting = new Set<string>();
+    const visited = new Set<string>();
+    const ordered: Record<string, unknown>[] = [];
+    const visit = (row: Record<string, unknown>): void => {
+      const id = String(row['id'] ?? '');
+      if (visited.has(id)) return;
+      if (visiting.has(id))
+        throw new Error('The backup contains cyclic wallet event relationships.');
+      visiting.add(id);
+      let payload: Record<string, unknown> | null = null;
+      if (typeof row['payload'] === 'string') {
+        try {
+          const parsed: unknown = JSON.parse(row['payload']);
+          if (this.isRecord(parsed)) payload = parsed;
+        } catch {
+          throw new Error('The backup contains an invalid consumer-wallet event.');
+        }
+      }
+      const parentId =
+        (typeof row['reversal_of_event_id'] === 'string' && row['reversal_of_event_id']) ||
+        (typeof payload?.['reversalOfEventId'] === 'string' ? payload['reversalOfEventId'] : '');
+      const parent = parentId ? byId.get(parentId) : undefined;
+      if (parent) visit(parent);
+      visiting.delete(id);
+      visited.add(id);
+      ordered.push(row);
+    };
+    for (const row of rows) visit(row);
+    return ordered;
   }
 
   private isRecord(value: unknown): value is Record<string, unknown> {

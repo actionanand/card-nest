@@ -12,6 +12,7 @@ import {
   ConsumerWallet,
   ConsumerWalletEvent,
   ConsumerWalletEventAllocation,
+  ConsumerWalletCreditProvenanceSegment,
   ConsumerWalletExpenseReversal,
   ConsumerWalletKind,
   ConsumerWalletReturnLink,
@@ -54,7 +55,7 @@ export interface WalletPurchaseInput {
   readonly merchant?: string;
   readonly notes?: string;
   readonly attachmentIds?: readonly string[];
-  readonly confirmationKey?: string;
+  readonly confirmationKey: string;
 }
 
 export interface WalletPurchasePreview {
@@ -68,6 +69,37 @@ export interface WalletPurchasePreview {
   }[];
   readonly confirmationKey: string;
 }
+
+export interface WalletPurchaseRefundInput {
+  readonly id: string;
+  readonly purchaseEventId: string;
+  readonly amountMinor: number;
+  readonly eventDate: string;
+  readonly eventTime?: string;
+  readonly reason?: string;
+  readonly reference?: string;
+  readonly notes?: string;
+  readonly eventType?: 'REFUND' | 'REVERSAL';
+  readonly confirmationKey?: string;
+}
+
+export interface WalletPurchaseRefundPreview {
+  readonly walletId: string;
+  readonly purchaseEventId: string;
+  readonly amountMinor: number;
+  readonly alreadyRefundedMinor: number;
+  readonly refundableRemainingMinor: number;
+  readonly provenanceSegments: readonly Omit<
+    ConsumerWalletCreditProvenanceSegment,
+    'id' | 'creditEventId' | 'createdAt'
+  >[];
+  readonly confirmationKey: string;
+}
+
+type WalletCreditProvenanceSegment = Pick<
+  ConsumerWalletCreditProvenanceSegment,
+  'segmentOrder' | 'rootCreditEventId' | 'sourcePurchaseEventId' | 'amountMinor'
+>;
 
 export interface UpiLiteReturnInput {
   readonly id: string;
@@ -131,7 +163,7 @@ function upiLiteReturnConfirmationKey(
 }
 
 function walletPurchaseConfirmationKey(
-  input: WalletPurchaseInput,
+  input: Omit<WalletPurchaseInput, 'confirmationKey'>,
   balanceAfterMinor: number,
   allocations: readonly { readonly creditEventId: string; readonly allocatedMinor: number }[],
 ): string {
@@ -147,6 +179,35 @@ function walletPurchaseConfirmationKey(
     input.attachmentIds ?? [],
     balanceAfterMinor,
     allocations.map((allocation) => [allocation.creditEventId, allocation.allocatedMinor]),
+  ]);
+}
+
+function walletRefundConfirmationKey(
+  input: WalletPurchaseRefundInput,
+  walletId: string,
+  alreadyRefundedMinor: number,
+  remainingMinor: number,
+  segments: readonly WalletCreditProvenanceSegment[],
+): string {
+  return JSON.stringify([
+    input.id,
+    input.purchaseEventId,
+    walletId,
+    input.amountMinor,
+    input.eventDate,
+    input.eventTime ?? '',
+    input.reason?.trim() ?? '',
+    input.reference?.trim() ?? '',
+    input.notes?.trim() ?? '',
+    input.eventType ?? 'REFUND',
+    alreadyRefundedMinor,
+    remainingMinor,
+    segments.map((segment) => [
+      segment.segmentOrder,
+      segment.rootCreditEventId,
+      segment.sourcePurchaseEventId,
+      segment.amountMinor,
+    ]),
   ]);
 }
 
@@ -545,6 +606,8 @@ export class ConsumerWalletService {
   async recordWalletPurchase(input: WalletPurchaseInput): Promise<ConsumerWalletEvent> {
     if (!input.id.trim() || !Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0)
       throw new Error('Enter a positive wallet purchase amount.');
+    if (!input.confirmationKey)
+      throw new Error('Review and approve the wallet purchase before saving.');
     if (!validTransferDate(input.eventDate, input.eventTime))
       throw new Error('Enter a valid wallet purchase date and time.');
     if (!input.categoryId.trim()) throw new Error('Choose a transaction category.');
@@ -571,7 +634,20 @@ export class ConsumerWalletService {
             JSON.stringify(input.attachmentIds ?? [])
         )
           throw new Error('This wallet purchase ID was already used for a different purchase.');
-        return { event: duplicate, allocations: await this.readEventAllocations(tx, duplicate.id) };
+        const existingAllocations = await this.readEventAllocations(tx, duplicate.id);
+        const balanceBeforeMinor = await this.balanceIn(tx, input.walletId, duplicate);
+        const replayPlan = await planConsumerWalletDebit(tx, duplicate, input.amountMinor);
+        const expectedKey = walletPurchaseConfirmationKey(
+          input,
+          balanceBeforeMinor - input.amountMinor,
+          replayPlan.map((allocation) => ({
+            creditEventId: allocation.creditEvent.id,
+            allocatedMinor: allocation.allocatedMinor,
+          })),
+        );
+        if (input.confirmationKey !== expectedKey)
+          throw new Error('Wallet balance or FIFO attribution changed. Review the purchase again.');
+        return { event: duplicate, allocations: existingAllocations };
       }
       const timestamp = new Date().toISOString();
       const event: ConsumerWalletEvent = {
@@ -602,7 +678,7 @@ export class ConsumerWalletService {
         historicalBalance - input.amountMinor,
         allocations,
       );
-      if (input.confirmationKey && input.confirmationKey !== confirmationKey)
+      if (input.confirmationKey !== confirmationKey)
         throw new Error('Wallet balance or FIFO attribution changed. Review the purchase again.');
       await this.insertEvent(tx, event);
       const persistedAllocations = await persistConsumerWalletDebitPlan(tx, event, plan);
@@ -683,16 +759,266 @@ export class ConsumerWalletService {
     });
   }
 
-  private async classifyReturnAllocation(
+  async previewWalletPurchaseEdit(
+    input: Omit<WalletPurchaseInput, 'confirmationKey'>,
+  ): Promise<WalletPurchasePreview> {
+    this.validateWalletPurchaseInput(input);
+    return this.database.atomic(async (tx) => {
+      await this.assertWalletsEnabled(tx);
+      await this.assertActiveWallet(tx, input.walletId);
+      await this.assertWalletCategory(tx, input.categoryId);
+      const previous = await this.readWalletPurchaseEvent(tx, input.id, input.walletId);
+      const financialChange = this.walletPurchaseFinancialChange(previous, input);
+      if (financialChange) await this.assertPurchaseHasNoRefunds(tx, previous.id);
+      const event = this.updatedWalletPurchaseEvent(previous, input);
+      const excludedEvents = new Set([previous.id]);
+      const balanceBeforeMinor = await this.balanceIn(tx, input.walletId, event, excludedEvents);
+      if (balanceBeforeMinor < input.amountMinor)
+        throw new Error('Purchase exceeds the available historical wallet balance.');
+      const plan = await planConsumerWalletDebit(
+        tx,
+        event,
+        input.amountMinor,
+        undefined,
+        excludedEvents,
+      );
+      const allocations = plan.map((item) => ({
+        creditEventId: item.creditEvent.id,
+        allocatedMinor: item.allocatedMinor,
+      }));
+      await assertChronologicalConsumerWalletLedger(tx, input.walletId, {
+        replacedEventIds: [previous.id],
+        replacedDebitEventIds: [previous.id],
+        additionalEvents: [event],
+        additionalAllocations: this.previewDebitAllocations(event, plan),
+      });
+      const balanceAfterMinor = balanceBeforeMinor - input.amountMinor;
+      return {
+        walletId: input.walletId,
+        amountMinor: input.amountMinor,
+        balanceBeforeMinor,
+        balanceAfterMinor,
+        allocations,
+        confirmationKey: walletPurchaseConfirmationKey(input, balanceAfterMinor, allocations),
+      };
+    });
+  }
+
+  async updateWalletPurchase(input: WalletPurchaseInput): Promise<ConsumerWalletEvent> {
+    this.validateWalletPurchaseInput(input);
+    if (!input.confirmationKey)
+      throw new Error('Review and approve the wallet purchase edit before saving.');
+    const result = await this.database.atomic(async (tx) => {
+      await this.assertWalletsEnabled(tx);
+      await this.assertActiveWallet(tx, input.walletId);
+      await this.assertWalletCategory(tx, input.categoryId);
+      const previous = await this.readWalletPurchaseEvent(tx, input.id, input.walletId);
+      const financialChange = this.walletPurchaseFinancialChange(previous, input);
+      if (financialChange) await this.assertPurchaseHasNoRefunds(tx, previous.id);
+      const event = this.updatedWalletPurchaseEvent(previous, input);
+      const excludedEvents = new Set([previous.id]);
+      const balanceBeforeMinor = await this.balanceIn(tx, input.walletId, event, excludedEvents);
+      if (balanceBeforeMinor < input.amountMinor)
+        throw new Error('Purchase exceeds the available historical wallet balance.');
+      const plan = await planConsumerWalletDebit(
+        tx,
+        event,
+        input.amountMinor,
+        undefined,
+        excludedEvents,
+      );
+      const allocations = plan.map((item) => ({
+        creditEventId: item.creditEvent.id,
+        allocatedMinor: item.allocatedMinor,
+      }));
+      const confirmationKey = walletPurchaseConfirmationKey(
+        input,
+        balanceBeforeMinor - input.amountMinor,
+        allocations,
+      );
+      if (input.confirmationKey !== confirmationKey)
+        throw new Error(
+          'Wallet balance or FIFO attribution changed. Review the purchase edit again.',
+        );
+
+      if (financialChange)
+        await tx.run('DELETE FROM consumer_wallet_event_allocations WHERE debit_event_id=?', [
+          event.id,
+        ]);
+      await tx.run(
+        'UPDATE consumer_wallet_events SET event_date=?,event_time=?,amount_minor=?,balance_delta_minor=?,category_id=?,merchant=?,notes=?,payload=?,updated_at=? WHERE id=?',
+        [
+          event.eventDate,
+          event.eventTime ?? null,
+          event.amountMinor,
+          event.balanceDeltaMinor,
+          event.categoryId ?? null,
+          event.merchant ?? null,
+          event.notes ?? null,
+          JSON.stringify(event),
+          event.updatedAt,
+          event.id,
+        ],
+      );
+      const persistedAllocations = financialChange
+        ? await persistConsumerWalletDebitPlan(tx, event, plan)
+        : await this.readEventAllocations(tx, event.id);
+      await assertChronologicalConsumerWalletLedger(tx, input.walletId);
+      return { event, allocations: persistedAllocations };
+    });
+    this.events.update((items) => [
+      result.event,
+      ...items.filter((item) => item.id !== result.event.id),
+    ]);
+    this.allocations.update((items) => [
+      ...result.allocations,
+      ...items.filter((item) => item.debitEventId !== result.event.id),
+    ]);
+    return result.event;
+  }
+
+  private validateWalletPurchaseInput(input: Omit<WalletPurchaseInput, 'confirmationKey'>): void {
+    if (!input.id.trim() || !Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0)
+      throw new Error('Enter a positive wallet purchase amount.');
+    if (!validTransferDate(input.eventDate, input.eventTime))
+      throw new Error('Enter a valid wallet purchase date and time.');
+    if (!input.categoryId.trim()) throw new Error('Choose a transaction category.');
+    this.assertWalletAttachments(input.attachmentIds);
+  }
+
+  private async readWalletPurchaseEvent(
     tx: DatabaseSession,
-    returnEventId: string,
+    eventId: string,
+    walletId: string,
+  ): Promise<ConsumerWalletEvent> {
+    const [row] = await tx.query<{ payload: string }>(
+      "SELECT payload FROM consumer_wallet_events WHERE id=? AND wallet_id=? AND event_type='PURCHASE'",
+      [eventId, walletId],
+    );
+    if (!row) throw new Error('Choose an existing purchase from this wallet.');
+    return JSON.parse(row.payload) as ConsumerWalletEvent;
+  }
+
+  private walletPurchaseFinancialChange(
+    previous: ConsumerWalletEvent,
+    input: Omit<WalletPurchaseInput, 'confirmationKey'>,
+  ): boolean {
+    return (
+      previous.amountMinor !== input.amountMinor ||
+      previous.eventDate !== input.eventDate ||
+      (previous.eventTime ?? '') !== (input.eventTime ?? '')
+    );
+  }
+
+  private updatedWalletPurchaseEvent(
+    previous: ConsumerWalletEvent,
+    input: Omit<WalletPurchaseInput, 'confirmationKey'>,
+  ): ConsumerWalletEvent {
+    return {
+      ...previous,
+      eventDate: input.eventDate,
+      eventTime: input.eventTime,
+      amountMinor: input.amountMinor,
+      balanceDeltaMinor: -input.amountMinor,
+      categoryId: input.categoryId,
+      merchant: input.merchant?.trim().slice(0, 100) || undefined,
+      notes: input.notes?.trim().slice(0, 500) || undefined,
+      attachmentIds: input.attachmentIds ? [...input.attachmentIds] : undefined,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  private async assertPurchaseHasNoRefunds(
+    tx: DatabaseSession,
+    purchaseEventId: string,
+  ): Promise<void> {
+    const [row] = await tx.query<{ id: string }>(
+      "SELECT id FROM consumer_wallet_events WHERE event_type IN ('REFUND','REVERSAL') AND reversal_of_event_id=? LIMIT 1",
+      [purchaseEventId],
+    );
+    if (row)
+      throw new Error('A purchase with refunds or cancellation cannot be financially edited.');
+  }
+
+  private previewDebitAllocations(
+    event: ConsumerWalletEvent,
+    plan: readonly { readonly creditEvent: ConsumerWalletEvent; readonly allocatedMinor: number }[],
+  ): ConsumerWalletEventAllocation[] {
+    return plan.map((item, index) => ({
+      id: `wallet-edit-preview:${index}:${item.creditEvent.id}`,
+      debitEventId: event.id,
+      creditEventId: item.creditEvent.id,
+      allocatedMinor: item.allocatedMinor,
+      expenseReversalMinor: 0,
+      createdAt: event.createdAt,
+    }));
+  }
+
+  private async resolveCreditProvenanceSegments(
+    tx: DatabaseSession,
     credit: ConsumerWalletEvent,
-    allocatedMinor: number,
-    alreadyConsumedMinor: number,
-    reversedByFundedLoad: Map<string, number>,
-    createdAt: string,
-  ): Promise<{ expenseReversalMinor: number; reversals: ConsumerWalletExpenseReversal[] }> {
-    const provenanceRows = await tx.query<{
+    seen = new Set<string>(),
+  ): Promise<WalletCreditProvenanceSegment[]> {
+    if (seen.has(credit.id)) throw new Error('Wallet refund provenance contains a cycle.');
+    seen.add(credit.id);
+    const stored = await tx.query<{
+      segment_order: number;
+      root_credit_event_id: string;
+      source_purchase_event_id: string;
+      amount_minor: number;
+    }>(
+      'SELECT segment_order,root_credit_event_id,source_purchase_event_id,amount_minor FROM consumer_wallet_credit_provenance_segments WHERE credit_event_id=? ORDER BY segment_order',
+      [credit.id],
+    );
+    if (stored.length) {
+      let total = 0;
+      const segments: WalletCreditProvenanceSegment[] = [];
+      for (const [index, row] of stored.entries()) {
+        if (
+          row.segment_order !== index ||
+          !Number.isSafeInteger(row.amount_minor) ||
+          row.amount_minor <= 0
+        )
+          throw new Error('Ordered wallet refund provenance is invalid.');
+        const [rootRow] = await tx.query<{ payload: string }>(
+          'SELECT payload FROM consumer_wallet_events WHERE id=?',
+          [row.root_credit_event_id],
+        );
+        const [purchaseRow] = await tx.query<{ payload: string }>(
+          'SELECT payload FROM consumer_wallet_events WHERE id=?',
+          [row.source_purchase_event_id],
+        );
+        const root = rootRow ? (JSON.parse(rootRow.payload) as ConsumerWalletEvent) : null;
+        const sourcePurchase = purchaseRow
+          ? (JSON.parse(purchaseRow.payload) as ConsumerWalletEvent)
+          : null;
+        if (
+          !root ||
+          root.walletId !== credit.walletId ||
+          root.balanceDeltaMinor <= 0 ||
+          root.eventType === 'REFUND' ||
+          root.eventType === 'REVERSAL' ||
+          !sourcePurchase ||
+          sourcePurchase.walletId !== credit.walletId ||
+          sourcePurchase.eventType !== 'PURCHASE'
+        )
+          throw new Error('Wallet refund provenance crosses an invalid event or wallet.');
+        total += row.amount_minor;
+        if (!Number.isSafeInteger(total))
+          throw new Error('Wallet provenance exceeds supported amounts.');
+        segments.push({
+          segmentOrder: index,
+          rootCreditEventId: row.root_credit_event_id,
+          sourcePurchaseEventId: row.source_purchase_event_id,
+          amountMinor: row.amount_minor,
+        });
+      }
+      if (total !== credit.amountMinor)
+        throw new Error('Ordered wallet refund provenance does not equal its credit amount.');
+      return segments;
+    }
+
+    const legacy = await tx.query<{
       source_credit_event_id: string;
       allocated_minor: number;
       payload: string;
@@ -703,38 +1029,426 @@ export class ConsumerWalletService {
        WHERE p.credit_event_id=?`,
       [credit.id],
     );
-    const origins = provenanceRows.length
-      ? provenanceRows
-          .map((row) => ({
-            id: row.source_credit_event_id,
-            amountMinor: row.allocated_minor,
-            event: JSON.parse(row.payload) as ConsumerWalletEvent,
-          }))
-          .sort((left, right) => compareConsumerWalletEvents(left.event, right.event))
-      : [{ id: credit.id, amountMinor: credit.amountMinor, event: credit }];
-    if (origins.reduce((total, origin) => total + origin.amountMinor, 0) !== credit.amountMinor)
-      throw new Error('Refund credit provenance is incomplete.');
+    if (!legacy.length) {
+      if (credit.eventType === 'REFUND' || credit.eventType === 'REVERSAL')
+        throw new Error(
+          'This legacy wallet refund has no provable ordered provenance; do not return it to Bank automatically.',
+        );
+      return [
+        {
+          segmentOrder: 0,
+          rootCreditEventId: credit.id,
+          sourcePurchaseEventId: '',
+          amountMinor: credit.amountMinor,
+        },
+      ];
+    }
+    if (legacy.length !== 1 || legacy[0].allocated_minor !== credit.amountMinor)
+      throw new Error(
+        'This legacy wallet refund has ambiguous provenance ordering; correct it manually before returning it to Bank.',
+      );
+    const root = JSON.parse(legacy[0].payload) as ConsumerWalletEvent;
+    if (root.walletId !== credit.walletId || root.balanceDeltaMinor <= 0)
+      throw new Error('Wallet refund provenance crosses wallet boundaries.');
+    if (root.eventType === 'REFUND' || root.eventType === 'REVERSAL')
+      return this.resolveCreditProvenanceSegments(tx, root, seen);
+    return [
+      {
+        segmentOrder: 0,
+        rootCreditEventId: root.id,
+        sourcePurchaseEventId: '',
+        amountMinor: credit.amountMinor,
+      },
+    ];
+  }
 
+  private sliceWalletProvenance(
+    segments: readonly WalletCreditProvenanceSegment[],
+    offsetMinor: number,
+    amountMinor: number,
+    purchaseEventId: string,
+  ): WalletCreditProvenanceSegment[] {
+    if (
+      !Number.isSafeInteger(offsetMinor) ||
+      offsetMinor < 0 ||
+      !Number.isSafeInteger(amountMinor) ||
+      amountMinor <= 0
+    )
+      throw new Error('Wallet refund provenance range is invalid.');
+    let remainingOffset = offsetMinor;
+    let remaining = amountMinor;
+    const result: WalletCreditProvenanceSegment[] = [];
+    for (const segment of segments) {
+      const skipped = Math.min(remainingOffset, segment.amountMinor);
+      remainingOffset -= skipped;
+      const available = segment.amountMinor - skipped;
+      const take = Math.min(available, remaining);
+      if (!take) continue;
+      remaining -= take;
+      result.push({
+        segmentOrder: result.length,
+        rootCreditEventId: segment.rootCreditEventId,
+        sourcePurchaseEventId: purchaseEventId,
+        amountMinor: take,
+      });
+    }
+    if (remainingOffset || remaining)
+      throw new Error('Wallet refund exceeds the original purchase provenance.');
+    return result;
+  }
+
+  private async purchaseProvenanceSegments(
+    tx: DatabaseSession,
+    purchase: ConsumerWalletEvent,
+    offsetMinor: number,
+    amountMinor: number,
+  ): Promise<WalletCreditProvenanceSegment[]> {
+    const allocations = await tx.query<{
+      credit_event_id: string;
+      allocated_minor: number;
+      payload: string;
+      credit_payload: string;
+    }>(
+      `SELECT a.credit_event_id,a.allocated_minor,d.payload,e.payload AS credit_payload
+       FROM consumer_wallet_event_allocations a
+       JOIN consumer_wallet_events d ON d.id=a.debit_event_id
+       JOIN consumer_wallet_events e ON e.id=a.credit_event_id
+       WHERE a.debit_event_id=?`,
+      [purchase.id],
+    );
+    const ordered = allocations
+      .map((row) => ({
+        ...row,
+        debit: JSON.parse(row.payload) as ConsumerWalletEvent,
+        credit: JSON.parse(row.credit_payload) as ConsumerWalletEvent,
+      }))
+      .sort((left, right) => compareConsumerWalletEvents(left.credit, right.credit));
+    if (ordered.reduce((total, row) => total + row.allocated_minor, 0) !== purchase.amountMinor)
+      throw new Error('Original purchase allocations are incomplete; refund was not saved.');
+
+    const purchaseSegments: WalletCreditProvenanceSegment[] = [];
+    for (const row of ordered) {
+      const priorRows = await tx.query<{ payload: string; allocated_minor: number }>(
+        `SELECT d.payload,a.allocated_minor FROM consumer_wallet_event_allocations a
+         JOIN consumer_wallet_events d ON d.id=a.debit_event_id
+         WHERE a.credit_event_id=?`,
+        [row.credit_event_id],
+      );
+      const consumedBeforePurchase = priorRows.reduce(
+        (total, allocation) =>
+          compareConsumerWalletEvents(
+            JSON.parse(allocation.payload) as ConsumerWalletEvent,
+            purchase,
+          ) < 0
+            ? total + allocation.allocated_minor
+            : total,
+        0,
+      );
+      const originSegments = await this.resolveCreditProvenanceSegments(tx, row.credit);
+      const allocatedSegments = this.sliceWalletProvenance(
+        originSegments,
+        consumedBeforePurchase,
+        row.allocated_minor,
+        purchase.id,
+      );
+      purchaseSegments.push(
+        ...allocatedSegments.map((segment) => ({
+          ...segment,
+          segmentOrder: purchaseSegments.length + segment.segmentOrder,
+        })),
+      );
+    }
+    if (
+      purchaseSegments.reduce((total, segment) => total + segment.amountMinor, 0) !==
+      purchase.amountMinor
+    )
+      throw new Error('Original purchase provenance is incomplete; refund was not saved.');
+    return this.sliceWalletProvenance(purchaseSegments, offsetMinor, amountMinor, purchase.id);
+  }
+
+  async previewWalletPurchaseRefund(
+    input: Omit<WalletPurchaseRefundInput, 'confirmationKey'>,
+  ): Promise<WalletPurchaseRefundPreview> {
+    this.assertRefundInput(input);
+    return this.database.atomic(async (tx) => {
+      await this.assertWalletsEnabled(tx);
+      const { purchase, alreadyRefundedMinor, segments, remainingMinor } =
+        await this.readWalletRefundState(tx, input);
+      const event = this.walletRefundEvent(input, purchase, new Date().toISOString());
+      if (compareConsumerWalletEvents(event, purchase) <= 0)
+        throw new Error('A wallet refund cannot be dated before its original purchase.');
+      await this.assertNoBackdatedWalletRefund(tx, purchase, event);
+      const balanceBeforeMinor = await this.balanceIn(tx, purchase.walletId, event);
+      const eventWithBalance = { ...event, balanceDeltaMinor: input.amountMinor };
+      if (!Number.isSafeInteger(balanceBeforeMinor + input.amountMinor))
+        throw new Error('Wallet balance would exceed the supported amount.');
+      await assertChronologicalConsumerWalletLedger(tx, purchase.walletId, {
+        additionalEvents: [eventWithBalance],
+      });
+      return {
+        walletId: purchase.walletId,
+        purchaseEventId: purchase.id,
+        amountMinor: input.amountMinor,
+        alreadyRefundedMinor,
+        refundableRemainingMinor: remainingMinor - input.amountMinor,
+        provenanceSegments: segments,
+        confirmationKey: walletRefundConfirmationKey(
+          input,
+          purchase.walletId,
+          alreadyRefundedMinor,
+          remainingMinor,
+          segments,
+        ),
+      };
+    });
+  }
+
+  async recordWalletPurchaseRefund(input: WalletPurchaseRefundInput): Promise<ConsumerWalletEvent> {
+    this.assertRefundInput(input);
+    if (!input.confirmationKey)
+      throw new Error('Review and approve the wallet refund before saving.');
+    const result = await this.database.atomic(async (tx) => {
+      await this.assertWalletsEnabled(tx);
+      const [duplicateRow] = await tx.query<{ payload: string }>(
+        'SELECT payload FROM consumer_wallet_events WHERE id=?',
+        [input.id],
+      );
+      if (duplicateRow) {
+        const duplicate = JSON.parse(duplicateRow.payload) as ConsumerWalletEvent;
+        if (
+          duplicate.eventType !== (input.eventType ?? 'REFUND') ||
+          duplicate.walletId !== (await this.readWalletIdForPurchase(tx, input.purchaseEventId)) ||
+          duplicate.reversalOfEventId !== input.purchaseEventId ||
+          duplicate.amountMinor !== input.amountMinor ||
+          duplicate.eventDate !== input.eventDate ||
+          (duplicate.eventTime ?? '') !== (input.eventTime ?? '') ||
+          (duplicate.reference ?? '') !== (input.reference?.trim().slice(0, 100) ?? '') ||
+          (duplicate.refundReason ?? '') !== (input.reason?.trim().slice(0, 160) ?? '') ||
+          (duplicate.notes ?? '') !== (input.notes?.trim().slice(0, 500) ?? '')
+        )
+          throw new Error('This refund ID was already used for a different financial event.');
+        return { event: duplicate };
+      }
+      const { purchase, alreadyRefundedMinor, segments, remainingMinor } =
+        await this.readWalletRefundState(tx, {
+          ...input,
+          amountMinor: input.amountMinor,
+        });
+      const event = this.walletRefundEvent(input, purchase, new Date().toISOString());
+      if (compareConsumerWalletEvents(event, purchase) <= 0)
+        throw new Error('A wallet refund cannot be dated before its original purchase.');
+      await this.assertNoBackdatedWalletRefund(tx, purchase, event);
+      if (input.amountMinor > remainingMinor)
+        throw new Error('Refund exceeds the remaining refundable purchase amount.');
+      if (input.eventType === 'REVERSAL' && input.amountMinor !== remainingMinor)
+        throw new Error('Purchase cancellation must reverse the full remaining purchase amount.');
+      const expectedKey = walletRefundConfirmationKey(
+        input,
+        purchase.walletId,
+        alreadyRefundedMinor,
+        remainingMinor,
+        segments,
+      );
+      if (input.confirmationKey !== expectedKey)
+        throw new Error('Purchase refunds or provenance changed. Review the refund again.');
+      const balanceBeforeMinor = await this.balanceIn(tx, purchase.walletId, event);
+      if (!Number.isSafeInteger(balanceBeforeMinor + input.amountMinor))
+        throw new Error('Wallet balance would exceed the supported amount.');
+      await this.insertEvent(tx, event);
+      const aggregate = new Map<string, number>();
+      for (const segment of segments) {
+        aggregate.set(
+          segment.rootCreditEventId,
+          (aggregate.get(segment.rootCreditEventId) ?? 0) + segment.amountMinor,
+        );
+        await tx.run(
+          'INSERT INTO consumer_wallet_credit_provenance_segments(id,credit_event_id,segment_order,root_credit_event_id,source_purchase_event_id,amount_minor,created_at) VALUES(?,?,?,?,?,?,?)',
+          [
+            `${event.id}:segment:${segment.segmentOrder}`,
+            event.id,
+            segment.segmentOrder,
+            segment.rootCreditEventId,
+            segment.sourcePurchaseEventId,
+            segment.amountMinor,
+            event.createdAt,
+          ],
+        );
+      }
+      for (const [rootCreditEventId, allocatedMinor] of aggregate) {
+        await tx.run(
+          'INSERT INTO consumer_wallet_credit_provenance(credit_event_id,source_credit_event_id,allocated_minor,created_at) VALUES(?,?,?,?)',
+          [event.id, rootCreditEventId, allocatedMinor, event.createdAt],
+        );
+      }
+      await assertChronologicalConsumerWalletLedger(tx, purchase.walletId);
+      return { event };
+    });
+    if (result.event.id === input.id) this.publishEventWrite(result.event, []);
+    return result.event;
+  }
+
+  async previewWalletPurchaseCancellation(
+    input: Omit<WalletPurchaseRefundInput, 'confirmationKey' | 'eventType'>,
+  ): Promise<WalletPurchaseRefundPreview> {
+    const preview = await this.previewWalletPurchaseRefund({ ...input, eventType: 'REVERSAL' });
+    if (preview.refundableRemainingMinor !== 0)
+      throw new Error('Cancel the purchase by reversing its full remaining amount.');
+    return preview;
+  }
+
+  async cancelWalletPurchase(
+    input: Omit<WalletPurchaseRefundInput, 'eventType'>,
+  ): Promise<ConsumerWalletEvent> {
+    return this.recordWalletPurchaseRefund({ ...input, eventType: 'REVERSAL' });
+  }
+
+  private assertRefundInput(input: Omit<WalletPurchaseRefundInput, 'confirmationKey'>): void {
+    if (
+      !input.id.trim() ||
+      !input.purchaseEventId.trim() ||
+      !Number.isSafeInteger(input.amountMinor) ||
+      input.amountMinor <= 0
+    )
+      throw new Error('Enter a positive wallet refund amount.');
+    if (!validTransferDate(input.eventDate, input.eventTime))
+      throw new Error('Enter a valid wallet refund date and time.');
+  }
+
+  private walletRefundEvent(
+    input: WalletPurchaseRefundInput,
+    purchase: ConsumerWalletEvent,
+    timestamp: string,
+  ): ConsumerWalletEvent {
+    return {
+      id: input.id,
+      walletId: purchase.walletId,
+      eventType: input.eventType ?? 'REFUND',
+      eventDate: input.eventDate,
+      eventTime: input.eventTime,
+      amountMinor: input.amountMinor,
+      balanceDeltaMinor: input.amountMinor,
+      reversalOfEventId: purchase.id,
+      reference: input.reference?.trim().slice(0, 100) || undefined,
+      refundReason: input.reason?.trim().slice(0, 160) || undefined,
+      notes: input.notes?.trim().slice(0, 500) || undefined,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+  }
+
+  private async readWalletRefundState(
+    tx: DatabaseSession,
+    input: Pick<WalletPurchaseRefundInput, 'purchaseEventId' | 'amountMinor' | 'eventDate' | 'id'>,
+  ): Promise<{
+    purchase: ConsumerWalletEvent;
+    alreadyRefundedMinor: number;
+    remainingMinor: number;
+    segments: WalletCreditProvenanceSegment[];
+  }> {
+    const [purchaseRow] = await tx.query<{ payload: string }>(
+      "SELECT payload FROM consumer_wallet_events WHERE id=? AND event_type='PURCHASE'",
+      [input.purchaseEventId],
+    );
+    if (!purchaseRow) throw new Error('Choose an existing wallet purchase to refund.');
+    const purchase = JSON.parse(purchaseRow.payload) as ConsumerWalletEvent;
+    if (input.id === purchase.id) throw new Error('A refund must use a new event ID.');
+    const [walletRow] = await tx.query<{ id: string }>(
+      'SELECT id FROM consumer_wallets WHERE id=?',
+      [purchase.walletId],
+    );
+    if (!walletRow) throw new Error('The original consumer wallet no longer exists.');
+    const refundRows = await tx.query<{ payload: string }>(
+      "SELECT payload FROM consumer_wallet_events WHERE event_type IN ('REFUND','REVERSAL') AND reversal_of_event_id=?",
+      [purchase.id],
+    );
+    const alreadyRefundedMinor = refundRows.reduce((total, row) => {
+      const refund = JSON.parse(row.payload) as ConsumerWalletEvent;
+      return total + refund.amountMinor;
+    }, 0);
+    if (!Number.isSafeInteger(alreadyRefundedMinor) || alreadyRefundedMinor > purchase.amountMinor)
+      throw new Error('Existing refunds exceed this purchase amount.');
+    const remainingMinor = purchase.amountMinor - alreadyRefundedMinor;
+    if (input.amountMinor > remainingMinor)
+      throw new Error('Refund exceeds the remaining refundable purchase amount.');
+    const segments = await this.purchaseProvenanceSegments(
+      tx,
+      purchase,
+      alreadyRefundedMinor,
+      input.amountMinor,
+    );
+    if (segments.reduce((total, segment) => total + segment.amountMinor, 0) !== input.amountMinor)
+      throw new Error('Refund provenance does not equal the refund amount.');
+    return { purchase, alreadyRefundedMinor, remainingMinor, segments };
+  }
+
+  private async readWalletIdForPurchase(
+    tx: DatabaseSession,
+    purchaseEventId: string,
+  ): Promise<string> {
+    const [row] = await tx.query<{ wallet_id: string }>(
+      "SELECT wallet_id FROM consumer_wallet_events WHERE id=? AND event_type='PURCHASE'",
+      [purchaseEventId],
+    );
+    if (!row) throw new Error('Choose an existing wallet purchase to refund.');
+    return row.wallet_id;
+  }
+
+  private async assertNoBackdatedWalletRefund(
+    tx: DatabaseSession,
+    purchase: ConsumerWalletEvent,
+    event: ConsumerWalletEvent,
+  ): Promise<void> {
+    const priorRows = await tx.query<{ payload: string }>(
+      "SELECT payload FROM consumer_wallet_events WHERE event_type IN ('REFUND','REVERSAL') AND reversal_of_event_id=?",
+      [purchase.id],
+    );
+    if (
+      priorRows.some((row) => {
+        const prior = JSON.parse(row.payload) as ConsumerWalletEvent;
+        return compareConsumerWalletEvents(event, prior) < 0;
+      })
+    )
+      throw new Error('A backdated refund would change audited purchase provenance.');
+  }
+
+  private async classifyReturnAllocation(
+    tx: DatabaseSession,
+    returnEventId: string,
+    credit: ConsumerWalletEvent,
+    allocatedMinor: number,
+    alreadyConsumedMinor: number,
+    reversedByFundedLoad: Map<string, number>,
+    createdAt: string,
+  ): Promise<{ expenseReversalMinor: number; reversals: ConsumerWalletExpenseReversal[] }> {
+    const segments = await this.resolveCreditProvenanceSegments(tx, credit);
     const allocationStart = alreadyConsumedMinor;
     const allocationEnd = alreadyConsumedMinor + allocatedMinor;
-    let originStart = 0;
+    let segmentStart = 0;
     let expenseReversalMinor = 0;
     const reversals: ConsumerWalletExpenseReversal[] = [];
-    for (const origin of origins) {
-      const originEnd = originStart + origin.amountMinor;
+    for (const segment of segments) {
+      const segmentEnd = segmentStart + segment.amountMinor;
       const overlap = Math.max(
         0,
-        Math.min(allocationEnd, originEnd) - Math.max(allocationStart, originStart),
+        Math.min(allocationEnd, segmentEnd) - Math.max(allocationStart, segmentStart),
       );
-      originStart = originEnd;
-      if (!overlap || origin.event.eventType !== 'FUNDED_LOAD') continue;
+      segmentStart = segmentEnd;
+      if (!overlap) continue;
+      const [originRow] = await tx.query<{ payload: string }>(
+        'SELECT payload FROM consumer_wallet_events WHERE id=?',
+        [segment.rootCreditEventId],
+      );
+      const origin = originRow ? (JSON.parse(originRow.payload) as ConsumerWalletEvent) : null;
+      if (!origin || origin.walletId !== credit.walletId)
+        throw new Error('Refund credit provenance crosses a wallet boundary.');
+      if (origin.eventType !== 'FUNDED_LOAD') continue;
       const [reversedRow] = await tx.query<{ reversed: number | null }>(
         'SELECT COALESCE(SUM(reversed_minor),0) AS reversed FROM consumer_wallet_expense_reversals WHERE funded_load_event_id=?',
         [origin.id],
       );
       const alreadyReversed =
         Number(reversedRow?.reversed ?? 0) + (reversedByFundedLoad.get(origin.id) ?? 0);
-      const fundedPrincipal = origin.event.loadedAmountMinor ?? origin.event.amountMinor;
+      const fundedPrincipal = origin.loadedAmountMinor ?? origin.amountMinor;
       const reversedMinor = Math.min(overlap, Math.max(0, fundedPrincipal - alreadyReversed));
       if (!reversedMinor) continue;
       reversals.push({
@@ -1430,10 +2144,12 @@ export class ConsumerWalletService {
     tx: DatabaseSession,
     walletId: string,
     before?: ConsumerWalletEventPosition,
+    excludedEventIds: ReadonlySet<string> = new Set<string>(),
   ): Promise<number> {
     const events = await this.readChronologicalEvents(tx, walletId);
     let balance = 0;
     for (const event of events) {
+      if (excludedEventIds.has(event.id)) continue;
       if (before && compareConsumerWalletEvents(event, before) >= 0) break;
       const next = balance + event.balanceDeltaMinor;
       if (!Number.isSafeInteger(event.balanceDeltaMinor) || !Number.isSafeInteger(next))

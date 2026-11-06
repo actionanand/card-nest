@@ -46,6 +46,21 @@ function setup(
     archivedWallets,
     activeWalletLimit: 15,
     balances,
+    previewWalletPurchase: vi.fn(async () => ({
+      walletId: 'purchase-wallet',
+      amountMinor: 10000,
+      balanceBeforeMinor: 30000,
+      balanceAfterMinor: 20000,
+      allocations: [{ creditEventId: 'purchase-origin', allocatedMinor: 10000 }],
+      confirmationKey: 'synthetic-purchase-approval',
+    })),
+    recordWalletPurchase: vi.fn(async (input: Record<string, unknown>) => ({
+      ...input,
+      eventType: 'PURCHASE',
+      balanceDeltaMinor: -Number(input['amountMinor']),
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    })),
     archiveWallet: vi.fn(async (id: string) => {
       savedWallets.update((items) =>
         items.map((wallet) => (wallet.id === id ? { ...wallet, archived: true } : wallet)),
@@ -85,6 +100,7 @@ function setup(
   const store = {
     paymentSources,
     transactions,
+    categories: signal([{ id: 'other', name: 'Other', icon: 'category', appliesTo: 'BOTH' }]),
     updatePaymentSource: vi.fn(async (source: PaymentSource) => {
       paymentSources.update((items) =>
         items.map((item) => (item.id === source.id ? source : item)),
@@ -115,6 +131,43 @@ function setup(
 }
 
 describe('Wallets page Stage A', () => {
+  it('requires preview approval for wallet purchases and clears approval when values change', async () => {
+    const { fixture, consumerWalletService } = setup();
+    const wallet: ConsumerWallet = {
+      id: 'purchase-wallet',
+      providerId: 'amazon-pay',
+      kind: 'STANDARD',
+      nickname: 'Synthetic Amazon',
+      archived: false,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    consumerWalletService.wallets.set([wallet]);
+    fixture.detectChanges();
+    const page = fixture.componentInstance;
+    page.openWalletActivity(wallet);
+    page.walletActivityForm.patchValue({ amount: '100.00', categoryId: 'other' });
+    await page.saveWalletActivity(new Event('submit'));
+    expect(consumerWalletService.previewWalletPurchase).toHaveBeenCalledOnce();
+    expect(consumerWalletService.recordWalletPurchase).not.toHaveBeenCalled();
+    expect(page.walletActivityPurchasePreview()?.balanceAfterMinor).toBe(20000);
+
+    page.confirmWalletActivityPurchase({ target: { checked: true } } as unknown as Event);
+    page.walletActivityForm.controls.amount.setValue('120.00');
+    expect(page.walletActivityPurchaseApprovedFor()).toBe('');
+    expect(page.walletActivityPurchasePreview()).toBeNull();
+    await page.saveWalletActivity(new Event('submit'));
+    expect(consumerWalletService.recordWalletPurchase).not.toHaveBeenCalled();
+
+    page.confirmWalletActivityPurchase({ target: { checked: true } } as unknown as Event);
+    await page.saveWalletActivity(new Event('submit'));
+    expect(consumerWalletService.recordWalletPurchase).toHaveBeenCalledOnce();
+    expect(consumerWalletService.recordWalletPurchase).toHaveBeenCalledWith(
+      expect.objectContaining({ confirmationKey: 'synthetic-purchase-approval' }),
+    );
+    fixture.destroy();
+  });
+
   it('creates FASTag from Wallets with the existing PaymentSource identity shape', async () => {
     const { fixture, consumerWalletService } = setup();
     const page = fixture.componentInstance;

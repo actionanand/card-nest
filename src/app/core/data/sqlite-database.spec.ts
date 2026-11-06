@@ -152,8 +152,23 @@ describe('SQLite shared write queue', () => {
     ).toBe(true);
   });
   it('deletes all new review and reconciliation tables and rejects invalid retention dates', async () => {
+    vi.mocked(CapacitorSQLite.query).mockResolvedValueOnce({
+      values: [
+        {
+          id: 'synthetic-wallet-event',
+          reversal_of_event_id: null,
+          payload: JSON.stringify({
+            id: 'synthetic-wallet-event',
+            eventType: 'MANUAL_CREDIT',
+          }),
+        },
+      ],
+    });
     await database.deleteAllData();
-    const statement = vi.mocked(CapacitorSQLite.execute).mock.calls[0][0].statements;
+    const statement = [
+      ...vi.mocked(CapacitorSQLite.execute).mock.calls.map(([options]) => options.statements ?? ''),
+      ...vi.mocked(CapacitorSQLite.run).mock.calls.map(([options]) => options.statement ?? ''),
+    ].join('\n');
     expect(statement).toContain('DELETE FROM sms_reconciliation');
     expect(statement).toContain('DELETE FROM sms_candidates');
     expect(statement).toContain('DELETE FROM sms_sync_state');

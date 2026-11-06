@@ -1,9 +1,15 @@
 import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
-import { CardTransaction, SourceTransfer } from '../models/domain';
+import {
+  CardTransaction,
+  ConsumerWallet,
+  ConsumerWalletEvent,
+  SourceTransfer,
+} from '../models/domain';
 import { ExportDocument } from '../models/export';
 import { CardNestStore } from './card-nest-store';
 import { ExportService } from './export.service';
+import { ConsumerWalletService } from './consumer-wallet.service';
 import { SnackbarService } from './snackbar.service';
 import { formatMoney } from './money';
 
@@ -56,6 +62,17 @@ describe('ExportService own-account movements', () => {
     cash: 'Cash',
     card: 'Fiction card',
   };
+  const wallets: ConsumerWallet[] = [
+    {
+      id: 'amazon-wallet',
+      providerId: 'amazon-pay',
+      kind: 'STANDARD',
+      nickname: 'Synthetic Amazon wallet',
+      archived: false,
+      createdAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+    },
+  ];
   const payment: CardTransaction = {
     id: 'payment',
     cardId: 'card',
@@ -87,6 +104,10 @@ describe('ExportService own-account movements', () => {
             sourceName: (id: string) => names[id] ?? 'Unknown',
             sourceDetail: (id: string) => `${names[id] ?? 'Unknown'} detail`,
           },
+        },
+        {
+          provide: ConsumerWalletService,
+          useValue: { wallets: signal(wallets) },
         },
         { provide: SnackbarService, useValue: { show: vi.fn() } },
       ],
@@ -230,5 +251,58 @@ describe('ExportService own-account movements', () => {
     const lines = String(csv.mock.calls[0][0]).split('\r\n').slice(1);
     expect(lines).toHaveLength(4);
     expect(lines.some((line) => line.includes('Second fiction bank'))).toBe(false);
+  });
+
+  it('exports wallet purchases and refunds separately from consolidated spending', () => {
+    const walletEvents: ConsumerWalletEvent[] = [
+      {
+        id: 'wallet-purchase',
+        walletId: 'amazon-wallet',
+        eventType: 'PURCHASE',
+        eventDate: '2026-05-12',
+        amountMinor: 10000,
+        balanceDeltaMinor: -10000,
+        categoryId: 'other',
+        merchant: 'Synthetic wallet shop',
+        createdAt: '2026-05-12T10:00:00Z',
+        updatedAt: '2026-05-12T10:00:00Z',
+      },
+      {
+        id: 'wallet-refund',
+        walletId: 'amazon-wallet',
+        eventType: 'REFUND',
+        eventDate: '2026-05-14',
+        amountMinor: 4000,
+        balanceDeltaMinor: 4000,
+        reversalOfEventId: 'wallet-purchase',
+        createdAt: '2026-05-14T10:00:00Z',
+        updatedAt: '2026-05-14T10:00:00Z',
+      },
+    ];
+    service.exportTransactionSelection('CSV', [payment], 'May 2026', '2026-05', may, walletEvents);
+    const content = String(csv.mock.calls[0][0]);
+    expect(content).toContain('Synthetic wallet shop');
+    expect(content).toContain('Wallet purchase');
+    expect(content).toContain('Wallet refund');
+    expect(content).toContain('0.00');
+    expect(content).toContain('wallet-purchase');
+    expect(content).toContain('wallet-refund');
+
+    service.exportTransactionSelection('PDF', [payment], 'May 2026', '2026-05', may, walletEvents);
+    const document = pdf.mock.calls[0][0] as ExportDocument;
+    expect(document.summary.find((item) => item.label === 'Transactions')?.value).toBe('1');
+    expect(
+      document.summary.find((item) => item.label === 'Wallet activities (informational)')?.value,
+    ).toBe('2');
+    expect(document.summary.find((item) => item.label === 'Net merchant spending')?.value).toBe(
+      formatMoney(0, 'INR'),
+    );
+    const walletSection = document.sections.find((item) =>
+      item.title.includes('Consumer wallet activity'),
+    )!;
+    expect(walletSection.rows.map((row) => row.cells[6])).toEqual([
+      formatMoney(0, 'INR'),
+      formatMoney(0, 'INR'),
+    ]);
   });
 });

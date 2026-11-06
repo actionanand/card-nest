@@ -3,7 +3,14 @@ import { provideRouter, Router } from '@angular/router';
 import { SourcesPage } from './sources';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { SqliteDatabase } from '../../core/data/sqlite-database';
-import { CardTransaction, CreditCard, PaymentSource } from '../../core/models/domain';
+import {
+  CardTransaction,
+  ConsumerWallet,
+  ConsumerWalletEvent,
+  CreditCard,
+  PaymentSource,
+} from '../../core/models/domain';
+import { ConsumerWalletService } from '../../core/services/consumer-wallet.service';
 import { TransactionsPage } from '../transactions/transactions';
 import axe from 'axe-core';
 
@@ -17,6 +24,99 @@ describe('FASTag source visibility and management relocation', () => {
     fixture.detectChanges();
     return fixture;
   };
+  it('keeps consumer wallet IDs separate and filters unified activity without ID collisions', () => {
+    const sourceFixture = setup();
+    const store = TestBed.inject(CardNestStore);
+    const wallets = TestBed.inject(ConsumerWalletService);
+    const card: CreditCard = {
+      id: 'wallet-activity-card',
+      nickname: 'Synthetic card',
+      issuerName: 'Fictional bank',
+      lastDigits: '1111',
+      network: 'VISA',
+      currencyCode: 'INR',
+      theme: 'green',
+      statementDay: 1,
+      dueDateMode: 'DAYS_AFTER_STATEMENT',
+      daysAfterStatement: 20,
+      adjustDueDateOnWeekend: false,
+      openingBalanceMinor: 0,
+      remindToSettle: false,
+      annualFeeEnabled: false,
+      emergencyPhones: [],
+      supportEmails: [],
+      archived: false,
+      createdAt: '2026-10-01',
+      updatedAt: '2026-10-01',
+    };
+    const wallet: ConsumerWallet = {
+      id: 'wallet-activity-wallet',
+      providerId: 'amazon-pay',
+      kind: 'STANDARD',
+      nickname: 'Synthetic wallet',
+      archived: false,
+      createdAt: '2026-10-01',
+      updatedAt: '2026-10-01',
+    };
+    const cardTransaction: CardTransaction = {
+      id: 'shared-display-id',
+      cardId: card.id,
+      type: 'PURCHASE',
+      amountMinor: 5000,
+      currencyCode: 'INR',
+      transactionDate: '2026-10-20',
+      categoryId: 'other',
+      merchant: 'Synthetic card merchant',
+      attachmentIds: [],
+      createdAt: '2026-10-20T10:00:00Z',
+      updatedAt: '2026-10-20T10:00:00Z',
+    };
+    const walletPurchase: ConsumerWalletEvent = {
+      id: 'shared-display-id',
+      walletId: wallet.id,
+      eventType: 'PURCHASE',
+      eventDate: '2026-10-20',
+      amountMinor: 4000,
+      balanceDeltaMinor: -4000,
+      categoryId: 'other',
+      merchant: 'Synthetic wallet merchant',
+      createdAt: '2026-10-20T11:00:00Z',
+      updatedAt: '2026-10-20T11:00:00Z',
+    };
+    store.cards.set([card]);
+    store.transactions.set([cardTransaction]);
+    wallets.wallets.set([wallet]);
+    wallets.events.set([walletPurchase]);
+    wallets.featureState.set('ENABLED');
+
+    const fixture = TestBed.createComponent(TransactionsPage);
+    fixture.detectChanges();
+    const page = fixture.componentInstance;
+    const walletSource = `consumer-wallet:${wallet.id}`;
+    page.selectPayFrom(walletSource);
+    expect(page.form.controls.consumerWalletId.value).toBe(wallet.id);
+    expect(page.form.controls.cardId.value).toBe('');
+
+    page.selectPayFrom(card.id);
+    expect(page.form.controls.consumerWalletId.value).toBe('');
+    expect(page.form.controls.cardId.value).toBe(card.id);
+
+    expect(page.activityProjection().map((activity) => activity.key)).toEqual(
+      expect.arrayContaining(['card:shared-display-id', 'wallet:shared-display-id']),
+    );
+    expect(
+      page.activityProjection().find((activity) => activity.kind === 'CONSUMER_WALLET_EVENT'),
+    ).toMatchObject({
+      classification: 'SPENDING_ALREADY_COUNTED',
+      consolidatedExpenseContributionMinor: 0,
+    });
+    page.selectSourceFilter(walletSource);
+    expect(page.activityProjection().map((activity) => activity.key)).toEqual([
+      'wallet:shared-display-id',
+    ]);
+    fixture.destroy();
+    sourceFixture.destroy();
+  });
   it('removes FASTag creation from Sources while preserving existing FASTag source visibility', () => {
     const fixture = setup();
     const store = TestBed.inject(CardNestStore);

@@ -185,4 +185,29 @@ export const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
       `CREATE INDEX idx_consumer_wallet_split_group_order ON consumer_wallet_split_members(group_id,member_order)`,
     ],
   },
+  {
+    version: 18,
+    statements: [
+      `CREATE TABLE consumer_wallet_credit_provenance_segments (id TEXT PRIMARY KEY NOT NULL,credit_event_id TEXT NOT NULL,segment_order INTEGER NOT NULL CHECK(segment_order >= 0),root_credit_event_id TEXT NOT NULL,source_purchase_event_id TEXT NOT NULL,amount_minor INTEGER NOT NULL CHECK(amount_minor > 0),created_at TEXT NOT NULL,UNIQUE(credit_event_id,segment_order),FOREIGN KEY(credit_event_id) REFERENCES consumer_wallet_events(id) ON DELETE RESTRICT,FOREIGN KEY(root_credit_event_id) REFERENCES consumer_wallet_events(id) ON DELETE RESTRICT,FOREIGN KEY(source_purchase_event_id) REFERENCES consumer_wallet_events(id) ON DELETE RESTRICT)`,
+      `CREATE INDEX idx_consumer_wallet_provenance_segments_root ON consumer_wallet_credit_provenance_segments(root_credit_event_id,credit_event_id,segment_order)`,
+      `INSERT INTO consumer_wallet_credit_provenance_segments(id,credit_event_id,segment_order,root_credit_event_id,source_purchase_event_id,amount_minor,created_at)
+       SELECT p.credit_event_id||':segment:0',p.credit_event_id,0,p.source_credit_event_id,e.reversal_of_event_id,p.allocated_minor,p.created_at
+       FROM consumer_wallet_credit_provenance p
+       JOIN consumer_wallet_events e ON e.id=p.credit_event_id
+       JOIN consumer_wallet_events root ON root.id=p.source_credit_event_id
+       JOIN consumer_wallet_events purchase ON purchase.id=e.reversal_of_event_id
+       WHERE e.event_type IN ('REFUND','REVERSAL')
+         AND e.reversal_of_event_id IS NOT NULL
+         AND p.allocated_minor=e.amount_minor
+         AND root.wallet_id=e.wallet_id AND root.balance_delta_minor>0
+         AND root.event_type NOT IN ('REFUND','REVERSAL')
+         AND purchase.wallet_id=e.wallet_id AND purchase.event_type='PURCHASE'
+         AND NOT EXISTS (
+           SELECT 1 FROM consumer_wallet_events root
+           WHERE root.id=p.source_credit_event_id
+             AND root.event_type IN ('REFUND','REVERSAL')
+         )
+         AND (SELECT COUNT(*) FROM consumer_wallet_credit_provenance p2 WHERE p2.credit_event_id=p.credit_event_id)=1`,
+    ],
+  },
 ];

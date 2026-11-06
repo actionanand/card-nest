@@ -1,5 +1,5 @@
 import { Component, computed, inject, input, linkedSignal, output } from '@angular/core';
-import { CardTransaction } from '../core/models/domain';
+import { CardTransaction, ConsumerWalletEvent } from '../core/models/domain';
 import { ExportFormat, ExportPeriod } from '../core/models/export';
 import { ExportService } from '../core/services/export.service';
 import { AppIcon } from './app-icon';
@@ -9,6 +9,7 @@ export interface TransactionExportChoice {
   readonly value: string;
   readonly label: string;
   readonly transactions: readonly CardTransaction[];
+  readonly walletEvents?: readonly ConsumerWalletEvent[];
 }
 
 @Component({
@@ -131,6 +132,7 @@ export interface TransactionExportChoice {
 export class ExportDialog {
   private readonly exporter = inject(ExportService);
   readonly transactions = input.required<readonly CardTransaction[]>();
+  readonly walletEvents = input<readonly ConsumerWalletEvent[]>([]);
   readonly statementChoices = input<readonly TransactionExportChoice[]>([]);
   readonly monthChoices = input<readonly TransactionExportChoice[]>([]);
   /** Payment-source filter applied on the page; transfers are scoped by it directly. */
@@ -175,6 +177,7 @@ export class ExportDialog {
         this.range() as ExportPeriod,
         this.transactions(),
         this.sourceFilter(),
+        this.walletEvents(),
       );
       this.closed.emit();
       return;
@@ -189,6 +192,7 @@ export class ExportDialog {
       this.scope() === 'MONTH'
         ? { range: monthRange(choice.value), sourceId: this.sourceFilter() }
         : {},
+      choice.walletEvents ?? [],
     );
     this.closed.emit();
   }

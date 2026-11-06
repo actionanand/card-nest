@@ -183,6 +183,62 @@ describe('SMS upgrade of an existing version-6 database', () => {
     }
   });
 
+  it('adds ordered wallet refund provenance segments and backfills only provable single-root rows', () => {
+    const sql = new DatabaseSync(':memory:');
+    try {
+      sql.exec('PRAGMA foreign_keys=ON');
+      for (const migration of DATABASE_MIGRATIONS.filter((item) => item.version <= 16))
+        for (const statement of migration.statements) sql.exec(statement);
+      sql.exec(`
+        INSERT INTO consumer_wallets(id,provider_id,wallet_kind,archived,payload,created_at,updated_at)
+          VALUES('wallet','amazon-pay','STANDARD',0,'{}','now','now');
+        INSERT INTO consumer_wallet_events(id,wallet_id,event_type,event_date,amount_minor,balance_delta_minor,reversal_of_event_id,payload,created_at,updated_at)
+          VALUES('root','wallet','PROMOTIONAL_CREDIT','2026-10-01',10000,10000,NULL,'{}','root','root');
+        INSERT INTO consumer_wallet_events(id,wallet_id,event_type,event_date,amount_minor,balance_delta_minor,reversal_of_event_id,payload,created_at,updated_at)
+          VALUES('purchase','wallet','PURCHASE','2026-10-02',10000,-10000,NULL,'{}','purchase','purchase');
+        INSERT INTO consumer_wallet_events(id,wallet_id,event_type,event_date,amount_minor,balance_delta_minor,reversal_of_event_id,payload,created_at,updated_at)
+          VALUES('legacy-single-refund','wallet','REFUND','2026-10-03',10000,10000,'purchase','{}','single','single');
+        INSERT INTO consumer_wallet_events(id,wallet_id,event_type,event_date,amount_minor,balance_delta_minor,reversal_of_event_id,payload,created_at,updated_at)
+          VALUES('legacy-multi-refund','wallet','REFUND','2026-10-04',10000,10000,'purchase','{}','multi','multi');
+      `);
+      for (const statement of DATABASE_MIGRATIONS.find((item) => item.version === 17)!.statements)
+        sql.exec(statement);
+      sql.exec(`
+        INSERT INTO consumer_wallet_credit_provenance(credit_event_id,source_credit_event_id,allocated_minor,created_at)
+          VALUES('legacy-single-refund','root',10000,'now');
+        INSERT INTO consumer_wallet_credit_provenance(credit_event_id,source_credit_event_id,allocated_minor,created_at)
+          VALUES('legacy-multi-refund','root',6000,'now');
+        INSERT INTO consumer_wallet_credit_provenance(credit_event_id,source_credit_event_id,allocated_minor,created_at)
+          VALUES('legacy-multi-refund','purchase',4000,'now');
+      `);
+      for (const statement of DATABASE_MIGRATIONS.find((item) => item.version === 18)!.statements)
+        sql.exec(statement);
+      expect(
+        sql
+          .prepare(
+            'SELECT credit_event_id,segment_order,root_credit_event_id,source_purchase_event_id,amount_minor FROM consumer_wallet_credit_provenance_segments ORDER BY credit_event_id,segment_order',
+          )
+          .all(),
+      ).toEqual([
+        {
+          credit_event_id: 'legacy-single-refund',
+          segment_order: 0,
+          root_credit_event_id: 'root',
+          source_purchase_event_id: 'purchase',
+          amount_minor: 10000,
+        },
+      ]);
+      expect(sql.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+      expect(() =>
+        sql.exec(
+          "INSERT INTO consumer_wallet_credit_provenance_segments(id,credit_event_id,segment_order,root_credit_event_id,source_purchase_event_id,amount_minor,created_at) VALUES('duplicate-order','legacy-single-refund',0,'root','purchase',1000,'later')",
+        ),
+      ).toThrow();
+    } finally {
+      sql.close();
+    }
+  });
+
   it('classifies historical adjustments only from positive audit provenance and preserves financial columns', () => {
     const sql = new DatabaseSync(':memory:');
     try {

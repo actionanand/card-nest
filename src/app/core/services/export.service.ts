@@ -1,7 +1,7 @@
 import { Service, inject } from '@angular/core';
 import { Capacitor } from '@capacitor/core';
 import { NativeExport } from './native-export';
-import { CardTransaction, SourceTransfer } from '../models/domain';
+import { CardTransaction, ConsumerWalletEvent, SourceTransfer } from '../models/domain';
 import { transferLabel } from './source-balance';
 import {
   ExportDocument,
@@ -11,6 +11,7 @@ import {
   ExportSection,
 } from '../models/export';
 import { CardNestStore } from './card-nest-store';
+import { ConsumerWalletService } from './consumer-wallet.service';
 import {
   calculateNetSpending,
   formatMoney,
@@ -36,6 +37,7 @@ interface ExportRange {
 @Service()
 export class ExportService {
   private readonly store = inject(CardNestStore);
+  private readonly consumerWallets = inject(ConsumerWalletService);
   private readonly snackbar = inject(SnackbarService);
 
   exportTransactions(
@@ -43,8 +45,14 @@ export class ExportService {
     period: ExportPeriod,
     candidates: readonly CardTransaction[],
     sourceId = 'ALL',
+    walletEvents: readonly ConsumerWalletEvent[] = [],
   ): void {
     const transactions = this.inPeriod(candidates, period);
+    const selectedWalletEvents = this.walletEventsIn(
+      walletEvents,
+      this.periodRange(period),
+      sourceId,
+    );
     const transfers = this.transfersIn(this.periodRange(period), sourceId, transactions);
     this.deliverTransactions(
       format,
@@ -52,6 +60,7 @@ export class ExportService {
       transfers,
       this.periodLabel(period),
       `cardnest-transactions-${this.filePeriod(period)}`,
+      selectedWalletEvents,
     );
   }
 
@@ -67,7 +76,11 @@ export class ExportService {
     label: string,
     filePeriod: string,
     scope: { readonly range?: ExportRange; readonly sourceId?: string } = {},
+    walletEvents: readonly ConsumerWalletEvent[] = [],
   ): void {
+    const selectedWalletEvents = scope.range
+      ? this.walletEventsIn(walletEvents, scope.range, scope.sourceId ?? 'ALL')
+      : walletEvents;
     const transfers = scope.range
       ? this.transfersIn(scope.range, scope.sourceId ?? 'ALL', candidates)
       : this.linkedFunding(candidates);
@@ -77,6 +90,7 @@ export class ExportService {
       transfers,
       label,
       `cardnest-transactions-${filePeriod}`,
+      selectedWalletEvents,
     );
   }
 
@@ -86,6 +100,7 @@ export class ExportService {
     transferCandidates: readonly SourceTransfer[],
     label: string,
     filename: string,
+    walletEvents: readonly ConsumerWalletEvent[] = [],
   ): void {
     const transactions = candidates.sort((left, right) =>
       right.transactionDate.localeCompare(left.transactionDate),
@@ -97,7 +112,7 @@ export class ExportService {
     );
     if (format === 'CSV') {
       void this.deliverCsv(
-        this.transactionsCsv(transactions, transfers),
+        this.transactionsCsv(transactions, transfers, walletEvents),
         `${filename}.csv`,
         `CardNest transactions - ${label}`,
       );
@@ -116,6 +131,11 @@ export class ExportService {
       generatedOn: this.generatedOn(),
       summary: [
         { label: 'Transactions', value: String(transactions.length) },
+        { label: 'Wallet activities (informational)', value: String(walletEvents.length) },
+        {
+          label: 'Wallet balance movement (informational)',
+          value: this.money(walletEvents.reduce((sum, event) => sum + event.balanceDeltaMinor, 0)),
+        },
         { label: 'Spent / charged', value: this.money(debits) },
         { label: 'Payments / credits', value: this.money(credits) },
         { label: 'Net outflow', value: this.money(debits - credits) },
@@ -133,6 +153,7 @@ export class ExportService {
       ],
       sections: [
         ...this.transactionSections(transactions),
+        ...(walletEvents.length ? [this.walletActivitySection(walletEvents)] : []),
         ...(transfers.length ? [this.transferSection(transfers)] : []),
       ],
     };
@@ -320,6 +341,7 @@ export class ExportService {
   private transactionsCsv(
     transactions: readonly CardTransaction[],
     transfers: readonly SourceTransfer[],
+    walletEvents: readonly ConsumerWalletEvent[] = [],
   ): string {
     const rows: readonly (readonly string[])[] = [
       [
@@ -335,6 +357,13 @@ export class ExportService {
         'Currency',
         'Notes',
         'Payment group ID',
+        'Activity ID',
+        'Source type',
+        'Source name',
+        'Activity type',
+        'Wallet balance effect',
+        'Consolidated expense contribution',
+        'Original purchase ID',
       ],
       ...transactions.map((item) => [
         item.transactionDate,
@@ -349,6 +378,15 @@ export class ExportService {
         item.currencyCode,
         item.notes ?? '',
         item.splitGroupId ?? '',
+        item.id,
+        (this.store.cards?.() ?? []).some((card) => card.id === item.cardId)
+          ? 'Card'
+          : 'Payment source',
+        this.store.sourceName(item.cardId),
+        transactionLabel(item),
+        '',
+        (spendingContribution(item) / 100).toFixed(2),
+        item.relatedTransactionId ?? '',
       ]),
       ...transfers.map((transfer) => [
         transfer.transferDate,
@@ -363,9 +401,105 @@ export class ExportService {
         transfer.currencyCode,
         transfer.reference ? `Ref ${transfer.reference}` : '',
         '',
+        transfer.id,
+        'Own-account transfer',
+        this.store.sourceName(transfer.fromSourceId),
+        transferLabel(transfer.kind),
+        '',
+        '0.00',
+        '',
+      ]),
+      ...walletEvents.map((event) => [
+        event.eventDate,
+        event.eventTime ?? '',
+        event.merchant ?? event.refundReason ?? this.walletEventLabel(event),
+        this.walletEventLabel(event),
+        this.categoryName(event.categoryId ?? ''),
+        'Consumer Wallet',
+        this.walletName(event.walletId),
+        (event.amountMinor / 100).toFixed(2),
+        event.balanceDeltaMinor >= 0 ? 'Wallet credit' : 'Wallet debit',
+        'INR',
+        event.notes ?? event.memo ?? '',
+        '',
+        event.id,
+        'Consumer Wallet',
+        this.walletName(event.walletId),
+        this.walletEventLabel(event),
+        `${event.balanceDeltaMinor >= 0 ? '+' : '-'}${(Math.abs(event.balanceDeltaMinor) / 100).toFixed(2)}`,
+        '0.00',
+        event.reversalOfEventId ?? '',
       ]),
     ];
     return `\uFEFF${rows.map((row) => row.map((cell) => this.csvCell(cell)).join(',')).join('\r\n')}`;
+  }
+
+  private walletEventsIn(
+    events: readonly ConsumerWalletEvent[],
+    range: ExportRange | null,
+    sourceId: string,
+  ): ConsumerWalletEvent[] {
+    return events.filter(
+      (event) =>
+        (!range || (event.eventDate >= range.startDate && event.eventDate <= range.endDate)) &&
+        (sourceId === 'ALL' || sourceId === `consumer-wallet:${event.walletId}`),
+    );
+  }
+
+  private walletActivitySection(events: readonly ConsumerWalletEvent[]): ExportSection {
+    const ordered = [...events].sort(
+      (left, right) =>
+        right.eventDate.localeCompare(left.eventDate) ||
+        (right.eventTime ?? '').localeCompare(left.eventTime ?? '') ||
+        right.id.localeCompare(left.id),
+    );
+    return {
+      title: 'Consumer wallet activity (not additional consolidated spending)',
+      stats: [
+        { label: 'Entries', value: String(ordered.length) },
+        {
+          label: 'Net wallet balance movement',
+          value: this.money(ordered.reduce((total, event) => total + event.balanceDeltaMinor, 0)),
+        },
+        { label: 'Additional consolidated expense', value: this.money(0) },
+      ],
+      headers: [
+        'Date / time',
+        'Activity',
+        'Wallet',
+        'Category',
+        'Amount',
+        'Balance effect',
+        'Consolidated expense',
+        'Original purchase',
+      ],
+      rows: ordered.map((event) => ({
+        state: event.balanceDeltaMinor > 0 ? 'credit' : 'normal',
+        cells: [
+          `${this.displayDate(event.eventDate)}${event.eventTime ? ` ${event.eventTime.slice(0, 5)}` : ''}`,
+          event.merchant ?? event.refundReason ?? this.walletEventLabel(event),
+          this.walletName(event.walletId),
+          this.categoryName(event.categoryId ?? ''),
+          this.money(event.amountMinor),
+          `${event.balanceDeltaMinor >= 0 ? '+' : '-'}${this.money(Math.abs(event.balanceDeltaMinor))}`,
+          this.money(0),
+          event.reversalOfEventId ?? '',
+        ],
+      })),
+    };
+  }
+
+  private walletName(walletId: string): string {
+    const wallet = this.consumerWallets.wallets().find((item) => item.id === walletId);
+    return wallet?.nickname || wallet?.customName || wallet?.providerId || 'Consumer wallet';
+  }
+
+  private walletEventLabel(event: ConsumerWalletEvent): string {
+    if (event.eventType === 'PURCHASE') return 'Wallet purchase';
+    if (event.eventType === 'REFUND') return 'Wallet refund';
+    if (event.eventType === 'REVERSAL') return 'Purchase cancellation';
+    if (event.eventType === 'UPI_LITE_RETURN') return 'UPI Lite return to Bank';
+    return event.eventType.replaceAll('_', ' ').toLowerCase();
   }
 
   /**

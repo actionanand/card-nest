@@ -98,9 +98,17 @@
             <app-icon name="close" />
           </button>
           <div>
-            <p class="eyebrow">{{ editingId() ? 'Update entry' : 'New entry' }}</p>
+            <p class="eyebrow">
+              {{ editingId() || walletPurchaseEditId() ? 'Update entry' : 'New entry' }}
+            </p>
             <h2 id="transaction-form-title">
-              {{ editingId() ? 'Edit transaction' : 'Record a transaction' }}
+              {{
+                editingId()
+                  ? 'Edit transaction'
+                  : walletPurchaseEditId()
+                    ? 'Edit wallet purchase'
+                    : 'Record a transaction'
+              }}
             </h2>
           </div>
         </div>
@@ -622,9 +630,11 @@
               {{
                 form.controls.consumerWalletId.value && !walletPurchaseApprovedFor()
                   ? 'Review wallet purchase'
-                  : editingId()
-                    ? 'Update transaction'
-                    : 'Save transaction'
+                  : walletPurchaseEditId()
+                    ? 'Update wallet purchase'
+                    : editingId()
+                      ? 'Update transaction'
+                      : 'Save transaction'
               }}
             </button>
           </div>
@@ -741,7 +751,15 @@
         >{{ activityProjection().length }} visible
         {{ activityProjection().length === 1 ? 'activity' : 'activities' }}</small
       >
-      <strong [class.credit]="visibleTotal() >= 0">{{ signedMoney(visibleTotal()) }}</strong>
+      <strong [class.credit]="visibleTotal() >= 0"
+        >Card/Bank net · {{ signedMoney(visibleTotal()) }}</strong
+      >
+      @if (projectedWalletEvents().length) {
+        <small
+          >Wallet balance movement (informational) ·
+          {{ signedMoney(walletActivityBalanceMovement()) }}</small
+        >
+      }
       @if (selectedFilterSource(); as selected) {
         <button
           class="selected-source-link"
@@ -1014,7 +1032,9 @@
     }
     @if (remainingTransactions() > 0) {
       <div class="ledger-load-more">
-        <p>Showing {{ visibleTransactions().length }} of {{ filtered().length }} transactions</p>
+        <p>
+          Showing {{ visibleActivities().length }} of {{ pageableActivities().length }} activities
+        </p>
         <button type="button" (click)="loadMoreTransactions()">
           Load 200 more <span>({{ remainingTransactions() }} remaining)</span>
         </button>
@@ -1060,6 +1080,23 @@
           <dd>{{ event.notes || event.memo }}</dd>
         </div>
       }
+      @if (relatedWalletPurchase(event); as purchase) {
+        <div class="detail-wide">
+          <dt>Original purchase</dt>
+          <dd>
+            {{ purchase.merchant || consumerWalletEventLabel(purchase) }} ·
+            {{ purchase.eventDate | appDate }} · {{ money(purchase.amountMinor, 'INR') }}
+          </dd>
+        </div>
+        <div>
+          <dt>Total refunded</dt>
+          <dd>{{ money(walletRefundTotalMinor(purchase.id), 'INR') }}</dd>
+        </div>
+        <div>
+          <dt>Remaining refundable</dt>
+          <dd>{{ money(walletRefundableMinor(purchase), 'INR') }}</dd>
+        </div>
+      }
     </dl>
     @if (event.attachmentIds?.length) {
       <section class="detail-receipts" aria-label="Wallet receipt images">
@@ -1070,7 +1107,111 @@
         }
       </section>
     }
+    @if (event.eventType === 'PURCHASE') {
+      <div class="detail-actions">
+        <button
+          class="btn"
+          type="button"
+          [disabled]="!consumerWallets.enabled()"
+          (click)="editWalletPurchase(event)"
+        >
+          <app-icon name="edit" /> Edit purchase
+        </button>
+        <button
+          class="btn"
+          type="button"
+          [disabled]="!consumerWallets.enabled() || !walletRefundableMinor(event)"
+          (click)="openWalletRefund(event)"
+        >
+          <app-icon name="incoming" /> Refund {{ money(walletRefundableMinor(event), 'INR') }}
+        </button>
+        <button
+          class="btn danger-item"
+          type="button"
+          [disabled]="!consumerWallets.enabled() || !walletRefundableMinor(event)"
+          (click)="requestWalletCancellation(event)"
+        >
+          <app-icon name="delete" /> Cancel purchase
+        </button>
+      </div>
+      <p class="muted">Remaining refundable: {{ money(walletRefundableMinor(event), 'INR') }}</p>
+    }
   </app-profile-modal>
+}
+
+@if (walletRefundPurchaseId()) {
+  <app-profile-modal
+    title="Refund wallet purchase"
+    [busy]="saving()"
+    (closed)="closeWalletRefund()"
+  >
+    <form class="wallet-form" [formGroup]="walletRefundForm" (submit)="saveWalletRefund($event)">
+      <label>Refund amount<input formControlName="amount" inputmode="decimal" required /></label>
+      <label>Date<input formControlName="eventDate" type="date" required /></label>
+      <label>Time (optional)<input formControlName="eventTime" type="time" /></label>
+      <label>Reason (optional)<input formControlName="reason" maxlength="160" /></label>
+      <label>Reference (optional)<input formControlName="reference" maxlength="100" /></label>
+      <label>Notes (optional)<textarea formControlName="notes" maxlength="500"></textarea></label>
+      @if (walletRefundPreview(); as preview) {
+        <fieldset class="wallet-load-summary">
+          <legend>Review wallet refund</legend>
+          <p>Refund credit: {{ money(preview.amountMinor, 'INR') }}</p>
+          <p>Remaining refundable: {{ money(preview.refundableRemainingMinor, 'INR') }}</p>
+          <ol>
+            @for (segment of preview.provenanceSegments; track $index) {
+              <li>
+                {{ provenanceLabel(segment.rootCreditEventId) }} ·
+                {{ money(segment.amountMinor, 'INR') }}
+              </li>
+            }
+          </ol>
+          <p>No Bank or card transaction will be created.</p>
+          <label
+            ><input
+              type="checkbox"
+              [checked]="walletRefundApprovedFor() === preview.confirmationKey"
+              (change)="confirmWalletRefundApproval($event)"
+            />
+            I approve this refund.</label
+          >
+        </fieldset>
+      }
+      @if (walletRefundError(); as message) {
+        <p class="form-error" role="alert">{{ message }}</p>
+      }
+      <div class="modal-actions">
+        <button class="btn btn-primary" type="submit" [disabled]="saving()">
+          {{
+            saving()
+              ? 'Saving…'
+              : walletRefundPreview() &&
+                  walletRefundApprovedFor() === walletRefundPreview()?.confirmationKey
+                ? 'Record refund'
+                : 'Review refund'
+          }}
+        </button>
+        <button class="btn" type="button" [disabled]="saving()" (click)="closeWalletRefund()">
+          Cancel
+        </button>
+      </div>
+    </form>
+  </app-profile-modal>
+}
+
+@if (walletCancellationCandidate(); as purchase) {
+  <app-confirmation-dialog
+    title="Cancel wallet purchase?"
+    [message]="
+      'This records an audited reversal and restores ' +
+      money(walletRefundableMinor(purchase), 'INR') +
+      ' remaining refundable value to ' +
+      consumerWalletName(purchase.walletId) +
+      '. The original purchase and earlier refunds remain in history.'
+    "
+    confirmLabel="Cancel purchase"
+    (confirmed)="confirmWalletCancellation()"
+    (cancelled)="walletCancellationCandidate.set(null)"
+  />
 }
 
 @if (detailTransaction(); as transaction) {
@@ -1510,6 +1651,7 @@
 @if (exportOpen()) {
   <app-export-dialog
     [transactions]="filtered()"
+    [walletEvents]="projectedWalletEvents()"
     [initialFormat]="exportFormat()"
     [statementChoices]="exportStatementChoices()"
     [monthChoices]="exportMonthChoices()"
@@ -1525,6 +1667,22 @@
     confirmLabel="Delete transaction"
     (confirmed)="confirmDelete()"
     (cancelled)="deleteCandidate.set(null)"
+  />
+}
+
+@if (walletCancellationCandidate(); as purchase) {
+  <app-confirmation-dialog
+    title="Cancel wallet purchase?"
+    [message]="
+      'This records an audited reversal and restores ' +
+      money(walletRefundableMinor(purchase), 'INR') +
+      ' remaining refundable value to ' +
+      consumerWalletName(purchase.walletId) +
+      '. The original purchase and prior refunds remain in history.'
+    "
+    confirmLabel="Cancel purchase"
+    (confirmed)="confirmWalletCancellation()"
+    (cancelled)="walletCancellationCandidate.set(null)"
   />
 }
 

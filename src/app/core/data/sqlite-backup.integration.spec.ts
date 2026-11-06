@@ -64,7 +64,7 @@ vi.mock('@capacitor-community/sqlite', () => ({
 describe('Durable first-run data, additive read migration and private portable backups', () => {
   let sql: DatabaseSyncType;
   let database: SqliteDatabase;
-  it('demonstrates v17 root ordering cannot retain refund-of-refund allocation segment order', async () => {
+  it('preserves nested refund segment order through purchases and a later UPI Lite return', async () => {
     await database.initialise();
     const store = TestBed.inject(CardNestStore);
     await store.initialisePreferences();
@@ -73,92 +73,105 @@ describe('Durable first-run data, additive read migration and private portable b
     const bank = await store.addBankAccount({ institution: 'ICICI Bank', lastDigits: '419' });
     const wallet = await wallets.registerWallet({ providerId: 'upi-lite' });
     const today = indiaTodayIso();
-    const events = [
-      {
-        id: 'lineage-promo',
-        eventType: 'PROMOTIONAL_CREDIT',
-        amountMinor: 6000,
-        balanceDeltaMinor: 6000,
-      },
-      {
-        id: 'lineage-first-purchase',
-        eventType: 'PURCHASE',
-        amountMinor: 6000,
-        balanceDeltaMinor: -6000,
-      },
-      {
-        id: 'lineage-new-load',
-        eventType: 'FUNDED_LOAD',
-        amountMinor: 6000,
-        balanceDeltaMinor: 6000,
-      },
-      {
-        id: 'lineage-first-refund',
-        eventType: 'REFUND',
-        amountMinor: 6000,
-        balanceDeltaMinor: 6000,
-      },
-      {
-        id: 'lineage-second-purchase',
-        eventType: 'PURCHASE',
-        amountMinor: 10000,
-        balanceDeltaMinor: -10000,
-      },
-      {
-        id: 'lineage-second-refund',
-        eventType: 'REFUND',
-        amountMinor: 10000,
-        balanceDeltaMinor: 10000,
-      },
-    ];
-    await database.atomic(async (tx) => {
-      for (const [index, value] of events.entries()) {
-        const eventDate = addCalendarDays(today, index - 7);
-        const event = {
-          ...value,
-          walletId: wallet.id,
-          eventDate,
-          createdAt: `${eventDate}T10:00:00Z`,
-          updatedAt: `${eventDate}T10:00:00Z`,
-        };
-        await tx.run(
-          'INSERT INTO consumer_wallet_events(id,wallet_id,event_type,event_date,amount_minor,balance_delta_minor,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)',
-          [
-            event.id,
-            wallet.id,
-            event.eventType,
-            eventDate,
-            event.amountMinor,
-            event.balanceDeltaMinor,
-            JSON.stringify(event),
-            event.createdAt,
-            event.updatedAt,
-          ],
-        );
-      }
-      for (const [debit, credit, amount] of [
-        ['lineage-first-purchase', 'lineage-promo', 6000],
-        ['lineage-second-purchase', 'lineage-new-load', 6000],
-        ['lineage-second-purchase', 'lineage-first-refund', 4000],
-      ] as const) {
-        await tx.run(
-          'INSERT INTO consumer_wallet_event_allocations(id,debit_event_id,credit_event_id,allocated_minor,expense_reversal_minor,created_at) VALUES(?,?,?,?,?,?)',
-          [`${debit}:${credit}`, debit, credit, amount, 0, 'now'],
-        );
-      }
-      for (const [refund, root, amount] of [
-        ['lineage-first-refund', 'lineage-promo', 6000],
-        ['lineage-second-refund', 'lineage-new-load', 6000],
-        ['lineage-second-refund', 'lineage-promo', 4000],
-      ] as const) {
-        await tx.run(
-          'INSERT INTO consumer_wallet_credit_provenance(credit_event_id,source_credit_event_id,allocated_minor,created_at) VALUES(?,?,?,?)',
-          [refund, root, amount, 'now'],
-        );
-      }
+    const promoDate = addCalendarDays(today, -7);
+    await wallets.addWalletCredit({
+      id: 'lineage-promo',
+      walletId: wallet.id,
+      amountMinor: 6000,
+      eventType: 'PROMOTIONAL_CREDIT',
+      eventDate: promoDate,
     });
+    const purchase = async (id: string, amountMinor: number, eventDate: string) => {
+      const input = {
+        id,
+        walletId: wallet.id,
+        amountMinor,
+        eventDate,
+        eventTime: '10:00',
+        categoryId: 'other',
+      };
+      const preview = await wallets.previewWalletPurchase(input);
+      return wallets.recordWalletPurchase({ ...input, confirmationKey: preview.confirmationKey });
+    };
+    await purchase('lineage-first-purchase', 6000, addCalendarDays(today, -6));
+
+    const refund = async (
+      id: string,
+      purchaseEventId: string,
+      amountMinor: number,
+      eventDate: string,
+    ) => {
+      const input = { id, purchaseEventId, amountMinor, eventDate, eventTime: '10:00' };
+      const preview = await wallets.previewWalletPurchaseRefund(input);
+      return wallets.recordWalletPurchaseRefund({
+        ...input,
+        confirmationKey: preview.confirmationKey,
+      });
+    };
+    await refund(
+      'lineage-first-refund',
+      'lineage-first-purchase',
+      6000,
+      addCalendarDays(today, -4),
+    );
+
+    const loadCreatedAt = new Date().toISOString();
+    await store.saveManualTransaction(
+      {
+        id: 'lineage-load-debit',
+        cardId: bank.id,
+        type: 'PURCHASE',
+        amountMinor: 6000,
+        currencyCode: 'INR',
+        transactionDate: addCalendarDays(today, -5),
+        transactionTime: '10:00',
+        categoryId: 'other',
+        attachmentIds: [],
+        paymentMethod: 'WALLET_LOADING',
+        origin: 'MANUAL',
+        createdAt: loadCreatedAt,
+        updatedAt: loadCreatedAt,
+      },
+      '',
+      false,
+      undefined,
+      '',
+      { walletId: wallet.id, loadedAmountMinor: 6000 },
+    );
+    await wallets.reloadFinancialHistory();
+    const fundedLoad = wallets
+      .events()
+      .find((event) => event.sourceTransactionId === 'lineage-load-debit');
+    expect(fundedLoad).toBeDefined();
+    await purchase('lineage-second-purchase', 10000, addCalendarDays(today, -3));
+    await refund(
+      'lineage-second-refund',
+      'lineage-second-purchase',
+      10000,
+      addCalendarDays(today, -2),
+    );
+
+    expect(
+      rows(
+        'SELECT segment_order,root_credit_event_id,source_purchase_event_id,amount_minor FROM consumer_wallet_credit_provenance_segments WHERE credit_event_id=? ORDER BY segment_order',
+        ['lineage-second-refund'],
+      ),
+    ).toEqual([
+      {
+        segment_order: 0,
+        root_credit_event_id: fundedLoad!.id,
+        source_purchase_event_id: 'lineage-second-purchase',
+        amount_minor: 6000,
+      },
+      {
+        segment_order: 1,
+        root_credit_event_id: 'lineage-promo',
+        source_purchase_event_id: 'lineage-second-purchase',
+        amount_minor: 4000,
+      },
+    ]);
     const preview = await wallets.previewUpiLiteReturn({
-      id: 'lineage-return-preview',
+      id: 'lineage-return',
       walletId: wallet.id,
       bankSourceId: bank.id,
       amountMinor: 8000,
@@ -167,10 +180,19 @@ describe('Durable first-run data, additive read migration and private portable b
     });
     expect(preview.attributions).toMatchObject([
       { creditEventId: 'lineage-first-refund', allocatedMinor: 2000, expenseReversalMinor: 0 },
-      { creditEventId: 'lineage-second-refund', allocatedMinor: 6000, expenseReversalMinor: 2000 },
+      { creditEventId: 'lineage-second-refund', allocatedMinor: 6000, expenseReversalMinor: 6000 },
     ]);
-    expect(preview.fundedPrincipalReversalMinor).toBe(2000);
-    expect(preview.fundedPrincipalReversalMinor).not.toBe(6000);
+    expect(preview.fundedPrincipalReversalMinor).toBe(6000);
+    const returned = await wallets.recordUpiLiteReturn({
+      id: 'lineage-return',
+      walletId: wallet.id,
+      bankSourceId: bank.id,
+      amountMinor: 8000,
+      eventDate: today,
+      eventTime: '10:00',
+      confirmationKey: preview.confirmationKey,
+    });
+    expect(returned.eventType).toBe('UPI_LITE_RETURN');
   });
   it('previews and confirms wallet purchases without fabricating a card or bank debit', async () => {
     await database.initialise();
@@ -231,7 +253,11 @@ describe('Durable first-run data, additive read migration and private portable b
       ]),
     ).toEqual([{ allocated_minor: 10000 }]);
     await expect(
-      wallets.recordWalletPurchase({ ...input, merchant: 'Different merchant' }),
+      wallets.recordWalletPurchase({
+        ...input,
+        merchant: 'Different merchant',
+        confirmationKey: preview.confirmationKey,
+      }),
     ).rejects.toThrow('different purchase');
     await expect(
       wallets.previewWalletPurchase({
@@ -256,8 +282,384 @@ describe('Durable first-run data, additive read migration and private portable b
     ).rejects.toThrow('active registered consumer wallet');
     await wallets.setEnabled(false);
     await expect(
-      wallets.recordWalletPurchase({ ...input, id: 'disabled-wallet-purchase' }),
+      wallets.recordWalletPurchase({
+        ...input,
+        id: 'disabled-wallet-purchase',
+        confirmationKey: 'approved-before-wallets-disabled',
+      }),
     ).rejects.toThrow('Wallets is off');
+  });
+  it('restores ordered mixed refund provenance through partial refunds and a later Bank return', async () => {
+    await database.initialise();
+    const store = TestBed.inject(CardNestStore);
+    await store.initialisePreferences();
+    const wallets = TestBed.inject(ConsumerWalletService);
+    await wallets.initialise();
+    const bank = await store.addBankAccount({ institution: 'ICICI Bank', lastDigits: '419' });
+    await store.enableBankTracking({ [bank.id]: 50000 });
+    const wallet = await wallets.registerWallet({ providerId: 'upi-lite' });
+    const today = indiaTodayIso();
+    const loadDate = addCalendarDays(today, -8);
+    const loadCreatedAt = new Date().toISOString();
+    await store.saveManualTransaction(
+      {
+        id: 'mixed-refund-load-debit',
+        cardId: bank.id,
+        type: 'PURCHASE',
+        amountMinor: 6000,
+        currencyCode: 'INR',
+        transactionDate: loadDate,
+        transactionTime: '10:00',
+        categoryId: 'other',
+        merchant: 'Synthetic UPI Lite load',
+        attachmentIds: [],
+        paymentMethod: 'WALLET_LOADING',
+        origin: 'MANUAL',
+        createdAt: loadCreatedAt,
+        updatedAt: loadCreatedAt,
+      },
+      '',
+      false,
+      undefined,
+      '',
+      { walletId: wallet.id, loadedAmountMinor: 6000 },
+    );
+    await wallets.reloadFinancialHistory();
+    const fundedLoad = wallets
+      .events()
+      .find((event) => event.sourceTransactionId === 'mixed-refund-load-debit')!;
+    await wallets.addWalletCredit({
+      id: 'mixed-refund-promo',
+      walletId: wallet.id,
+      amountMinor: 4000,
+      eventType: 'PROMOTIONAL_CREDIT',
+      eventDate: addCalendarDays(today, -7),
+    });
+    const purchaseInput = {
+      id: 'mixed-refund-purchase',
+      walletId: wallet.id,
+      amountMinor: 10000,
+      eventDate: addCalendarDays(today, -6),
+      categoryId: 'other',
+      merchant: 'Synthetic mixed purchase',
+    };
+    await recordApprovedWalletPurchase(wallets, purchaseInput);
+
+    const refundInput = (id: string, amountMinor: number, eventDate: string) => ({
+      id,
+      purchaseEventId: purchaseInput.id,
+      amountMinor,
+      eventDate,
+      reason: 'Synthetic partial refund',
+    });
+    const firstInput = refundInput('mixed-refund-40', 4000, addCalendarDays(today, -4));
+    const firstPreview = await wallets.previewWalletPurchaseRefund(firstInput);
+    expect(firstPreview.provenanceSegments).toEqual([
+      {
+        segmentOrder: 0,
+        rootCreditEventId: fundedLoad.id,
+        sourcePurchaseEventId: purchaseInput.id,
+        amountMinor: 4000,
+      },
+    ]);
+    const firstRefund = await wallets.recordWalletPurchaseRefund({
+      ...firstInput,
+      confirmationKey: firstPreview.confirmationKey,
+    });
+    await expect(
+      wallets.recordWalletPurchaseRefund({
+        ...firstInput,
+        confirmationKey: firstPreview.confirmationKey,
+      }),
+    ).resolves.toEqual(firstRefund);
+    expect(wallets.balances().get(wallet.id)).toBe(4000);
+    await expect(
+      wallets.previewWalletPurchaseEdit({
+        ...purchaseInput,
+        amountMinor: 9000,
+      }),
+    ).rejects.toThrow('refunds or cancellation');
+    const secondInput = refundInput('mixed-refund-30', 3000, addCalendarDays(today, -3));
+    const secondPreview = await wallets.previewWalletPurchaseRefund(secondInput);
+    expect(secondPreview.provenanceSegments).toEqual([
+      {
+        segmentOrder: 0,
+        rootCreditEventId: fundedLoad.id,
+        sourcePurchaseEventId: purchaseInput.id,
+        amountMinor: 2000,
+      },
+      {
+        segmentOrder: 1,
+        rootCreditEventId: 'mixed-refund-promo',
+        sourcePurchaseEventId: purchaseInput.id,
+        amountMinor: 1000,
+      },
+    ]);
+    const secondRefund = await wallets.recordWalletPurchaseRefund({
+      ...secondInput,
+      confirmationKey: secondPreview.confirmationKey,
+    });
+    await expect(
+      wallets.recordWalletPurchaseRefund({
+        ...secondInput,
+        confirmationKey: secondPreview.confirmationKey,
+      }),
+    ).resolves.toEqual(secondRefund);
+    expect(wallets.balances().get(wallet.id)).toBe(7000);
+    await expect(
+      wallets.previewWalletPurchaseRefund(
+        refundInput('mixed-refund-over', 4000, addCalendarDays(today, -2)),
+      ),
+    ).rejects.toThrow('remaining refundable');
+    const returnInput = {
+      id: 'mixed-refund-return',
+      walletId: wallet.id,
+      bankSourceId: bank.id,
+      amountMinor: 7000,
+      eventDate: today,
+      eventTime: '10:00',
+    };
+    const returnPreview = await wallets.previewUpiLiteReturn(returnInput);
+    expect(returnPreview).toMatchObject({
+      fundedPrincipalReversalMinor: 6000,
+      nonFundedReturnMinor: 1000,
+    });
+    const returnEvent = await wallets.recordUpiLiteReturn({
+      ...returnInput,
+      confirmationKey: returnPreview.confirmationKey,
+    });
+    expect(returnEvent.eventType).toBe('UPI_LITE_RETURN');
+    expect(
+      rows(
+        'SELECT segment_order,root_credit_event_id,amount_minor FROM consumer_wallet_credit_provenance_segments WHERE credit_event_id=? ORDER BY segment_order',
+        [firstRefund.id],
+      ),
+    ).toEqual([{ segment_order: 0, root_credit_event_id: fundedLoad.id, amount_minor: 4000 }]);
+    expect(
+      rows(
+        'SELECT segment_order,root_credit_event_id,amount_minor FROM consumer_wallet_credit_provenance_segments WHERE credit_event_id=? ORDER BY segment_order',
+        [secondRefund.id],
+      ),
+    ).toEqual([
+      { segment_order: 0, root_credit_event_id: fundedLoad.id, amount_minor: 2000 },
+      { segment_order: 1, root_credit_event_id: 'mixed-refund-promo', amount_minor: 1000 },
+    ]);
+    expect(
+      rows(
+        'SELECT SUM(reversed_minor) AS reversed FROM consumer_wallet_expense_reversals WHERE funded_load_event_id=?',
+        [fundedLoad.id],
+      ),
+    ).toEqual([{ reversed: 6000 }]);
+    expect(
+      rows('SELECT id FROM card_transactions WHERE id=?', [
+        `wallet-return-bank-credit-${returnInput.id}`,
+      ]),
+    ).toHaveLength(1);
+  });
+  it('cancels a purchase by reversing only its remaining refundable value', async () => {
+    await database.initialise();
+    await TestBed.inject(CardNestStore).initialisePreferences();
+    const wallets = TestBed.inject(ConsumerWalletService);
+    await wallets.initialise();
+    const wallet = await wallets.registerWallet({ providerId: 'amazon-pay' });
+    const today = indiaTodayIso();
+    await wallets.addWalletCredit({
+      id: 'cancel-wallet-credit',
+      walletId: wallet.id,
+      amountMinor: 15000,
+      eventType: 'MANUAL_CREDIT',
+      eventDate: addCalendarDays(today, -4),
+    });
+    const purchaseInput = {
+      id: 'cancel-wallet-purchase',
+      walletId: wallet.id,
+      amountMinor: 10000,
+      eventDate: addCalendarDays(today, -3),
+      categoryId: 'other',
+    };
+    await recordApprovedWalletPurchase(wallets, purchaseInput);
+    const refundInput = {
+      id: 'cancel-wallet-partial-refund',
+      purchaseEventId: purchaseInput.id,
+      amountMinor: 4000,
+      eventDate: addCalendarDays(today, -2),
+    };
+    const refundPreview = await wallets.previewWalletPurchaseRefund(refundInput);
+    await wallets.recordWalletPurchaseRefund({
+      ...refundInput,
+      confirmationKey: refundPreview.confirmationKey,
+    });
+    const cancellationInput = {
+      id: 'cancel-wallet-reversal',
+      purchaseEventId: purchaseInput.id,
+      amountMinor: 6000,
+      eventDate: addCalendarDays(today, -1),
+      reason: 'Synthetic cancellation',
+    };
+    const cancellationPreview = await wallets.previewWalletPurchaseCancellation(cancellationInput);
+    const cancellation = await wallets.cancelWalletPurchase({
+      ...cancellationInput,
+      confirmationKey: cancellationPreview.confirmationKey,
+    });
+    expect(cancellation).toMatchObject({
+      eventType: 'REVERSAL',
+      reversalOfEventId: purchaseInput.id,
+      amountMinor: 6000,
+    });
+    expect(wallets.balances().get(wallet.id)).toBe(15000);
+    expect(
+      rows('SELECT id FROM consumer_wallet_events WHERE id=?', [purchaseInput.id]),
+    ).toHaveLength(1);
+    await expect(
+      wallets.cancelWalletPurchase({
+        ...cancellationInput,
+        confirmationKey: cancellationPreview.confirmationKey,
+      }),
+    ).resolves.toEqual(cancellation);
+    expect(
+      rows(
+        "SELECT id FROM consumer_wallet_events WHERE reversal_of_event_id=? AND event_type IN ('REFUND','REVERSAL')",
+        [purchaseInput.id],
+      ),
+    ).toHaveLength(2);
+  });
+  it('starts cumulative refund offsets after a completely refunded provenance segment', async () => {
+    await database.initialise();
+    await TestBed.inject(CardNestStore).initialisePreferences();
+    const wallets = TestBed.inject(ConsumerWalletService);
+    await wallets.initialise();
+    const wallet = await wallets.registerWallet({ providerId: 'amazon-pay' });
+    const today = indiaTodayIso();
+    await wallets.addWalletCredit({
+      id: 'segment-offset-first-credit',
+      walletId: wallet.id,
+      amountMinor: 6000,
+      eventType: 'MANUAL_CREDIT',
+      eventDate: addCalendarDays(today, -5),
+    });
+    await wallets.addWalletCredit({
+      id: 'segment-offset-second-credit',
+      walletId: wallet.id,
+      amountMinor: 4000,
+      eventType: 'PROMOTIONAL_CREDIT',
+      eventDate: addCalendarDays(today, -4),
+    });
+    const purchaseInput = {
+      id: 'segment-offset-purchase',
+      walletId: wallet.id,
+      amountMinor: 10000,
+      eventDate: addCalendarDays(today, -3),
+      categoryId: 'other',
+    };
+    await recordApprovedWalletPurchase(wallets, purchaseInput);
+    const refund = async (id: string, amountMinor: number, eventDate: string) => {
+      const input = { id, purchaseEventId: purchaseInput.id, amountMinor, eventDate };
+      const preview = await wallets.previewWalletPurchaseRefund(input);
+      return wallets.recordWalletPurchaseRefund({
+        ...input,
+        confirmationKey: preview.confirmationKey,
+      });
+    };
+    await refund('segment-offset-refund-first', 6000, addCalendarDays(today, -2));
+    await refund('segment-offset-refund-second', 1000, addCalendarDays(today, -1));
+    expect(
+      rows(
+        'SELECT segment_order,root_credit_event_id,amount_minor FROM consumer_wallet_credit_provenance_segments WHERE credit_event_id=? ORDER BY segment_order',
+        ['segment-offset-refund-second'],
+      ),
+    ).toEqual([
+      {
+        segment_order: 0,
+        root_credit_event_id: 'segment-offset-second-credit',
+        amount_minor: 1000,
+      },
+    ]);
+  });
+  it('edits wallet purchase metadata and safe amounts without changing downstream FIFO history', async () => {
+    await database.initialise();
+    const store = TestBed.inject(CardNestStore);
+    await store.initialisePreferences();
+    const wallets = TestBed.inject(ConsumerWalletService);
+    await wallets.initialise();
+    const wallet = await wallets.registerWallet({ providerId: 'amazon-pay' });
+    const today = indiaTodayIso();
+    await wallets.addWalletCredit({
+      id: 'edit-wallet-credit',
+      walletId: wallet.id,
+      amountMinor: 30000,
+      eventType: 'MANUAL_CREDIT',
+      eventDate: addCalendarDays(today, -4),
+    });
+    const originalInput = {
+      id: 'edit-wallet-purchase',
+      walletId: wallet.id,
+      amountMinor: 10000,
+      eventDate: addCalendarDays(today, -3),
+      eventTime: '10:00',
+      categoryId: 'other',
+      merchant: 'Original merchant',
+      notes: 'Original note',
+    };
+    const original = await recordApprovedWalletPurchase(wallets, originalInput);
+    const later = await recordApprovedWalletPurchase(wallets, {
+      id: 'edit-later-purchase',
+      walletId: wallet.id,
+      amountMinor: 5000,
+      eventDate: addCalendarDays(today, -2),
+      categoryId: 'other',
+    });
+    const originalAllocation = rows(
+      'SELECT id,credit_event_id,allocated_minor FROM consumer_wallet_event_allocations WHERE debit_event_id=?',
+      [original.id],
+    );
+    const metadataInput = {
+      ...originalInput,
+      merchant: 'Updated merchant',
+      notes: 'Updated note',
+    };
+    const metadataPreview = await wallets.previewWalletPurchaseEdit(metadataInput);
+    const metadataUpdate = await wallets.updateWalletPurchase({
+      ...metadataInput,
+      confirmationKey: metadataPreview.confirmationKey,
+    });
+    expect(metadataUpdate).toMatchObject({
+      id: original.id,
+      merchant: 'Updated merchant',
+      notes: 'Updated note',
+    });
+    expect(
+      rows(
+        'SELECT id,credit_event_id,allocated_minor FROM consumer_wallet_event_allocations WHERE debit_event_id=?',
+        [original.id],
+      ),
+    ).toEqual(originalAllocation);
+
+    const amountInput = { ...metadataInput, amountMinor: 12000 };
+    const amountPreview = await wallets.previewWalletPurchaseEdit(amountInput);
+    await wallets.updateWalletPurchase({
+      ...amountInput,
+      confirmationKey: amountPreview.confirmationKey,
+    });
+    expect(wallets.balances().get(wallet.id)).toBe(13000);
+    expect(
+      rows(
+        'SELECT credit_event_id,allocated_minor FROM consumer_wallet_event_allocations WHERE debit_event_id=?',
+        [later.id],
+      ),
+    ).toEqual([{ credit_event_id: 'edit-wallet-credit', allocated_minor: 5000 }]);
+    expect(
+      rows('SELECT id,amount_minor FROM consumer_wallet_events WHERE id=?', [original.id]),
+    ).toEqual([{ id: original.id, amount_minor: 12000 }]);
+
+    await expect(
+      wallets.previewWalletPurchaseEdit({
+        ...amountInput,
+        eventDate: addCalendarDays(today, -5),
+      }),
+    ).rejects.toThrow('historical wallet balance');
+    expect(
+      rows('SELECT id,amount_minor FROM consumer_wallet_events WHERE id=?', [original.id]),
+    ).toEqual([{ id: original.id, amount_minor: 12000 }]);
   });
   it('initializes Wallets from legacy FASTag data but preserves explicit OFF', async () => {
     await database.initialise();
@@ -732,6 +1134,13 @@ describe('Durable first-run data, additive read migration and private portable b
   });
   const rows = (statement: string, values: readonly unknown[] = []) =>
     sql.prepare(statement).all(...(values as SQLInputValue[]));
+  const recordApprovedWalletPurchase = async (
+    wallets: ConsumerWalletService,
+    input: Parameters<ConsumerWalletService['previewWalletPurchase']>[0],
+  ) => {
+    const preview = await wallets.previewWalletPurchase(input);
+    return wallets.recordWalletPurchase({ ...input, confirmationKey: preview.confirmationKey });
+  };
   const count = (table: string) => Number(rows(`SELECT COUNT(*) AS n FROM ${table}`)[0]['n']);
   const marker = () =>
     rows("SELECT encrypted_value FROM app_preferences WHERE key='initial_data_state'")[0]?.[
@@ -977,20 +1386,22 @@ describe('Durable first-run data, additive read migration and private portable b
       ),
     ).toEqual([{ count: 1 }]);
 
-    const walletPurchase = await wallets.recordWalletPurchase({
+    const walletPurchaseInput = {
       id: 'wallet-load-test-purchase',
       walletId: wallet.id,
       amountMinor: 2100,
       eventDate: '2026-10-06',
       categoryId: 'other',
+    };
+    const walletPurchasePreview = await wallets.previewWalletPurchase(walletPurchaseInput);
+    const walletPurchase = await wallets.recordWalletPurchase({
+      ...walletPurchaseInput,
+      confirmationKey: walletPurchasePreview.confirmationKey,
     });
     await expect(
       wallets.recordWalletPurchase({
-        id: 'wallet-load-test-purchase',
-        walletId: wallet.id,
-        amountMinor: 2100,
-        eventDate: '2026-10-06',
-        categoryId: 'other',
+        ...walletPurchaseInput,
+        confirmationKey: walletPurchasePreview.confirmationKey,
       }),
     ).resolves.toEqual(walletPurchase);
     const fundedLoad = rows(
@@ -1076,7 +1487,7 @@ describe('Durable first-run data, additive read migration and private portable b
       eventType: 'MANUAL_CREDIT',
       eventDate: '2026-11-02',
     });
-    await wallets.recordWalletPurchase({
+    await recordApprovedWalletPurchase(wallets, {
       id: 'nov-3-wallet-purchase',
       walletId: creditedWallet.id,
       amountMinor: 5000,
@@ -1149,7 +1560,7 @@ describe('Durable first-run data, additive read migration and private portable b
       eventType: 'MANUAL_CREDIT',
       eventDate: creditDate,
     });
-    await wallets.recordWalletPurchase({
+    await recordApprovedWalletPurchase(wallets, {
       id: 'safe-backdated-purchase',
       walletId: wallet.id,
       amountMinor: 5000,
@@ -1205,7 +1616,7 @@ describe('Durable first-run data, additive read migration and private portable b
       JSON.stringify(timedCredit),
       timedCredit.id,
     ]);
-    await wallets.recordWalletPurchase({
+    await recordApprovedWalletPurchase(wallets, {
       id: 'same-day-wallet-purchase-before-load',
       walletId: wallet.id,
       amountMinor: 5000,
@@ -1234,7 +1645,7 @@ describe('Durable first-run data, additive read migration and private portable b
         loadedAmountMinor: 10000,
       });
     await save(transaction);
-    await wallets.recordWalletPurchase({
+    await recordApprovedWalletPurchase(wallets, {
       id: 'same-day-wallet-purchase-after-load',
       walletId: wallet.id,
       amountMinor: 10000,
@@ -1296,7 +1707,7 @@ describe('Durable first-run data, additive read migration and private portable b
     );
     expect(wallets.balances().get(wallet.id) ?? 0).toBe(0);
     await expect(
-      wallets.recordWalletPurchase({
+      recordApprovedWalletPurchase(wallets, {
         id: 'backdated-wallet-purchase',
         walletId: wallet.id,
         amountMinor: 1000,
@@ -1322,7 +1733,7 @@ describe('Durable first-run data, additive read migration and private portable b
       eventType: 'MANUAL_CREDIT',
       eventDate: addCalendarDays(today, -3),
     });
-    await wallets.recordWalletPurchase({
+    await recordApprovedWalletPurchase(wallets, {
       id: 'correction-later-purchase',
       walletId: wallet.id,
       amountMinor: 200,
@@ -1366,7 +1777,7 @@ describe('Durable first-run data, additive read migration and private portable b
       eventType: 'PROMOTIONAL_CREDIT',
       eventDate: addCalendarDays(today, -2),
     });
-    await wallets.recordWalletPurchase({
+    await recordApprovedWalletPurchase(wallets, {
       id: 'fifo-later-purchase',
       walletId: wallet.id,
       amountMinor: 500,
@@ -1406,7 +1817,7 @@ describe('Durable first-run data, additive read migration and private portable b
       eventType: 'MANUAL_CREDIT',
       eventDate: addCalendarDays(today, -3),
     });
-    await wallets.recordWalletPurchase({
+    await recordApprovedWalletPurchase(wallets, {
       id: 'negative-history-purchase',
       walletId: wallet.id,
       amountMinor: 700,
@@ -1970,6 +2381,8 @@ describe('Durable first-run data, additive read migration and private portable b
         eventDate: '2026-10-21',
         amountMinor: 5000,
         balanceDeltaMinor: -5000,
+        categoryId: 'other',
+        attachmentIds: ['data:image/jpeg;base64,c3ludGhldGljLXJlY2VpcHQ='],
         createdAt: '2026-10-21T10:00:00Z',
         updatedAt: '2026-10-21T10:00:00Z',
       },
@@ -1987,6 +2400,18 @@ describe('Durable first-run data, additive read migration and private portable b
         sourceTransactionId: 'backup-bank-load-transaction',
         createdAt: '2026-10-22T10:00:00Z',
         updatedAt: '2026-10-22T10:00:00Z',
+      },
+      {
+        id: 'backup-upi-purchase',
+        walletId: upiLite.id,
+        eventType: 'PURCHASE',
+        eventDate: '2026-10-23',
+        eventTime: '09:00',
+        amountMinor: 5000,
+        balanceDeltaMinor: -5000,
+        categoryId: 'other',
+        createdAt: '2026-10-23T09:00:00Z',
+        updatedAt: '2026-10-23T09:00:00Z',
       },
       {
         id: 'backup-upi-return',
@@ -2008,6 +2433,8 @@ describe('Durable first-run data, additive read migration and private portable b
         eventDate: '2026-10-24',
         amountMinor: 5000,
         balanceDeltaMinor: 5000,
+        reversalOfEventId: 'backup-upi-purchase',
+        refundReason: 'Synthetic returned purchase',
         createdAt: '2026-10-24T11:00:00Z',
         updatedAt: '2026-10-24T11:00:00Z',
       },
@@ -2052,7 +2479,7 @@ describe('Durable first-run data, additive read migration and private portable b
       );
       for (const event of eventRows)
         await tx.run(
-          'INSERT INTO consumer_wallet_events(id,wallet_id,event_type,event_date,amount_minor,balance_delta_minor,loaded_amount_minor,fee_minor,funding_source_kind,funding_source_id,source_transaction_id,return_source_id,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+          'INSERT INTO consumer_wallet_events(id,wallet_id,event_type,event_date,amount_minor,balance_delta_minor,loaded_amount_minor,fee_minor,funding_source_kind,funding_source_id,source_transaction_id,return_source_id,reversal_of_event_id,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
           [
             event.id,
             event.walletId,
@@ -2066,6 +2493,7 @@ describe('Durable first-run data, additive read migration and private portable b
             'fundingSourceId' in event ? event.fundingSourceId : null,
             'sourceTransactionId' in event ? event.sourceTransactionId : null,
             'returnSourceId' in event ? event.returnSourceId : null,
+            'reversalOfEventId' in event ? event.reversalOfEventId : null,
             JSON.stringify(event),
             event.createdAt,
             event.updatedAt,
@@ -2085,6 +2513,17 @@ describe('Durable first-run data, additive read migration and private portable b
       await tx.run(
         'INSERT INTO consumer_wallet_event_allocations(id,debit_event_id,credit_event_id,allocated_minor,expense_reversal_minor,created_at) VALUES(?,?,?,?,?,?)',
         ['backup-return-allocation', 'backup-upi-return', 'backup-upi-load', 10000, 10000, 'now'],
+      );
+      await tx.run(
+        'INSERT INTO consumer_wallet_event_allocations(id,debit_event_id,credit_event_id,allocated_minor,expense_reversal_minor,created_at) VALUES(?,?,?,?,?,?)',
+        [
+          'backup-upi-purchase-allocation',
+          'backup-upi-purchase',
+          'backup-upi-load',
+          5000,
+          0,
+          'now',
+        ],
       );
       await tx.run(
         'INSERT INTO consumer_wallet_return_links(return_event_id,wallet_id,bank_source_id,existing_bank_transaction_id,balance_effect,reference,note,created_at) VALUES(?,?,?,?,?,?,?,?)',
@@ -2110,6 +2549,18 @@ describe('Durable first-run data, additive read migration and private portable b
       await tx.run(
         'INSERT INTO consumer_wallet_credit_provenance(credit_event_id,source_credit_event_id,allocated_minor,created_at) VALUES(?,?,?,?)',
         ['backup-refund-credit', 'backup-upi-load', 5000, 'now'],
+      );
+      await tx.run(
+        'INSERT INTO consumer_wallet_credit_provenance_segments(id,credit_event_id,segment_order,root_credit_event_id,source_purchase_event_id,amount_minor,created_at) VALUES(?,?,?,?,?,?,?)',
+        [
+          'backup-refund-credit:segment:0',
+          'backup-refund-credit',
+          0,
+          'backup-upi-load',
+          'backup-upi-purchase',
+          5000,
+          'now',
+        ],
       );
       await tx.run(
         'INSERT INTO transaction_split_groups(id,original_amount_minor,created_at,kind,anchor_transaction_id,title,currency_code,bill_total_minor,updated_at) VALUES(?,?,?,?,?,?,?,?,?)',
@@ -2166,6 +2617,9 @@ describe('Durable first-run data, additive read migration and private portable b
     const expectedCreditProvenance = rows(
       'SELECT * FROM consumer_wallet_credit_provenance ORDER BY credit_event_id,source_credit_event_id',
     );
+    const expectedProvenanceSegments = rows(
+      'SELECT * FROM consumer_wallet_credit_provenance_segments ORDER BY credit_event_id,segment_order',
+    );
     const expectedWalletSplitMembers = rows(
       'SELECT * FROM consumer_wallet_split_members ORDER BY group_id,member_order',
     );
@@ -2185,6 +2639,9 @@ describe('Durable first-run data, additive read migration and private portable b
         "UPDATE consumer_wallet_events SET notes='mutated after backup' WHERE id='backup-upi-return'",
       );
       const preRestoreEvents = rows('SELECT * FROM consumer_wallet_events ORDER BY id');
+      const preRestoreSegments = rows(
+        'SELECT * FROM consumer_wallet_credit_provenance_segments ORDER BY credit_event_id,segment_order',
+      );
       const preRestoreLinks = rows(
         'SELECT * FROM consumer_wallet_return_links ORDER BY return_event_id',
       );
@@ -2196,6 +2653,11 @@ describe('Durable first-run data, additive read migration and private portable b
         backups.restore(backup.contents, 'synthetic-wallet-roundtrip-passphrase'),
       ).rejects.toThrow('synthetic wallet relation restore failure');
       expect(rows('SELECT * FROM consumer_wallet_events ORDER BY id')).toEqual(preRestoreEvents);
+      expect(
+        rows(
+          'SELECT * FROM consumer_wallet_credit_provenance_segments ORDER BY credit_event_id,segment_order',
+        ),
+      ).toEqual(preRestoreSegments);
       expect(rows('SELECT * FROM consumer_wallet_return_links ORDER BY return_event_id')).toEqual(
         preRestoreLinks,
       );
@@ -2212,6 +2674,20 @@ describe('Durable first-run data, additive read migration and private portable b
           'SELECT * FROM consumer_wallet_credit_provenance ORDER BY credit_event_id,source_credit_event_id',
         ),
       ).toEqual(expectedCreditProvenance);
+      expect(
+        rows(
+          'SELECT * FROM consumer_wallet_credit_provenance_segments ORDER BY credit_event_id,segment_order',
+        ),
+      ).toEqual(expectedProvenanceSegments);
+      expect(
+        JSON.parse(
+          String(
+            rows('SELECT payload FROM consumer_wallet_events WHERE id=?', [
+              'backup-wallet-purchase',
+            ])[0]['payload'],
+          ),
+        ).attachmentIds,
+      ).toEqual(['data:image/jpeg;base64,c3ludGhldGljLXJlY2VpcHQ=']);
       expect(
         rows('SELECT * FROM consumer_wallet_split_members ORDER BY group_id,member_order'),
       ).toEqual(expectedWalletSplitMembers);
