@@ -17,6 +17,7 @@ import { ActivatedRoute, Router } from '@angular/router';
 import { Camera, CameraResultType, CameraSource } from '@capacitor/camera';
 import { Capacitor } from '@capacitor/core';
 import {
+  AddOnCardProfile,
   BalanceTiming,
   CardTransaction,
   ConsumerWalletActivityClassification,
@@ -122,6 +123,7 @@ interface TransactionFilterDraft {
 const TRANSACTION_PAGE_SIZE = 200;
 const MAX_RECEIPT_BYTES = 1_000_000;
 const CONSUMER_WALLET_SOURCE_PREFIX = 'consumer-wallet:';
+const ADD_ON_FILTER_PREFIX = 'add-on:';
 
 function sanitizedMoneyInput(value: string): string {
   const numeric = value.replace(/[^0-9.]/g, '');
@@ -455,6 +457,16 @@ export class TransactionsPage {
       const walletId = id.slice(CONSUMER_WALLET_SOURCE_PREFIX.length);
       return { id: walletId, label: this.consumerWalletName(walletId), kind: 'CONSUMER_WALLET' };
     }
+    if (id.startsWith(ADD_ON_FILTER_PREFIX)) {
+      const profileId = id.slice(ADD_ON_FILTER_PREFIX.length);
+      const card = this.store
+        .cards()
+        .find((item) => item.addOnProfiles?.some((profile) => profile.id === profileId));
+      const profile = card?.addOnProfiles?.find((item) => item.id === profileId);
+      if (card && profile)
+        return { id: card.id, label: `${card.nickname} · ${profile.name}`, kind: 'CARD' };
+      return null;
+    }
     const card = this.store.cards().find((item) => item.id === id);
     if (card) return { id, label: card.nickname, kind: 'CARD' };
     const source = this.store.paymentSources().find((item) => item.id === id);
@@ -536,20 +548,22 @@ export class TransactionsPage {
       label: `Budget cycle (day ${this.store.budgetCycleStartDay()})`,
       disabled: this.store
         .cards()
-        .some((card) => card.id === (this.filterDraft()?.source ?? this.sourceFilter())),
+        .some(
+          (card) =>
+            card.id ===
+            this.primaryCardIdForFilter(this.filterDraft()?.source ?? this.sourceFilter()),
+        ),
     },
     {
       value: 'STATEMENT',
       label: 'Selected card statement cycle',
-      disabled: !this.store
-        .cards()
-        .some((card) => card.id === (this.filterDraft()?.source ?? this.sourceFilter())),
+      disabled: !this.primaryCardIdForFilter(this.filterDraft()?.source ?? this.sourceFilter()),
     },
   ]);
   readonly filterDraftGrouping = computed<GroupingMode>(() => {
     const draft = this.filterDraft();
     if (!draft) return this.effectiveGrouping();
-    if (this.store.cards().some((card) => card.id === draft.source)) return 'STATEMENT';
+    if (this.primaryCardIdForFilter(draft.source)) return 'STATEMENT';
     if (draft.source.startsWith(CONSUMER_WALLET_SOURCE_PREFIX)) return 'MONTH';
     if (
       draft.source !== 'ALL' &&
@@ -565,6 +579,13 @@ export class TransactionsPage {
       label: `${card.nickname}${card.archived || card.deletedAt ? ' · Archived' : ''}`,
       detail: `${card.lastDigits} · ${card.issuerName}`,
     })),
+    ...this.store.cards().flatMap((card) =>
+      (card.addOnProfiles ?? []).map((profile) => ({
+        value: `${ADD_ON_FILTER_PREFIX}${profile.id}`,
+        label: `${card.nickname} · ${profile.name}${profile.archived ? ' · Archived' : ''}`,
+        detail: `Add-On · •••• ${profile.lastDigits}`,
+      })),
+    ),
     ...this.store.paymentSources().map((source) => ({
       value: source.id,
       label: `${source.nickname}${source.archived ? ' · Archived' : ''}`,
@@ -698,6 +719,7 @@ export class TransactionsPage {
       nonNullable: true,
       validators: [Validators.required],
     }),
+    addOnCardId: new FormControl('', { nonNullable: true }),
     consumerWalletId: new FormControl('', { nonNullable: true }),
     type: new FormControl<TransactionType>(
       this.route.snapshot.queryParamMap.get('payment') === 'true' ? 'PAYMENT' : 'PURCHASE',
@@ -1084,7 +1106,10 @@ export class TransactionsPage {
             (this.typeFilter() === 'WITH_IMAGE'
               ? item.attachmentIds.length > 0
               : item.type === this.typeFilter())) &&
-          (this.sourceFilter() === 'ALL' || item.cardId === this.sourceFilter()) &&
+          (this.sourceFilter() === 'ALL' ||
+            item.cardId === this.sourceFilter() ||
+            (this.sourceFilter().startsWith(ADD_ON_FILTER_PREFIX) &&
+              item.addOnCardId === this.sourceFilter().slice(ADD_ON_FILTER_PREFIX.length))) &&
           (this.categoryFilter() === 'ALL' || item.categoryId === this.categoryFilter()) &&
           (!term ||
             (this.store.paymentGroups?.() ?? []).some(
@@ -1133,7 +1158,8 @@ export class TransactionsPage {
     const selectedSource = this.sourceFilter();
     if (selectedSource === 'ALL' || selectedSource.startsWith(CONSUMER_WALLET_SOURCE_PREFIX))
       return [];
-    const selectedCard = this.store.cards().find((card) => card.id === selectedSource);
+    const selectedCardId = this.primaryCardIdForFilter(selectedSource);
+    const selectedCard = this.store.cards().find((card) => card.id === selectedCardId);
     const transactions = this.filtered();
     return Array.from({ length: 60 }, (_, offset) => {
       const statementMonth = new Date();
@@ -1559,6 +1585,35 @@ export class TransactionsPage {
   cardName(cardId: string): string {
     return this.store.sourceName(cardId);
   }
+  addOnProfileOptions(): readonly AppSelectOption[] {
+    this.formChanges();
+    const card = this.store.cards().find((item) => item.id === this.form.controls.cardId.value);
+    if (!card) return [];
+    const selectedId = this.form.controls.addOnCardId.value;
+    return [
+      { value: '', label: 'Primary cardholder' },
+      ...(card.addOnProfiles ?? [])
+        .filter((profile) => !profile.archived || profile.id === selectedId)
+        .map((profile) => ({
+          value: profile.id,
+          label: `${profile.name}${profile.archived ? ' · Archived' : ''}`,
+          detail: `•••• ${profile.lastDigits}`,
+        })),
+    ];
+  }
+  addOnProfileForTransaction(transaction: CardTransaction): AddOnCardProfile | undefined {
+    return this.store
+      .cards()
+      .find((card) => card.id === transaction.cardId)
+      ?.addOnProfiles?.find((profile) => profile.id === transaction.addOnCardId);
+  }
+  isEditingSmsTransaction(): boolean {
+    const editingId = this.editingId();
+    return (
+      !!editingId &&
+      this.store.transactions().find((item) => item.id === editingId)?.origin === 'SMS'
+    );
+  }
   mobileSourceDetail(sourceId: string): string {
     const card = this.store.cards().find((item) => item.id === sourceId);
     if (card) return `${card.nickname} · ${card.lastDigits}`;
@@ -1615,7 +1670,16 @@ export class TransactionsPage {
     this.closeMenus();
   }
   isCreditCardSelected(): boolean {
-    return this.store.cards().some((card) => card.id === this.sourceFilter());
+    return !!this.primaryCardIdForFilter(this.sourceFilter());
+  }
+  private primaryCardIdForFilter(source: string): string | undefined {
+    const direct = this.store.cards().find((card) => card.id === source);
+    if (direct) return direct.id;
+    if (!source.startsWith(ADD_ON_FILTER_PREFIX)) return undefined;
+    const profileId = source.slice(ADD_ON_FILTER_PREFIX.length);
+    return this.store
+      .cards()
+      .find((card) => card.addOnProfiles?.some((profile) => profile.id === profileId))?.id;
   }
   signedMoney(value: number): string {
     return `${value >= 0 ? '+' : '−'}${formatMoney(Math.abs(value), 'INR')}`;
@@ -1825,6 +1889,7 @@ export class TransactionsPage {
     }
   }
   selectPayFrom(id: string): void {
+    this.form.controls.addOnCardId.setValue('');
     if (id.startsWith(CONSUMER_WALLET_SOURCE_PREFIX)) {
       const walletId = id.slice(CONSUMER_WALLET_SOURCE_PREFIX.length);
       const wallet = this.consumerWallets.activeWallets().find((item) => item.id === walletId);
@@ -1883,6 +1948,7 @@ export class TransactionsPage {
   selectBankAccount(id: string): void {
     if (this.editingArchivedCard()) return;
     if (!this.bankAccountOptions().some((option) => option.value === id)) return;
+    this.form.controls.addOnCardId.setValue('');
     this.form.controls.consumerWalletId.setValue('');
     this.form.controls.cardId.setValidators(Validators.required);
     this.form.controls.cardId.setValue(id);
@@ -1961,6 +2027,7 @@ export class TransactionsPage {
       );
     this.form.reset({
       cardId: transaction.cardId,
+      addOnCardId: transaction.addOnCardId ?? '',
       consumerWalletId: '',
       type: transaction.type,
       amount: String(transaction.amountMinor / 100),
@@ -2485,6 +2552,7 @@ export class TransactionsPage {
   readonly deleteTransferCandidate = signal<SourceTransfer | null>(null);
   readonly visibleTransfers = computed(() => {
     const source = this.sourceFilter();
+    const primaryCardId = this.primaryCardIdForFilter(source);
     const term = this.search().trim().toLocaleLowerCase();
     return this.store
       .transfers()
@@ -2493,7 +2561,8 @@ export class TransactionsPage {
           (source === 'ALL' ||
             transfer.fromSourceId === source ||
             transfer.toSourceId === source ||
-            transfer.cardId === source) &&
+            transfer.cardId === source ||
+            (!!primaryCardId && transfer.cardId === primaryCardId)) &&
           (!term || this.transferTitle(transfer).toLocaleLowerCase().includes(term)),
       );
   });
@@ -2532,7 +2601,7 @@ export class TransactionsPage {
   updateFilterDraftSource(source: string): void {
     this.filterDraft.update((draft) => {
       if (!draft) return draft;
-      const grouping = this.store.cards().some((card) => card.id === source)
+      const grouping = this.primaryCardIdForFilter(source)
         ? 'STATEMENT'
         : source.startsWith(CONSUMER_WALLET_SOURCE_PREFIX)
           ? 'MONTH'
@@ -2940,6 +3009,8 @@ export class TransactionsPage {
           ? this.pendingCardRecurringIdentity!.transactionId
           : crypto.randomUUID()),
       cardId: value.cardId,
+      addOnCardId:
+        (existing?.origin ?? 'MANUAL') === 'SMS' ? undefined : value.addOnCardId || undefined,
       type: value.type,
       amountMinor,
       currencyCode: existing?.currencyCode ?? 'INR',
@@ -2973,6 +3044,7 @@ export class TransactionsPage {
         ? {
             id: recurringRuleId!,
             cardId: value.cardId,
+            addOnCardId: value.addOnCardId || undefined,
             title: value.merchant.trim() || value.type.replace('_', ' '),
             amountMinor,
             categoryId: value.categoryId,
@@ -3227,6 +3299,7 @@ export class TransactionsPage {
     this.receiptDraftDirty.set(false);
     this.form.reset({
       cardId: sourceId,
+      addOnCardId: '',
       consumerWalletId: '',
       type: 'PURCHASE',
       amount: '',

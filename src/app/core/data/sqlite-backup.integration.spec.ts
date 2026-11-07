@@ -10,7 +10,7 @@ import {
   ConsumerWalletService,
   WALLETS_FEATURE_STATE_KEY,
 } from '../services/consumer-wallet.service';
-import { CardTransaction, CreditCard, PaymentSource } from '../models/domain';
+import { AddOnCardProfile, CardTransaction, CreditCard, PaymentSource } from '../models/domain';
 import { sumConsolidatedSpending } from '../services/financial-spending';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -129,6 +129,133 @@ describe('Durable first-run data, additive read migration and private portable b
     });
     expect(sumConsolidatedSpending(store.consolidatedSpending())).toBe(32000);
     expect(rows('PRAGMA foreign_key_check')).toEqual([]);
+  });
+  it('persists Add-On attribution on the primary account through archive, backup, and retention', async () => {
+    await database.initialise();
+    const store = TestBed.inject(CardNestStore);
+    await store.initialisePreferences();
+    const today = indiaTodayIso();
+    const timestamp = `${today}T10:00:00Z`;
+    const profiles: AddOnCardProfile[] = Array.from({ length: 5 }, (_, index) => ({
+      id: `addon-profile-${index + 1}`,
+      name: `Synthetic member ${index + 1}`,
+      lastDigits: String(4100 + index),
+      archived: false,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    }));
+    const card: CreditCard = {
+      id: 'addon-primary-card',
+      nickname: 'Synthetic household card',
+      issuerName: 'Synthetic issuer',
+      lastDigits: '1357',
+      network: 'VISA',
+      theme: 'green',
+      statementDay: 1,
+      dueDateMode: 'DAYS_AFTER_STATEMENT',
+      daysAfterStatement: 20,
+      adjustDueDateOnWeekend: false,
+      currencyCode: 'INR',
+      openingBalanceMinor: 0,
+      remindToSettle: false,
+      annualFeeEnabled: false,
+      emergencyPhones: [],
+      supportEmails: [],
+      archived: false,
+      addOnProfiles: profiles,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    await database.run(
+      'INSERT INTO credit_cards(id,nickname,issuer_name,last_digits,network,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)',
+      [
+        card.id,
+        card.nickname,
+        card.issuerName,
+        card.lastDigits,
+        card.network,
+        JSON.stringify(card),
+        timestamp,
+        timestamp,
+      ],
+    );
+    store.cards.set([card]);
+    expect(() =>
+      store.updateCard({
+        ...card,
+        addOnProfiles: [...profiles, { ...profiles[0], id: 'addon-profile-sixth' }],
+      }),
+    ).toThrow('up to 5 Add-On profiles');
+    const transaction: CardTransaction = {
+      id: 'addon-attributed-purchase',
+      cardId: card.id,
+      addOnCardId: profiles[0].id,
+      type: 'PURCHASE',
+      amountMinor: 12345,
+      currencyCode: 'INR',
+      transactionDate: today,
+      categoryId: 'other',
+      attachmentIds: [],
+      origin: 'MANUAL',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    await store.saveManualTransaction(transaction);
+    const [persisted] = await database.query<{ card_id: string; payload: string }>(
+      'SELECT card_id,payload FROM card_transactions WHERE id=?',
+      [transaction.id],
+    );
+    expect(persisted.card_id).toBe(card.id);
+    expect(JSON.parse(persisted.payload)).toMatchObject({
+      cardId: card.id,
+      addOnCardId: profiles[0].id,
+      amountMinor: transaction.amountMinor,
+    });
+    await expect(
+      store.saveManualTransaction({ ...transaction, id: 'sms-addon-attribution', origin: 'SMS' }),
+    ).rejects.toThrow('only for manual transactions');
+    const archivedCard: CreditCard = {
+      ...card,
+      addOnProfiles: profiles.map((profile) =>
+        profile.id === profiles[0].id ? { ...profile, archived: true } : profile,
+      ),
+    };
+    store.updateCard(archivedCard);
+    await expect(
+      store.saveManualTransaction({ ...transaction, id: 'new-archived-addon-purchase' }),
+    ).rejects.toThrow('active Add-On profile');
+    const backup = await database.exportBackupJson();
+    await database.run('UPDATE credit_cards SET payload=? WHERE id=?', [
+      JSON.stringify({ ...archivedCard, addOnProfiles: [] }),
+      card.id,
+    ]);
+    await database.run(
+      "UPDATE card_transactions SET payload=json_remove(payload,'$.addOnCardId') WHERE id=?",
+      [transaction.id],
+    );
+    await database.restoreBackupJson(backup);
+    const [restoredCard] = await database.query<{ payload: string }>(
+      'SELECT payload FROM credit_cards WHERE id=?',
+      [card.id],
+    );
+    const [restoredTransaction] = await database.query<{ payload: string }>(
+      'SELECT payload FROM card_transactions WHERE id=?',
+      [transaction.id],
+    );
+    expect(JSON.parse(restoredCard.payload).addOnProfiles[0]).toMatchObject({
+      id: profiles[0].id,
+      archived: true,
+    });
+    expect(JSON.parse(restoredTransaction.payload).addOnCardId).toBe(profiles[0].id);
+    await database.deleteDataOlderThan('2999-12-31');
+    expect(
+      await database.query('SELECT id FROM card_transactions WHERE id=?', [transaction.id]),
+    ).toHaveLength(0);
+    const [retainedCard] = await database.query<{ payload: string }>(
+      'SELECT payload FROM credit_cards WHERE id=?',
+      [card.id],
+    );
+    expect(JSON.parse(retainedCard.payload).addOnProfiles[0].id).toBe(profiles[0].id);
   });
   it('atomically records mixed wallet/card payments, adds a third payment, refunds and restores exact group history', async () => {
     await database.initialise();

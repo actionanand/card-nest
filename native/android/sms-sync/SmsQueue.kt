@@ -41,7 +41,8 @@ class SmsQueue(context: Context) : SQLiteOpenHelper(context, "sms-discovery.db",
   fun stage(result: SmsTransactionParser.Result, providerId: String): Boolean {
     val db = writableDatabase
     db.rawQuery("SELECT COUNT(*) FROM queue", null).use { it.moveToFirst(); if (it.getInt(0) >= 5000) return false }
-    db.execSQL("INSERT OR REPLACE INTO queue(id,payload) VALUES (?,?)", arrayOf(result.fingerprint, encrypt(json(result, providerId).toString())))
+    val identity = SmsTransactionParser.smsIdentity(providerId)
+    db.execSQL("INSERT OR REPLACE INTO queue(id,payload) VALUES (?,?)", arrayOf(identity, encrypt(json(result, providerId, identity, providerId).toString())))
     return true
   }
   fun pending(limit: Int): List<JSONObject> = readableDatabase.rawQuery("SELECT payload FROM queue ORDER BY rowid LIMIT ?", arrayOf(limit.toString())).use { cursor ->
@@ -65,8 +66,13 @@ class SmsQueue(context: Context) : SQLiteOpenHelper(context, "sms-discovery.db",
     KeyStore.getInstance("AndroidKeyStore").apply { load(null); deleteEntry("cardnest-sms-v1") }
   }
   companion object {
-    fun json(r: SmsTransactionParser.Result, providerId: String): JSONObject = JSONObject().apply {
-      put("id", r.fingerprint); put("providerId", providerId); put("kind", r.kind.name)
+    fun json(
+      r: SmsTransactionParser.Result,
+      providerId: String,
+      identity: String = r.fingerprint,
+      sourceMessageId: String? = null
+    ): JSONObject = JSONObject().apply {
+      put("id", identity); put("providerId", providerId); sourceMessageId?.let { put("sourceMessageId", it) }; put("kind", r.kind.name)
       put("amountMinor", r.amountMinor); put("eventDate", r.eventDate); put("eventAt", r.eventAt)
       put("receivedAt", r.receivedAt); put("dateFallback", r.dateFallback); put("currency", r.currency)
       put("merchant", r.merchant); put("merchantEvidence", r.merchantEvidence); put("cardDigits", r.cardDigits); put("accountDigits", r.accountDigits)

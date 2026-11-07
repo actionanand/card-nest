@@ -106,6 +106,14 @@ describe('ExportService own-account movements', () => {
         {
           provide: CardNestStore,
           useValue: {
+            cards: signal([
+              {
+                id: 'card',
+                addOnProfiles: [
+                  { id: 'addon-profile', name: 'Synthetic cardholder', lastDigits: '2468' },
+                ],
+              },
+            ]),
             transfers: signal(transfers),
             transactions: transactionEntries,
             walletFinancialEvents: walletEventEntries,
@@ -213,7 +221,7 @@ describe('ExportService own-account movements', () => {
     expect(lines.filter((line) => line.includes('Cash withdrawal'))).toHaveLength(1);
     expect(lines.filter((line) => line.includes('Loan repayment'))).toHaveLength(1);
     expect(content).toContain('"2026-05-04","10:15"');
-    expect(content).toContain('"Fiction bank (Fiction bank detail)","Cash (Cash detail)"');
+    expect(content).toContain('"Fiction bank (Fiction bank detail)","","Cash (Cash detail)"');
     expect(content).toContain('Ref FICTREF0001');
     expect(content).toContain('Transfer / settlement (not spending)');
     expect(content).not.toContain('other-month');
@@ -258,6 +266,18 @@ describe('ExportService own-account movements', () => {
         .split('\r\n')
         .filter((line) => line.includes('Credit-card settlement')),
     ).toHaveLength(1);
+  });
+
+  it('exports Add-On attribution separately from the primary payment source', () => {
+    const attributed = { ...payment, addOnCardId: 'addon-profile' };
+    service.exportTransactionSelection('CSV', [attributed], 'May 2026', '2026-05', may);
+    expect(String(csv.mock.calls[0][0])).toContain('Synthetic cardholder · •••• 2468');
+    service.exportTransactionSelection('PDF', [attributed], 'May 2026', '2026-05', may);
+    const report = pdf.mock.calls[0][0] as ExportDocument;
+    const section = report.sections.find((item) => item.headers.includes('Add-On cardholder'))!;
+    expect(section).toBeDefined();
+    expect(section.rows[0].cells).toContain('Synthetic cardholder · •••• 2468');
+    expect(section.rows[0].cells).toContain('Fiction card');
   });
 
   it('all-time export filtered by source includes every movement of that source', () => {

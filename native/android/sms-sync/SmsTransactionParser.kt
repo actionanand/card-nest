@@ -13,7 +13,7 @@ import java.util.Locale
 object SmsTransactionParser {
   enum class Kind {
     PURCHASE, BANK_DEBIT, BANK_CREDIT, BANK_TRANSFER, CARD_PAYMENT_RECEIVED, PAYMENT_INITIATED,
-    CASHBACK, REFUND, PLUXEE_TOPUP, PLUXEE_PURCHASE, FASTAG_TOLL, FASTAG_TOPUP,
+    CASHBACK, REFUND, PLUXEE_TOPUP, PLUXEE_PURCHASE, PLUXEE_FEE, FASTAG_TOLL, FASTAG_TOPUP,
     LOAN_DEBIT, STATEMENT, PAYMENT_REMINDER, LOAN_REMINDER, SCHEDULED_CHARGE
   }
   data class Result(
@@ -77,6 +77,9 @@ object SmsTransactionParser {
     minor(rx("(?:$label)[\\s:]*$MONEY$NUMBER").find(text)?.groupValues?.get(1))
   fun fingerprint(text: String): String = MessageDigest.getInstance("SHA-256")
     .digest(text.lowercase(Locale.ROOT).replace(Regex("\\s+"), " ").trim().toByteArray(Charsets.UTF_8))
+    .joinToString("") { "%02x".format(it) }
+  fun smsIdentity(providerId: String): String = MessageDigest.getInstance("SHA-256")
+    .digest("cardnest-android-sms:$providerId".toByteArray(Charsets.UTF_8))
     .joinToString("") { "%02x".format(it) }
 
   fun parse(body: String, receivedAtMillis: Long, zone: ZoneId = ZoneId.of("Asia/Kolkata")): Result? {
@@ -143,11 +146,13 @@ object SmsTransactionParser {
       balanceAt != null && amountAt != null && balanceAt < amountAt && (verbAt == null || verbAt > balanceAt)
     }
     val mealTopup = has("\\b(credited|received|loaded|recharged|topped up)\\b")
-    val mealDebit = has("\\b(spent|debited)\\b")
+    val mealFee = meal && has("\\b(fee|charge|charges)\\b") &&
+      has("\\b(charged|debited|deducted|levied|deduction)\\b")
+    val mealDebit = has("\\b(spent|debited)\\b") || mealFee
     val due = has("is due|due on|due by|payable by|amount due|minimum due|emi reminder")
     val loan = has("loan|\\bemi\\b|\\becs\\b|merchantmandate")
     val aggregator = has("\\bcred\\b|cheq|ccbp")
-    val confirmed = card && !aggregator && has("payment of.{0,100}(received|credited)|online payment.{0,100}credited")
+    val confirmed = card && has("payment of.{0,100}(received|credited)|online payment.{0,100}credited")
     val completedCardUse = card && has("\\b(?:credit\\s+)?card\\b.{0,50}\\b(?:(?:was|has been|has)\\s+)?used\\s+at\\b.{0,100}\\bfor\\s+$MONEY$NUMBER")
     val statement = card && (has("statement.{0,120}\\b(?:sent|generated|issued|available(?!\\s+limit)|ready|emailed|delivered)\\b|your\\s+(?:credit\\s+)?card\\s+statement|statement\\s+(?:total|amount)") ||
       (has("\\bstatement\\b") && due && has("total|minimum") && !has("reminder")))
@@ -160,6 +165,7 @@ object SmsTransactionParser {
       scheduled -> Kind.SCHEDULED_CHARGE
       card && has("mandate.{0,40}(?:successfully )?executed") -> Kind.PURCHASE
       card && has("cashback") && credit -> Kind.CASHBACK
+      mealFee -> Kind.PLUXEE_FEE
       meal && mealTopup && !mealDebit -> Kind.PLUXEE_TOPUP
       meal && mealDebit -> Kind.PLUXEE_PURCHASE
       tag && debit -> Kind.FASTAG_TOLL
@@ -187,8 +193,8 @@ object SmsTransactionParser {
     val amountDue = value(flat, "(?:amount\\s+due|due\\s+amount|(?<!minimum )due)")
     // Prefer verb-scoped monetary events; statement amounts and balance are separate evidence.
     val eventText = flat.split(rx(if (meal)
-      "(?:current\\s+)?meal wallet balance|current balance|avl|available|wallet bal|statement total|minimum|total due|\\bdue\\b"
-      else "avl|available|wallet bal|current meal|statement total|minimum|total due|\\bdue\\b"))[0]
+      "(?:current\\s+)?meal wallet balance|current balance|avbl?\\.?|avl|available|wallet bal|statement total|minimum|total due|\\bdue\\b"
+      else "avbl?\\.?|avl|available|wallet bal|current meal|statement total|minimum|total due|\\bdue\\b"))[0]
     val amount = if (kind == Kind.STATEMENT || (kind == Kind.PAYMENT_REMINDER && total != null)) total ?: minimum ?: money.find(flat)?.groupValues?.get(1)?.let(::minor) else {
       val matches = money.findAll(eventText).map { minor(it.groupValues[1]) }.toList()
       if (matches.size > 1 && kind !in setOf(Kind.PAYMENT_REMINDER, Kind.LOAN_REMINDER)) return null
@@ -206,7 +212,8 @@ object SmsTransactionParser {
     val issuer = listOf("Pluxee" to "pluxee|sodexo", "Axis" to "axis", "ICICI" to "icici",
       "HDFC" to "hdfc", "HSBC" to "hsbc", "PNB" to "pnb", "AMEX" to "amex|american express", "Standard Chartered" to "stanchart|standard chartered",
       "Federal" to "federal", "BOBCARD" to "bobcard", "IDFC FIRST" to "idfc", "AU Bank" to "au bank", "Slice" to "slice",
-      "Yes Bank" to "yes bank|yesbank", "IndusInd Bank" to "indusind")
+      "Yes Bank" to "yes bank|yesbank", "IndusInd Bank" to "indusind",
+      "IDBI Bank" to "idbi(?: bank)?")
       .firstOrNull { has(it.second) }?.first
     val ref = rx("\\b(?:UPI\\s*(?:ref(?:erence)?\\s*(?:no\\.?)?)?|RRN|UTR|Ref(?:erence)?\\s*(?:No\\.?|ID)?)\\s*[:#.]?\\s*([A-Z0-9]{9,30})\\b")
       .find(flat)?.groupValues?.get(1)
@@ -223,7 +230,7 @@ object SmsTransactionParser {
     val cardUseMerchant = rx("\\b(?:credit\\s+)?card\\b.{0,50}\\b(?:(?:was|has been|has)\\s+)?used\\s+at\\s+(.+?)\\s+for\\s+(?:₹|\\bINR\\b|\\bRs\\.?)").find(flat)?.groupValues?.get(1)
     val merchant = if (bankEvent) counterparty else cardUseMerchant ?: rx("\\bfor (.+?) has been charged").find(flat)?.groupValues?.get(1)
       ?: rx("\\bby (.+?) on [0-9]{1,2}[-/]").find(flat)?.groupValues?.get(1)
-      ?: rx("\\bat\\s+(.+?)(?=\\s+(?:on|via|through|avl|wallet bal)\\b|\\s*\\.\\s*Avl|$)").find(flat)?.groupValues?.get(1)
+      ?: rx("\\bat\\s+(.+?)(?=\\s+(?:on|via|through|avbl?\\.?|avl|wallet bal)\\b|\\s*\\.\\s*Avl|$)").find(flat)?.groupValues?.get(1)
       ?: safe.lines().getOrNull(3)?.takeIf { has("spent") && !it.contains("limit", true) }
       ?: rx("\\bon [0-9]{1,2}[-/][A-Za-z0-9]{2,3}[-/][0-9]{2,4} on (.+?)(?:\\. Avl|$)").find(flat)?.groupValues?.get(1)
       ?: rx(";\\s*(.+?) credited").find(flat)?.groupValues?.get(1)
@@ -245,7 +252,7 @@ object SmsTransactionParser {
         else "current meal wallet balance is|current balance|(?:avl|available|wallet)\\.?\\s*bal(?:ance)?\\.?"),
       if (tag) rx("\\b[A-Z]{2}\\s?[0-9]{1,2}\\s?[A-Z]{1,3}\\s?[0-9]{4}\\b").find(flat)?.value?.replace(" ", "")?.uppercase(Locale.ROOT) else null,
       eventAt = event.first.toInstant().toString(), receivedAt = receivedAtMillis, dateFallback = event.second,
-      availableLimitMinor = value(flat, "(?:avl|available) limit"), statementTotalMinor = total,
+      availableLimitMinor = value(flat, "(?:avbl?\\.?|avl|available) limit"), statementTotalMinor = total,
       minimumDueMinor = minimum, dueDate = parsedDue,
       fingerprint = fingerprint(text + if (event.second) "|${event.first.toLocalDate()}" else ""),
       eventTime = event.first.toLocalTime().toString(), timeZone = event.first.zone.id,

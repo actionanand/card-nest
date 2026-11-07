@@ -1,6 +1,6 @@
 import { TestBed, ComponentFixture } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
-import { ConsumerWalletEvent } from '../../core/models/domain';
+import { CardTransaction, ConsumerWalletEvent, CreditCard } from '../../core/models/domain';
 import { SqliteDatabase } from '../../core/data/sqlite-database';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { ConsumerWalletService } from '../../core/services/consumer-wallet.service';
@@ -273,5 +273,64 @@ describe('Transactions wallet purchase approval and lifecycle UI', () => {
     expect(back.defaultPrevented).toBe(true);
     expect(page.detailWalletEvent()).toBeNull();
     expect(wallets.recordWalletPurchaseRefund).not.toHaveBeenCalled();
+  });
+  it('attributes and filters manual transactions by Add-On profile while retaining the primary card', () => {
+    const store = TestBed.inject(CardNestStore);
+    const profile = {
+      id: 'family-profile',
+      name: 'Synthetic cardholder',
+      lastDigits: '2468',
+      archived: false,
+      createdAt: '2026-10-01',
+      updatedAt: '2026-10-01',
+    };
+    const card: CreditCard = {
+      id: 'family-primary',
+      nickname: 'Household card',
+      issuerName: 'Synthetic issuer',
+      lastDigits: '1357',
+      network: 'VISA',
+      theme: 'green',
+      statementDay: 1,
+      dueDateMode: 'DAYS_AFTER_STATEMENT',
+      daysAfterStatement: 20,
+      adjustDueDateOnWeekend: false,
+      currencyCode: 'INR',
+      openingBalanceMinor: 0,
+      remindToSettle: false,
+      annualFeeEnabled: false,
+      emergencyPhones: [],
+      supportEmails: [],
+      archived: false,
+      addOnProfiles: [profile],
+      createdAt: '2026-10-01',
+      updatedAt: '2026-10-01',
+    };
+    const attributed: CardTransaction = {
+      id: 'family-attributed-transaction',
+      cardId: card.id,
+      addOnCardId: profile.id,
+      type: 'PURCHASE',
+      amountMinor: 1200,
+      currencyCode: 'INR',
+      transactionDate: '2026-10-20',
+      categoryId: 'other',
+      attachmentIds: [],
+      createdAt: '2026-10-20T10:00:00Z',
+      updatedAt: '2026-10-20T10:00:00Z',
+    };
+    const primaryOnly = { ...attributed, id: 'primary-only', addOnCardId: undefined };
+    store.cards.set([card]);
+    store.transactions.set([attributed, primaryOnly]);
+    page.form.controls.cardId.setValue(card.id);
+    page.form.controls.addOnCardId.setValue(profile.id);
+    fixture.detectChanges();
+    expect(page.addOnProfileOptions()).toContainEqual(
+      expect.objectContaining({ value: profile.id, label: profile.name }),
+    );
+    page.sourceFilter.set(`add-on:${profile.id}`);
+    expect(page.filtered().map((transaction) => transaction.id)).toEqual([attributed.id]);
+    expect(page.filtered()[0].cardId).toBe(card.id);
+    expect(page.addOnProfileForTransaction(attributed)).toMatchObject({ name: profile.name });
   });
 });

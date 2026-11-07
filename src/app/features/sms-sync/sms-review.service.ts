@@ -1045,13 +1045,31 @@ export class SmsReviewService {
           counterpartyAccountMask: counterparty?.mask,
         };
         // Parser fixes may change a receipt-fallback fingerprint. Retain the old identity/decision.
+        const [existingMessage] = sanitized.sourceMessageId
+          ? await tx.query<{ id: string }>(
+              "SELECT id FROM sms_candidates WHERE json_valid(payload) AND json_extract(payload,'$.sourceMessageId')=? ORDER BY rowid LIMIT 1",
+              [sanitized.sourceMessageId],
+            )
+          : [];
+        const [legacyAndroidMessage] =
+          sanitized.sourceMessageId && !existingMessage
+            ? await tx.query<{ id: string }>(
+                "SELECT id FROM sms_candidates WHERE provider_id=? AND (payload IS NULL OR (json_valid(payload) AND json_extract(payload,'$.sourceMessageId') IS NULL)) ORDER BY rowid LIMIT 1",
+                [sanitized.providerId],
+              )
+            : [];
         const [old] =
-          sanitized.legacyId && sanitized.legacyId !== sanitized.id
+          !sanitized.sourceMessageId && sanitized.legacyId && sanitized.legacyId !== sanitized.id
             ? await tx.query<{ id: string }>('SELECT id FROM sms_candidates WHERE id=?', [
                 sanitized.legacyId,
               ])
             : [];
-        const item = old ? { ...sanitized, id: old.id } : sanitized;
+        const matchedMessage = existingMessage ?? legacyAndroidMessage;
+        const item = matchedMessage
+          ? { ...sanitized, id: matchedMessage.id }
+          : old
+            ? { ...sanitized, id: old.id }
+            : sanitized;
         if (!retention || item.eventDate >= retention.value)
           activityCandidates.push({
             fingerprint: item.id,
@@ -1763,8 +1781,9 @@ export class SmsReviewService {
             [transaction.id, transaction.relatedTransactionId, now],
           );
         if (source && !source.noLimit && !retainBalance) {
+          const walletDebit = type === 'PURCHASE' || item.kind === 'PLUXEE_FEE';
           source.balanceMinor =
-            (source.balanceMinor ?? 0) + (type === 'PURCHASE' ? -amountMinor : amountMinor);
+            (source.balanceMinor ?? 0) + (walletDebit ? -amountMinor : amountMinor);
           if (!Number.isSafeInteger(source.balanceMinor))
             throw new Error('Wallet balance would overflow.');
           await tx.run(

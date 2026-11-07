@@ -177,6 +177,15 @@
                 (valueChange)="selectBankAccount($event)"
               />
             }
+            @if (!isEditingSmsTransaction() && addOnProfileOptions().length > 1) {
+              <app-select-picker
+                class="full"
+                label="Cardholder attribution"
+                [options]="addOnProfileOptions()"
+                [value]="form.controls.addOnCardId.value"
+                (valueChange)="form.controls.addOnCardId.setValue($event)"
+              />
+            }
 
             @if (payFromOpen()) {
               <div
@@ -919,6 +928,11 @@
                       >{{ categoryName(transaction.categoryId) }} ·
                       {{ store.sourceDetail(transaction.cardId) }}</small
                     >
+                    @if (addOnProfileForTransaction(transaction); as addOn) {
+                      <small class="addon-attribution"
+                        >Add-On · {{ addOn.name }} · •••• {{ addOn.lastDigits }}</small
+                      >
+                    }
                     @if (fundedWalletLoad(transaction.id); as load) {
                       <small class="wallet-load-provenance">
                         Wallet load · {{ consumerWalletName(load.walletId) }} ·
@@ -1293,6 +1307,15 @@
           <dt>Payment source</dt>
           <dd>{{ store.sourceDetail(transaction.cardId) }}</dd>
         </div>
+        @if (addOnProfileForTransaction(transaction); as addOn) {
+          <div>
+            <dt>Add-On cardholder</dt>
+            <dd>
+              {{ addOn.name }} · •••• {{ addOn.lastDigits
+              }}{{ addOn.archived ? ' · Archived' : '' }}
+            </dd>
+          </div>
+        }
         @if (transaction.bankName || transaction.accountSuffix) {
           <div>
             <dt>Bank</dt>

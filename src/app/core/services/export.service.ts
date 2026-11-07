@@ -296,7 +296,15 @@ export class ExportService {
             value: this.money(items.reduce((sum, item) => sum + transactionEffect(item), 0)),
           },
         ],
-        headers: ['Date', 'Transaction', 'Category', 'Payment source', 'Type', 'Amount'],
+        headers: [
+          'Date',
+          'Transaction',
+          'Category',
+          'Payment source',
+          'Add-On cardholder',
+          'Type',
+          'Amount',
+        ],
         rows: items.map((item) => ({
           state: transactionEffect(item) < 0 ? 'credit' : 'normal',
           cells: [
@@ -304,6 +312,7 @@ export class ExportService {
             item.merchant || transactionLabel(item),
             this.categoryName(item.categoryId),
             this.store.sourceName(item.cardId),
+            this.addOnCardholder(item),
             transactionLabel(item),
             `${transactionEffect(item) < 0 ? '+' : '-'}${this.money(item.amountMinor)}`,
           ],
@@ -329,6 +338,14 @@ export class ExportService {
         ],
       })),
     };
+  }
+
+  private addOnCardholder(transaction: CardTransaction): string {
+    if (!transaction.addOnCardId) return '';
+    const profile = (this.store.cards?.() ?? [])
+      .find((card) => card.id === transaction.cardId)
+      ?.addOnProfiles?.find((item) => item.id === transaction.addOnCardId);
+    return profile ? `${profile.name} · •••• ${profile.lastDigits}` : '';
   }
 
   private transferFrom(transfer: SourceTransfer): string {
@@ -357,6 +374,7 @@ export class ExportService {
         'Type',
         'Category',
         'Payment source / From',
+        'Add-On cardholder',
         'Institution / card / To or purpose',
         'Amount',
         'Direction',
@@ -378,6 +396,7 @@ export class ExportService {
         transactionLabel(item),
         this.categoryName(item.categoryId),
         this.store.sourceName(item.cardId),
+        this.addOnCardholder(item),
         this.store.sourceDetail(item.cardId),
         (item.amountMinor / 100).toFixed(2),
         transactionEffect(item) < 0 ? 'Credit' : 'Debit',
@@ -401,6 +420,7 @@ export class ExportService {
         transferLabel(transfer.kind),
         'Transfer / settlement (not spending)',
         this.transferFrom(transfer),
+        '',
         this.transferTo(transfer),
         (transfer.amountMinor / 100).toFixed(2),
         'Transfer',
@@ -422,6 +442,7 @@ export class ExportService {
         this.walletEventLabel(event),
         this.categoryName(event.categoryId ?? ''),
         'Consumer Wallet',
+        '',
         this.walletName(event.walletId),
         (event.amountMinor / 100).toFixed(2),
         event.balanceDeltaMinor >= 0 ? 'Wallet credit' : 'Wallet debit',
@@ -447,6 +468,7 @@ export class ExportService {
             : 'Retained wallet-load expense',
           this.categoryName(entry.categoryId),
           this.store.sourceName(entry.sourceId),
+          '',
           this.store.sourceDetail(entry.sourceId),
           (Math.abs(entry.amountMinor) / 100).toFixed(2),
           entry.amountMinor < 0 ? 'Expense reversal' : 'Debit',

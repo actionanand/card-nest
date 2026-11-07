@@ -892,6 +892,54 @@ label small.validation-error {
   border-top: 1px solid var(--line);
   background: var(--canvas);
 }
+.addon-profile-manager {
+  display: grid;
+  gap: 0.55rem;
+  margin-bottom: 0.9rem;
+  padding-bottom: 0.8rem;
+  border-bottom: 1px solid var(--line);
+}
+.addon-profile-manager header,
+.addon-profile-row,
+.addon-profile-row > div,
+.addon-profile-form > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.addon-profile-manager h3 {
+  margin: 0;
+  font-size: 0.9rem;
+}
+.addon-profile-manager p,
+.addon-profile-manager small {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+.addon-profile-row {
+  min-height: 2.5rem;
+  border-top: 1px solid var(--line);
+}
+.addon-profile-row > span,
+.addon-profile-form label {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+}
+.addon-profile-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.6rem;
+}
+.addon-profile-form > small,
+.addon-profile-form > div {
+  grid-column: 1 / -1;
+}
+.addon-profile-form > small {
+  color: var(--danger);
+}
 .metric-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1443,6 +1491,9 @@ label small.validation-error {
   }
   .card-details {
     padding: 0.8rem;
+  }
+  .addon-profile-form {
+    grid-template-columns: 1fr;
   }
   .metric-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));

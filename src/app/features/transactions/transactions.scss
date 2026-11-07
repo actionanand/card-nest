@@ -850,6 +850,9 @@ label small {
 .tx-source-mobile {
   display: none;
 }
+.addon-attribution {
+  color: var(--accent);
+}
 .tx-amount {
   justify-self: end;
 }

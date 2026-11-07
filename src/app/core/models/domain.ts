@@ -37,6 +37,15 @@ export interface CardBenefit {
   note?: string;
 }
 
+export interface AddOnCardProfile {
+  id: string;
+  name: string;
+  lastDigits: string;
+  archived: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface CreditCard {
   id: string;
   nickname: string;
@@ -55,6 +64,7 @@ export interface CreditCard {
   subtype?: string;
   benefits?: readonly CardBenefit[];
   importantLinks?: readonly CardImportantLink[];
+  addOnProfiles?: readonly AddOnCardProfile[];
   relationshipGroupId?: string;
   theme: string;
   expiryMonth?: number;
@@ -85,6 +95,7 @@ export interface CreditCard {
 export interface CardTransaction {
   id: string;
   cardId: string;
+  addOnCardId?: string;
   type: TransactionType;
   adjustmentDirection?: 'INCREASE' | 'DECREASE';
   adjustmentPurpose?: 'SPLIT_PAYMENT' | 'LEGACY_MANUAL' | 'BALANCE_RECONCILIATION';
@@ -472,6 +483,7 @@ export interface CardStatement {
 export interface RecurringRule {
   id: string;
   cardId: string;
+  addOnCardId?: string;
   title: string;
   amountMinor: Money;
   categoryId: string;

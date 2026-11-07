@@ -221,4 +221,7 @@ describe('Safe SMS list titles', () => {
     expect(merchantTitle(null, 'STATEMENT')).toBe('Credit card statement');
     expect(merchantTitle(null, 'CARD_PAYMENT_RECEIVED')).toBe('Payment received');
   });
+  it('maps Pluxee fee evidence to a fee transaction', () => {
+    expect(ledgerType(item({ kind: 'PLUXEE_FEE' }))).toBe('FEE');
+  });
 });

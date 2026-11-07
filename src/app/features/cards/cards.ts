@@ -4,7 +4,13 @@ import { Component, computed, effect, inject, signal } from '@angular/core';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
-import { CardBenefit, CardImportantLink, CardNetwork, CreditCard } from '../../core/models/domain';
+import {
+  AddOnCardProfile,
+  CardBenefit,
+  CardImportantLink,
+  CardNetwork,
+  CreditCard,
+} from '../../core/models/domain';
 import {
   daysBetween,
   estimatedGracePeriod,
@@ -29,6 +35,7 @@ import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker
 
 type PaymentMode = 'DUE' | 'OUTSTANDING' | 'CUSTOM';
 type ArchiveAction = 'ARCHIVE' | 'RESTORE';
+const MAX_ADD_ON_PROFILES = 5;
 
 interface CardFilterTotal {
   readonly label: string;
@@ -70,6 +77,11 @@ export class CardsPage {
   readonly showForm = signal(this.route.snapshot.queryParamMap.get('add') === 'true');
   readonly editingId = signal<string | null>(null);
   readonly selectedCardId = signal<string | null>(this.route.snapshot.queryParamMap.get('open'));
+  readonly addOnProfileName = signal('');
+  readonly addOnProfileDigits = signal('');
+  readonly editingAddOnProfileId = signal<string | null>(null);
+  readonly addOnProfileFormOpen = signal(false);
+  readonly addOnProfileError = signal<string | null>(null);
   readonly showArchived = signal(false);
   readonly actionMenuId = signal<string | null>(null);
   readonly actionMenuOpensUp = signal(false);
@@ -613,6 +625,86 @@ export class CardsPage {
     this.descriptionEditorHtml.set(this.richHtml(''));
     this.benefitEditorHtml.set(this.richHtml(''));
     this.showForm.set(true);
+  }
+  editAddOnProfile(profile: AddOnCardProfile): void {
+    this.addOnProfileFormOpen.set(true);
+    this.editingAddOnProfileId.set(profile.id);
+    this.addOnProfileName.set(profile.name);
+    this.addOnProfileDigits.set(profile.lastDigits);
+    this.addOnProfileError.set(null);
+  }
+  cancelAddOnProfileEdit(): void {
+    this.addOnProfileFormOpen.set(false);
+    this.editingAddOnProfileId.set(null);
+    this.addOnProfileName.set('');
+    this.addOnProfileDigits.set('');
+    this.addOnProfileError.set(null);
+  }
+  saveAddOnProfile(card: CreditCard): void {
+    const name = this.addOnProfileName().trim();
+    const lastDigits = this.addOnProfileDigits().replace(/\D/g, '');
+    const profiles = card.addOnProfiles ?? [];
+    const editingId = this.editingAddOnProfileId();
+    const existing = profiles.find((profile) => profile.id === editingId);
+    if (card.archived || card.deletedAt) {
+      this.addOnProfileError.set('Restore the primary card before changing profiles.');
+      return;
+    }
+    if (name.length < 2 || name.length > 50 || !/^\d{4}$/.test(lastDigits)) {
+      this.addOnProfileError.set('Enter a name and exactly four card digits.');
+      return;
+    }
+    if (editingId && !existing) {
+      this.addOnProfileError.set('This Add-On profile is no longer available.');
+      return;
+    }
+    if (!editingId && profiles.length >= MAX_ADD_ON_PROFILES) {
+      this.addOnProfileError.set(
+        `A primary card can have up to ${MAX_ADD_ON_PROFILES} Add-On profiles.`,
+      );
+      return;
+    }
+    const timestamp = new Date().toISOString();
+    const profile: AddOnCardProfile = existing
+      ? { ...existing, name, lastDigits, updatedAt: timestamp }
+      : {
+          id: crypto.randomUUID(),
+          name,
+          lastDigits,
+          archived: false,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        };
+    this.store.updateCard({
+      ...card,
+      addOnProfiles: existing
+        ? profiles.map((item) => (item.id === profile.id ? profile : item))
+        : [...profiles, profile],
+      updatedAt: timestamp,
+    });
+    this.cancelAddOnProfileEdit();
+    this.snackbar.show(existing ? 'Add-On profile updated.' : 'Add-On profile added.');
+  }
+  openAddOnProfile(): void {
+    this.editingAddOnProfileId.set(null);
+    this.addOnProfileName.set('');
+    this.addOnProfileDigits.set('');
+    this.addOnProfileError.set(null);
+    this.addOnProfileFormOpen.set(true);
+  }
+  setAddOnProfileDigits(value: string): void {
+    this.addOnProfileDigits.set(value.replace(/\D/g, '').slice(0, 4));
+  }
+  toggleAddOnProfileArchive(card: CreditCard, profile: AddOnCardProfile): void {
+    if (card.archived || card.deletedAt) return;
+    const timestamp = new Date().toISOString();
+    this.store.updateCard({
+      ...card,
+      addOnProfiles: (card.addOnProfiles ?? []).map((item) =>
+        item.id === profile.id ? { ...item, archived: !item.archived, updatedAt: timestamp } : item,
+      ),
+      updatedAt: timestamp,
+    });
   }
   edit(card: CreditCard): void {
     if (card.archived) return;
@@ -1367,7 +1459,11 @@ export class CardsPage {
       card.issuerName.toLocaleLowerCase().includes(term) ||
       card.network.replaceAll('_', ' ').toLocaleLowerCase().includes(term) ||
       card.subtype?.toLocaleLowerCase().includes(term) ||
-      card.lastDigits.includes(term)
+      card.lastDigits.includes(term) ||
+      !!card.addOnProfiles?.some(
+        (profile) =>
+          profile.name.toLocaleLowerCase().includes(term) || profile.lastDigits.includes(term),
+      )
     );
   }
   private splitValues(value: string): readonly string[] {

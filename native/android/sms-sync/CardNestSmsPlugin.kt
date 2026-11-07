@@ -185,7 +185,9 @@ class CardNestSmsPlugin : Plugin() {
         }
       }
       val results = JSONArray()
-      recovered.forEach { (request, parsed) -> results.put(SmsQueue.json(parsed, request.providerId).put("id", request.id)) }
+      recovered.forEach { (request, parsed) ->
+        results.put(SmsQueue.json(parsed, request.providerId, request.id, request.providerId))
+      }
       call.resolve(JSObject().put("items", results))
     } catch (_: Exception) { call.reject("Saved SMS could not be rechecked. Permission or original message is unavailable; no financial records changed.") }
   } }

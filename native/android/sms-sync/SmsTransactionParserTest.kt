@@ -59,6 +59,43 @@ class SmsTransactionParserTest {
     assertEquals("2026-10-07", a.eventDate)
   }
 
+  @Test fun pluxeeServiceFeeIsASeparateDebitAndPhysicalSmsIdentityIsStable() {
+    val fee = parse("Pluxee Meal Wallet was charged a service fee of INR 3.25 on 04-Nov-2026 10:11. Available balance is INR 400.00.")
+    assertEquals(SmsTransactionParser.Kind.PLUXEE_FEE, fee.kind)
+    assertEquals(325L, fee.amountMinor)
+    assertEquals(40000L, fee.reportedBalanceMinor)
+    assertEquals("Pluxee", fee.issuer)
+    val physicalId = SmsTransactionParser.smsIdentity("701")
+    assertEquals(physicalId, SmsTransactionParser.smsIdentity("701"))
+    assertNotEquals(physicalId, SmsTransactionParser.smsIdentity("702"))
+  }
+
+  @Test fun idfcFirstAvblLimitIsNotMistakenForTheTransactionAmount() {
+    val result = parse("IDFC FIRST Bank Credit Card 4321 spent INR 123.45 at FICTIONAL STORE on 04-Nov-2026 11:35. Avbl Limit INR 45,678.90.")
+    assertEquals(SmsTransactionParser.Kind.PURCHASE, result.kind)
+    assertEquals(12345L, result.amountMinor)
+    assertEquals(4567890L, result.availableLimitMinor)
+    assertEquals("IDFC FIRST", result.issuer)
+  }
+
+  @Test fun idbiAccountCreditsAndDebitsKeepTheirDirection() {
+    val debit = parse("IDBI Bank A/c XX765 debited with INR 31.25 on 04-Nov-2026.")
+    val credit = parse("IDBI Bank Account XX765 credited with INR 45.67 on 05-Nov-2026.")
+    assertEquals(SmsTransactionParser.Kind.BANK_DEBIT, debit.kind)
+    assertEquals("DEBIT", debit.direction)
+    assertEquals("IDBI Bank", debit.issuer)
+    assertEquals(SmsTransactionParser.Kind.BANK_CREDIT, credit.kind)
+    assertEquals("CREDIT", credit.direction)
+    assertEquals("IDBI Bank", credit.issuer)
+  }
+
+  @Test fun cheqCardPaymentReceiptIsConfirmedRatherThanInitiated() {
+    val result = parse("Payment of INR 678.90 has been received on your IDFC FIRST Bank Credit Card XX4321 through CheQ.")
+    assertEquals(SmsTransactionParser.Kind.CARD_PAYMENT_RECEIVED, result.kind)
+    assertEquals(67890L, result.amountMinor)
+    assertEquals("4321", result.cardDigits)
+  }
+
   @Test fun confirmedCardPaymentNeverBecomesCardPurchase() {
     val a = parse("Payment of Rs 4350 has been received on your ICICI Bank Credit Card XX2222 through Bharat Bill Payment System on 17-OCT-26.")
     assertEquals(SmsTransactionParser.Kind.CARD_PAYMENT_RECEIVED, a.kind)

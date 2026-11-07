@@ -1,6 +1,7 @@
 import { Service, computed, inject, signal } from '@angular/core';
 import { CommittedSaveRefreshError } from './committed-save-refresh-error';
 import {
+  AddOnCardProfile,
   BalanceTiming,
   BankCashTrackingSettings,
   CardTransaction,
@@ -105,6 +106,26 @@ import {
 const FLASH_SOURCE_STORAGE_KEY = 'cardnest_flash_transaction_source_id';
 const PAYMENT_SOURCES_PREFERENCE_KEY = 'payment_sources';
 const BANK_ACCOUNT_FINGERPRINT_KEY = 'bank_account_fingerprint_key';
+const MAX_ADD_ON_PROFILES = 5;
+
+function assertValidAddOnProfiles(profiles: readonly AddOnCardProfile[] | undefined): void {
+  if (!profiles) return;
+  if (profiles.length > MAX_ADD_ON_PROFILES)
+    throw new Error(`A primary card can have up to ${MAX_ADD_ON_PROFILES} Add-On profiles.`);
+  const ids = new Set<string>();
+  for (const profile of profiles) {
+    if (
+      !profile.id ||
+      ids.has(profile.id) ||
+      profile.name.trim().length < 2 ||
+      profile.name.trim().length > 50 ||
+      !/^\d{4}$/.test(profile.lastDigits) ||
+      typeof profile.archived !== 'boolean'
+    )
+      throw new Error('Check the Add-On profile name and last four digits.');
+    ids.add(profile.id);
+  }
+}
 
 function readFlashSourcePreference(): string | null {
   try {
@@ -905,10 +926,12 @@ export class CardNestStore {
   }
 
   addCard(card: CreditCard): void {
+    assertValidAddOnProfiles(card.addOnProfiles);
     this.cards.update((cards) => [...cards, card]);
     void this.persistCard(card);
   }
   updateCard(updated: CreditCard): void {
+    assertValidAddOnProfiles(updated.addOnProfiles);
     this.cards.update((cards) => cards.map((card) => (card.id === updated.id ? updated : card)));
     void this.persistCard(updated);
   }
@@ -963,6 +986,8 @@ export class CardNestStore {
     walletLoading?: WalletLoadingDetails,
   ): Promise<void> {
     if (!this.database.ready()) throw new Error('Database is not ready.');
+    if (transaction.addOnCardId && transaction.origin === 'SMS')
+      throw new Error('Add-On attribution is available only for manual transactions.');
     const result = await this.database.atomic(async (tx) => {
       const [row] = await tx.query<{ payload: string }>(
         'SELECT payload FROM card_transactions WHERE id=?',
@@ -1003,6 +1028,14 @@ export class CardNestStore {
       const previousCard = previous
         ? this.cards().find((item) => item.id === previous.cardId && !item.deletedAt)
         : undefined;
+      if (transaction.addOnCardId) {
+        const profile = card?.addOnProfiles?.find((item) => item.id === transaction.addOnCardId);
+        const retainedArchivedProfile = previous?.addOnCardId === transaction.addOnCardId;
+        if (!profile || (profile.archived && !retainedArchivedProfile))
+          throw new Error('Choose an active Add-On profile belonging to the selected card.');
+      }
+      if (recurringRule && recurringRule.addOnCardId !== transaction.addOnCardId)
+        throw new Error('Recurring attribution must match the saved transaction.');
       const archivedCardReassignment =
         !!previous && !!previousCard?.archived && previous.cardId !== transaction.cardId;
       if (card?.archived && (!previous || previous.cardId !== card.id))
@@ -3028,6 +3061,7 @@ export class CardNestStore {
           generated.push({
             id: crypto.randomUUID(),
             cardId: rule.cardId,
+            addOnCardId: rule.addOnCardId,
             type: rule.transactionType ?? 'PURCHASE',
             amountMinor: rule.amountMinor,
             currencyCode: cards.find((card) => card.id === rule.cardId)!.currencyCode,

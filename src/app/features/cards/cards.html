@@ -928,6 +928,84 @@
         </div>
         @if (selectedCardId() === card.id) {
           <div class="card-details" [id]="'details-' + card.id">
+            <section class="addon-profile-manager" aria-label="Family Add-On cards">
+              <header>
+                <div>
+                  <h3>Family Add-On cards</h3>
+                  <small>{{ card.addOnProfiles?.length ?? 0 }} of 5 profiles</small>
+                </div>
+                @if (!card.archived && !card.deletedAt && (card.addOnProfiles?.length ?? 0) < 5) {
+                  <button class="btn" type="button" (click)="openAddOnProfile()">
+                    <app-icon name="plus" /> Add profile
+                  </button>
+                }
+              </header>
+              <p>Transactions stay on {{ card.nickname }} and can be attributed to a cardholder.</p>
+              @for (profile of card.addOnProfiles ?? []; track profile.id) {
+                <div class="addon-profile-row">
+                  <span>
+                    <strong>{{ profile.name }}</strong>
+                    <small
+                      >•••• {{ profile.lastDigits }} ·
+                      {{ profile.archived ? 'Archived' : 'Active' }}</small
+                    >
+                  </span>
+                  @if (!card.archived && !card.deletedAt) {
+                    <div>
+                      <button
+                        class="btn btn-quiet"
+                        type="button"
+                        (click)="editAddOnProfile(profile)"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        class="btn btn-quiet"
+                        type="button"
+                        (click)="toggleAddOnProfileArchive(card, profile)"
+                      >
+                        {{ profile.archived ? 'Restore' : 'Archive' }}
+                      </button>
+                    </div>
+                  }
+                </div>
+              }
+              @if (addOnProfileFormOpen()) {
+                <form
+                  class="addon-profile-form"
+                  (submit)="$event.preventDefault(); saveAddOnProfile(card)"
+                >
+                  <label
+                    >Cardholder name
+                    <input
+                      maxlength="50"
+                      [value]="addOnProfileName()"
+                      (input)="addOnProfileName.set($any($event.target).value)"
+                    />
+                  </label>
+                  <label
+                    >Last four digits
+                    <input
+                      inputmode="numeric"
+                      maxlength="4"
+                      [value]="addOnProfileDigits()"
+                      (input)="setAddOnProfileDigits($any($event.target).value)"
+                    />
+                  </label>
+                  @if (addOnProfileError(); as error) {
+                    <small role="alert">{{ error }}</small>
+                  }
+                  <div>
+                    <button class="btn btn-primary" type="submit">
+                      {{ editingAddOnProfileId() ? 'Save changes' : 'Add profile' }}
+                    </button>
+                    <button class="btn" type="button" (click)="cancelAddOnProfileEdit()">
+                      Cancel
+                    </button>
+                  </div>
+                </form>
+              }
+            </section>
             @if (card.archived) {
               <section class="inactive-card-note">
                 <app-icon name="archive" />

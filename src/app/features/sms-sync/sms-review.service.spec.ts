@@ -1231,6 +1231,73 @@ describe('SMS approved import integrity', () => {
       expect(sources()[0].balanceMinor).toBe(90000);
     },
   );
+  it('keeps a physical Pluxee fee idempotent while distinct identical fee messages remain separate', async () => {
+    const stageEvidence = service as unknown as {
+      stage(items: readonly SmsEvidence[]): Promise<void>;
+    };
+    const fee = evidence({
+      kind: 'PLUXEE_FEE',
+      issuer: 'Pluxee',
+      providerId: '701',
+      sourceMessageId: '701',
+      amountMinor: 325,
+      merchant: 'Synthetic service fee',
+    });
+    await stageEvidence.stage([fee]);
+    await stageEvidence.stage([{ ...fee, id: 'b'.repeat(64) }]);
+    const distinctFees = ['702', '703', '704'].map((providerId, index) => ({
+      ...fee,
+      id: String.fromCharCode(99 + index).repeat(64),
+      providerId,
+      sourceMessageId: providerId,
+    }));
+    await stageEvidence.stage(distinctFees);
+    expect(rows<{ count: number }>('SELECT COUNT(*) AS count FROM sms_candidates')[0].count).toBe(
+      4,
+    );
+    expect(
+      rows<{ provider_id: string; kind: string }>(
+        'SELECT provider_id,kind FROM sms_candidates ORDER BY provider_id',
+      ),
+    ).toEqual(
+      ['701', '702', '703', '704'].map((providerId) => ({
+        provider_id: providerId,
+        kind: 'PLUXEE_FEE',
+      })),
+    );
+    const wallet: PaymentSource = {
+      id: 'synthetic-pluxee-fees',
+      nickname: 'Synthetic meal card',
+      institution: 'Pluxee',
+      kind: 'MEAL',
+      noLimit: false,
+      balanceMinor: 50000,
+      autoLoad: false,
+      archived: false,
+    };
+    sources.set([wallet]);
+    run('INSERT INTO app_preferences VALUES (?,?)', ['payment_sources', JSON.stringify([wallet])]);
+    for (const item of [fee, ...distinctFees])
+      await service.approve(
+        { id: item.id, kind: item.kind, eventAt: item.eventAt, state: 'PENDING', item },
+        wallet.id,
+        item.amountMinor,
+        item.merchant ?? 'Synthetic meal wallet fee',
+        '',
+        'PENDING',
+        true,
+      );
+    expect(count('card_transactions')).toBe(4);
+    expect(
+      rows<{ type: string; payload: string }>(
+        'SELECT type,payload FROM card_transactions ORDER BY id',
+      ).map((row) => ({
+        type: row.type,
+        cardId: (JSON.parse(row.payload) as CardTransaction).cardId,
+      })),
+    ).toEqual(Array.from({ length: 4 }, () => ({ type: 'FEE', cardId: wallet.id })));
+    expect(sources()[0].balanceMinor).toBe(48700);
+  });
   it('retains read status and explicit decisions when improved evidence is restaged', async () => {
     stage(confident({ cardDigits: undefined }));
     run("UPDATE sms_candidates SET read_at='already-read'");

@@ -28,6 +28,7 @@ export type SmsKind =
   | 'REFUND'
   | 'PLUXEE_TOPUP'
   | 'PLUXEE_PURCHASE'
+  | 'PLUXEE_FEE'
   | 'FASTAG_TOLL'
   | 'FASTAG_TOPUP'
   | 'LOAN_DEBIT'
@@ -57,6 +58,7 @@ export interface SmsEvidence {
   statementDate?: string;
   id: string;
   providerId: string;
+  sourceMessageId?: string;
   kind: SmsKind;
   amountMinor: number;
   currency: string;
@@ -174,6 +176,7 @@ const LEDGER_TYPES: Partial<Record<SmsKind, TransactionType>> = {
   REFUND: 'REFUND',
   PLUXEE_TOPUP: 'CREDIT',
   PLUXEE_PURCHASE: 'PURCHASE',
+  PLUXEE_FEE: 'FEE',
   FASTAG_TOLL: 'PURCHASE',
   FASTAG_TOPUP: 'CREDIT',
 };
@@ -202,6 +205,7 @@ export function validEvidence(value: unknown): value is SmsEvidence {
       'REFUND',
       'PLUXEE_TOPUP',
       'PLUXEE_PURCHASE',
+      'PLUXEE_FEE',
       'FASTAG_TOLL',
       'FASTAG_TOPUP',
       'LOAN_DEBIT',
@@ -228,7 +232,8 @@ export function validEvidence(value: unknown): value is SmsEvidence {
     (item['counterpartyAccountDigits'] === undefined ||
       /^\d{3,5}$/.test(String(item['counterpartyAccountDigits']))) &&
     typeof item['receivedAt'] === 'number' &&
-    typeof item['providerId'] === 'string'
+    typeof item['providerId'] === 'string' &&
+    (item['sourceMessageId'] === undefined || typeof item['sourceMessageId'] === 'string')
   );
 }
 export function eligibleSources(
@@ -550,6 +555,7 @@ export function merchantTitle(item: SmsEvidence | null, kind: SmsKind): string {
     PAYMENT_REMINDER: 'Payment reminder',
     PAYMENT_INITIATED: 'Payment initiated',
     PLUXEE_PURCHASE: 'Meal wallet purchase',
+    PLUXEE_FEE: 'Meal wallet fee',
     PLUXEE_TOPUP: 'Meal wallet top-up',
     FASTAG_TOLL: 'Toll payment',
     FASTAG_TOPUP: 'FASTag top-up',
