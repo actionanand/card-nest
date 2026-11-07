@@ -1,0 +1,1 @@
+import {d as h}from'./main-VBYFU2Z5.js';var a=class o{static \u0275fac=function(e){return new(e||o)};static \u0275cmp=h({type:o,selectors:[["app-platform-tools"]],decls:0,vars:0,template:function(e,s){},encapsulation:2})};export{a};
