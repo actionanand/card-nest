@@ -109,8 +109,15 @@ describe('ExportService own-account movements', () => {
             cards: signal([
               {
                 id: 'card',
+                network: 'VISA',
                 addOnProfiles: [
-                  { id: 'addon-profile', name: 'Synthetic cardholder', lastDigits: '2468' },
+                  {
+                    id: 'addon-profile',
+                    name: 'Synthetic cardholder',
+                    relationship: 'Wife',
+                    network: 'MASTERCARD',
+                    lastDigits: '2468',
+                  },
                 ],
               },
             ]),
@@ -271,12 +278,14 @@ describe('ExportService own-account movements', () => {
   it('exports Add-On attribution separately from the primary payment source', () => {
     const attributed = { ...payment, addOnCardId: 'addon-profile' };
     service.exportTransactionSelection('CSV', [attributed], 'May 2026', '2026-05', may);
-    expect(String(csv.mock.calls[0][0])).toContain('Synthetic cardholder · •••• 2468');
+    expect(String(csv.mock.calls[0][0])).toContain(
+      'Synthetic cardholder · Wife · MASTERCARD · •••• 2468',
+    );
     service.exportTransactionSelection('PDF', [attributed], 'May 2026', '2026-05', may);
     const report = pdf.mock.calls[0][0] as ExportDocument;
     const section = report.sections.find((item) => item.headers.includes('Add-On cardholder'))!;
     expect(section).toBeDefined();
-    expect(section.rows[0].cells).toContain('Synthetic cardholder · •••• 2468');
+    expect(section.rows[0].cells).toContain('Synthetic cardholder · Wife · MASTERCARD · •••• 2468');
     expect(section.rows[0].cells).toContain('Fiction card');
   });
 

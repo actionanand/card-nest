@@ -5,7 +5,9 @@ import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angula
 import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import {
+  ADD_ON_RELATIONSHIPS,
   AddOnCardProfile,
+  AddOnRelationship,
   CardBenefit,
   CardImportantLink,
   CardNetwork,
@@ -44,6 +46,11 @@ interface CardFilterTotal {
   readonly count: number;
 }
 
+interface AddOnCardRow {
+  readonly primaryCard: CreditCard;
+  readonly profile: AddOnCardProfile;
+}
+
 @Component({
   selector: 'app-cards-page',
   imports: [
@@ -77,9 +84,13 @@ export class CardsPage {
   readonly showForm = signal(this.route.snapshot.queryParamMap.get('add') === 'true');
   readonly editingId = signal<string | null>(null);
   readonly selectedCardId = signal<string | null>(this.route.snapshot.queryParamMap.get('open'));
+  readonly showAddOnCards = signal(false);
   readonly addOnProfileName = signal('');
   readonly addOnProfileDigits = signal('');
+  readonly addOnProfileRelationship = signal<AddOnRelationship | ''>('');
+  readonly addOnProfileNetwork = signal<CardNetwork>('VISA');
   readonly editingAddOnProfileId = signal<string | null>(null);
+  readonly editingAddOnCardId = signal<string | null>(null);
   readonly addOnProfileFormOpen = signal(false);
   readonly addOnProfileError = signal<string | null>(null);
   readonly showArchived = signal(false);
@@ -189,6 +200,34 @@ export class CardsPage {
   readonly archivedCardTotal = computed(
     () => this.store.cards().filter((card) => !card.deletedAt && card.archived).length,
   );
+  readonly addOnProfileTotal = computed(() =>
+    this.store.cards().reduce((total, card) => total + (card.addOnProfiles?.length ?? 0), 0),
+  );
+  readonly visibleAddOnProfiles = computed<readonly AddOnCardRow[]>(() => {
+    const term = this.search().trim().toLocaleLowerCase();
+    return this.store
+      .cards()
+      .flatMap((primaryCard) =>
+        (primaryCard.addOnProfiles ?? []).map((profile) => ({ primaryCard, profile })),
+      )
+      .filter(
+        ({ primaryCard, profile }) =>
+          !term ||
+          primaryCard.nickname.toLocaleLowerCase().includes(term) ||
+          profile.name.toLocaleLowerCase().includes(term) ||
+          (profile.relationship ?? 'Other').toLocaleLowerCase().includes(term) ||
+          (profile.network ?? primaryCard.network)
+            .replaceAll('_', ' ')
+            .toLocaleLowerCase()
+            .includes(term) ||
+          !!profile.lastDigits?.includes(term),
+      )
+      .sort(
+        (left, right) =>
+          left.primaryCard.nickname.localeCompare(right.primaryCard.nickname) ||
+          left.profile.name.localeCompare(right.profile.name),
+      );
+  });
   readonly filteredActiveCardCount = computed(
     () =>
       this.store
@@ -207,7 +246,8 @@ export class CardsPage {
   );
   readonly cardFilterTotal = computed<CardFilterTotal | null>(() => {
     const filter = this.cardFilter();
-    if (this.showArchived() || (filter !== 'DUE' && filter !== 'FEE')) return null;
+    if (this.showArchived() || this.showAddOnCards() || (filter !== 'DUE' && filter !== 'FEE'))
+      return null;
 
     const cards = this.visibleCards();
     if (filter === 'DUE') {
@@ -252,6 +292,11 @@ export class CardsPage {
   );
   readonly days = Array.from({ length: 31 }, (_, index) => index + 1);
   readonly networkOptions: readonly AppSelectOption[] = this.networks;
+  readonly addOnRelationshipOptions: readonly AppSelectOption[] = [
+    { value: '', label: 'Choose relationship' },
+    ...ADD_ON_RELATIONSHIPS.map((relationship) => ({ value: relationship, label: relationship })),
+  ];
+  readonly addOnNetworkOptions: readonly AppSelectOption[] = this.networkOptions;
   readonly globalNetworkOptions: readonly AppSelectOption[] = [
     { value: 'SAME', label: 'Same as card network' },
     ...this.networks,
@@ -614,11 +659,42 @@ export class CardsPage {
   }
   showCardArchive(archived: boolean): void {
     this.showArchived.set(archived);
+    this.showAddOnCards.set(false);
     this.selectedCardId.set(null);
     this.hideRevealedSecrets();
     this.expandedBenefitId.set(null);
   }
+  showAddOnProfileTab(): void {
+    this.showArchived.set(false);
+    this.showAddOnCards.set(true);
+    this.selectedCardId.set(null);
+    this.hideRevealedSecrets();
+    this.expandedBenefitId.set(null);
+  }
+  addOnCardsEnabled(card: CreditCard): boolean {
+    return card.addOnCardsEnabled ?? !!card.addOnProfiles?.length;
+  }
+  setAddOnCardsEnabled(card: CreditCard, event: Event): void {
+    if (card.archived || card.deletedAt) return;
+    const enabled = (event.target as HTMLInputElement).checked;
+    const timestamp = new Date().toISOString();
+    this.store.updateCard({ ...card, addOnCardsEnabled: enabled, updatedAt: timestamp });
+    if (!enabled && this.editingAddOnCardId() === card.id) this.cancelAddOnProfileEdit();
+  }
+  addOnRelationship(profile: AddOnCardProfile): string {
+    return profile.relationship ?? 'Other';
+  }
+  addOnNetwork(card: CreditCard, profile: AddOnCardProfile): string {
+    return (profile.network ?? card.network).replaceAll('_', ' ');
+  }
+  viewAddOnTransactions(row: AddOnCardRow): void {
+    void this.router.navigate(['/transactions'], {
+      queryParams: { source: `add-on:${row.profile.id}` },
+    });
+  }
   openAdd(): void {
+    this.showArchived.set(false);
+    this.showAddOnCards.set(false);
     this.editingId.set(null);
     this.resetForm();
     this.draftBenefits.set([]);
@@ -626,23 +702,38 @@ export class CardsPage {
     this.benefitEditorHtml.set(this.richHtml(''));
     this.showForm.set(true);
   }
-  editAddOnProfile(profile: AddOnCardProfile): void {
+  editAddOnProfile(card: CreditCard, profile: AddOnCardProfile): void {
+    if (this.showAddOnCards()) {
+      this.showAddOnCards.set(false);
+      this.showArchived.set(false);
+      this.search.set('');
+      this.uiPreferences.setCardsFilter('ALL');
+      this.selectedCardId.set(card.id);
+    }
+    this.editingAddOnCardId.set(card.id);
     this.addOnProfileFormOpen.set(true);
     this.editingAddOnProfileId.set(profile.id);
     this.addOnProfileName.set(profile.name);
-    this.addOnProfileDigits.set(profile.lastDigits);
+    this.addOnProfileDigits.set(profile.lastDigits ?? '');
+    this.addOnProfileRelationship.set(profile.relationship ?? 'Other');
+    this.addOnProfileNetwork.set(profile.network ?? card.network);
     this.addOnProfileError.set(null);
   }
   cancelAddOnProfileEdit(): void {
     this.addOnProfileFormOpen.set(false);
+    this.editingAddOnCardId.set(null);
     this.editingAddOnProfileId.set(null);
     this.addOnProfileName.set('');
     this.addOnProfileDigits.set('');
+    this.addOnProfileRelationship.set('');
+    this.addOnProfileNetwork.set('VISA');
     this.addOnProfileError.set(null);
   }
   saveAddOnProfile(card: CreditCard): void {
     const name = this.addOnProfileName().trim();
-    const lastDigits = this.addOnProfileDigits().replace(/\D/g, '');
+    const enteredDigits = this.addOnProfileDigits().trim();
+    const lastDigits = enteredDigits.replace(/\D/g, '');
+    const relationship = this.addOnProfileRelationship();
     const profiles = card.addOnProfiles ?? [];
     const editingId = this.editingAddOnProfileId();
     const existing = profiles.find((profile) => profile.id === editingId);
@@ -650,11 +741,21 @@ export class CardsPage {
       this.addOnProfileError.set('Restore the primary card before changing profiles.');
       return;
     }
-    if (name.length < 2 || name.length > 50 || !/^\d{4}$/.test(lastDigits)) {
-      this.addOnProfileError.set('Enter a name and exactly four card digits.');
+    if (
+      !this.addOnCardsEnabled(card) ||
+      name.length < 1 ||
+      name.length > 50 ||
+      !relationship ||
+      (enteredDigits !== '' && !/^\d{4}$/.test(lastDigits))
+    ) {
+      this.addOnProfileError.set(
+        !this.addOnCardsEnabled(card)
+          ? 'Enable Add-On cards before adding or editing profiles.'
+          : 'Choose a relationship, enter a cardholder name, and enter exactly four digits if provided.',
+      );
       return;
     }
-    if (editingId && !existing) {
+    if (editingId && (!existing || this.editingAddOnCardId() !== card.id)) {
       this.addOnProfileError.set('This Add-On profile is no longer available.');
       return;
     }
@@ -666,11 +767,20 @@ export class CardsPage {
     }
     const timestamp = new Date().toISOString();
     const profile: AddOnCardProfile = existing
-      ? { ...existing, name, lastDigits, updatedAt: timestamp }
+      ? {
+          ...existing,
+          name,
+          relationship,
+          network: this.addOnProfileNetwork() || card.network,
+          lastDigits: lastDigits || undefined,
+          updatedAt: timestamp,
+        }
       : {
           id: crypto.randomUUID(),
           name,
-          lastDigits,
+          relationship,
+          network: this.addOnProfileNetwork() || card.network,
+          lastDigits: lastDigits || undefined,
           archived: false,
           createdAt: timestamp,
           updatedAt: timestamp,
@@ -685,12 +795,28 @@ export class CardsPage {
     this.cancelAddOnProfileEdit();
     this.snackbar.show(existing ? 'Add-On profile updated.' : 'Add-On profile added.');
   }
-  openAddOnProfile(): void {
+  openAddOnProfile(card: CreditCard): void {
+    if (!this.addOnCardsEnabled(card) || card.archived || card.deletedAt) return;
+    this.editingAddOnCardId.set(card.id);
     this.editingAddOnProfileId.set(null);
     this.addOnProfileName.set('');
     this.addOnProfileDigits.set('');
+    this.addOnProfileRelationship.set('');
+    this.addOnProfileNetwork.set(card.network);
     this.addOnProfileError.set(null);
     this.addOnProfileFormOpen.set(true);
+  }
+  setAddOnProfileRelationship(value: string): void {
+    if (value === '') {
+      this.addOnProfileRelationship.set('');
+      return;
+    }
+    if (ADD_ON_RELATIONSHIPS.includes(value as AddOnRelationship))
+      this.addOnProfileRelationship.set(value as AddOnRelationship);
+  }
+  setAddOnProfileNetwork(value: string): void {
+    if (this.networks.some((network) => network.value === value))
+      this.addOnProfileNetwork.set(value as CardNetwork);
   }
   setAddOnProfileDigits(value: string): void {
     this.addOnProfileDigits.set(value.replace(/\D/g, '').slice(0, 4));
@@ -708,6 +834,8 @@ export class CardsPage {
   }
   edit(card: CreditCard): void {
     if (card.archived) return;
+    this.showArchived.set(false);
+    this.showAddOnCards.set(false);
     const linkedCard = this.relatedCardFor(card);
     this.editingId.set(card.id);
     this.form.reset({
@@ -1462,7 +1590,7 @@ export class CardsPage {
       card.lastDigits.includes(term) ||
       !!card.addOnProfiles?.some(
         (profile) =>
-          profile.name.toLocaleLowerCase().includes(term) || profile.lastDigits.includes(term),
+          profile.name.toLocaleLowerCase().includes(term) || !!profile.lastDigits?.includes(term),
       )
     );
   }

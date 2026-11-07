@@ -342,10 +342,10 @@ export class ExportService {
 
   private addOnCardholder(transaction: CardTransaction): string {
     if (!transaction.addOnCardId) return '';
-    const profile = (this.store.cards?.() ?? [])
-      .find((card) => card.id === transaction.cardId)
-      ?.addOnProfiles?.find((item) => item.id === transaction.addOnCardId);
-    return profile ? `${profile.name} · •••• ${profile.lastDigits}` : '';
+    const card = (this.store.cards?.() ?? []).find((item) => item.id === transaction.cardId);
+    const profile = card?.addOnProfiles?.find((item) => item.id === transaction.addOnCardId);
+    if (!profile || !card) return '';
+    return `${profile.name} · ${profile.relationship ?? 'Other'} · ${(profile.network ?? card.network).replaceAll('_', ' ')}${profile.lastDigits ? ` · •••• ${profile.lastDigits}` : ''}`;
   }
 
   private transferFrom(transfer: SourceTransfer): string {

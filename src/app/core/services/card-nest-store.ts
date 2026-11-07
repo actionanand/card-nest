@@ -1,12 +1,14 @@
 import { Service, computed, inject, signal } from '@angular/core';
 import { CommittedSaveRefreshError } from './committed-save-refresh-error';
 import {
+  ADD_ON_RELATIONSHIPS,
   AddOnCardProfile,
   BalanceTiming,
   BankCashTrackingSettings,
   CardTransaction,
   CardStatement,
   Category,
+  CardNetwork,
   CreditCard,
   DashboardSnapshot,
   EmiInstallment,
@@ -108,21 +110,45 @@ const PAYMENT_SOURCES_PREFERENCE_KEY = 'payment_sources';
 const BANK_ACCOUNT_FINGERPRINT_KEY = 'bank_account_fingerprint_key';
 const MAX_ADD_ON_PROFILES = 5;
 
-function assertValidAddOnProfiles(profiles: readonly AddOnCardProfile[] | undefined): void {
+function assertValidAddOnProfiles(
+  profiles: readonly AddOnCardProfile[] | undefined,
+  previousProfiles: readonly AddOnCardProfile[] = [],
+  enabled = false,
+): void {
   if (!profiles) return;
   if (profiles.length > MAX_ADD_ON_PROFILES)
     throw new Error(`A primary card can have up to ${MAX_ADD_ON_PROFILES} Add-On profiles.`);
   const ids = new Set<string>();
   for (const profile of profiles) {
+    const previous = previousProfiles.find((item) => item.id === profile.id);
     if (
       !profile.id ||
       ids.has(profile.id) ||
-      profile.name.trim().length < 2 ||
+      profile.name.trim().length < 1 ||
       profile.name.trim().length > 50 ||
-      !/^\d{4}$/.test(profile.lastDigits) ||
+      (profile.lastDigits !== undefined && !/^\d{4}$/.test(profile.lastDigits)) ||
+      (profile.relationship !== undefined &&
+        !ADD_ON_RELATIONSHIPS.includes(profile.relationship)) ||
+      (profile.network !== undefined &&
+        !(
+          [
+            'VISA',
+            'MASTERCARD',
+            'RUPAY',
+            'AMERICAN_EXPRESS',
+            'DISCOVER',
+            'DINERS_CLUB',
+            'JCB',
+            'UNIONPAY',
+            'OTHER',
+          ] as CardNetwork[]
+        ).includes(profile.network)) ||
+      (!previous && (!enabled || !profile.relationship || !profile.network)) ||
       typeof profile.archived !== 'boolean'
     )
-      throw new Error('Check the Add-On profile name and last four digits.');
+      throw new Error(
+        'Check the Add-On profile name, relationship, network and optional last four digits.',
+      );
     ids.add(profile.id);
   }
 }
@@ -926,12 +952,19 @@ export class CardNestStore {
   }
 
   addCard(card: CreditCard): void {
-    assertValidAddOnProfiles(card.addOnProfiles);
+    assertValidAddOnProfiles(
+      card.addOnProfiles,
+      [],
+      card.addOnCardsEnabled ?? !!card.addOnProfiles?.length,
+    );
     this.cards.update((cards) => [...cards, card]);
     void this.persistCard(card);
   }
   updateCard(updated: CreditCard): void {
-    assertValidAddOnProfiles(updated.addOnProfiles);
+    const previous = this.cards().find((card) => card.id === updated.id);
+    const enabled =
+      updated.addOnCardsEnabled ?? previous?.addOnCardsEnabled ?? !!previous?.addOnProfiles?.length;
+    assertValidAddOnProfiles(updated.addOnProfiles, previous?.addOnProfiles, enabled);
     this.cards.update((cards) => cards.map((card) => (card.id === updated.id ? updated : card)));
     void this.persistCard(updated);
   }
@@ -1031,7 +1064,12 @@ export class CardNestStore {
       if (transaction.addOnCardId) {
         const profile = card?.addOnProfiles?.find((item) => item.id === transaction.addOnCardId);
         const retainedArchivedProfile = previous?.addOnCardId === transaction.addOnCardId;
-        if (!profile || (profile.archived && !retainedArchivedProfile))
+        const addOnEnabled = card?.addOnCardsEnabled ?? !!card?.addOnProfiles?.length;
+        if (
+          !profile ||
+          (profile.archived && !retainedArchivedProfile) ||
+          (!addOnEnabled && !retainedArchivedProfile)
+        )
           throw new Error('Choose an active Add-On profile belonging to the selected card.');
       }
       if (recurringRule && recurringRule.addOnCardId !== transaction.addOnCardId)

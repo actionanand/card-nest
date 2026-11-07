@@ -908,19 +908,11 @@ label small.validation-error {
   justify-content: space-between;
   gap: 0.5rem;
 }
-.addon-profile-manager h3 {
-  margin: 0;
-  font-size: 0.9rem;
-}
 .addon-profile-manager p,
 .addon-profile-manager small {
   margin: 0;
   color: var(--muted);
   font-size: 0.75rem;
-}
-.addon-profile-row {
-  min-height: 2.5rem;
-  border-top: 1px solid var(--line);
 }
 .addon-profile-row > span,
 .addon-profile-form label {

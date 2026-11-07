@@ -583,7 +583,7 @@ export class TransactionsPage {
       (card.addOnProfiles ?? []).map((profile) => ({
         value: `${ADD_ON_FILTER_PREFIX}${profile.id}`,
         label: `${card.nickname} · ${profile.name}${profile.archived ? ' · Archived' : ''}`,
-        detail: `Add-On · •••• ${profile.lastDigits}`,
+        detail: `Add-On · ${profile.relationship ?? 'Other'}${profile.lastDigits ? ` · •••• ${profile.lastDigits}` : ''}`,
       })),
     ),
     ...this.store.paymentSources().map((source) => ({
@@ -1590,14 +1590,20 @@ export class TransactionsPage {
     const card = this.store.cards().find((item) => item.id === this.form.controls.cardId.value);
     if (!card) return [];
     const selectedId = this.form.controls.addOnCardId.value;
+    const enabled = card.addOnCardsEnabled ?? !!card.addOnProfiles?.length;
     return [
       { value: '', label: 'Primary cardholder' },
       ...(card.addOnProfiles ?? [])
-        .filter((profile) => !profile.archived || profile.id === selectedId)
+        .filter((profile) => (enabled && !profile.archived) || profile.id === selectedId)
         .map((profile) => ({
           value: profile.id,
           label: `${profile.name}${profile.archived ? ' · Archived' : ''}`,
-          detail: `•••• ${profile.lastDigits}`,
+          detail: [
+            profile.relationship ?? 'Other',
+            profile.lastDigits ? `•••• ${profile.lastDigits}` : '',
+          ]
+            .filter(Boolean)
+            .join(' · '),
         })),
     ];
   }
@@ -1606,6 +1612,9 @@ export class TransactionsPage {
       .cards()
       .find((card) => card.id === transaction.cardId)
       ?.addOnProfiles?.find((profile) => profile.id === transaction.addOnCardId);
+  }
+  addOnRelationshipForTransaction(transaction: CardTransaction): string {
+    return this.addOnProfileForTransaction(transaction)?.relationship ?? 'Other';
   }
   isEditingSmsTransaction(): boolean {
     const editingId = this.editingId();
@@ -2552,7 +2561,6 @@ export class TransactionsPage {
   readonly deleteTransferCandidate = signal<SourceTransfer | null>(null);
   readonly visibleTransfers = computed(() => {
     const source = this.sourceFilter();
-    const primaryCardId = this.primaryCardIdForFilter(source);
     const term = this.search().trim().toLocaleLowerCase();
     return this.store
       .transfers()
@@ -2561,8 +2569,7 @@ export class TransactionsPage {
           (source === 'ALL' ||
             transfer.fromSourceId === source ||
             transfer.toSourceId === source ||
-            transfer.cardId === source ||
-            (!!primaryCardId && transfer.cardId === primaryCardId)) &&
+            transfer.cardId === source) &&
           (!term || this.transferTitle(transfer).toLocaleLowerCase().includes(term)),
       );
   });

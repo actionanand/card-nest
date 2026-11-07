@@ -139,7 +139,11 @@ describe('Durable first-run data, additive read migration and private portable b
     const profiles: AddOnCardProfile[] = Array.from({ length: 5 }, (_, index) => ({
       id: `addon-profile-${index + 1}`,
       name: `Synthetic member ${index + 1}`,
-      lastDigits: String(4100 + index),
+      relationship: ['Wife', 'Parent', 'Child', 'Sibling', 'Other'][
+        index
+      ] as AddOnCardProfile['relationship'],
+      network: 'MASTERCARD',
+      lastDigits: index === 4 ? undefined : String(4100 + index),
       archived: false,
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -162,6 +166,7 @@ describe('Durable first-run data, additive read migration and private portable b
       emergencyPhones: [],
       supportEmails: [],
       archived: false,
+      addOnCardsEnabled: true,
       addOnProfiles: profiles,
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -186,6 +191,24 @@ describe('Durable first-run data, additive read migration and private portable b
         addOnProfiles: [...profiles, { ...profiles[0], id: 'addon-profile-sixth' }],
       }),
     ).toThrow('up to 5 Add-On profiles');
+    expect(() =>
+      store.updateCard({
+        ...card,
+        addOnProfiles: [
+          ...profiles.slice(0, 4),
+          { ...profiles[4], id: 'addon-profile-missing-relationship', relationship: undefined },
+        ],
+      }),
+    ).toThrow('relationship');
+    expect(() =>
+      store.updateCard({
+        ...card,
+        addOnProfiles: [
+          ...profiles.slice(0, 4),
+          { ...profiles[4], id: 'addon-profile-bad-suffix', lastDigits: '123' },
+        ],
+      }),
+    ).toThrow('last four digits');
     const transaction: CardTransaction = {
       id: 'addon-attributed-purchase',
       cardId: card.id,
@@ -211,9 +234,15 @@ describe('Durable first-run data, additive read migration and private portable b
       addOnCardId: profiles[0].id,
       amountMinor: transaction.amountMinor,
     });
+    expect(store.cardOutstanding(card.id)).toBe(transaction.amountMinor);
     await expect(
       store.saveManualTransaction({ ...transaction, id: 'sms-addon-attribution', origin: 'SMS' }),
     ).rejects.toThrow('only for manual transactions');
+    store.updateCard({ ...card, addOnCardsEnabled: false });
+    await expect(
+      store.saveManualTransaction({ ...transaction, id: 'disabled-addon-attribution' }),
+    ).rejects.toThrow('active Add-On profile');
+    store.updateCard(card);
     const archivedCard: CreditCard = {
       ...card,
       addOnProfiles: profiles.map((profile) =>
@@ -224,38 +253,49 @@ describe('Durable first-run data, additive read migration and private portable b
     await expect(
       store.saveManualTransaction({ ...transaction, id: 'new-archived-addon-purchase' }),
     ).rejects.toThrow('active Add-On profile');
-    const backup = await database.exportBackupJson();
-    await database.run('UPDATE credit_cards SET payload=? WHERE id=?', [
-      JSON.stringify({ ...archivedCard, addOnProfiles: [] }),
-      card.id,
-    ]);
-    await database.run(
-      "UPDATE card_transactions SET payload=json_remove(payload,'$.addOnCardId') WHERE id=?",
-      [transaction.id],
-    );
-    await database.restoreBackupJson(backup);
-    const [restoredCard] = await database.query<{ payload: string }>(
-      'SELECT payload FROM credit_cards WHERE id=?',
-      [card.id],
-    );
-    const [restoredTransaction] = await database.query<{ payload: string }>(
-      'SELECT payload FROM card_transactions WHERE id=?',
-      [transaction.id],
-    );
-    expect(JSON.parse(restoredCard.payload).addOnProfiles[0]).toMatchObject({
-      id: profiles[0].id,
-      archived: true,
-    });
-    expect(JSON.parse(restoredTransaction.payload).addOnCardId).toBe(profiles[0].id);
-    await database.deleteDataOlderThan('2999-12-31');
-    expect(
-      await database.query('SELECT id FROM card_transactions WHERE id=?', [transaction.id]),
-    ).toHaveLength(0);
-    const [retainedCard] = await database.query<{ payload: string }>(
-      'SELECT payload FROM credit_cards WHERE id=?',
-      [card.id],
-    );
-    expect(JSON.parse(retainedCard.payload).addOnProfiles[0].id).toBe(profiles[0].id);
+    vi.stubGlobal('crypto', webcrypto);
+    vi.stubGlobal('CompressionStream', undefined);
+    vi.stubGlobal('DecompressionStream', undefined);
+    try {
+      const backups = TestBed.inject(BackupService);
+      const backup = await backups.create('synthetic-addon-passphrase');
+      await database.run('UPDATE credit_cards SET payload=? WHERE id=?', [
+        JSON.stringify({ ...archivedCard, addOnProfiles: [] }),
+        card.id,
+      ]);
+      await database.run(
+        "UPDATE card_transactions SET payload=json_remove(payload,'$.addOnCardId') WHERE id=?",
+        [transaction.id],
+      );
+      await backups.restore(backup.contents, 'synthetic-addon-passphrase');
+      const [restoredCard] = await database.query<{ payload: string }>(
+        'SELECT payload FROM credit_cards WHERE id=?',
+        [card.id],
+      );
+      const [restoredTransaction] = await database.query<{ payload: string }>(
+        'SELECT payload FROM card_transactions WHERE id=?',
+        [transaction.id],
+      );
+      expect(JSON.parse(restoredCard.payload).addOnProfiles[0]).toMatchObject({
+        id: profiles[0].id,
+        archived: true,
+        relationship: 'Wife',
+        network: 'MASTERCARD',
+      });
+      expect(JSON.parse(restoredCard.payload).addOnCardsEnabled).toBe(true);
+      expect(JSON.parse(restoredTransaction.payload).addOnCardId).toBe(profiles[0].id);
+      await database.deleteDataOlderThan('2999-12-31');
+      expect(
+        await database.query('SELECT id FROM card_transactions WHERE id=?', [transaction.id]),
+      ).toHaveLength(0);
+      const [retainedCard] = await database.query<{ payload: string }>(
+        'SELECT payload FROM credit_cards WHERE id=?',
+        [card.id],
+      );
+      expect(JSON.parse(retainedCard.payload).addOnProfiles[0].id).toBe(profiles[0].id);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
   it('atomically records mixed wallet/card payments, adds a third payment, refunds and restores exact group history', async () => {
     await database.initialise();

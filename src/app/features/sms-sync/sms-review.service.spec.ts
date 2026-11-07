@@ -1240,8 +1240,8 @@ describe('SMS approved import integrity', () => {
       issuer: 'Pluxee',
       providerId: '701',
       sourceMessageId: '701',
-      amountMinor: 325,
-      merchant: 'Synthetic service fee',
+      amountMinor: 200,
+      merchant: 'ONLINE CONVENIENCE FEE',
     });
     await stageEvidence.stage([fee]);
     await stageEvidence.stage([{ ...fee, id: 'b'.repeat(64) }]);
@@ -1296,7 +1296,18 @@ describe('SMS approved import integrity', () => {
         cardId: (JSON.parse(row.payload) as CardTransaction).cardId,
       })),
     ).toEqual(Array.from({ length: 4 }, () => ({ type: 'FEE', cardId: wallet.id })));
-    expect(sources()[0].balanceMinor).toBe(48700);
+    expect(sources()[0].balanceMinor).toBe(49200);
+    await service.approve(
+      { id: fee.id, kind: fee.kind, eventAt: fee.eventAt, state: 'PENDING', item: fee },
+      wallet.id,
+      fee.amountMinor,
+      fee.merchant!,
+      '',
+      'PENDING',
+      true,
+    );
+    expect(count('card_transactions')).toBe(4);
+    expect(sources()[0].balanceMinor).toBe(49200);
   });
   it('retains read status and explicit decisions when improved evidence is restaged', async () => {
     stage(confident({ cardDigits: undefined }));

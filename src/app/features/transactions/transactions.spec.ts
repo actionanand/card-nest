@@ -1,6 +1,11 @@
 import { TestBed, ComponentFixture } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
-import { CardTransaction, ConsumerWalletEvent, CreditCard } from '../../core/models/domain';
+import {
+  AddOnCardProfile,
+  CardTransaction,
+  ConsumerWalletEvent,
+  CreditCard,
+} from '../../core/models/domain';
 import { SqliteDatabase } from '../../core/data/sqlite-database';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { ConsumerWalletService } from '../../core/services/consumer-wallet.service';
@@ -276,9 +281,11 @@ describe('Transactions wallet purchase approval and lifecycle UI', () => {
   });
   it('attributes and filters manual transactions by Add-On profile while retaining the primary card', () => {
     const store = TestBed.inject(CardNestStore);
-    const profile = {
+    const profile: AddOnCardProfile = {
       id: 'family-profile',
       name: 'Synthetic cardholder',
+      relationship: 'Wife',
+      network: 'MASTERCARD',
       lastDigits: '2468',
       archived: false,
       createdAt: '2026-10-01',
@@ -331,6 +338,11 @@ describe('Transactions wallet purchase approval and lifecycle UI', () => {
     page.sourceFilter.set(`add-on:${profile.id}`);
     expect(page.filtered().map((transaction) => transaction.id)).toEqual([attributed.id]);
     expect(page.filtered()[0].cardId).toBe(card.id);
+    expect(page.visibleTotal()).toBe(-attributed.amountMinor);
     expect(page.addOnProfileForTransaction(attributed)).toMatchObject({ name: profile.name });
+    page.openDetails(attributed);
+    fixture.detectChanges();
+    expect(fixture.nativeElement.textContent).toContain('Add-On card · Synthetic cardholder');
+    expect(fixture.nativeElement.textContent).toContain('Relationship · Wife');
   });
 });

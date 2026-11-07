@@ -1,4 +1,4 @@
-import { CreditCard, PaymentSource } from '../../core/models/domain';
+import { BankCashTrackingSettings, CreditCard, PaymentSource } from '../../core/models/domain';
 import {
   SmsEvidence,
   eligibleSources,
@@ -6,6 +6,8 @@ import {
   merchantTitle,
   recurringRelationship,
   ledgerType,
+  bankPurposes,
+  defaultBankPurpose,
 } from './sms-model';
 
 const card = (changes: Partial<CreditCard> = {}): CreditCard => ({
@@ -58,6 +60,21 @@ const mealWallet = (changes: Partial<PaymentSource> = {}): PaymentSource => ({
   ...changes,
 });
 describe('Reliable SMS source matching', () => {
+  it('keeps an IDBI CheQ debit as a confirmation-required card settlement candidate', () => {
+    const alert = item({
+      kind: 'PAYMENT_INITIATED',
+      issuer: 'IDBI Bank',
+      accountDigits: '582',
+      direction: 'DEBIT',
+      purposeHint: 'CARD_REPAYMENT',
+    });
+    const settings: BankCashTrackingSettings = {
+      enabled: true,
+      askCardSettlementFunding: true,
+    };
+    expect(bankPurposes(alert, settings)).toEqual(['CARD_SETTLEMENT']);
+    expect(defaultBankPurpose(alert, settings)).toBe('');
+  });
   it.each(['VISA', 'MASTERCARD', 'RUPAY'] as const)(
     'matches a card-specific suffix with missing issuer for %s',
     (network) => {

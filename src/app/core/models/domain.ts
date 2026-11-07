@@ -37,10 +37,24 @@ export interface CardBenefit {
   note?: string;
 }
 
+export const ADD_ON_RELATIONSHIPS = [
+  'Wife',
+  'Parent',
+  'Child',
+  'Grandparent',
+  'Grandchild',
+  'Sibling',
+  'Other',
+] as const;
+
+export type AddOnRelationship = (typeof ADD_ON_RELATIONSHIPS)[number];
+
 export interface AddOnCardProfile {
   id: string;
   name: string;
-  lastDigits: string;
+  relationship?: AddOnRelationship;
+  network?: CardNetwork;
+  lastDigits?: string;
   archived: boolean;
   createdAt: string;
   updatedAt: string;
@@ -64,6 +78,7 @@ export interface CreditCard {
   subtype?: string;
   benefits?: readonly CardBenefit[];
   importantLinks?: readonly CardImportantLink[];
+  addOnCardsEnabled?: boolean;
   addOnProfiles?: readonly AddOnCardProfile[];
   relationshipGroupId?: string;
   theme: string;

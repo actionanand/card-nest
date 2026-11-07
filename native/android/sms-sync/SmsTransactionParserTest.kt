@@ -60,10 +60,11 @@ class SmsTransactionParserTest {
   }
 
   @Test fun pluxeeServiceFeeIsASeparateDebitAndPhysicalSmsIdentityIsStable() {
-    val fee = parse("Pluxee Meal Wallet was charged a service fee of INR 3.25 on 04-Nov-2026 10:11. Available balance is INR 400.00.")
+    val fee = parse("Rs. 2.00 deducted from your Pluxee Card xxxx2846 towards ONLINE CONVENIENCE FEE. Pluxee")
     assertEquals(SmsTransactionParser.Kind.PLUXEE_FEE, fee.kind)
-    assertEquals(325L, fee.amountMinor)
-    assertEquals(40000L, fee.reportedBalanceMinor)
+    assertEquals(200L, fee.amountMinor)
+    assertEquals("2846", fee.cardDigits)
+    assertEquals("ONLINE CONVENIENCE FEE", fee.merchant)
     assertEquals("Pluxee", fee.issuer)
     val physicalId = SmsTransactionParser.smsIdentity("701")
     assertEquals(physicalId, SmsTransactionParser.smsIdentity("701"))
@@ -71,27 +72,40 @@ class SmsTransactionParserTest {
   }
 
   @Test fun idfcFirstAvblLimitIsNotMistakenForTheTransactionAmount() {
-    val result = parse("IDFC FIRST Bank Credit Card 4321 spent INR 123.45 at FICTIONAL STORE on 04-Nov-2026 11:35. Avbl Limit INR 45,678.90.")
+    val result = parse("Transaction Successful! INR 195.96 spent on your IDFC FIRST Bank Credit Card ending XX7482 at DEMO DIGITAL SERVICES on 06 NOV 2026 at 12:52 AM Avbl Limit: INR 76432.18 If not done by you, call 1800000000 for dispute or to block your card SMS CCBLOCK 7482 to 000000")
     assertEquals(SmsTransactionParser.Kind.PURCHASE, result.kind)
-    assertEquals(12345L, result.amountMinor)
-    assertEquals(4567890L, result.availableLimitMinor)
+    assertEquals(19596L, result.amountMinor)
+    assertEquals("7482", result.cardDigits)
+    assertEquals("DEMO DIGITAL SERVICES", result.merchant)
+    assertEquals("2026-11-06", result.eventDate)
+    assertEquals("00:52", result.eventTime)
+    assertEquals(7643218L, result.availableLimitMinor)
     assertEquals("IDFC FIRST", result.issuer)
   }
 
   @Test fun idbiAccountCreditsAndDebitsKeepTheirDirection() {
-    val debit = parse("IDBI Bank A/c XX765 debited with INR 31.25 on 04-Nov-2026.")
-    val credit = parse("IDBI Bank Account XX765 credited with INR 45.67 on 05-Nov-2026.")
-    assertEquals(SmsTransactionParser.Kind.BANK_DEBIT, debit.kind)
-    assertEquals("DEBIT", debit.direction)
-    assertEquals("IDBI Bank", debit.issuer)
+    val credit = parse("Dear Customer, Acct XX582 is credited with Rs 7260.00 on 07-Nov-26 from DEMO CUSTOMER. UPI:782345610987 Avl Bal Rs 9470.90-IDBI Bank")
+    val debit = parse("IDBI Bank Acct XX582 debited for Rs 7253.00 on 07-Nov-26; Bal Rs 2217.90 CheQ Credit Card credited. UPI:109876543210. To Block UPI send SMS UPIBLOCK <Mob. No> to 07799000000 or call 1800000000-IDBI Bank")
     assertEquals(SmsTransactionParser.Kind.BANK_CREDIT, credit.kind)
+    assertEquals(726000L, credit.amountMinor)
+    assertEquals("582", credit.accountDigits)
     assertEquals("CREDIT", credit.direction)
+    assertEquals(947090L, credit.reportedBalanceMinor)
+    assertEquals("782345610987", credit.reference)
     assertEquals("IDBI Bank", credit.issuer)
+    assertEquals(SmsTransactionParser.Kind.PAYMENT_INITIATED, debit.kind)
+    assertEquals(725300L, debit.amountMinor)
+    assertEquals("582", debit.accountDigits)
+    assertEquals("DEBIT", debit.direction)
+    assertEquals("CARD_REPAYMENT", debit.purposeHint)
+    assertEquals(221790L, debit.reportedBalanceMinor)
+    assertEquals("109876543210", debit.reference)
+    assertEquals("IDBI Bank", debit.issuer)
   }
 
-  @Test fun cheqCardPaymentReceiptIsConfirmedRatherThanInitiated() {
+  @Test fun cheqCardPaymentNoticeRemainsAnInitiatedSettlementCandidate() {
     val result = parse("Payment of INR 678.90 has been received on your IDFC FIRST Bank Credit Card XX4321 through CheQ.")
-    assertEquals(SmsTransactionParser.Kind.CARD_PAYMENT_RECEIVED, result.kind)
+    assertEquals(SmsTransactionParser.Kind.PAYMENT_INITIATED, result.kind)
     assertEquals(67890L, result.amountMinor)
     assertEquals("4321", result.cardDigits)
   }

@@ -1638,7 +1638,7 @@ export class SmsReviewService {
         if (reconciliation === 'REPAIR_EXISTING')
           throw new Error('Select the existing top-up to repair.');
         if (
-          item.kind.startsWith('PLUXEE') &&
+          (item.kind === 'PLUXEE_TOPUP' || item.kind === 'PLUXEE_PURCHASE') &&
           [source?.balanceReconciliation, source?.latestBalanceReconciliation].some(
             (record) =>
               !!record &&

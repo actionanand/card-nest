@@ -929,9 +929,17 @@
                       {{ store.sourceDetail(transaction.cardId) }}</small
                     >
                     @if (addOnProfileForTransaction(transaction); as addOn) {
-                      <small class="addon-attribution"
-                        >Add-On · {{ addOn.name }} · •••• {{ addOn.lastDigits }}</small
-                      >
+                      <small class="addon-attribution">
+                        <span class="filter-chip"
+                          >Add-On card · {{ addOn.name }}
+                          @if (addOn.lastDigits) {
+                            · •••• {{ addOn.lastDigits }}
+                          }
+                        </span>
+                        <span class="filter-chip"
+                          >Relationship · {{ addOnRelationshipForTransaction(transaction) }}</span
+                        >
+                      </small>
                     }
                     @if (fundedWalletLoad(transaction.id); as load) {
                       <small class="wallet-load-provenance">
@@ -1309,10 +1317,17 @@
         </div>
         @if (addOnProfileForTransaction(transaction); as addOn) {
           <div>
-            <dt>Add-On cardholder</dt>
-            <dd>
-              {{ addOn.name }} · •••• {{ addOn.lastDigits
-              }}{{ addOn.archived ? ' · Archived' : '' }}
+            <dt>Attribution</dt>
+            <dd class="addon-attribution">
+              <span class="filter-chip"
+                >Add-On card · {{ addOn.name }}
+                @if (addOn.lastDigits) {
+                  · •••• {{ addOn.lastDigits }}
+                }
+              </span>
+              <span class="filter-chip"
+                >Relationship · {{ addOnRelationshipForTransaction(transaction) }}</span
+              >
             </dd>
           </div>
         }

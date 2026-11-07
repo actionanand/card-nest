@@ -38,8 +38,12 @@
         (input)="updateSearch($event)"
       />
     </label>
-    <div class="view-switch" role="group" aria-label="Card status">
-      <button type="button" [class.active]="!showArchived()" (click)="showCardArchive(false)">
+    <div class="view-switch" role="group" aria-label="Card view">
+      <button
+        type="button"
+        [class.active]="!showArchived() && !showAddOnCards()"
+        (click)="showCardArchive(false)"
+      >
         <span>Active</span>
         <small>{{ filteredActiveCardCount() }}/{{ activeCardTotal() }}</small>
       </button>
@@ -47,18 +51,24 @@
         <span>Archived</span>
         <small>{{ filteredArchivedCardCount() }}/{{ archivedCardTotal() }}</small>
       </button>
+      <button type="button" [class.active]="showAddOnCards()" (click)="showAddOnProfileTab()">
+        <span>Add-On</span>
+        <small>{{ addOnProfileTotal() }}</small>
+      </button>
     </div>
     <app-select-picker
       class="card-filter"
       label="Card view"
       [options]="cardFilterOptions"
       [value]="cardFilter()"
-      [disabled]="showArchived()"
+      [disabled]="showArchived() || showAddOnCards()"
       (valueChange)="updateCardFilter($event)"
     />
   </div>
 
-  @if (!showArchived() && (cardFilter() === 'DUE' || cardFilter() === 'GRACE')) {
+  @if (
+    !showArchived() && !showAddOnCards() && (cardFilter() === 'DUE' || cardFilter() === 'GRACE')
+  ) {
     <div class="card-subfilters">
       @if (cardFilter() === 'DUE') {
         <app-select-picker
@@ -809,460 +819,567 @@
     </div>
   }
 
-  <section class="card-list" aria-label="Credit cards">
-    @for (card of visibleCards(); track card.id) {
-      <article class="card-list-item panel" [class.expanded]="selectedCardId() === card.id">
-        <div class="card-row">
-          <button
-            class="card-main-button"
-            type="button"
-            (click)="selectCard(card)"
-            [attr.aria-expanded]="selectedCardId() === card.id"
-            [attr.aria-controls]="'details-' + card.id"
-          >
-            <span class="network-cell">
-              <span class="network-tile"><app-card-network-logo [network]="card.network" /></span>
-              @if (linkGroupColour(card); as colour) {
-                <span
-                  class="link-dot"
-                  [style.background-color]="colour"
-                  [attr.title]="'Linked cards'"
-                  aria-label="Linked cards"
-                ></span>
-              }
-            </span>
-            <span class="card-identity">
-              <span class="ci-line ci-line--name">
-                <strong class="card-identity__name"
-                  ><span class="card-nick">{{ card.nickname }}</span
-                  ><b>{{ card.lastDigits }}</b></strong
-                >
-                @if (filterChip(card); as chip) {
-                  <em class="filter-chip ci-chip {{ chip.tone }}">{{ chip.label }}</em>
+  @if (showAddOnCards()) {
+    <section class="card-list addon-directory" aria-label="Family Add-On cards">
+      @for (row of visibleAddOnProfiles(); track row.profile.id) {
+        <article class="card-list-item panel">
+          <div class="addon-profile-row">
+            <span>
+              <strong>{{ row.primaryCard.nickname }} · {{ row.profile.name }}</strong>
+              <small>
+                {{ addOnRelationship(row.profile) }} ·
+                {{ addOnNetwork(row.primaryCard, row.profile) }}
+                @if (row.profile.lastDigits) {
+                  · •••• {{ row.profile.lastDigits }}
                 }
-              </span>
-              <span class="ci-line ci-line--meta">
-                <small class="card-identity__meta">
-                  @if (card.archived) {
-                    {{ card.issuerName }} · Inactive
-                  } @else {
-                    {{ card.issuerName }} · Exp {{ expiry(card) }}
-                    @if (!billIsDue(card)) {
-                      · {{ statementCountdown(card) }}
-                    }
-                  }
-                </small>
-                @if (!card.archived && billIsDue(card)) {
-                  <em class="bill-due-badge ci-due"
-                    ><app-icon name="schedule" /> Due on · {{ date(dueDate(card)) }}</em
-                  >
+                @if (row.profile.archived) {
+                  · Archived
                 }
-              </span>
-              @if (card.subtype) {
-                <em class="compact-subtype">{{ card.subtype }}</em>
-              }
-              @if (card.archived) {
-                <em class="archived-badge">Archived {{ archivedDate(card) }}</em>
-              }
+                @if (row.primaryCard.deletedAt) {
+                  · Primary card deleted
+                } @else if (row.primaryCard.archived) {
+                  · Primary card archived
+                }
+                @if (!addOnCardsEnabled(row.primaryCard)) {
+                  · Disabled
+                }
+              </small>
             </span>
-            <span class="card-balance">
-              <span>
-                <small>Due amount</small>
-                <strong>{{ money(dueAmount(card), card.currencyCode) }}</strong>
-              </span>
-              <span>
-                <small>Outstanding</small>
-                <strong>{{ money(store.cardOutstanding(card.id), card.currencyCode) }}</strong>
-              </span>
-            </span>
-            <app-icon class="chevron" name="chevron_down" />
-          </button>
-          <div class="menu-anchor" data-action-menu>
-            <button
-              class="menu-button"
-              type="button"
-              (click)="toggleActionMenu($event, card.id)"
-              [attr.aria-expanded]="actionMenuId() === card.id"
-              aria-label="Actions for {{ card.nickname }}"
-            >
-              <app-icon name="more" />
-            </button>
-            @if (actionMenuId() === card.id) {
-              <div class="action-menu" [class.menu-up]="actionMenuOpensUp()" role="menu">
-                <button type="button" role="menuitem" (click)="showTransactions(card.id)">
-                  Show transactions
+            <div class="addon-directory-actions">
+              <button class="btn" type="button" (click)="viewAddOnTransactions(row)">
+                View Transactions
+              </button>
+              @if (!row.primaryCard.archived && !row.primaryCard.deletedAt) {
+                <button
+                  class="icon-button"
+                  type="button"
+                  [disabled]="!addOnCardsEnabled(row.primaryCard)"
+                  [attr.aria-label]="'Edit ' + row.profile.name"
+                  [attr.title]="'Edit ' + row.profile.name"
+                  (click)="editAddOnProfile(row.primaryCard, row.profile)"
+                >
+                  <app-icon name="edit" />
                 </button>
                 <button
+                  class="icon-button"
                   type="button"
-                  role="menuitem"
-                  [disabled]="card.archived || dueAmount(card) <= 0"
-                  (click)="openPayment(card, 'DUE')"
+                  [attr.aria-label]="
+                    (row.profile.archived ? 'Restore ' : 'Archive ') + row.profile.name
+                  "
+                  [attr.title]="(row.profile.archived ? 'Restore ' : 'Archive ') + row.profile.name"
+                  (click)="toggleAddOnProfileArchive(row.primaryCard, row.profile)"
                 >
-                  Pay due amount
+                  <app-icon name="archive" />
                 </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  [disabled]="card.archived || store.cardOutstanding(card.id) <= 0"
-                  (click)="openPayment(card, 'OUTSTANDING')"
-                >
-                  Pay outstanding
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  [disabled]="card.archived"
-                  (click)="edit(card)"
-                >
-                  Edit
-                </button>
-                <button type="button" role="menuitem" (click)="requestArchive(card)">
-                  {{ card.archived ? 'Restore' : 'Archive' }}
-                </button>
-                <button class="danger-item" type="button" role="menuitem" (click)="delete(card)">
-                  Delete
-                </button>
-              </div>
-            }
+              }
+            </div>
           </div>
+        </article>
+      } @empty {
+        <div class="panel empty">
+          <h2>No Add-On cards</h2>
+          <p>Enable Add-On cards in a primary card's details to create a profile.</p>
         </div>
-        @if (selectedCardId() === card.id) {
-          <div class="card-details" [id]="'details-' + card.id">
-            <section class="addon-profile-manager" aria-label="Family Add-On cards">
-              <header>
-                <div>
-                  <h3>Family Add-On cards</h3>
-                  <small>{{ card.addOnProfiles?.length ?? 0 }} of 5 profiles</small>
-                </div>
-                @if (!card.archived && !card.deletedAt && (card.addOnProfiles?.length ?? 0) < 5) {
-                  <button class="btn" type="button" (click)="openAddOnProfile()">
-                    <app-icon name="plus" /> Add profile
-                  </button>
-                }
-              </header>
-              <p>Transactions stay on {{ card.nickname }} and can be attributed to a cardholder.</p>
-              @for (profile of card.addOnProfiles ?? []; track profile.id) {
-                <div class="addon-profile-row">
-                  <span>
-                    <strong>{{ profile.name }}</strong>
-                    <small
-                      >•••• {{ profile.lastDigits }} ·
-                      {{ profile.archived ? 'Archived' : 'Active' }}</small
-                    >
-                  </span>
-                  @if (!card.archived && !card.deletedAt) {
-                    <div>
-                      <button
-                        class="btn btn-quiet"
-                        type="button"
-                        (click)="editAddOnProfile(profile)"
-                      >
-                        Edit
-                      </button>
-                      <button
-                        class="btn btn-quiet"
-                        type="button"
-                        (click)="toggleAddOnProfileArchive(card, profile)"
-                      >
-                        {{ profile.archived ? 'Restore' : 'Archive' }}
-                      </button>
-                    </div>
-                  }
-                </div>
-              }
-              @if (addOnProfileFormOpen()) {
-                <form
-                  class="addon-profile-form"
-                  (submit)="$event.preventDefault(); saveAddOnProfile(card)"
-                >
-                  <label
-                    >Cardholder name
-                    <input
-                      maxlength="50"
-                      [value]="addOnProfileName()"
-                      (input)="addOnProfileName.set($any($event.target).value)"
-                    />
-                  </label>
-                  <label
-                    >Last four digits
-                    <input
-                      inputmode="numeric"
-                      maxlength="4"
-                      [value]="addOnProfileDigits()"
-                      (input)="setAddOnProfileDigits($any($event.target).value)"
-                    />
-                  </label>
-                  @if (addOnProfileError(); as error) {
-                    <small role="alert">{{ error }}</small>
-                  }
-                  <div>
-                    <button class="btn btn-primary" type="submit">
-                      {{ editingAddOnProfileId() ? 'Save changes' : 'Add profile' }}
-                    </button>
-                    <button class="btn" type="button" (click)="cancelAddOnProfileEdit()">
-                      Cancel
-                    </button>
-                  </div>
-                </form>
-              }
-            </section>
-            @if (card.archived) {
-              <section class="inactive-card-note">
-                <app-icon name="archive" />
-                <div>
-                  <strong>Inactive card</strong>
+      }
+    </section>
+  } @else {
+    <section class="card-list" aria-label="Credit cards">
+      @for (card of visibleCards(); track card.id) {
+        <article class="card-list-item panel" [class.expanded]="selectedCardId() === card.id">
+          <div class="card-row">
+            <button
+              class="card-main-button"
+              type="button"
+              (click)="selectCard(card)"
+              [attr.aria-expanded]="selectedCardId() === card.id"
+              [attr.aria-controls]="'details-' + card.id"
+            >
+              <span class="network-cell">
+                <span class="network-tile"><app-card-network-logo [network]="card.network" /></span>
+                @if (linkGroupColour(card); as colour) {
                   <span
-                    >Archived {{ archivedDate(card) }}. Transactions and saved information remain
-                    available for history.</span
-                  >
-                </div>
-              </section>
-              <section class="archived-card-info" aria-label="Archived card billing information">
-                <div>
-                  <span>Billing setup</span>
-                  <strong>{{ archivedBillingInfo(card) }}</strong>
-                </div>
-                <div>
-                  <span>Annual fee</span>
-                  <strong>{{ annualFeeInfo(card) }}</strong>
-                </div>
-              </section>
-            } @else {
-              <div class="metric-grid">
-                <div>
-                  <span>Due amount</span
-                  ><strong>{{ money(dueAmount(card), card.currencyCode) }}</strong>
-                </div>
-                <div>
-                  <span>Current outstanding</span
-                  ><strong>{{ money(store.cardOutstanding(card.id), card.currencyCode) }}</strong>
-                </div>
-                <div>
-                  <span>Payment status</span><strong>{{ paymentStatus(card) }}</strong>
-                </div>
-                <div>
-                  <span>Statement</span><strong>{{ date(currentStatement(card)) }}</strong>
-                </div>
-                <div>
-                  <span>Bill generation</span><strong>{{ statementCountdown(card) }}</strong>
-                </div>
-                <div>
-                  <span>Statement-date transactions</span
-                  ><strong>{{
-                    card.excludeStatementDayTransactions === false
-                      ? 'Included in current statement'
-                      : 'Moved to next statement'
-                  }}</strong>
-                </div>
-                <div>
-                  <span>Due date</span><strong>{{ date(dueDate(card)) }}</strong>
-                </div>
-                <div>
-                  <span>Grace period</span><strong>{{ graceLabel(card) }}</strong>
-                </div>
-                <div>
-                  <span>Credit limit</span
-                  ><strong>{{ money(card.creditLimitMinor ?? 0, card.currencyCode) }}</strong>
-                </div>
-              </div>
-              <div class="utilisation">
-                <div>
-                  <span>Credit used</span><strong>{{ utilisation(card) }}%</strong>
-                </div>
-                <progress [value]="utilisation(card)" max="100">{{ utilisation(card) }}%</progress
-                ><small>{{ money(availableCredit(card), card.currencyCode) }} available</small>
-                @if (linkedCardsFor(card).length) {
-                  <div class="linked-cards" aria-label="Linked cards">
-                    <small>Linked cards</small>
-                    @for (linked of linkedCardsFor(card); track linked.id) {
-                      <span
-                        ><app-icon name="cards" /> {{ linked.nickname }} ·
-                        {{ linked.lastDigits }}</span
-                      >
-                    }
-                  </div>
-                  <section class="linked-account-summary" aria-label="Linked account balance">
-                    <div>
-                      <small>Linked account due</small>
-                      <strong>{{ money(linkedAccountDue(card), card.currencyCode) }}</strong>
-                    </div>
-                    <div>
-                      <small>Linked outstanding</small>
-                      <strong>{{
-                        money(linkedAccountOutstanding(card), card.currencyCode)
-                      }}</strong>
-                    </div>
-                    <small>Across {{ linkedAccountCards(card).length }} linked cards</small>
-                  </section>
+                    class="link-dot"
+                    [style.background-color]="colour"
+                    [attr.title]="'Linked cards'"
+                    aria-label="Linked cards"
+                  ></span>
                 }
-              </div>
-              @if (card.annualFee?.waiverThresholdMinor && waiverDeadline(card); as deadline) {
-                <section class="waiver-progress" aria-label="Annual fee waiver progress">
-                  <div>
-                    <strong>Annual fee waiver</strong>
-                    <span>{{ waiverProgress(card) }}%</span>
-                  </div>
-                  <progress [value]="waiverProgress(card)" max="100">
-                    {{ waiverProgress(card) }}%
-                  </progress>
-                  <small>
-                    @if (waiverRemaining(card) > 0) {
-                      Spend {{ money(waiverRemaining(card), card.currencyCode) }} more by
-                      {{ date(deadline) }} to reach the waiver target.
+              </span>
+              <span class="card-identity">
+                <span class="ci-line ci-line--name">
+                  <strong class="card-identity__name"
+                    ><span class="card-nick">{{ card.nickname }}</span
+                    ><b>{{ card.lastDigits }}</b></strong
+                  >
+                  @if (filterChip(card); as chip) {
+                    <em class="filter-chip ci-chip {{ chip.tone }}">{{ chip.label }}</em>
+                  }
+                </span>
+                <span class="ci-line ci-line--meta">
+                  <small class="card-identity__meta">
+                    @if (card.archived) {
+                      {{ card.issuerName }} · Inactive
                     } @else {
-                      Waiver spend target reached for the period ending {{ date(deadline) }}.
+                      {{ card.issuerName }} · Exp {{ expiry(card) }}
+                      @if (!billIsDue(card)) {
+                        · {{ statementCountdown(card) }}
+                      }
                     }
                   </small>
-                </section>
-              }
-            }
-            @if (card.notes) {
-              <section class="card-description" aria-label="Description">
-                <strong>Description</strong>
-                <div class="card-notes rich-content" [innerHTML]="richHtml(card.notes)"></div>
-              </section>
-            }
-            @if (card.subtype) {
-              <span class="network-subtype">{{ card.subtype }}</span>
-            }
-            @if (card.globalNetwork && card.globalNetwork !== card.network) {
-              <section class="global-network-detail" aria-label="Global card network">
-                <span class="global-network-logo"
-                  ><app-card-network-logo [network]="card.globalNetwork"
-                /></span>
-                <div>
-                  <small>Global network</small>
-                  <strong>{{ card.globalNetwork.replaceAll('_', ' ') }}</strong>
-                  <span>International acceptance network</span>
-                </div>
-              </section>
-            }
-            @if (card.isVirtual) {
-              <span class="ecard-detail"
-                ><app-icon name="cards" /> E-credit card · Non-physical</span
-              >
-            }
-            @if (card.benefits?.length) {
-              <div class="card-benefits" aria-label="Card benefits">
-                @for (benefit of card.benefits ?? []; track benefit.id) {
-                  <div class="benefit-view">
-                    <button
-                      class="benefit-view-trigger"
-                      type="button"
-                      [attr.aria-expanded]="expandedBenefitId() === benefit.id"
-                      (click)="toggleBenefitDetails(benefit.id)"
+                  @if (!card.archived && billIsDue(card)) {
+                    <em class="bill-due-badge ci-due"
+                      ><app-icon name="schedule" /> Due on · {{ date(dueDate(card)) }}</em
                     >
-                      {{ benefit.name }} <app-icon name="chevron_down" />
+                  }
+                </span>
+                @if (card.subtype) {
+                  <em class="compact-subtype">{{ card.subtype }}</em>
+                }
+                @if (card.archived) {
+                  <em class="archived-badge">Archived {{ archivedDate(card) }}</em>
+                }
+              </span>
+              <span class="card-balance">
+                <span>
+                  <small>Due amount</small>
+                  <strong>{{ money(dueAmount(card), card.currencyCode) }}</strong>
+                </span>
+                <span>
+                  <small>Outstanding</small>
+                  <strong>{{ money(store.cardOutstanding(card.id), card.currencyCode) }}</strong>
+                </span>
+              </span>
+              <app-icon class="chevron" name="chevron_down" />
+            </button>
+            <div class="menu-anchor" data-action-menu>
+              <button
+                class="menu-button"
+                type="button"
+                (click)="toggleActionMenu($event, card.id)"
+                [attr.aria-expanded]="actionMenuId() === card.id"
+                aria-label="Actions for {{ card.nickname }}"
+              >
+                <app-icon name="more" />
+              </button>
+              @if (actionMenuId() === card.id) {
+                <div class="action-menu" [class.menu-up]="actionMenuOpensUp()" role="menu">
+                  <button type="button" role="menuitem" (click)="showTransactions(card.id)">
+                    Show transactions
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    [disabled]="card.archived || dueAmount(card) <= 0"
+                    (click)="openPayment(card, 'DUE')"
+                  >
+                    Pay due amount
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    [disabled]="card.archived || store.cardOutstanding(card.id) <= 0"
+                    (click)="openPayment(card, 'OUTSTANDING')"
+                  >
+                    Pay outstanding
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    [disabled]="card.archived"
+                    (click)="edit(card)"
+                  >
+                    Edit
+                  </button>
+                  <button type="button" role="menuitem" (click)="requestArchive(card)">
+                    {{ card.archived ? 'Restore' : 'Archive' }}
+                  </button>
+                  <button class="danger-item" type="button" role="menuitem" (click)="delete(card)">
+                    Delete
+                  </button>
+                </div>
+              }
+            </div>
+          </div>
+          @if (selectedCardId() === card.id) {
+            <div class="card-details" [id]="'details-' + card.id">
+              <section class="addon-profile-manager" aria-label="Family Add-On cards">
+                <label class="ecard-option">
+                  <input
+                    type="checkbox"
+                    [checked]="addOnCardsEnabled(card)"
+                    [disabled]="card.archived || !!card.deletedAt"
+                    (change)="setAddOnCardsEnabled(card, $event)"
+                  />
+                  <span>Enable Add-On cards</span>
+                </label>
+                <header>
+                  <div>
+                    <h3>Family Add-On cards</h3>
+                    <small>{{ card.addOnProfiles?.length ?? 0 }} of 5 profiles</small>
+                  </div>
+                  @if (
+                    addOnCardsEnabled(card) &&
+                    !card.archived &&
+                    !card.deletedAt &&
+                    (card.addOnProfiles?.length ?? 0) < 5
+                  ) {
+                    <button class="btn" type="button" (click)="openAddOnProfile(card)">
+                      <app-icon name="plus" /> Add profile
                     </button>
-                    @if (expandedBenefitId() === benefit.id) {
-                      <div class="benefit-condition rich-content">
-                        @if (benefit.note) {
-                          <div [innerHTML]="richHtml(benefit.note)"></div>
-                        } @else {
-                          <span>No condition or note was added.</span>
+                  }
+                </header>
+                <p>
+                  Transactions stay on {{ card.nickname }} and can be attributed to a cardholder.
+                </p>
+                @for (profile of card.addOnProfiles ?? []; track profile.id) {
+                  <div class="addon-profile-row">
+                    <span>
+                      <strong>{{ profile.name }}</strong>
+                      <small>
+                        {{ addOnRelationship(profile) }} · {{ addOnNetwork(card, profile) }}
+                        @if (profile.lastDigits) {
+                          · •••• {{ profile.lastDigits }}
                         }
+                        · {{ profile.archived ? 'Archived' : 'Active' }}
+                      </small>
+                    </span>
+                    @if (!card.archived && !card.deletedAt) {
+                      <div>
+                        <button
+                          class="icon-button"
+                          type="button"
+                          [disabled]="!addOnCardsEnabled(card)"
+                          [attr.aria-label]="'Edit ' + profile.name"
+                          [attr.title]="'Edit ' + profile.name"
+                          (click)="editAddOnProfile(card, profile)"
+                        >
+                          <app-icon name="edit" />
+                        </button>
+                        <button
+                          class="icon-button"
+                          type="button"
+                          [attr.aria-label]="
+                            (profile.archived ? 'Restore ' : 'Archive ') + profile.name
+                          "
+                          [attr.title]="(profile.archived ? 'Restore ' : 'Archive ') + profile.name"
+                          (click)="toggleAddOnProfileArchive(card, profile)"
+                        >
+                          <app-icon name="archive" />
+                        </button>
                       </div>
                     }
                   </div>
                 }
-              </div>
-            }
-            @if (
-              card.encryptedFullNumber ||
-              card.encryptedCvv ||
-              card.cardholderName ||
-              (card.expiryMonth && card.expiryYear)
-            ) {
-              <div class="secret-details">
-                <button class="btn btn-quiet" type="button" (click)="revealSecrets(card)">
-                  <app-icon [name]="revealedCardId() === card.id ? 'hide_credit' : 'show_credit'" />
-                  {{
-                    revealedCardId() === card.id
-                      ? 'Hide protected details'
-                      : 'Reveal protected details'
-                  }}
-                </button>
-                @if (revealedCardId() === card.id) {
-                  <div>
-                    @if (card.cardholderName) {
-                      <span>Name on card</span
-                      ><strong class="protected-text">{{ card.cardholderName }}</strong>
+                @if (addOnProfileFormOpen() && editingAddOnCardId() === card.id) {
+                  <form
+                    class="addon-profile-form"
+                    (submit)="$event.preventDefault(); saveAddOnProfile(card)"
+                  >
+                    <app-select-picker
+                      label="Relationship"
+                      [options]="addOnRelationshipOptions"
+                      [value]="addOnProfileRelationship()"
+                      (valueChange)="setAddOnProfileRelationship($event)"
+                    />
+                    <label
+                      >Cardholder name
+                      <input
+                        required
+                        maxlength="50"
+                        [value]="addOnProfileName()"
+                        (input)="addOnProfileName.set($any($event.target).value)"
+                      />
+                    </label>
+                    <label
+                      >Last four digits (optional)
+                      <input
+                        inputmode="numeric"
+                        maxlength="4"
+                        placeholder="Optional"
+                        [value]="addOnProfileDigits()"
+                        (input)="setAddOnProfileDigits($any($event.target).value)"
+                      />
+                    </label>
+                    <app-select-picker
+                      label="Network (optional, defaults to primary)"
+                      [options]="addOnNetworkOptions"
+                      [value]="addOnProfileNetwork()"
+                      (valueChange)="setAddOnProfileNetwork($event)"
+                    />
+                    @if (addOnProfileError(); as error) {
+                      <small role="alert">{{ error }}</small>
                     }
-                    @if (revealedNumber()) {
-                      <span>Number</span><strong>{{ revealedNumber() }}</strong>
-                    }
-                    @if (revealedCvv()) {
-                      <span>CVV</span><strong>{{ revealedCvv() }}</strong>
-                    }
-                    @if (card.expiryMonth && card.expiryYear) {
-                      <span>Expiry date</span><strong>{{ expiry(card) }}</strong>
-                    }
-                  </div>
-                }
-              </div>
-            }
-            @if (card.importantLinks?.length) {
-              <div class="important-links">
-                <strong>Important links</strong>
-                @for (link of card.importantLinks ?? []; track link.id) {
-                  <a [href]="link.url" target="_blank" rel="noopener noreferrer">
-                    <app-icon name="go_to_source" /> {{ link.label }}
-                  </a>
-                }
-              </div>
-            }
-            @if (card.emergencyPhones.length || card.supportEmails.length) {
-              <section class="card-contact-details" aria-label="Card support contacts">
-                @if (card.emergencyPhones.length) {
-                  <div>
-                    <strong>Emergency hotline</strong>
-                    @for (phone of card.emergencyPhones; track phone) {
-                      <a [href]="'tel:' + phone"><app-icon name="phone" /> {{ phone }}</a>
-                    }
-                  </div>
-                }
-                @if (card.supportEmails.length) {
-                  <div>
-                    <strong>Support email IDs</strong>
-                    @for (email of card.supportEmails; track email) {
-                      <a [href]="'mailto:' + email"><app-icon name="mail" /> {{ email }}</a>
-                    }
-                  </div>
+                    <div>
+                      <button class="btn btn-primary" type="submit">
+                        {{ editingAddOnProfileId() ? 'Save changes' : 'Add profile' }}
+                      </button>
+                      <button class="btn" type="button" (click)="cancelAddOnProfileEdit()">
+                        Cancel
+                      </button>
+                    </div>
+                  </form>
                 }
               </section>
-            }
-            <div class="card-actions">
               @if (card.archived) {
-                <button class="btn btn-primary" type="button" disabled>
-                  <app-icon name="plus" /> Add transaction
-                </button>
+                <section class="inactive-card-note">
+                  <app-icon name="archive" />
+                  <div>
+                    <strong>Inactive card</strong>
+                    <span
+                      >Archived {{ archivedDate(card) }}. Transactions and saved information remain
+                      available for history.</span
+                    >
+                  </div>
+                </section>
+                <section class="archived-card-info" aria-label="Archived card billing information">
+                  <div>
+                    <span>Billing setup</span>
+                    <strong>{{ archivedBillingInfo(card) }}</strong>
+                  </div>
+                  <div>
+                    <span>Annual fee</span>
+                    <strong>{{ annualFeeInfo(card) }}</strong>
+                  </div>
+                </section>
               } @else {
-                <a
-                  class="btn btn-primary"
-                  routerLink="/transactions"
-                  [queryParams]="{ add: true, source: card.id }"
-                  ><app-icon name="plus" /> Add transaction</a
+                <div class="metric-grid">
+                  <div>
+                    <span>Due amount</span
+                    ><strong>{{ money(dueAmount(card), card.currencyCode) }}</strong>
+                  </div>
+                  <div>
+                    <span>Current outstanding</span
+                    ><strong>{{ money(store.cardOutstanding(card.id), card.currencyCode) }}</strong>
+                  </div>
+                  <div>
+                    <span>Payment status</span><strong>{{ paymentStatus(card) }}</strong>
+                  </div>
+                  <div>
+                    <span>Statement</span><strong>{{ date(currentStatement(card)) }}</strong>
+                  </div>
+                  <div>
+                    <span>Bill generation</span><strong>{{ statementCountdown(card) }}</strong>
+                  </div>
+                  <div>
+                    <span>Statement-date transactions</span
+                    ><strong>{{
+                      card.excludeStatementDayTransactions === false
+                        ? 'Included in current statement'
+                        : 'Moved to next statement'
+                    }}</strong>
+                  </div>
+                  <div>
+                    <span>Due date</span><strong>{{ date(dueDate(card)) }}</strong>
+                  </div>
+                  <div>
+                    <span>Grace period</span><strong>{{ graceLabel(card) }}</strong>
+                  </div>
+                  <div>
+                    <span>Credit limit</span
+                    ><strong>{{ money(card.creditLimitMinor ?? 0, card.currencyCode) }}</strong>
+                  </div>
+                </div>
+                <div class="utilisation">
+                  <div>
+                    <span>Credit used</span><strong>{{ utilisation(card) }}%</strong>
+                  </div>
+                  <progress [value]="utilisation(card)" max="100">{{ utilisation(card) }}%</progress
+                  ><small>{{ money(availableCredit(card), card.currencyCode) }} available</small>
+                  @if (linkedCardsFor(card).length) {
+                    <div class="linked-cards" aria-label="Linked cards">
+                      <small>Linked cards</small>
+                      @for (linked of linkedCardsFor(card); track linked.id) {
+                        <span
+                          ><app-icon name="cards" /> {{ linked.nickname }} ·
+                          {{ linked.lastDigits }}</span
+                        >
+                      }
+                    </div>
+                    <section class="linked-account-summary" aria-label="Linked account balance">
+                      <div>
+                        <small>Linked account due</small>
+                        <strong>{{ money(linkedAccountDue(card), card.currencyCode) }}</strong>
+                      </div>
+                      <div>
+                        <small>Linked outstanding</small>
+                        <strong>{{
+                          money(linkedAccountOutstanding(card), card.currencyCode)
+                        }}</strong>
+                      </div>
+                      <small>Across {{ linkedAccountCards(card).length }} linked cards</small>
+                    </section>
+                  }
+                </div>
+                @if (card.annualFee?.waiverThresholdMinor && waiverDeadline(card); as deadline) {
+                  <section class="waiver-progress" aria-label="Annual fee waiver progress">
+                    <div>
+                      <strong>Annual fee waiver</strong>
+                      <span>{{ waiverProgress(card) }}%</span>
+                    </div>
+                    <progress [value]="waiverProgress(card)" max="100">
+                      {{ waiverProgress(card) }}%
+                    </progress>
+                    <small>
+                      @if (waiverRemaining(card) > 0) {
+                        Spend {{ money(waiverRemaining(card), card.currencyCode) }} more by
+                        {{ date(deadline) }} to reach the waiver target.
+                      } @else {
+                        Waiver spend target reached for the period ending {{ date(deadline) }}.
+                      }
+                    </small>
+                  </section>
+                }
+              }
+              @if (card.notes) {
+                <section class="card-description" aria-label="Description">
+                  <strong>Description</strong>
+                  <div class="card-notes rich-content" [innerHTML]="richHtml(card.notes)"></div>
+                </section>
+              }
+              @if (card.subtype) {
+                <span class="network-subtype">{{ card.subtype }}</span>
+              }
+              @if (card.globalNetwork && card.globalNetwork !== card.network) {
+                <section class="global-network-detail" aria-label="Global card network">
+                  <span class="global-network-logo"
+                    ><app-card-network-logo [network]="card.globalNetwork"
+                  /></span>
+                  <div>
+                    <small>Global network</small>
+                    <strong>{{ card.globalNetwork.replaceAll('_', ' ') }}</strong>
+                    <span>International acceptance network</span>
+                  </div>
+                </section>
+              }
+              @if (card.isVirtual) {
+                <span class="ecard-detail"
+                  ><app-icon name="cards" /> E-credit card · Non-physical</span
                 >
               }
-              <button
-                class="btn"
-                type="button"
-                [disabled]="card.archived || store.cardOutstanding(card.id) <= 0"
-                (click)="openPayment(card, 'CUSTOM')"
-              >
-                Record custom payment
-              </button>
+              @if (card.benefits?.length) {
+                <div class="card-benefits" aria-label="Card benefits">
+                  @for (benefit of card.benefits ?? []; track benefit.id) {
+                    <div class="benefit-view">
+                      <button
+                        class="benefit-view-trigger"
+                        type="button"
+                        [attr.aria-expanded]="expandedBenefitId() === benefit.id"
+                        (click)="toggleBenefitDetails(benefit.id)"
+                      >
+                        {{ benefit.name }} <app-icon name="chevron_down" />
+                      </button>
+                      @if (expandedBenefitId() === benefit.id) {
+                        <div class="benefit-condition rich-content">
+                          @if (benefit.note) {
+                            <div [innerHTML]="richHtml(benefit.note)"></div>
+                          } @else {
+                            <span>No condition or note was added.</span>
+                          }
+                        </div>
+                      }
+                    </div>
+                  }
+                </div>
+              }
+              @if (
+                card.encryptedFullNumber ||
+                card.encryptedCvv ||
+                card.cardholderName ||
+                (card.expiryMonth && card.expiryYear)
+              ) {
+                <div class="secret-details">
+                  <button class="btn btn-quiet" type="button" (click)="revealSecrets(card)">
+                    <app-icon
+                      [name]="revealedCardId() === card.id ? 'hide_credit' : 'show_credit'"
+                    />
+                    {{
+                      revealedCardId() === card.id
+                        ? 'Hide protected details'
+                        : 'Reveal protected details'
+                    }}
+                  </button>
+                  @if (revealedCardId() === card.id) {
+                    <div>
+                      @if (card.cardholderName) {
+                        <span>Name on card</span
+                        ><strong class="protected-text">{{ card.cardholderName }}</strong>
+                      }
+                      @if (revealedNumber()) {
+                        <span>Number</span><strong>{{ revealedNumber() }}</strong>
+                      }
+                      @if (revealedCvv()) {
+                        <span>CVV</span><strong>{{ revealedCvv() }}</strong>
+                      }
+                      @if (card.expiryMonth && card.expiryYear) {
+                        <span>Expiry date</span><strong>{{ expiry(card) }}</strong>
+                      }
+                    </div>
+                  }
+                </div>
+              }
+              @if (card.importantLinks?.length) {
+                <div class="important-links">
+                  <strong>Important links</strong>
+                  @for (link of card.importantLinks ?? []; track link.id) {
+                    <a [href]="link.url" target="_blank" rel="noopener noreferrer">
+                      <app-icon name="go_to_source" /> {{ link.label }}
+                    </a>
+                  }
+                </div>
+              }
+              @if (card.emergencyPhones.length || card.supportEmails.length) {
+                <section class="card-contact-details" aria-label="Card support contacts">
+                  @if (card.emergencyPhones.length) {
+                    <div>
+                      <strong>Emergency hotline</strong>
+                      @for (phone of card.emergencyPhones; track phone) {
+                        <a [href]="'tel:' + phone"><app-icon name="phone" /> {{ phone }}</a>
+                      }
+                    </div>
+                  }
+                  @if (card.supportEmails.length) {
+                    <div>
+                      <strong>Support email IDs</strong>
+                      @for (email of card.supportEmails; track email) {
+                        <a [href]="'mailto:' + email"><app-icon name="mail" /> {{ email }}</a>
+                      }
+                    </div>
+                  }
+                </section>
+              }
+              <div class="card-actions">
+                @if (card.archived) {
+                  <button class="btn btn-primary" type="button" disabled>
+                    <app-icon name="plus" /> Add transaction
+                  </button>
+                } @else {
+                  <a
+                    class="btn btn-primary"
+                    routerLink="/transactions"
+                    [queryParams]="{ add: true, source: card.id }"
+                    ><app-icon name="plus" /> Add transaction</a
+                  >
+                }
+                <button
+                  class="btn"
+                  type="button"
+                  [disabled]="card.archived || store.cardOutstanding(card.id) <= 0"
+                  (click)="openPayment(card, 'CUSTOM')"
+                >
+                  Record custom payment
+                </button>
+              </div>
             </div>
-          </div>
-        }
-      </article>
-    } @empty {
-      <div class="panel empty">
-        <h2>No matching cards</h2>
-        <p>Change the filter or add a credit card.</p>
-      </div>
-    }
-  </section>
+          }
+        </article>
+      } @empty {
+        <div class="panel empty">
+          <h2>No matching cards</h2>
+          <p>Change the filter or add a credit card.</p>
+        </div>
+      }
+    </section>
+  }
 
   <a
     class="transaction-fab"
