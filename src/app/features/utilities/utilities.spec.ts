@@ -134,10 +134,10 @@ describe('Indian Utilities page', () => {
         (image: HTMLImageElement) => image.getAttribute('ngSrc'),
       ),
     ).toEqual([
-      '/images/utilities-mobile.jpg',
-      '/images/utilities-lpg.jpg',
-      '/images/utilities-electricity.jpg',
-      '/images/utilities-broadband.jpg',
+      'images/utilities-mobile.jpg',
+      'images/utilities-lpg.jpg',
+      'images/utilities-electricity.jpg',
+      'images/utilities-broadband.jpg',
     ]);
     fixture.componentInstance.setSection('GAS');
     fixture.detectChanges();
