@@ -914,7 +914,7 @@ label small.validation-error {
   color: var(--muted);
   font-size: 0.75rem;
 }
-.addon-profile-row > span,
+.addon-profile-row > span:not(.network-tile),
 .addon-profile-form label {
   display: grid;
   flex: 1;
