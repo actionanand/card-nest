@@ -6,6 +6,8 @@
 }
 .loan-header-actions {
   display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
   align-items: flex-end;
   gap: 0.55rem;
 }
@@ -68,9 +70,11 @@
   font-size: 0.58rem;
   font-weight: 800;
 }
-.loan-header-actions select {
+.loan-header-actions app-select-picker {
+  display: block;
+  width: min(12rem, 45vw);
   min-width: 9rem;
-  min-height: 2.65rem;
+  flex: 0 1 12rem;
 }
 .add-loan-button {
   display: inline-flex;
@@ -560,9 +564,10 @@
   .loan-header-actions {
     gap: 0.4rem;
   }
-  .loan-header-actions select {
-    width: 8.2rem;
-    min-width: 0;
+  .loan-header-actions app-select-picker {
+    width: min(100%, 12rem);
+    min-width: 9rem;
+    flex: 1 1 100%;
   }
   .add-loan-button {
     width: 2.65rem;

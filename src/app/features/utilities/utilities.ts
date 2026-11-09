@@ -206,7 +206,6 @@ export class UtilitiesPage {
     eventType: new FormControl<LpgEventType>('STARTED', { nonNullable: true }),
     eventDate: new FormControl(this.today, { nonNullable: true, validators: Validators.required }),
     amount: new FormControl('', { nonNullable: true }),
-    cylinderSize: new FormControl<LpgEvent['cylinderSize']>('NORMAL', { nonNullable: true }),
     comment: new FormControl('', { nonNullable: true, validators: Validators.maxLength(300) }),
   });
   private readonly lpgEventChanges = toSignal(this.lpgEventForm.valueChanges);
@@ -523,7 +522,6 @@ export class UtilitiesPage {
       eventType,
       eventDate: this.today,
       amount: '',
-      cylinderSize: profile.cylinderSize,
       comment: '',
     });
   }
@@ -538,7 +536,6 @@ export class UtilitiesPage {
       eventType: event.eventType,
       eventDate: event.eventDate,
       amount: event.amountMinor === undefined ? '' : String(event.amountMinor / 100),
-      cylinderSize: event.cylinderSize ?? 'NORMAL',
       comment: event.comment ?? '',
     });
   }
@@ -581,7 +578,6 @@ export class UtilitiesPage {
         eventType: value.eventType,
         eventDate: value.eventDate,
         amountMinor: amountMinor ?? undefined,
-        cylinderSize: value.cylinderSize || undefined,
         comment: value.comment,
       });
       this.lpgEventProfileId.set(null);

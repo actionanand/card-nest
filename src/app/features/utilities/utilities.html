@@ -499,9 +499,27 @@
                       inputmode="numeric"
                       maxlength="10"
                       placeholder="10-digit mobile number"
+                      [attr.aria-invalid]="
+                        lpgForm.controls.mobileNumber.invalid &&
+                        lpgForm.controls.mobileNumber.touched
+                      "
+                      [attr.aria-describedby]="
+                        lpgForm.controls.mobileNumber.invalid &&
+                        lpgForm.controls.mobileNumber.touched
+                          ? 'lpg-mobile-number-error'
+                          : null
+                      "
                     />
                   </span>
                 </label>
+                @if (
+                  lpgForm.controls.mobileNumber.invalid && lpgForm.controls.mobileNumber.touched
+                ) {
+                  <p id="lpg-mobile-number-error" class="form-error" role="alert">
+                    Enter exactly 10 digits starting with 6, 7, 8 or 9, or leave this optional
+                    number empty.
+                  </p>
+                }
                 <label
                   >Connection ID (optional)<input formControlName="connectionId" maxlength="80"
                 /></label>
@@ -551,11 +569,7 @@
               }
 
               <div class="modal-actions">
-                <button
-                  class="btn btn-primary"
-                  type="submit"
-                  [disabled]="saving() || lpgForm.invalid"
-                >
+                <button class="btn btn-primary" type="submit" [disabled]="saving()">
                   Save connection</button
                 ><button
                   class="btn"
@@ -690,21 +704,15 @@
                 >
                   <p class="form-note">
                     <strong>{{ profile.connectionName }}</strong> · {{ profile.provider }} ·
-                    {{ profile.commercial ? 'Commercial' : 'Domestic' }}
+                    {{ profile.commercial ? 'Commercial' : 'Domestic' }} ·
+                    {{ cylinderSizeLabel(profile.cylinderSize) }} cylinder
                   </p>
                   <app-select-picker
                     label="Event"
                     formControlName="eventType"
                     [options]="lpgEventOptions()"
                   />
-                  <div class="form-grid">
-                    <label>Date<input type="date" formControlName="eventDate" required /></label
-                    ><app-select-picker
-                      label="Cylinder size"
-                      formControlName="cylinderSize"
-                      [options]="cylinderOptions"
-                    />
-                  </div>
+                  <label>Date<input type="date" formControlName="eventDate" required /></label>
                   @if (lpgEventForm.controls.eventType.value === 'REFILL_RECEIVED') {
                     <label
                       >Amount paid (INR, optional)<input

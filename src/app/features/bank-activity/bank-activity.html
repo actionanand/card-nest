@@ -260,13 +260,13 @@
           }
           <div class="profile-actions">
             @if (account.profile && !account.profile.archived) {
-              <button class="btn" type="button" (click)="startEvent(account.profile)">
+              <button class="btn btn-primary" type="button" (click)="startEvent(account.profile)">
                 <app-icon name="plus" /> Record activity
               </button>
               <button class="btn" type="button" (click)="editProfile(account.profile)">
                 Edit monitoring
               </button>
-              <button class="btn" type="button" (click)="archive(account.profile)">
+              <button class="btn btn-archive" type="button" (click)="archive(account.profile)">
                 Archive monitoring profile
               </button>
             } @else if (account.profile?.archived) {
@@ -281,7 +281,7 @@
             @if (account.source) {
               @if (!account.source.isPrimaryBank) {
                 <button
-                  class="btn"
+                  class="btn btn-primary-bank"
                   type="button"
                   [disabled]="saving()"
                   (click)="requestPrimaryBankSwitch(account.source)"
@@ -293,11 +293,15 @@
                 Edit bank details
               </button>
               @if (canSetBalance(account)) {
-                <button class="btn" type="button" (click)="openBalance(account)">
+                <button class="btn btn-set-balance" type="button" (click)="openBalance(account)">
                   Set current balance
                 </button>
               }
-              <button class="btn" type="button" (click)="archiveMoneySource(account.source)">
+              <button
+                class="btn btn-archive"
+                type="button"
+                (click)="archiveMoneySource(account.source)"
+              >
                 Archive Money Source
               </button>
             }

@@ -192,9 +192,14 @@ export class WalletsPage {
     providerId: new FormControl<ConsumerWalletProviderId>('amazon-pay', { nonNullable: true }),
     customName: new FormControl('', { nonNullable: true, validators: Validators.maxLength(80) }),
     nickname: new FormControl('', { nonNullable: true, validators: Validators.maxLength(80) }),
+    openingBalance: new FormControl('0', {
+      nonNullable: true,
+      validators: [Validators.pattern(/^\d+(?:\.\d{1,2})?$/)],
+    }),
   });
 
   constructor() {
+    this.consumerForm.valueChanges.pipe(takeUntilDestroyed()).subscribe(() => this.error.set(null));
     this.walletActivityForm.valueChanges.pipe(takeUntilDestroyed()).subscribe(() => {
       this.walletActivityPurchasePreview.set(null);
       this.walletActivityPurchaseApprovedFor.set('');
@@ -421,7 +426,12 @@ export class WalletsPage {
   openConsumerWallet(): void {
     if (this.saving() || (!this.wallets.enabled() && !this.setupIntentId('CONSUMER'))) return;
     this.error.set(null);
-    this.consumerForm.reset({ providerId: 'amazon-pay', customName: '', nickname: '' });
+    this.consumerForm.reset({
+      providerId: 'amazon-pay',
+      customName: '',
+      nickname: '',
+      openingBalance: '0',
+    });
     this.consumerOpen.set(true);
   }
 
@@ -437,6 +447,14 @@ export class WalletsPage {
     this.consumerForm.markAllAsTouched();
     if (this.consumerForm.invalid || this.saving()) return;
     const value = this.consumerForm.getRawValue();
+    const openingBalanceMinor = value.openingBalance.trim()
+      ? parseMoneyToMinor(value.openingBalance)
+      : 0;
+    if (openingBalanceMinor === null || openingBalanceMinor < 0) {
+      this.consumerForm.controls.openingBalance.setErrors({ amount: true });
+      this.error.set('Enter a nonnegative amount with up to two decimal places.');
+      return;
+    }
     if (value.providerId === 'other' && !value.customName.trim()) {
       this.consumerForm.controls.customName.setErrors({ required: true });
       this.error.set('Enter a custom wallet name.');
@@ -449,10 +467,16 @@ export class WalletsPage {
         providerId: value.providerId,
         customName: value.customName,
         nickname: value.nickname,
+        openingBalanceMinor,
         setupIntentId: this.setupIntentId('CONSUMER'),
       });
       this.consumerOpen.set(false);
-      this.consumerForm.reset({ providerId: 'amazon-pay', customName: '', nickname: '' });
+      this.consumerForm.reset({
+        providerId: 'amazon-pay',
+        customName: '',
+        nickname: '',
+        openingBalance: '0',
+      });
       this.clearSetupQuery();
       this.snackbar.show('Wallet registered.');
     } catch (error: unknown) {

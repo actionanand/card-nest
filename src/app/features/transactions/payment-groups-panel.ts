@@ -294,14 +294,35 @@ interface PaymentMemberChoice {
       display: grid;
       gap: 0.3rem;
     }
-    .member {
+    .step-body label.member {
       display: flex;
       align-items: center;
       gap: 0.7rem;
       min-height: 44px;
+      padding: 0.45rem 0;
+      border-bottom: 1px solid var(--line);
     }
-    .member span {
+    .step-body label.member span {
       min-width: 0;
+      overflow-wrap: anywhere;
+    }
+    .step-body label.member input[type='checkbox'] {
+      width: 19px;
+      min-width: 19px;
+      height: 19px;
+      min-height: 19px;
+      flex: 0 0 19px;
+      margin: 0;
+      align-self: flex-start;
+      accent-color: var(--accent);
+    }
+    .step-body fieldset {
+      display: grid;
+      gap: 0.25rem;
+      min-width: 0;
+      padding: 0.65rem 0.8rem;
+      border: 1px solid var(--line);
+      border-radius: 0.6rem;
     }
     .actions {
       display: flex;

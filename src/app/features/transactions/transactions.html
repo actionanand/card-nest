@@ -57,33 +57,6 @@
       (addTransaction)="openAddAfterCombine($event)"
     />
   }
-  @for (group of logicalGroups(); track group.id) {
-    <details class="panel payment-group-summary">
-      <summary>
-        {{ group.title || 'Combined purchase' }} ·
-        {{ money(groupTotal(group), group.currency) }} paid · {{ groupMemberCount(group) }} payments
-      </summary>
-      <app-payment-breakdown
-        [entries]="groupDisplayEntries(group)"
-        [billTotalMinor]="group.billTotalMinor"
-      />
-      <button class="btn" type="button" (click)="openPaymentGroup(group.id)">
-        Manage payment group
-      </button>
-      @for (entry of groupEntries(group.memberIds); track entry.id) {
-        <button class="btn" type="button" (click)="openDetails(entry)">
-          View {{ store.sourceName(entry.cardId) }} payment
-        </button>
-      }
-      @if (groupRefundTotal(group) > 0) {
-        <p>
-          Wallet refunds retained in group history:
-          {{ money(groupRefundTotal(group), group.currency) }}
-        </p>
-      }
-    </details>
-  }
-
   @if (showForm()) {
     <div class="transaction-modal-backdrop">
       <section
@@ -389,7 +362,7 @@
                     Existing amount and payment effect are retained when only classification
                     changes.
                   </p>
-                  <label
+                  <label class="checkbox-field"
                     ><input
                       type="checkbox"
                       formControlName="preserveLegacy"
@@ -431,7 +404,7 @@
               </div>
             }
             @if (groupTypeChange()) {
-              <label class="full"
+              <label class="full checkbox-field"
                 ><input type="checkbox" formControlName="unlinkConfirmed" /> Confirm changing this
                 payment's type and removing its old grouping relationship where needed. The real
                 payment is kept.</label
@@ -499,7 +472,7 @@
                     <p>
                       The full debit is counted as an expense; wallet credit is not counted again.
                     </p>
-                    <label>
+                    <label class="wallet-load-approval">
                       <input
                         type="checkbox"
                         [checked]="
@@ -625,7 +598,7 @@
                       <dd>{{ money(preview.balanceAfterMinor, 'INR') }}</dd>
                     </div>
                   </dl>
-                  <label>
+                  <label class="wallet-load-approval">
                     <input
                       type="checkbox"
                       [checked]="walletPurchaseApprovedFor() === preview.confirmationKey"
@@ -657,7 +630,7 @@
     </div>
   }
 
-  <section class="filter-panel panel" aria-label="Transaction filters">
+  <section class="filter-panel" aria-label="Transaction filters">
     <button
       id="transaction-filter-trigger"
       class="filter-panel__toggle"
@@ -898,7 +871,54 @@
         </summary>
         <div class="month-entries">
           @for (activity of group.activities; track activity.key) {
-            @if (activity.kind === 'CARD_TRANSACTION') {
+            @if (activity.kind === 'PAYMENT_GROUP') {
+              @let paymentGroup = activity.group;
+              <details class="combined-purchase-entry">
+                <summary class="transaction-open-button">
+                  <span class="tx-icon" aria-hidden="true"><app-icon name="cards" /></span>
+                  <span class="tx-main">
+                    <strong>Combined purchase</strong>
+                    <small class="combined-payment-indicator"
+                      >{{ groupMemberCount(paymentGroup) }} payments</small
+                    >
+                  </span>
+                  <span class="tx-date">
+                    <span>{{ activity.date | appDate }}</span>
+                    <small>Combined</small>
+                  </span>
+                  <strong class="tx-amount"
+                    >−{{ money(groupTotal(paymentGroup), paymentGroup.currency) }}</strong
+                  >
+                  <app-icon name="chevron_right" />
+                </summary>
+                <div class="combined-purchase-details">
+                  <app-payment-breakdown
+                    [entries]="groupDisplayEntries(paymentGroup)"
+                    [billTotalMinor]="paymentGroup.billTotalMinor"
+                  />
+                  <div class="combined-purchase-actions">
+                    <button
+                      class="btn manage-payment-group"
+                      type="button"
+                      (click)="openPaymentGroup(paymentGroup.id)"
+                    >
+                      Manage payment group
+                    </button>
+                    @for (entry of groupEntries(paymentGroup.memberIds); track entry.id) {
+                      <button class="btn" type="button" (click)="openDetails(entry)">
+                        View {{ store.sourceName(entry.cardId) }} payment
+                      </button>
+                    }
+                  </div>
+                  @if (groupRefundTotal(paymentGroup) > 0) {
+                    <p class="combined-refund-note">
+                      Wallet refunds retained in group history:
+                      {{ money(groupRefundTotal(paymentGroup), paymentGroup.currency) }}
+                    </p>
+                  }
+                </div>
+              </details>
+            } @else if (activity.kind === 'CARD_TRANSACTION') {
               @let transaction = activity.transaction;
               @let transactionCategory = category(transaction.categoryId);
               <article [class.menu-open]="actionMenuId() === transaction.id">
@@ -933,12 +953,12 @@
                         <span class="filter-chip"
                           >Add-On card · {{ addOn.name }}
                           @if (addOn.lastDigits) {
-                            · •••• {{ addOn.lastDigits }}
+                            · {{ addOn.lastDigits }}
                           }
                         </span>
-                        <span class="filter-chip"
-                          >Relationship · {{ addOnRelationshipForTransaction(transaction) }}</span
-                        >
+                        <span class="filter-chip">{{
+                          addOnRelationshipForTransaction(transaction)
+                        }}</span>
                       </small>
                     }
                     @if (fundedWalletLoad(transaction.id); as load) {
@@ -1205,7 +1225,7 @@
             }
           </ol>
           <p>No Bank or card transaction will be created.</p>
-          <label
+          <label class="wallet-load-approval"
             ><input
               type="checkbox"
               [checked]="walletRefundApprovedFor() === preview.confirmationKey"
@@ -1322,12 +1342,10 @@
               <span class="filter-chip"
                 >Add-On card · {{ addOn.name }}
                 @if (addOn.lastDigits) {
-                  · •••• {{ addOn.lastDigits }}
+                  · {{ addOn.lastDigits }}
                 }
               </span>
-              <span class="filter-chip"
-                >Relationship · {{ addOnRelationshipForTransaction(transaction) }}</span
-              >
+              <span class="filter-chip">{{ addOnRelationshipForTransaction(transaction) }}</span>
             </dd>
           </div>
         }
@@ -1411,7 +1429,11 @@
             [entries]="groupDisplayEntries(group)"
             [billTotalMinor]="group.billTotalMinor"
           />
-          <button class="btn" type="button" (click)="openPaymentGroup(group.id)">
+          <button
+            class="btn manage-payment-group"
+            type="button"
+            (click)="openPaymentGroup(group.id)"
+          >
             Manage payment group
           </button>
         </section>

@@ -1,9 +1,11 @@
 import { Component, ElementRef, effect, input, output, viewChild } from '@angular/core';
 import { lockDocumentScroll } from './document-scroll-lock';
+import { AppIcon } from './app-icon';
 
 /** Native top-layer dialog composes with the existing picker dialogs and shared scroll locks. */
 @Component({
   selector: 'app-profile-modal',
+  imports: [AppIcon],
   template: `<dialog
     #dialog
     tabindex="-1"
@@ -16,13 +18,13 @@ import { lockDocumentScroll } from './document-scroll-lock';
     <header>
       <h2 [id]="titleId">{{ title() }}</h2>
       <button
-        class="btn"
+        class="popup-close"
         type="button"
         [disabled]="busy()"
         (click)="closed.emit()"
-        aria-label="Close profile dialog"
+        aria-label="Close dialog"
       >
-        Close
+        <app-icon name="close" />
       </button>
     </header>
     <div class="modal-content"><ng-content /></div>
@@ -85,6 +87,21 @@ import { lockDocumentScroll } from './document-scroll-lock';
     }
     button {
       min-height: 44px;
+    }
+    .popup-close {
+      display: grid;
+      width: 44px;
+      height: 44px;
+      flex: 0 0 44px;
+      place-items: center;
+      border: 1px solid var(--line);
+      border-radius: 50%;
+      color: var(--ink);
+      background: var(--surface);
+    }
+    .popup-close app-icon {
+      width: 1.2rem;
+      height: 1.2rem;
     }
     .modal-content {
       padding: 1rem;

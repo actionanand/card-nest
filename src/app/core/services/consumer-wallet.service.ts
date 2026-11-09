@@ -439,6 +439,7 @@ export class ConsumerWalletService {
     providerId: ConsumerWalletProviderId;
     customName?: string;
     nickname?: string;
+    openingBalanceMinor?: number;
     setupIntentId?: string;
   }): Promise<ConsumerWallet> {
     if (!CONSUMER_WALLET_PROVIDERS.some((provider) => provider.id === input.providerId))
@@ -452,6 +453,9 @@ export class ConsumerWalletService {
       throw new Error('Custom wallet names must be a single line of at most 80 characters.');
     if ((nickname?.length ?? 0) > 80 || /[\r\n\0]/.test(nickname ?? ''))
       throw new Error('Wallet nicknames must be a single line of at most 80 characters.');
+    const openingBalanceMinor = input.openingBalanceMinor ?? 0;
+    if (!Number.isSafeInteger(openingBalanceMinor) || openingBalanceMinor < 0)
+      throw new Error('Enter a valid nonnegative opening balance.');
     const timestamp = new Date().toISOString();
     const wallet: ConsumerWallet = {
       id: crypto.randomUUID(),
@@ -463,7 +467,7 @@ export class ConsumerWalletService {
       createdAt: timestamp,
       updatedAt: timestamp,
     };
-    const next = await this.database.atomic(async (tx) => {
+    const result = await this.database.atomic(async (tx) => {
       await this.assertSetupIntent(tx, input.setupIntentId, 'CONSUMER');
       const current = await this.readWallets(tx);
       if (current.filter((item) => !item.archived).length >= this.activeWalletLimit)
@@ -476,10 +480,28 @@ export class ConsumerWalletService {
           'This wallet identity already exists. Restore its archived record instead.',
         );
       await this.insertWallet(tx, wallet);
+      const openingEvent: ConsumerWalletEvent | null = openingBalanceMinor
+        ? {
+            id: crypto.randomUUID(),
+            walletId: wallet.id,
+            eventType: 'MANUAL_CREDIT',
+            eventDate: indiaTodayIso(),
+            amountMinor: openingBalanceMinor,
+            balanceDeltaMinor: openingBalanceMinor,
+            memo: 'Opening balance',
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          }
+        : null;
+      if (openingEvent) {
+        await this.insertEvent(tx, openingEvent);
+        await assertChronologicalConsumerWalletLedger(tx, wallet.id);
+      }
       await this.completeSetup(tx, input.setupIntentId);
-      return [...current, wallet];
+      return { wallets: [...current, wallet], openingEvent };
     });
-    this.wallets.set(next);
+    this.wallets.set(result.wallets);
+    if (result.openingEvent) this.events.update((items) => [result.openingEvent!, ...items]);
     this.featureState.set('ENABLED');
     this.setupIntent.set(null);
     return wallet;

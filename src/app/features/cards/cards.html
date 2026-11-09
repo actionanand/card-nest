@@ -51,10 +51,12 @@
         <span>Archived</span>
         <small>{{ filteredArchivedCardCount() }}/{{ archivedCardTotal() }}</small>
       </button>
-      <button type="button" [class.active]="showAddOnCards()" (click)="showAddOnProfileTab()">
-        <span>Add-On</span>
-        <small>{{ addOnProfileTotal() }}</small>
-      </button>
+      @if (addOnProfileTotal() > 0) {
+        <button type="button" [class.active]="showAddOnCards()" (click)="showAddOnProfileTab()">
+          <span>Add-On</span>
+          <small>{{ addOnProfileTotal() }}</small>
+        </button>
+      }
     </div>
     <app-select-picker
       class="card-filter"
@@ -823,16 +825,21 @@
     <section class="card-list addon-directory" aria-label="Family Add-On cards">
       @for (row of visibleAddOnProfiles(); track row.profile.id) {
         <article class="card-list-item panel">
-          <div class="addon-profile-row">
-            <span>
+          <div class="addon-directory-row">
+            <span class="addon-network-logo">
+              <app-card-network-logo [network]="row.profile.network ?? row.primaryCard.network" />
+            </span>
+            <div class="addon-directory-info">
               <strong>{{ row.primaryCard.nickname }} · {{ row.profile.name }}</strong>
               <small>
-                {{ addOnRelationship(row.profile) }} ·
-                {{ addOnNetwork(row.primaryCard, row.profile) }}
+                {{ addOnNetwork(row.primaryCard, row.profile) }} ·
+                {{ addOnRelationship(row.profile) }}
                 @if (row.profile.lastDigits) {
-                  · •••• {{ row.profile.lastDigits }}
+                  · {{ row.profile.lastDigits }}
                 }
-                @if (row.profile.archived) {
+                @if (row.profile.deletedAt) {
+                  · Deleted; history retained
+                } @else if (row.profile.archived) {
                   · Archived
                 }
                 @if (row.primaryCard.deletedAt) {
@@ -844,12 +851,14 @@
                   · Disabled
                 }
               </small>
-            </span>
+            </div>
             <div class="addon-directory-actions">
               <button class="btn" type="button" (click)="viewAddOnTransactions(row)">
                 View Transactions
               </button>
-              @if (!row.primaryCard.archived && !row.primaryCard.deletedAt) {
+              @if (
+                !row.primaryCard.archived && !row.primaryCard.deletedAt && !row.profile.deletedAt
+              ) {
                 <button
                   class="icon-button"
                   type="button"
@@ -867,9 +876,24 @@
                     (row.profile.archived ? 'Restore ' : 'Archive ') + row.profile.name
                   "
                   [attr.title]="(row.profile.archived ? 'Restore ' : 'Archive ') + row.profile.name"
-                  (click)="toggleAddOnProfileArchive(row.primaryCard, row.profile)"
+                  (click)="
+                    requestAddOnProfileAction(
+                      row.primaryCard,
+                      row.profile,
+                      row.profile.archived ? 'RESTORE' : 'ARCHIVE'
+                    )
+                  "
                 >
                   <app-icon name="archive" />
+                </button>
+                <button
+                  class="icon-button danger-item"
+                  type="button"
+                  [attr.aria-label]="'Delete ' + row.profile.name"
+                  [attr.title]="'Delete ' + row.profile.name"
+                  (click)="requestAddOnProfileAction(row.primaryCard, row.profile, 'DELETE')"
+                >
+                  <app-icon name="delete" />
                 </button>
               }
             </div>
@@ -1015,13 +1039,13 @@
                 <header>
                   <div>
                     <h3>Family Add-On cards</h3>
-                    <small>{{ card.addOnProfiles?.length ?? 0 }} of 5 profiles</small>
+                    <small>{{ addOnProfileCount(card) }} of 5 profiles</small>
                   </div>
                   @if (
                     addOnCardsEnabled(card) &&
                     !card.archived &&
                     !card.deletedAt &&
-                    (card.addOnProfiles?.length ?? 0) < 5
+                    addOnProfileCount(card) < 5
                   ) {
                     <button class="btn" type="button" (click)="openAddOnProfile(card)">
                       <app-icon name="plus" /> Add profile
@@ -1040,10 +1064,17 @@
                         @if (profile.lastDigits) {
                           · •••• {{ profile.lastDigits }}
                         }
-                        · {{ profile.archived ? 'Archived' : 'Active' }}
+                        ·
+                        {{
+                          profile.deletedAt
+                            ? 'Deleted; history retained'
+                            : profile.archived
+                              ? 'Archived'
+                              : 'Active'
+                        }}
                       </small>
                     </span>
-                    @if (!card.archived && !card.deletedAt) {
+                    @if (!card.archived && !card.deletedAt && !profile.deletedAt) {
                       <div>
                         <button
                           class="icon-button"
@@ -1062,9 +1093,24 @@
                             (profile.archived ? 'Restore ' : 'Archive ') + profile.name
                           "
                           [attr.title]="(profile.archived ? 'Restore ' : 'Archive ') + profile.name"
-                          (click)="toggleAddOnProfileArchive(card, profile)"
+                          (click)="
+                            requestAddOnProfileAction(
+                              card,
+                              profile,
+                              profile.archived ? 'RESTORE' : 'ARCHIVE'
+                            )
+                          "
                         >
                           <app-icon name="archive" />
+                        </button>
+                        <button
+                          class="icon-button danger-item"
+                          type="button"
+                          [attr.aria-label]="'Delete ' + profile.name"
+                          [attr.title]="'Delete ' + profile.name"
+                          (click)="requestAddOnProfileAction(card, profile, 'DELETE')"
+                        >
+                          <app-icon name="delete" />
                         </button>
                       </div>
                     }
@@ -1417,6 +1463,46 @@
     [confirmLabel]="candidate.action === 'ARCHIVE' ? 'Archive card' : 'Restore card'"
     (confirmed)="confirmArchive()"
     (cancelled)="archiveCandidate.set(null)"
+  />
+}
+
+@if (addOnAction(); as candidate) {
+  <app-confirmation-dialog
+    [title]="
+      candidate.action === 'DELETE'
+        ? 'Delete Add-On profile?'
+        : candidate.action === 'ARCHIVE'
+          ? 'Archive Add-On profile?'
+          : 'Restore Add-On profile?'
+    "
+    [message]="
+      candidate.action === 'DELETE'
+        ? 'Remove ' +
+          candidate.profile.name +
+          '? If transactions reference this profile, ' +
+          'its identity will be retained for historical attribution. ' +
+          'The primary card and all transactions will remain unchanged.'
+        : candidate.action === 'ARCHIVE'
+          ? 'Archive ' +
+            candidate.profile.name +
+            '? Existing transactions will remain attributed and the profile ' +
+            'will no longer be selectable for new transactions.'
+          : 'Restore ' +
+            candidate.profile.name +
+            ' so it can be selected ' +
+            'for new transactions?'
+    "
+    [confirmLabel]="
+      candidate.action === 'DELETE'
+        ? 'Delete profile'
+        : candidate.action === 'ARCHIVE'
+          ? 'Archive profile'
+          : 'Restore profile'
+    "
+    [busy]="addOnActionSaving()"
+    [error]="addOnActionError()"
+    (confirmed)="confirmAddOnAction()"
+    (cancelled)="cancelAddOnAction()"
   />
 }
 

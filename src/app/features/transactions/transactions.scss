@@ -203,6 +203,21 @@ legend {
 .archived-source-reassignment span {
   min-width: 0;
 }
+.checkbox-field {
+  display: flex !important;
+  min-height: 44px;
+  align-items: center;
+  gap: 0.55rem;
+}
+.checkbox-field input[type='checkbox'] {
+  width: 19px;
+  min-width: 19px;
+  height: 19px;
+  min-height: 19px;
+  flex: 0 0 19px;
+  margin: 0;
+  accent-color: var(--accent);
+}
 /* ── Custom Pay-From field ───────────────────────────────────────────────── */
 .pay-from-field {
   display: grid;
@@ -363,8 +378,13 @@ legend {
   border-radius: 0.6rem;
 }
 .tax-option input {
-  width: 1.2rem;
-  min-height: 1.2rem;
+  width: 19px;
+  min-width: 19px;
+  height: 19px;
+  min-height: 19px;
+  flex: 0 0 19px;
+  margin: 0;
+  accent-color: var(--accent);
 }
 .tax-option span {
   display: grid;
@@ -479,6 +499,9 @@ label small {
   gap: 0.5rem;
   margin-bottom: 0.75rem;
 }
+.manage-categories {
+  min-height: 2.75rem;
+}
 .filter-panel__toggle {
   display: inline-flex;
   min-height: 2.75rem;
@@ -550,6 +573,10 @@ label small {
   gap: 0.75rem;
   margin-bottom: 0.75rem;
   padding: 0.65rem 0.75rem 0.65rem 1rem;
+}
+.ledger-summary strong {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 .ledger-summary > div:first-child {
   display: flex;
@@ -722,7 +749,7 @@ label small {
 .month-group {
   overflow: visible;
 }
-.month-group summary {
+.month-group > summary {
   display: grid;
   min-height: 4rem;
   grid-template-columns: minmax(0, 1fr) auto 1.5rem;
@@ -732,26 +759,26 @@ label small {
   cursor: pointer;
   list-style: none;
 }
-.month-group summary::-webkit-details-marker {
+.month-group > summary::-webkit-details-marker {
   display: none;
 }
-.month-group summary > span {
+.month-group > summary > span {
   font-family: var(--display);
   font-size: 1.15rem;
   font-weight: 700;
 }
-.month-group summary > strong {
+.month-group > summary > strong {
   color: var(--ink);
   font-size: 0.95rem;
 }
-.month-group summary > strong.credit {
+.month-group > summary > strong.credit {
   color: var(--success);
 }
-.month-group summary app-icon {
+.month-group > summary app-icon {
   width: 1.25rem;
   transition: transform 0.18s ease;
 }
-.month-group[open] summary app-icon {
+.month-group[open] > summary app-icon {
   transform: rotate(90deg);
 }
 .month-entries {
@@ -781,6 +808,48 @@ label small {
 .transaction-open-button:hover,
 .transaction-open-button:focus-visible {
   background: var(--canvas);
+}
+.combined-purchase-entry {
+  border-bottom: 1px solid var(--line);
+}
+.combined-purchase-entry > summary {
+  grid-template-columns: auto minmax(0, 1fr) 7rem auto auto;
+  list-style: none;
+  cursor: pointer;
+}
+.combined-purchase-entry > summary::-webkit-details-marker {
+  display: none;
+}
+.combined-purchase-entry > summary > app-icon {
+  width: 1.15rem;
+  height: 1.15rem;
+  color: var(--muted);
+  transition: transform 0.18s ease;
+}
+.combined-purchase-entry[open] > summary > app-icon {
+  transform: rotate(90deg);
+}
+.combined-payment-indicator {
+  color: var(--accent) !important;
+  font-weight: 700;
+}
+.combined-purchase-details {
+  display: grid;
+  gap: 0.65rem;
+  padding: 0 1rem 1rem 4rem;
+}
+.combined-purchase-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+.combined-refund-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+.manage-payment-group {
+  margin-top: 0.75rem;
 }
 .month-entries article.menu-open {
   z-index: 12;
@@ -851,7 +920,73 @@ label small {
   display: none;
 }
 .addon-attribution {
+  display: flex;
+  max-width: 100%;
+  flex-wrap: wrap;
+  gap: 0.25rem;
   color: var(--accent);
+  overflow: visible;
+  white-space: normal;
+}
+.addon-attribution .filter-chip {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.wallet-load-summary {
+  display: grid;
+  gap: 0.7rem;
+  min-width: 0;
+  padding: 0.9rem;
+  border: 1px solid var(--line);
+  border-radius: 0.65rem;
+  background: var(--surface-2);
+}
+.wallet-load-summary legend {
+  padding-inline: 0.35rem;
+  color: var(--accent);
+  font-weight: 750;
+}
+.wallet-load-summary dl {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0;
+}
+.wallet-load-summary dl > div {
+  display: flex;
+  min-width: 0;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.wallet-load-summary dt {
+  color: var(--muted);
+}
+.wallet-load-summary dd {
+  min-width: 0;
+  margin: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.wallet-load-summary > p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+.wallet-load-approval {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 0.55rem;
+}
+.wallet-load-approval input[type='checkbox'] {
+  width: 19px;
+  min-width: 19px;
+  height: 19px;
+  min-height: 19px;
+  flex: 0 0 19px;
+  margin: 0;
+  accent-color: var(--accent);
 }
 .tx-amount {
   justify-self: end;
@@ -1136,8 +1271,13 @@ label small {
   background: var(--canvas);
 }
 .ownership-checkbox input {
-  width: 1.1rem;
-  height: 1.1rem;
+  width: 19px;
+  min-width: 19px;
+  height: 19px;
+  min-height: 19px;
+  flex: 0 0 19px;
+  margin: 0;
+  accent-color: var(--accent);
   margin-top: 0.1rem;
 }
 .ownership-checkbox span {
@@ -1291,11 +1431,11 @@ label small {
   .form-actions .btn {
     flex: 1 1 8rem;
   }
-  .month-group summary {
+  .month-group > summary {
     min-height: 3.6rem;
     padding: 0.65rem 0.75rem;
   }
-  .month-group summary > span {
+  .month-group > summary > span {
     font-size: 1rem;
   }
   .month-entries article {
@@ -1305,10 +1445,32 @@ label small {
     gap: 0.55rem;
     padding: 0.7rem 0.25rem 0.7rem 0.75rem;
   }
+  .combined-purchase-entry > summary.transaction-open-button {
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+  }
+  .combined-purchase-entry > summary .tx-date {
+    display: none;
+  }
+  .combined-purchase-details {
+    padding: 0 0.75rem 0.75rem;
+  }
   .ledger-summary > div:first-child {
     align-items: flex-start;
     flex-direction: column;
     gap: 0.15rem;
+  }
+  .ledger-summary {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .summary-menu-anchor {
+    justify-content: space-between;
+  }
+  .export-choices {
+    flex: 1 1 auto;
+  }
+  .export-choices button {
+    flex: 1 1 0;
   }
   .summary-menu {
     width: min(15rem, calc(100vw - 2rem));
@@ -1323,6 +1485,12 @@ label small {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .tx-main .addon-attribution {
+    max-width: 100%;
+    flex-direction: row;
+    overflow: visible;
+    white-space: normal;
   }
   .tx-amount {
     font-size: 0.78rem;

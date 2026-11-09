@@ -261,6 +261,19 @@
   min-height: 40px;
   padding: 0.45rem 0.7rem;
 }
+.profile-actions .btn-set-balance {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.profile-actions .btn-primary-bank {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+  color: var(--accent);
+  background: var(--surface);
+}
+.profile-actions .btn-archive {
+  color: var(--muted);
+}
 .event-history {
   margin-top: 0.85rem;
   border-top: 1px solid var(--line);

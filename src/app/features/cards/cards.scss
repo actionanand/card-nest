@@ -908,6 +908,9 @@ label small.validation-error {
   justify-content: space-between;
   gap: 0.5rem;
 }
+.addon-profile-row {
+  flex-wrap: wrap;
+}
 .addon-profile-manager p,
 .addon-profile-manager small {
   margin: 0;
@@ -919,6 +922,53 @@ label small.validation-error {
   display: grid;
   gap: 0.2rem;
   min-width: 0;
+}
+.addon-directory-row {
+  display: grid;
+  grid-template-columns: 2.75rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.75rem;
+}
+.addon-network-logo {
+  display: grid;
+  width: 2.75rem;
+  height: 2.75rem;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 0.65rem;
+  background: var(--surface-2);
+}
+.addon-network-logo app-card-network-logo {
+  width: 2rem;
+  height: 1.4rem;
+}
+.addon-directory-info {
+  display: grid;
+  min-width: 0;
+  gap: 0.2rem;
+}
+.addon-directory-info strong,
+.addon-directory-info small {
+  overflow-wrap: anywhere;
+}
+.addon-directory-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.4rem;
+}
+.addon-directory-actions .danger-item,
+.addon-profile-row .danger-item {
+  color: var(--danger);
+}
+@media (max-width: 560px) {
+  .addon-directory-row {
+    grid-template-columns: 2.75rem minmax(0, 1fr);
+  }
+  .addon-directory-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
 }
 .addon-profile-form {
   display: grid;

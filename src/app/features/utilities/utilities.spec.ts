@@ -937,6 +937,35 @@ describe('Indian Utilities page', () => {
     fixture.destroy();
   });
 
+  it('shows optional LPG mobile validation after blur or submit and clears it when corrected', async () => {
+    const fixture = TestBed.createComponent(UtilitiesPage);
+    const page = fixture.componentInstance;
+    page.setSection('GAS');
+    page.startAddLpg();
+    page.lpgForm.controls.connectionName.setValue('Fiction kitchen');
+    page.lpgForm.controls.mobileNumber.setValue('1234567890');
+    page.lpgForm.controls.mobileNumber.markAsTouched();
+    fixture.detectChanges();
+    expect(fixture.nativeElement.textContent).toContain(
+      'Enter exactly 10 digits starting with 6, 7, 8 or 9',
+    );
+    const save = [...fixture.nativeElement.querySelectorAll('button')].find(
+      (button: HTMLButtonElement) => button.textContent?.includes('Save connection'),
+    ) as HTMLButtonElement;
+    expect(save.disabled).toBe(false);
+    await page.saveLpg(new Event('submit'));
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('[role="alert"]')).not.toBeNull();
+    expect(mock.saveLpgProfile).not.toHaveBeenCalled();
+    page.lpgForm.controls.mobileNumber.setValue('9876543210');
+    fixture.detectChanges();
+    expect(fixture.nativeElement.textContent).not.toContain('Enter exactly 10 digits');
+    expect(page.lpgForm.controls.mobileNumber.valid).toBe(true);
+    page.lpgForm.controls.mobileNumber.setValue('');
+    expect(page.lpgForm.controls.mobileNumber.valid).toBe(true);
+    fixture.destroy();
+  });
+
   it('uses a fixed +91 ten-digit linked mobile while keeping distributor contacts international', async () => {
     const fixture = TestBed.createComponent(UtilitiesPage);
     const page = fixture.componentInstance;

@@ -2325,9 +2325,18 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     expect(count('card_transactions')).toBe(2);
     expect(stored('source-meal')).toBe(8000);
     expect(first).toMatchObject({
+      origin: 'MANUAL',
+      attachmentIds: original.attachmentIds,
+    });
+    expect(first!.reference).toBeUndefined();
+    expect(first!.bankName).toBeUndefined();
+    expect(first!.accountSuffix).toBeUndefined();
+    expect(first!.paymentMethod).toBeUndefined();
+    expect(
+      store.transactions().find((transaction) => transaction.id === original.id),
+    ).toMatchObject({
       origin: 'SMS',
       reference: original.reference,
-      attachmentIds: original.attachmentIds,
     });
     const restarted = TestBed.runInInjectionContext(() => new CardNestStore());
     await restarted.initialisePreferences();

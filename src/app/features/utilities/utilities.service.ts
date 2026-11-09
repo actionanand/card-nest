@@ -481,8 +481,8 @@ export class UtilitiesService {
     )
       throw new Error('Choose a supported cylinder size.');
     const event = await this.database.atomic(async (tx) => {
-      const [profile] = await tx.query<{ id: string; archived: number }>(
-        "SELECT id,archived FROM utility_profiles WHERE id=? AND kind='LPG'",
+      const [profile] = await tx.query<{ id: string; archived: number; payload: string }>(
+        "SELECT id,archived,payload FROM utility_profiles WHERE id=? AND kind='LPG'",
         [input.profileId],
       );
       if (!profile || profile.archived) throw new Error('Choose an active LPG connection.');
@@ -496,6 +496,7 @@ export class UtilitiesService {
       const timestamp = new Date().toISOString();
       const saved: LpgEvent = {
         ...input,
+        cylinderSize: (JSON.parse(profile.payload) as LpgProfile).cylinderSize,
         id: previous?.id ?? crypto.randomUUID(),
         comment: input.comment?.trim().slice(0, 300) || undefined,
         createdAt: previous?.createdAt ?? timestamp,

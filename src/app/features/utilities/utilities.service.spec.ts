@@ -47,7 +47,11 @@ describe('Indian Utilities service', () => {
             ? utilities
                 .lpgProfiles()
                 .filter((profile) => profile.id === values[0])
-                .map((profile) => ({ id: profile.id, archived: profile.archived ? 1 : 0 }))
+                .map((profile) => ({
+                  id: profile.id,
+                  archived: profile.archived ? 1 : 0,
+                  payload: JSON.stringify(profile),
+                }))
             : utilities
                 .lpgEvents()
                 .filter((event) =>
@@ -112,6 +116,23 @@ describe('Indian Utilities service', () => {
     ]);
     expect(lpgTargets.every((target) => target.title === 'Estimated LPG check')).toBe(true);
     expect(lpgTargets.every((target) => target.body.includes('estimate only'))).toBe(true);
+  });
+
+  it('uses the LPG connection cylinder size when a stale event submits another size', async () => {
+    const profile = await utilities.saveLpgProfile({
+      connectionName: 'Fictional home',
+      provider: 'INDANE',
+      commercial: false,
+      cylinderSize: 'SMALL',
+      estimatedUsageDays: 25,
+    });
+    const saved = await utilities.saveLpgEvent({
+      profileId: profile.id,
+      eventType: 'STARTED',
+      eventDate: '2026-10-26',
+      cylinderSize: 'NORMAL',
+    });
+    expect(saved.cylinderSize).toBe('SMALL');
   });
 
   it('schedules only uninterrupted voice coverage and supports Data-only plan reminders', async () => {

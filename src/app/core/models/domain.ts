@@ -56,6 +56,7 @@ export interface AddOnCardProfile {
   network?: CardNetwork;
   lastDigits?: string;
   archived: boolean;
+  deletedAt?: string;
   createdAt: string;
   updatedAt: string;
 }

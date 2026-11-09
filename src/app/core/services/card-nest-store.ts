@@ -116,7 +116,7 @@ function assertValidAddOnProfiles(
   enabled = false,
 ): void {
   if (!profiles) return;
-  if (profiles.length > MAX_ADD_ON_PROFILES)
+  if (profiles.filter((profile) => !profile.deletedAt).length > MAX_ADD_ON_PROFILES)
     throw new Error(`A primary card can have up to ${MAX_ADD_ON_PROFILES} Add-On profiles.`);
   const ids = new Set<string>();
   for (const profile of profiles) {
@@ -968,6 +968,60 @@ export class CardNestStore {
     this.cards.update((cards) => cards.map((card) => (card.id === updated.id ? updated : card)));
     void this.persistCard(updated);
   }
+  async setAddOnProfileArchived(
+    cardId: string,
+    profileId: string,
+    archived: boolean,
+  ): Promise<void> {
+    if (!this.database.ready()) throw new Error('Database is not ready.');
+    const card = this.cards().find((item) => item.id === cardId);
+    const profile = card?.addOnProfiles?.find((item) => item.id === profileId);
+    if (!card || !profile || profile.deletedAt || card.archived || card.deletedAt)
+      throw new Error('This Add-On profile can no longer be changed.');
+    const timestamp = new Date().toISOString();
+    const updated: CreditCard = {
+      ...card,
+      addOnProfiles: card.addOnProfiles?.map((item) =>
+        item.id === profileId ? { ...item, archived, updatedAt: timestamp } : item,
+      ),
+      updatedAt: timestamp,
+    };
+    await this.persistCard(updated);
+    this.cards.update((cards) => cards.map((item) => (item.id === cardId ? updated : item)));
+  }
+  async deleteAddOnProfile(cardId: string, profileId: string): Promise<void> {
+    if (!this.database.ready()) throw new Error('Database is not ready.');
+    const updated = await this.database.atomic(async (tx) => {
+      const [row] = await tx.query<{ payload: string }>(
+        'SELECT payload FROM credit_cards WHERE id=?',
+        [cardId],
+      );
+      const card = row ? (JSON.parse(row.payload) as CreditCard) : null;
+      const profile = card?.addOnProfiles?.find((item) => item.id === profileId);
+      if (!card || !profile) throw new Error('Add-On profile not found.');
+      const [history] = await tx.query<{ count: number }>(
+        'SELECT COUNT(*) AS count FROM card_transactions WHERE card_id=? AND add_on_card_id=?',
+        [cardId, profileId],
+      );
+      const timestamp = new Date().toISOString();
+      const addOnProfiles = history.count
+        ? card.addOnProfiles?.map((item) =>
+            item.id === profileId
+              ? { ...item, archived: true, deletedAt: timestamp, updatedAt: timestamp }
+              : item,
+          )
+        : card.addOnProfiles?.filter((item) => item.id !== profileId);
+      const next = { ...card, addOnProfiles, updatedAt: timestamp };
+      assertValidAddOnProfiles(next.addOnProfiles, card.addOnProfiles, true);
+      await tx.run('UPDATE credit_cards SET payload=?,updated_at=? WHERE id=?', [
+        JSON.stringify(next),
+        timestamp,
+        cardId,
+      ]);
+      return next;
+    });
+    this.cards.update((items) => items.map((item) => (item.id === cardId ? updated : item)));
+  }
   async refreshPaymentGroups(): Promise<void> {
     if (this.database.ready()) this.paymentGroups.set(await readPaymentGroups(this.database));
   }
@@ -1454,11 +1508,21 @@ export class CardNestStore {
       throw new Error(
         'Duplicate the real wallet-load funding debit manually with a new wallet event.',
       );
+    const duplicateFromSms = existing.origin === 'SMS';
     const timestamp = new Date().toISOString();
     const key = `duplicate:${transactionId}`;
     const duplicate: CardTransaction = this.pendingTransactionDrafts.get(key) ?? {
       ...existing,
       id: crypto.randomUUID(),
+      origin: 'MANUAL',
+      reference: duplicateFromSms ? undefined : existing.reference,
+      bankName: duplicateFromSms ? undefined : existing.bankName,
+      accountSuffix: duplicateFromSms ? undefined : existing.accountSuffix,
+      paymentMethod: duplicateFromSms ? undefined : existing.paymentMethod,
+      paymentMethodDetail: duplicateFromSms ? undefined : existing.paymentMethodDetail,
+      paymentMethodCustom: duplicateFromSms ? undefined : existing.paymentMethodCustom,
+      smsAdditionalComment: undefined,
+      balanceEffect: undefined,
       recurringRuleId: undefined,
       generatedOccurrenceDate: undefined,
       emiPlanId: undefined,
@@ -1474,7 +1538,9 @@ export class CardNestStore {
         (source) => source.id === existing.cardId && source.kind === 'MEAL',
       )
         ? true
-        : existing.sourceBalanceApplied,
+        : existing.origin === 'SMS'
+          ? undefined
+          : existing.sourceBalanceApplied,
       balanceTiming: undefined,
       balanceTimingAt: undefined,
       createdAt: timestamp,

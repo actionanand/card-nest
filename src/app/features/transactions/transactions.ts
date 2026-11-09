@@ -120,6 +120,14 @@ interface TransactionFilterDraft {
   readonly fromDate: string;
   readonly toDate: string;
 }
+interface CombinedPurchaseActivity {
+  readonly kind: 'PAYMENT_GROUP';
+  readonly key: string;
+  readonly date: string;
+  readonly group: PaymentGroup;
+  readonly period: { readonly key: string; readonly label: string };
+}
+type LedgerActivity = FinancialActivity | CombinedPurchaseActivity;
 const TRANSACTION_PAGE_SIZE = 200;
 const MAX_RECEIPT_BYTES = 1_000_000;
 const CONSUMER_WALLET_SOURCE_PREFIX = 'consumer-wallet:';
@@ -1280,6 +1288,8 @@ export class TransactionsPage {
       : 'Unknown original wallet credit';
   }
   consumerWalletEventLabel(event: ConsumerWalletEvent): string {
+    if (event.eventType === 'MANUAL_CREDIT' && event.memo === 'Opening balance')
+      return 'Opening balance';
     if (event.eventType === 'PURCHASE') return 'Wallet purchase';
     if (event.eventType === 'REFUND') return 'Wallet refund';
     if (event.eventType === 'REVERSAL') return 'Purchase cancellation';
@@ -1448,17 +1458,57 @@ export class TransactionsPage {
         )
       : [],
   );
-  readonly pageableActivities = computed(() => {
+  readonly pageableActivities = computed<readonly LedgerActivity[]>(() => {
+    const projection = this.activityProjection();
+    const logicalGroups = this.logicalGroups();
     const groupedCardIds = new Set(this.logicalGroups().flatMap((group) => group.memberIds));
     const groupedWalletIds = new Set(
       this.logicalGroups().flatMap((group) =>
         group.walletMembers.map((member) => member.walletEventId),
       ),
     );
-    return this.activityProjection().filter((activity) =>
+    const activities: LedgerActivity[] = projection.filter((activity) =>
       activity.kind === 'CARD_TRANSACTION'
         ? !groupedCardIds.has(activity.transaction.id)
         : !groupedWalletIds.has(activity.event.id),
+    );
+    const combined = logicalGroups.map((group): CombinedPurchaseActivity => {
+      const members = projection.filter(
+        (activity) =>
+          (activity.kind === 'CARD_TRANSACTION' &&
+            group.memberIds.includes(activity.transaction.id)) ||
+          (activity.kind === 'CONSUMER_WALLET_EVENT' &&
+            group.walletMembers.some((member) => member.walletEventId === activity.event.id)),
+      );
+      const date =
+        members
+          .map((activity) => activity.date)
+          .sort()
+          .at(-1) ?? '';
+      const anchor = group.anchorId
+        ? this.store.transactions().find((transaction) => transaction.id === group.anchorId)
+        : undefined;
+      const period = anchor ? this.periodFor(anchor) : this.periodForDate(date);
+      return { kind: 'PAYMENT_GROUP', key: `payment-group:${group.id}`, date, group, period };
+    });
+    const createdAt = (activity: LedgerActivity): string =>
+      activity.kind === 'CARD_TRANSACTION'
+        ? activity.transaction.createdAt
+        : activity.kind === 'CONSUMER_WALLET_EVENT'
+          ? activity.event.createdAt
+          : activity.group.updatedAt;
+    const time = (activity: LedgerActivity): string =>
+      activity.kind === 'CARD_TRANSACTION'
+        ? (activity.transaction.transactionTime ?? '')
+        : activity.kind === 'CONSUMER_WALLET_EVENT'
+          ? (activity.event.eventTime ?? '')
+          : '';
+    return [...activities, ...combined].sort(
+      (left, right) =>
+        right.date.localeCompare(left.date) ||
+        time(right).localeCompare(time(left)) ||
+        createdAt(right).localeCompare(createdAt(left)) ||
+        right.key.localeCompare(left.key),
     );
   });
   readonly visibleActivities = computed(() =>
@@ -1478,12 +1528,14 @@ export class TransactionsPage {
       const period = this.periodFor(transaction);
       totals.set(period.key, (totals.get(period.key) ?? 0) + -transactionEffect(transaction));
     }
-    const grouped = new Map<string, { label: string; activities: FinancialActivity[] }>();
+    const grouped = new Map<string, { label: string; activities: LedgerActivity[] }>();
     for (const activity of this.visibleActivities()) {
       const period =
-        activity.kind === 'CARD_TRANSACTION'
-          ? this.periodFor(activity.transaction)
-          : this.periodForDate(activity.date);
+        activity.kind === 'PAYMENT_GROUP'
+          ? activity.period
+          : activity.kind === 'CARD_TRANSACTION'
+            ? this.periodFor(activity.transaction)
+            : this.periodForDate(activity.date);
       const group = grouped.get(period.key) ?? { label: period.label, activities: [] };
       group.activities.push(activity);
       grouped.set(period.key, group);
@@ -1498,11 +1550,15 @@ export class TransactionsPage {
             right.date.localeCompare(left.date) ||
             (right.kind === 'CARD_TRANSACTION'
               ? (right.transaction.transactionTime ?? '')
-              : (right.event.eventTime ?? '')
+              : right.kind === 'CONSUMER_WALLET_EVENT'
+                ? (right.event.eventTime ?? '')
+                : ''
             ).localeCompare(
               left.kind === 'CARD_TRANSACTION'
                 ? (left.transaction.transactionTime ?? '')
-                : (left.event.eventTime ?? ''),
+                : left.kind === 'CONSUMER_WALLET_EVENT'
+                  ? (left.event.eventTime ?? '')
+                  : '',
             ) ||
             right.key.localeCompare(left.key),
         ),
@@ -1594,10 +1650,14 @@ export class TransactionsPage {
     return [
       { value: '', label: 'Primary cardholder' },
       ...(card.addOnProfiles ?? [])
-        .filter((profile) => (enabled && !profile.archived) || profile.id === selectedId)
+        .filter(
+          (profile) =>
+            (enabled && !profile.archived && !profile.deletedAt) || profile.id === selectedId,
+        )
         .map((profile) => ({
           value: profile.id,
-          label: `${profile.name}${profile.archived ? ' · Archived' : ''}`,
+          label: `${profile.name}${profile.deletedAt ? ' · Deleted' : profile.archived ? ' · Archived' : ''}`,
+          disabled: !!profile.deletedAt,
           detail: [
             profile.relationship ?? 'Other',
             profile.lastDigits ? `•••• ${profile.lastDigits}` : '',

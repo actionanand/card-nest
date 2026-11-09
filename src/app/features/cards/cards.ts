@@ -37,6 +37,7 @@ import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker
 
 type PaymentMode = 'DUE' | 'OUTSTANDING' | 'CUSTOM';
 type ArchiveAction = 'ARCHIVE' | 'RESTORE';
+type AddOnProfileAction = 'ARCHIVE' | 'RESTORE' | 'DELETE';
 const MAX_ADD_ON_PROFILES = 5;
 
 interface CardFilterTotal {
@@ -98,6 +99,13 @@ export class CardsPage {
   readonly actionMenuOpensUp = signal(false);
   readonly deleteCandidate = signal<CreditCard | null>(null);
   readonly archiveCandidate = signal<{ card: CreditCard; action: ArchiveAction } | null>(null);
+  readonly addOnAction = signal<{
+    card: CreditCard;
+    profile: AddOnCardProfile;
+    action: AddOnProfileAction;
+  } | null>(null);
+  readonly addOnActionSaving = signal(false);
+  readonly addOnActionError = signal<string | null>(null);
   readonly paymentCard = signal<CreditCard | null>(null);
   readonly paymentMode = signal<PaymentMode>('CUSTOM');
   readonly paymentAmount = signal('');
@@ -674,6 +682,9 @@ export class CardsPage {
   addOnCardsEnabled(card: CreditCard): boolean {
     return card.addOnCardsEnabled ?? !!card.addOnProfiles?.length;
   }
+  addOnProfileCount(card: CreditCard): number {
+    return (card.addOnProfiles ?? []).filter((profile) => !profile.deletedAt).length;
+  }
   setAddOnCardsEnabled(card: CreditCard, event: Event): void {
     if (card.archived || card.deletedAt) return;
     const enabled = (event.target as HTMLInputElement).checked;
@@ -759,7 +770,7 @@ export class CardsPage {
       this.addOnProfileError.set('This Add-On profile is no longer available.');
       return;
     }
-    if (!editingId && profiles.length >= MAX_ADD_ON_PROFILES) {
+    if (!editingId && profiles.filter((item) => !item.deletedAt).length >= MAX_ADD_ON_PROFILES) {
       this.addOnProfileError.set(
         `A primary card can have up to ${MAX_ADD_ON_PROFILES} Add-On profiles.`,
       );
@@ -821,16 +832,50 @@ export class CardsPage {
   setAddOnProfileDigits(value: string): void {
     this.addOnProfileDigits.set(value.replace(/\D/g, '').slice(0, 4));
   }
-  toggleAddOnProfileArchive(card: CreditCard, profile: AddOnCardProfile): void {
-    if (card.archived || card.deletedAt) return;
-    const timestamp = new Date().toISOString();
-    this.store.updateCard({
-      ...card,
-      addOnProfiles: (card.addOnProfiles ?? []).map((item) =>
-        item.id === profile.id ? { ...item, archived: !item.archived, updatedAt: timestamp } : item,
-      ),
-      updatedAt: timestamp,
-    });
+  requestAddOnProfileAction(
+    card: CreditCard,
+    profile: AddOnCardProfile,
+    action: AddOnProfileAction,
+  ): void {
+    if (card.archived || card.deletedAt || profile.deletedAt) return;
+    this.addOnActionError.set(null);
+    this.addOnAction.set({ card, profile, action });
+  }
+  cancelAddOnAction(): void {
+    if (this.addOnActionSaving()) return;
+    this.addOnAction.set(null);
+    this.addOnActionError.set(null);
+  }
+  async confirmAddOnAction(): Promise<void> {
+    const candidate = this.addOnAction();
+    if (!candidate || this.addOnActionSaving()) return;
+    this.addOnActionSaving.set(true);
+    this.addOnActionError.set(null);
+    try {
+      if (candidate.action === 'DELETE') {
+        await this.store.deleteAddOnProfile(candidate.card.id, candidate.profile.id);
+        this.snackbar.show(
+          'Add-On profile removed. Existing transactions and the primary card were kept.',
+        );
+      } else {
+        await this.store.setAddOnProfileArchived(
+          candidate.card.id,
+          candidate.profile.id,
+          candidate.action === 'ARCHIVE',
+        );
+        this.snackbar.show(
+          candidate.action === 'ARCHIVE' ? 'Add-On profile archived.' : 'Add-On profile restored.',
+        );
+      }
+      this.addOnAction.set(null);
+      if (!this.addOnProfileTotal()) this.showAddOnCards.set(false);
+    } catch (error: unknown) {
+      this.addOnActionError.set(
+        error instanceof Error ? error.message : 'Add-On profile could not be updated.',
+      );
+    } finally {
+      this.addOnActionSaving.set(false);
+    }
   }
   edit(card: CreditCard): void {
     if (card.archived) return;
@@ -880,6 +925,10 @@ export class CardsPage {
     globalThis.scrollTo?.({ top: 0, behavior: 'smooth' });
   }
   closeForm(): void {
+    if (this.addOnAction()) {
+      this.cancelAddOnAction();
+      return;
+    }
     if (this.deleteCandidate()) {
       this.deleteCandidate.set(null);
       return;

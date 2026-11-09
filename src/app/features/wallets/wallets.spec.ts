@@ -202,11 +202,17 @@ describe('Wallets page Stage A', () => {
     expect(page.error()).toBe('Enter a custom wallet name.');
 
     page.consumerForm.controls.customName.setValue('Synthetic Rewards');
+    page.consumerForm.controls.openingBalance.setValue('1.234');
+    await page.saveConsumerWallet(new Event('submit'));
+    expect(consumerWalletService.registerWallet).not.toHaveBeenCalled();
+    expect(page.consumerForm.controls.openingBalance.invalid).toBe(true);
+    page.consumerForm.controls.openingBalance.setValue('12.34');
     await page.saveConsumerWallet(new Event('submit'));
     expect(consumerWalletService.registerWallet).toHaveBeenCalledWith({
       providerId: 'other',
       customName: 'Synthetic Rewards',
       nickname: 'Rewards',
+      openingBalanceMinor: 1234,
       setupIntentId: undefined,
     });
     expect(page.consumerOpen()).toBe(false);

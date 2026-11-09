@@ -45,6 +45,7 @@ describe('Transactions wallet purchase approval and lifecycle UI', () => {
     const store = TestBed.inject(CardNestStore);
     store.cards.set([]);
     store.transactions.set([]);
+    store.paymentGroups.set([]);
     wallets.wallets.set([
       {
         id: 'wallet',
@@ -343,6 +344,70 @@ describe('Transactions wallet purchase approval and lifecycle UI', () => {
     page.openDetails(attributed);
     fixture.detectChanges();
     expect(fixture.nativeElement.textContent).toContain('Add-On card · Synthetic cardholder');
-    expect(fixture.nativeElement.textContent).toContain('Relationship · Wife');
+    expect(fixture.nativeElement.textContent).toContain('Wife');
+    expect(fixture.nativeElement.textContent).not.toContain('Relationship');
+    expect(fixture.nativeElement.textContent).not.toContain('•••• 2468');
+  });
+  it('places a combined purchase once inside its chronological period and preserves real totals', () => {
+    const store = TestBed.inject(CardNestStore);
+    const card: CreditCard = {
+      id: 'combined-primary',
+      nickname: 'Synthetic card',
+      issuerName: 'Synthetic issuer',
+      lastDigits: '1357',
+      network: 'VISA',
+      theme: 'green',
+      statementDay: 1,
+      dueDateMode: 'DAYS_AFTER_STATEMENT',
+      daysAfterStatement: 20,
+      adjustDueDateOnWeekend: false,
+      currencyCode: 'INR',
+      openingBalanceMinor: 0,
+      remindToSettle: false,
+      annualFeeEnabled: false,
+      emergencyPhones: [],
+      supportEmails: [],
+      archived: false,
+      createdAt: '2026-11-01T00:00:00Z',
+      updatedAt: '2026-11-01T00:00:00Z',
+    };
+    const transactions: CardTransaction[] = [1000, 2000, 3000].map((amountMinor, index) => ({
+      id: `combined-payment-${index + 1}`,
+      cardId: card.id,
+      type: 'PURCHASE',
+      amountMinor,
+      currencyCode: 'INR',
+      transactionDate: '2026-11-08',
+      categoryId: 'other',
+      merchant: 'Synthetic merchant',
+      attachmentIds: [],
+      createdAt: `2026-11-08T10:0${index}:00Z`,
+      updatedAt: `2026-11-08T10:0${index}:00Z`,
+    }));
+    store.cards.set([card]);
+    store.transactions.set(transactions);
+    store.paymentGroups.set([
+      {
+        id: 'combined-payment-group',
+        kind: 'PAYMENTS',
+        anchorId: transactions[0].id,
+        title: 'Synthetic group',
+        currency: 'INR',
+        billTotalMinor: null,
+        createdAt: '2026-11-08T10:00:00Z',
+        updatedAt: '2026-11-08T10:00:00Z',
+        memberIds: transactions.map((transaction) => transaction.id),
+        walletMembers: [],
+      },
+    ]);
+    fixture.detectChanges();
+    expect(page.logicalGroups()).toHaveLength(1);
+    expect(page.pageableActivities()).toHaveLength(1);
+    expect(page.pageableActivities()[0].kind).toBe('PAYMENT_GROUP');
+    expect(page.visibleTotal()).toBe(-6000);
+    expect(fixture.nativeElement.querySelector('.payment-group-summary')).toBeNull();
+    expect(fixture.nativeElement.querySelectorAll('.combined-purchase-entry')).toHaveLength(1);
+    expect(fixture.nativeElement.textContent).toContain('Combined purchase');
+    expect(fixture.nativeElement.textContent).toContain('3 payments');
   });
 });

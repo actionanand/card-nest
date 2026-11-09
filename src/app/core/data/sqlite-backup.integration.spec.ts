@@ -65,6 +65,52 @@ vi.mock('@capacitor-community/sqlite', () => ({
 describe('Durable first-run data, additive read migration and private portable backups', () => {
   let sql: DatabaseSyncType;
   let database: SqliteDatabase;
+  it('records a consumer-wallet opening balance as ledger credit without a load or expense', async () => {
+    await database.initialise();
+    const store = TestBed.inject(CardNestStore);
+    await store.initialisePreferences();
+    const wallets = TestBed.inject(ConsumerWalletService);
+    await wallets.initialise();
+    const wallet = await wallets.registerWallet({
+      providerId: 'amazon-pay',
+      openingBalanceMinor: 12345,
+    });
+    expect(wallets.balances().get(wallet.id)).toBe(12345);
+    expect(
+      rows(
+        'SELECT event_type,amount_minor,balance_delta_minor,payload FROM consumer_wallet_events',
+      ),
+    ).toHaveLength(1);
+    expect(rows('SELECT id FROM card_transactions')).toEqual([]);
+    expect(
+      rows("SELECT event_type FROM consumer_wallet_events WHERE event_type='FUNDED_LOAD'"),
+    ).toEqual([]);
+    const [opening] = await database.query<{ id: string; payload: string }>(
+      'SELECT id,payload FROM consumer_wallet_events WHERE wallet_id=?',
+      [wallet.id],
+    );
+    expect(JSON.parse(opening.payload)).toMatchObject({
+      eventType: 'MANUAL_CREDIT',
+      memo: 'Opening balance',
+      amountMinor: 12345,
+      balanceDeltaMinor: 12345,
+    });
+    const purchaseInput = {
+      id: 'opening-balance-purchase',
+      walletId: wallet.id,
+      amountMinor: 5000,
+      eventDate: indiaTodayIso(),
+      categoryId: 'other',
+    };
+    await recordApprovedWalletPurchase(wallets, purchaseInput);
+    expect(wallets.balances().get(wallet.id)).toBe(7345);
+    expect(
+      rows('SELECT credit_event_id,allocated_minor FROM consumer_wallet_event_allocations'),
+    ).toEqual([{ credit_event_id: opening.id, allocated_minor: 5000 }]);
+    expect(sumConsolidatedSpending(store.consolidatedSpending())).toBe(0);
+    await wallets.initialise();
+    expect(wallets.balances().get(wallet.id)).toBe(7345);
+  });
   it('approves Bank SMS wallet loading through the real store atomically and idempotently', async () => {
     await database.initialise();
     const store = TestBed.inject(CardNestStore);
@@ -296,6 +342,106 @@ describe('Durable first-run data, additive read migration and private portable b
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+  it('permanently removes unused Add-On profiles and tombstones profiles referenced by transactions', async () => {
+    await database.initialise();
+    const store = TestBed.inject(CardNestStore);
+    await store.initialisePreferences();
+    const today = indiaTodayIso();
+    const timestamp = `${today}T10:00:00Z`;
+    const profiles: AddOnCardProfile[] = [
+      {
+        id: 'addon-unused',
+        name: 'Unused member',
+        relationship: 'Child',
+        network: 'MASTERCARD',
+        archived: false,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      },
+      {
+        id: 'addon-retained',
+        name: 'Historical member',
+        relationship: 'Wife',
+        network: 'VISA',
+        lastDigits: '4408',
+        archived: false,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      },
+    ];
+    const card: CreditCard = {
+      id: 'addon-delete-primary',
+      nickname: 'Synthetic primary',
+      issuerName: 'Synthetic issuer',
+      lastDigits: '1357',
+      network: 'VISA',
+      theme: 'green',
+      statementDay: 1,
+      dueDateMode: 'DAYS_AFTER_STATEMENT',
+      daysAfterStatement: 20,
+      adjustDueDateOnWeekend: false,
+      currencyCode: 'INR',
+      openingBalanceMinor: 0,
+      remindToSettle: false,
+      annualFeeEnabled: false,
+      emergencyPhones: [],
+      supportEmails: [],
+      archived: false,
+      addOnCardsEnabled: true,
+      addOnProfiles: profiles,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    await database.run(
+      'INSERT INTO credit_cards(id,nickname,issuer_name,last_digits,network,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)',
+      [
+        card.id,
+        card.nickname,
+        card.issuerName,
+        card.lastDigits,
+        card.network,
+        JSON.stringify(card),
+        timestamp,
+        timestamp,
+      ],
+    );
+    store.cards.set([card]);
+    const transaction: CardTransaction = {
+      id: 'addon-delete-history-transaction',
+      cardId: card.id,
+      addOnCardId: profiles[1].id,
+      type: 'PURCHASE',
+      amountMinor: 3200,
+      currencyCode: 'INR',
+      transactionDate: today,
+      categoryId: 'other',
+      attachmentIds: [],
+      origin: 'MANUAL',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    await store.saveManualTransaction(transaction);
+    await store.deleteAddOnProfile(card.id, profiles[0].id);
+    await store.deleteAddOnProfile(card.id, profiles[1].id);
+    const updatedCard = store.cards().find((item) => item.id === card.id)!;
+    expect(updatedCard.deletedAt).toBeUndefined();
+    expect(updatedCard.addOnProfiles).toEqual([
+      expect.objectContaining({
+        id: profiles[1].id,
+        archived: true,
+        deletedAt: expect.any(String),
+      }),
+    ]);
+    expect(count('card_transactions')).toBe(1);
+    expect(
+      rows('SELECT payload FROM card_transactions WHERE id=?', [transaction.id]).map((row) =>
+        JSON.parse(String(row['payload'])),
+      ),
+    ).toEqual([expect.objectContaining({ addOnCardId: profiles[1].id })]);
+    await expect(
+      store.saveManualTransaction({ ...transaction, id: 'addon-delete-new-attribution' }),
+    ).rejects.toThrow('active Add-On profile');
   });
   it('atomically records mixed wallet/card payments, adds a third payment, refunds and restores exact group history', async () => {
     await database.initialise();

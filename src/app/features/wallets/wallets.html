@@ -5,7 +5,9 @@
       <h1>Wallets</h1>
       <p class="subtitle">FASTag and registered consumer wallets.</p>
     </div>
-    <a class="btn" routerLink="/settings">Settings</a>
+    <a class="wallet-settings" routerLink="/settings" aria-label="Wallet settings">
+      <app-icon name="settings" />
+    </a>
   </header>
 
   @if (wallets.loadError(); as loadError) {
@@ -288,7 +290,37 @@
         /></label>
       }
       <label>Display nickname (optional)<input formControlName="nickname" maxlength="80" /></label>
-      <p class="form-note">Available balance starts at ₹0.00.</p>
+      <label>
+        Opening balance (₹)
+        <input
+          type="number"
+          min="0"
+          step="0.01"
+          formControlName="openingBalance"
+          inputmode="decimal"
+          autocomplete="off"
+          [attr.aria-describedby]="
+            consumerForm.controls.openingBalance.invalid &&
+            consumerForm.controls.openingBalance.touched
+              ? 'wallet-opening-balance-help wallet-opening-balance-error'
+              : 'wallet-opening-balance-help'
+          "
+          [attr.aria-invalid]="
+            consumerForm.controls.openingBalance.invalid &&
+            consumerForm.controls.openingBalance.touched
+          "
+        />
+      </label>
+      <small id="wallet-opening-balance-help" class="form-note">
+        This starting balance is not recorded as a load or expense.
+      </small>
+      @if (
+        consumerForm.controls.openingBalance.invalid && consumerForm.controls.openingBalance.touched
+      ) {
+        <p id="wallet-opening-balance-error" class="form-error" role="alert">
+          Enter a nonnegative amount with up to two decimal places.
+        </p>
+      }
       @if (error(); as message) {
         <p class="form-error" role="alert">{{ message }}</p>
       }
@@ -310,7 +342,14 @@
       <ol class="wallet-events">
         @for (event of selectedHistoryEvents(); track event.id) {
           <li>
-            <span>{{ event.eventDate }} · {{ event.eventType.replaceAll('_', ' ') }}</span>
+            <span>
+              {{ event.eventDate }} ·
+              {{
+                event.memo === 'Opening balance'
+                  ? 'Opening balance'
+                  : event.eventType.replaceAll('_', ' ')
+              }}
+            </span>
             <strong>{{ money(event.balanceDeltaMinor) }}</strong>
           </li>
         }
@@ -377,7 +416,7 @@
               </div>
             </dl>
             <p>Wallet spending - already counted when loaded.</p>
-            <label>
+            <label class="wallet-approval">
               <input
                 type="checkbox"
                 [checked]="walletActivityPurchaseApprovedFor() === preview.confirmationKey"
@@ -505,7 +544,7 @@
                 </li>
               }
             </ul>
-            <label>
+            <label class="wallet-approval">
               <input type="checkbox" (change)="setReturnApproval($event)" />
               I approve this return and its FIFO expense attribution.
             </label>
