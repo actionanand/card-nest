@@ -386,6 +386,7 @@ describe('Transactions wallet purchase approval and lifecycle UI', () => {
     }));
     store.cards.set([card]);
     store.transactions.set(transactions);
+    wallets.events.set([]);
     store.paymentGroups.set([
       {
         id: 'combined-payment-group',

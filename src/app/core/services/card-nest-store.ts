@@ -1000,7 +1000,7 @@ export class CardNestStore {
       const profile = card?.addOnProfiles?.find((item) => item.id === profileId);
       if (!card || !profile) throw new Error('Add-On profile not found.');
       const [history] = await tx.query<{ count: number }>(
-        'SELECT COUNT(*) AS count FROM card_transactions WHERE card_id=? AND add_on_card_id=?',
+        "SELECT COUNT(*) AS count FROM card_transactions WHERE card_id=? AND json_extract(payload,'$.addOnCardId')=?",
         [cardId, profileId],
       );
       const timestamp = new Date().toISOString();

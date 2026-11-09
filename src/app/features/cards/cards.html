@@ -825,11 +825,11 @@
     <section class="card-list addon-directory" aria-label="Family Add-On cards">
       @for (row of visibleAddOnProfiles(); track row.profile.id) {
         <article class="card-list-item panel">
-          <div class="addon-directory-row">
-            <span class="addon-network-logo">
+          <div class="addon-profile-row">
+            <span class="network-tile">
               <app-card-network-logo [network]="row.profile.network ?? row.primaryCard.network" />
             </span>
-            <div class="addon-directory-info">
+            <span>
               <strong>{{ row.primaryCard.nickname }} · {{ row.profile.name }}</strong>
               <small>
                 {{ addOnNetwork(row.primaryCard, row.profile) }} ·
@@ -851,8 +851,8 @@
                   · Disabled
                 }
               </small>
-            </div>
-            <div class="addon-directory-actions">
+            </span>
+            <div class="addon-actions">
               <button class="btn" type="button" (click)="viewAddOnTransactions(row)">
                 View Transactions
               </button>
