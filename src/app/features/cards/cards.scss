@@ -962,24 +962,24 @@ label small.validation-error {
 }
 .utilisation progress {
   width: 100%;
-  .addon-card-copy {
-    overflow-wrap: anywhere;
-  }
-  .archived-addon-list {
-    display: grid;
-    gap: 0.55rem;
-  }
-  .archived-addon-list summary {
-    min-height: 44px;
-    align-content: center;
-    cursor: pointer;
-  }
-  .archived-addon-row {
-    opacity: 0.8;
-  }
   height: 0.45rem;
   margin: 0.35rem 0;
   accent-color: var(--accent);
+}
+.addon-card-copy {
+  overflow-wrap: anywhere;
+}
+.archived-addon-list {
+  display: grid;
+  gap: 0.55rem;
+}
+.archived-addon-list summary {
+  min-height: 44px;
+  align-content: center;
+  cursor: pointer;
+}
+.archived-addon-row {
+  opacity: 0.8;
 }
 .linked-cards {
   display: flex;

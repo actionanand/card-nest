@@ -3393,6 +3393,73 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
     transactions.destroy();
   });
 
+  it('allows ordinary edits of expired primary cards but gates archived Add-On restoration through renewal', async () => {
+    const { store } = await boot();
+    const timestamp = new Date().toISOString();
+    const profile = {
+      id: 'expired-primary-addon',
+      name: 'Synthetic cardholder',
+      relationship: 'Wife' as const,
+      network: 'VISA' as const,
+      archived: true,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    const expiredCard: CreditCard = {
+      ...card,
+      id: 'expired-primary-card',
+      expiryMonth: 1,
+      expiryYear: 2020,
+      addOnCardsEnabled: true,
+      addOnProfiles: [profile],
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    store.addCard(expiredCard);
+    await settle();
+    const fixture = TestBed.createComponent(CardsPage);
+    const page = fixture.componentInstance;
+
+    page.edit(expiredCard);
+    page.form.controls.notes.setValue('Edited without renewal');
+    await page.save();
+    expect(page.formError()).toBeNull();
+    expect(store.cards().find((item) => item.id === expiredCard.id)?.notes).toBe(
+      'Edited without renewal',
+    );
+
+    const currentCard = store.cards().find((item) => item.id === expiredCard.id)!;
+    const archivedProfile = currentCard.addOnProfiles![0];
+    page.requestAddOnProfileAction(currentCard, archivedProfile, 'RESTORE');
+    expect(page.addOnRenewalCandidate()).toMatchObject({
+      card: { id: currentCard.id },
+      profile: { id: archivedProfile.id },
+    });
+    expect(page.addOnAction()).toBeNull();
+
+    page.beginAddOnExpiryRenewal();
+    expect(page.pendingAddOnRestore()).toEqual({
+      cardId: currentCard.id,
+      profileId: archivedProfile.id,
+    });
+    const indiaMonth = indiaTodayIso().slice(0, 7);
+    page.form.controls.expiryMonth.setValue(Number(indiaMonth.slice(5, 7)));
+    page.form.controls.expiryYear.setValue(Number(indiaMonth.slice(0, 4)));
+    await page.save();
+    expect(store.cards().find((item) => item.id === expiredCard.id)?.expiryYear).toBe(
+      Number(indiaMonth.slice(0, 4)),
+    );
+    expect(
+      store.cards().find((item) => item.id === expiredCard.id)?.addOnProfiles?.[0].archived,
+    ).toBe(true);
+    expect(page.addOnAction()).toMatchObject({ action: 'RESTORE' });
+    await page.confirmAddOnAction();
+    expect(
+      store.cards().find((item) => item.id === expiredCard.id)?.addOnProfiles?.[0].archived,
+    ).toBe(false);
+    fixture.destroy();
+  });
+
   it('retries only the failed card after a partially completed linked reminder payment', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date(`${today}T06:30:00Z`));
@@ -3558,8 +3625,48 @@ describe('Bank/UPI and Cash tracking with SQLite', () => {
         );
         expect(financialState()).toEqual(beforeWalletBaseline);
         await store.setSourceBalance(wallet.id, 25000);
-      } else await store.updatePaymentSource({ ...wallet, balanceMinor: 25000 });
-      expect(stored(wallet.id)).toBe(25000);
+        expect(stored(wallet.id)).toBe(25000);
+      } else {
+        const walletService = TestBed.inject(ConsumerWalletService);
+        await walletService.initialise();
+        if (!walletService.enabled()) await walletService.setEnabled(true);
+        const fastag = walletService
+          .fastagWallets()
+          .find((item) => item.fastagSourceId === wallet.id)!;
+        const adjustmentsBeforeFastagCorrection = count('source_balance_adjustments');
+        const beforeCorrection = financialState();
+        await expect(store.updatePaymentSource({ ...wallet, balanceMinor: 25000 })).rejects.toThrow(
+          'Set verified balance',
+        );
+        expect(financialState()).toEqual(beforeCorrection);
+        await walletService.updateWalletBalance({
+          id: 'synthetic-fastag-verified-balance',
+          walletId: fastag.id,
+          newBalanceMinor: 25000,
+          memo: 'Synthetic verified balance',
+        });
+        expect(walletService.balances().get(fastag.id)).toBe(25000);
+        expect(walletService.events()).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              id: 'synthetic-fastag-verified-balance',
+              eventType: 'UNKNOWN_BALANCE',
+              balanceDeltaMinor: 25000,
+            }),
+          ]),
+        );
+        expect(stored(wallet.id)).toBe(0);
+        expect(store.paymentSources().find((item) => item.id === wallet.id)?.noLimit).toBe(false);
+        const source = store.paymentSources().find((item) => item.id === wallet.id)!;
+        await store.updatePaymentSource({ ...source, noLimit: true });
+        await store.updatePaymentSource({
+          ...store.paymentSources().find((item) => item.id === wallet.id)!,
+          noLimit: false,
+        });
+        expect(walletService.balances().get(fastag.id)).toBe(25000);
+        expect(count('card_transactions')).toBe(0);
+        expect(count('source_balance_adjustments')).toBe(adjustmentsBeforeFastagCorrection);
+      }
     }
     const beforeFailure = store.paymentSources();
     sql.exec(

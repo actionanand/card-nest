@@ -277,6 +277,8 @@
         <section class="tv-profile-list" aria-label="Active TV profiles">
           @for (profile of tvProfiles(); track profile.id) {
             @let recharge = latestTvRecharge(profile);
+            @let currentRecharge = currentTvRecharge(profile);
+            @let scheduledRecharge = scheduledTvRecharge(profile);
             <article class="panel tv-profile">
               <header>
                 <div>
@@ -312,6 +314,12 @@
                 </dl>
               } @else {
                 <p class="form-note">No current recharge · Add recharge</p>
+              }
+              @if (currentRecharge && scheduledRecharge) {
+                <p class="form-note">
+                  Next recharge scheduled: {{ scheduledRecharge.startDate }} to
+                  {{ scheduledRecharge.endDate }}
+                </p>
               }
               <div class="tv-profile-actions">
                 <button class="btn btn-primary" type="button" (click)="startTvRecharge(profile)">

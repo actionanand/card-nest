@@ -98,7 +98,7 @@ object SmsTransactionParser {
     val tag = has("fastag|toll paid|toll plaza")
     val bank = has("\\b(acct|acc|account|a/c)\\b")
     val card = !meal && !tag && has("card") && !has("debit card")
-    val debit = has("\\b(spent|debited|charged|sent|paid:|toll paid)\\b") || has("transaction of.+was made using|thank you for using.+card")
+    val debit = has("\\b(spent|debited|charged|sent|toll paid)\\b|\\bpaid:") || has("transaction of.+was made using|thank you for using.+card")
     val credit = has("\\b(credited|received)\\b")
     // The primary account is the one addressed as "your" (else the first mention). Its movement is
     // the verb grammatically attached to it, never a verb tied to a payee or counterparty account.

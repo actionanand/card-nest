@@ -130,8 +130,12 @@ export class UtilitiesPage {
   readonly lpgProfiles = computed(() =>
     this.utilities.lpgProfiles().filter((item) => !item.archived),
   );
-  readonly tvProfiles = computed(() => this.utilities.tvProfiles().filter((item) => !item.archived));
-  readonly archivedTvProfiles = computed(() => this.utilities.tvProfiles().filter((item) => item.archived));
+  readonly tvProfiles = computed(() =>
+    this.utilities.tvProfiles().filter((item) => !item.archived),
+  );
+  readonly archivedTvProfiles = computed(() =>
+    this.utilities.tvProfiles().filter((item) => item.archived),
+  );
   readonly archivedMobileProfiles = computed(() =>
     this.utilities.mobileProfiles().filter((item) => item.archived),
   );
@@ -227,7 +231,10 @@ export class UtilitiesPage {
       validators: [Validators.required, Validators.maxLength(80)],
     }),
     provider: new FormControl<TvProvider>('SUN', { nonNullable: true }),
-    otherProviderName: new FormControl('', { nonNullable: true, validators: [Validators.maxLength(80)] }),
+    otherProviderName: new FormControl('', {
+      nonNullable: true,
+      validators: [Validators.maxLength(80)],
+    }),
     customerId: new FormControl('', { nonNullable: true, validators: [Validators.maxLength(80)] }),
     mobileNumber: new FormControl('', {
       nonNullable: true,
@@ -236,7 +243,10 @@ export class UtilitiesPage {
   });
   readonly tvRechargeForm = new FormGroup({
     amount: new FormControl('', { nonNullable: true }),
-    startDate: new FormControl(this.today, { nonNullable: true, validators: [Validators.required] }),
+    startDate: new FormControl(this.today, {
+      nonNullable: true,
+      validators: [Validators.required],
+    }),
     validityDays: new FormControl('30', { nonNullable: true }),
     endDate: new FormControl('', { nonNullable: true }),
     notes: new FormControl('', { nonNullable: true, validators: [Validators.maxLength(300)] }),
@@ -948,32 +958,57 @@ export class UtilitiesPage {
 
   tvProviderLabel(profile: TvProfile): string {
     if (profile.provider === 'OTHER') return profile.otherProviderName || 'Other';
-    return this.tvProviderOptions.find((item) => item.value === profile.provider)?.label ?? 'TV provider';
+    return (
+      this.tvProviderOptions.find((item) => item.value === profile.provider)?.label ?? 'TV provider'
+    );
   }
 
   tvProfileRecharges(profile: TvProfile): readonly TvRecharge[] {
-    return this.utilities.tvRechargesFor(profile.id).slice().sort((a, b) => b.startDate.localeCompare(a.startDate));
+    return this.utilities
+      .tvRechargesFor(profile.id)
+      .slice()
+      .sort((a, b) => b.startDate.localeCompare(a.startDate));
+  }
+
+  currentTvRecharge(profile: TvProfile): TvRecharge | undefined {
+    return this.tvProfileRecharges(profile).find(
+      (recharge) => recharge.startDate <= this.today && recharge.endDate >= this.today,
+    );
+  }
+
+  scheduledTvRecharge(profile: TvProfile): TvRecharge | undefined {
+    return this.tvProfileRecharges(profile)
+      .filter((recharge) => recharge.startDate > this.today)
+      .sort((left, right) => left.startDate.localeCompare(right.startDate))[0];
+  }
+
+  private latestExpiredTvRecharge(profile: TvProfile): TvRecharge | undefined {
+    return this.tvProfileRecharges(profile).find((recharge) => recharge.endDate < this.today);
   }
 
   latestTvRecharge(profile: TvProfile): TvRecharge | undefined {
-    return this.tvProfileRecharges(profile)[0];
+    return (
+      this.currentTvRecharge(profile) ??
+      this.scheduledTvRecharge(profile) ??
+      this.latestExpiredTvRecharge(profile)
+    );
   }
 
   tvProfileStatus(profile: TvProfile): string {
-    const recharge = this.latestTvRecharge(profile);
-    if (!recharge) return 'Inactive';
-    if (recharge.startDate > this.today) return 'Scheduled';
-    return recharge.endDate < this.today ? 'Expired' : 'Active';
+    if (this.currentTvRecharge(profile)) return 'Active';
+    if (this.scheduledTvRecharge(profile)) return 'Scheduled';
+    return this.latestExpiredTvRecharge(profile) ? 'Expired' : 'Inactive';
   }
 
   tvRechargePeriod(profile: TvProfile): string {
-    const recharge = this.latestTvRecharge(profile);
-    if (!recharge) return 'No current recharge';
-    if (recharge.startDate > this.today)
-      return `Scheduled · starts in ${calendarDaysBetween(this.today, recharge.startDate)} days`;
-    if (recharge.endDate < this.today)
-      return `Expired ${calendarDaysBetween(recharge.endDate, this.today)} days ago`;
-    return `${calendarDaysBetween(this.today, recharge.endDate)} days remaining`;
+    const recharge = this.currentTvRecharge(profile);
+    if (recharge) return `${calendarDaysBetween(this.today, recharge.endDate)} days remaining`;
+    const scheduled = this.scheduledTvRecharge(profile);
+    if (scheduled)
+      return `Scheduled · starts in ${calendarDaysBetween(this.today, scheduled.startDate)} days`;
+    const expired = this.latestExpiredTvRecharge(profile);
+    if (!expired) return 'No current recharge';
+    return `Expired ${calendarDaysBetween(expired.endDate, this.today)} days ago`;
   }
 
   startAddTvProfile(): void {
@@ -1050,7 +1085,10 @@ export class UtilitiesPage {
       await this.utilities.setTvArchived(profile.id, true);
       this.snackbar.show('TV profile archived. Recharge history is kept.');
     } catch (error: unknown) {
-      this.snackbar.show(error instanceof Error ? error.message : 'TV profile could not be archived.', 'WARNING');
+      this.snackbar.show(
+        error instanceof Error ? error.message : 'TV profile could not be archived.',
+        'WARNING',
+      );
     }
   }
 
@@ -1059,7 +1097,10 @@ export class UtilitiesPage {
       await this.utilities.setTvArchived(profile.id, false);
       this.snackbar.show('TV profile restored.');
     } catch (error: unknown) {
-      this.snackbar.show(error instanceof Error ? error.message : 'TV profile could not be restored.', 'WARNING');
+      this.snackbar.show(
+        error instanceof Error ? error.message : 'TV profile could not be restored.',
+        'WARNING',
+      );
     }
   }
 

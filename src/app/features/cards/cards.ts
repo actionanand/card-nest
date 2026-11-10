@@ -404,7 +404,7 @@ export class CardsPage {
     ]),
     expiryYear: new FormControl<number | null>(null, [
       Validators.required,
-      Validators.min(new Date().getFullYear()),
+      Validators.min(1900),
       Validators.max(2100),
     ]),
     statementDay: new FormControl(15, {
@@ -1087,6 +1087,7 @@ export class CardsPage {
     this.formError.set(null);
     this.form.markAllAsTouched();
     const value = this.form.getRawValue();
+    const existing = this.store.cards().find((card) => card.id === this.editingId());
     const expectedDigits = value.network === 'AMERICAN_EXPRESS' ? 5 : 4;
     const fullNumber = value.fullNumber.replace(/\D/g, '');
     const lastDigits = fullNumber ? fullNumber.slice(-expectedDigits) : value.lastDigits;
@@ -1130,7 +1131,8 @@ export class CardsPage {
       value.expiryMonth && value.expiryYear
         ? `${value.expiryYear}-${String(value.expiryMonth).padStart(2, '0')}`
         : '';
-    if (expiryIncomplete || (expiryDate && expiryMonth < currentMonth)) {
+    const expiryPassed = !!expiryDate && expiryMonth < currentMonth;
+    if (expiryIncomplete || (expiryPassed && (!existing || !!this.pendingAddOnRestore()))) {
       this.form.controls.expiryMonth.setErrors({ expiry: true });
       this.form.controls.expiryYear.setErrors({ expiry: true });
     }
@@ -1160,7 +1162,6 @@ export class CardsPage {
       );
       return;
     }
-    const existing = this.store.cards().find((card) => card.id === this.editingId());
     const timestamp = new Date().toISOString();
     const relationshipGroupId = linkedCard
       ? (linkedCard.relationshipGroupId ?? existing?.relationshipGroupId ?? crypto.randomUUID())

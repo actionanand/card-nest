@@ -7,6 +7,7 @@ import {
   ConsumerWallet,
   ConsumerWalletEvent,
   ConsumerWalletEventAllocation,
+  FastagPass,
   PaymentSource,
 } from '../../core/models/domain';
 import {
@@ -32,7 +33,9 @@ function setup(
   const intent = signal(setupIntent);
   const loadError = signal<string | null>(null);
   const activeWallets = computed(() => savedWallets().filter((wallet) => !wallet.archived));
-  const activeLoadDestinations = computed(() => savedWallets().filter((wallet) => !wallet.archived));
+  const activeLoadDestinations = computed(() =>
+    savedWallets().filter((wallet) => !wallet.archived),
+  );
   const archivedWallets = computed(() => savedWallets().filter((wallet) => wallet.archived));
   const balances = computed(() => new Map<string, number>());
   const consumerWalletService = {
@@ -145,7 +148,7 @@ function setup(
   });
   const fixture = TestBed.createComponent(WalletsPage);
   fixture.detectChanges();
-  return { fixture, consumerWalletService, paymentSources, transactions, snackbar };
+  return { fixture, consumerWalletService, paymentSources, transactions, snackbar, store };
 }
 
 describe('Wallets page Stage A', () => {
@@ -208,6 +211,7 @@ describe('Wallets page Stage A', () => {
         balanceMinor: 0,
       }),
       undefined,
+      false,
     );
     expect(page.fastagOpen()).toBe(false);
     fixture.destroy();
@@ -238,13 +242,47 @@ describe('Wallets page Stage A', () => {
     expect(consumerWalletService.events()).toEqual([]);
     const pass = savedSource.fastagPasses![0];
     await page.recordFastagCrossing(savedSource, pass);
-    expect(paymentSources().find((item) => item.id === source.id)?.fastagPasses?.[0].usedCrossings).toBe(11);
+    expect(
+      paymentSources().find((item) => item.id === source.id)?.fastagPasses?.[0].usedCrossings,
+    ).toBe(11);
     expect(consumerWalletService.events()).toEqual([]);
     await page.toggleFastagBalance(paymentSources().find((item) => item.id === source.id)!);
     expect(paymentSources().find((item) => item.id === source.id)).toMatchObject({
       noLimit: true,
       balanceMinor: 84500,
     });
+    fixture.destroy();
+  });
+  it('marks a future FASTAG pass Scheduled and blocks crossings before its start date', async () => {
+    const source: PaymentSource = {
+      id: 'fastag-scheduled-pass-source',
+      nickname: 'Synthetic FASTag',
+      kind: 'FASTAG',
+      vehicleNumber: 'FICT001',
+      noLimit: false,
+      balanceMinor: 0,
+      autoLoad: false,
+      archived: false,
+    };
+    const pass: FastagPass = {
+      id: 'scheduled-pass',
+      name: 'Synthetic upcoming pass',
+      amountMinor: 307500,
+      startDate: '2999-01-01',
+      endDate: '2999-12-31',
+      totalCrossings: 200,
+      usedCrossings: 0,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    const { fixture, store, paymentSources } = setup(true, null, {}, [source]);
+    const page = fixture.componentInstance;
+    expect(page.fastagPassStatus(pass)).toBe('SCHEDULED');
+    expect(page.fastagPassStatusLabel(pass)).toBe('Scheduled');
+    expect(page.fastagPassValidity(pass)).toMatch(/^Scheduled · starts in \d+ days$/);
+    await page.recordFastagCrossing(source, pass);
+    expect(store.updatePaymentSource).not.toHaveBeenCalled();
+    expect(paymentSources()[0]).toEqual(source);
     fixture.destroy();
   });
 

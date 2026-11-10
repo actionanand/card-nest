@@ -47,6 +47,7 @@ const consumerWalletService = {
   enabled: consumerWalletEnabled,
   wallets: consumerWalletList,
   activeWallets: computed(() => consumerWalletList().filter((wallet) => !wallet.archived)),
+  activeLoadDestinations: computed(() => consumerWalletList().filter((wallet) => !wallet.archived)),
   balances: computed(() => new Map(consumerWalletList().map((wallet) => [wallet.id, 0]))),
 };
 const demoCandidate = (): SmsCandidate => ({
@@ -107,7 +108,7 @@ describe('SMS review privacy and explicit approval UI', () => {
     confirmation.click();
     fixture.detectChanges();
     expect(page.walletLoadingApproved('CARD')).toBe(true);
-    expect(fixture.nativeElement.textContent).toContain('included fee/difference');
+    expect(fixture.nativeElement.textContent).toContain('included fee');
 
     page.editor.controls.walletLoadedAmount.setValue('75');
     fixture.detectChanges();

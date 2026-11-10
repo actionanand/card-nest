@@ -205,6 +205,9 @@ describe('Combine payments controls', () => {
     fixture.detectChanges();
     expect(store.removePaymentMember).not.toHaveBeenCalled();
     expect(fixture.nativeElement.textContent).toContain('Only this payment’s membership');
+    expect(
+      fixture.nativeElement.querySelector('app-profile-modal dialog app-confirmation-dialog'),
+    ).not.toBeNull();
     const cancelButton = [
       ...fixture.nativeElement.querySelectorAll('.confirmation-dialog button'),
     ].find(
@@ -222,7 +225,7 @@ describe('Combine payments controls', () => {
     ) as HTMLButtonElement;
     confirmRemove.click();
     await fixture.whenStable();
-    expect(store.removePaymentMember).toHaveBeenLastCalledWith('CARD:nov9');
+    expect(store.removePaymentMember).toHaveBeenLastCalledWith('CARD:nov9', false);
 
     (fixture.nativeElement.querySelector('.dissolve-group') as HTMLButtonElement).click();
     fixture.detectChanges();
@@ -296,7 +299,7 @@ describe('Combine payments controls', () => {
     ) as HTMLButtonElement;
     confirmRemove.click();
     await fixture.whenStable();
-    expect(store.removePaymentMember).toHaveBeenLastCalledWith('CARD:nov9');
+    expect(store.removePaymentMember).toHaveBeenLastCalledWith('CARD:nov9', false);
 
     const dissolve = [
       ...fixture.nativeElement.querySelectorAll('.dissolve-group'),

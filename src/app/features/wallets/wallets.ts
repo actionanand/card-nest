@@ -34,14 +34,16 @@ function dateOrdinal(value: string): number | null {
 
 function addIsoDays(value: string, days: number): string {
   const timestamp = dateOrdinal(value);
-  return timestamp === null ? '' : new Date((timestamp + days) * 86_400_000).toISOString().slice(0, 10);
+  return timestamp === null
+    ? ''
+    : new Date((timestamp + days) * 86_400_000).toISOString().slice(0, 10);
 }
 
 function addIsoMonths(value: string, months: number): string {
   const [year, month, day] = value.split('-').map(Number);
   const nextMonthIndex = year * 12 + month - 1 + months;
   const nextYear = Math.floor(nextMonthIndex / 12);
-  const nextMonth = nextMonthIndex % 12 + 1;
+  const nextMonth = (nextMonthIndex % 12) + 1;
   const nextDay = Math.min(day, daysInMonth(nextYear, nextMonth));
   return `${nextYear}-${String(nextMonth).padStart(2, '0')}-${String(nextDay).padStart(2, '0')}`;
 }
@@ -239,10 +241,16 @@ export class WalletsPage {
       validators: [Validators.required, Validators.maxLength(80)],
     }),
     amount: new FormControl('3075', { nonNullable: true, validators: [Validators.required] }),
-    startDate: new FormControl(indiaTodayIso(), { nonNullable: true, validators: [Validators.required] }),
+    startDate: new FormControl(indiaTodayIso(), {
+      nonNullable: true,
+      validators: [Validators.required],
+    }),
     durationDays: new FormControl('365', { nonNullable: true }),
     endDate: new FormControl('', { nonNullable: true }),
-    totalCrossings: new FormControl('200', { nonNullable: true, validators: [Validators.required] }),
+    totalCrossings: new FormControl('200', {
+      nonNullable: true,
+      validators: [Validators.required],
+    }),
     usedCrossings: new FormControl('0', { nonNullable: true, validators: [Validators.required] }),
     notes: new FormControl('', { nonNullable: true, validators: [Validators.maxLength(300)] }),
   });
@@ -336,12 +344,14 @@ export class WalletsPage {
     const normalized = this.fastagForm.controls.plate.value.replace(/[\s-]/g, '').toUpperCase();
     if (!normalized) return false;
     const editingId = this.editingFastagSourceId();
-    return this.store.paymentSources().some(
-      (source) =>
-        source.kind === 'FASTAG' &&
-        source.id !== editingId &&
-        source.vehicleNumber?.replace(/[\s-]/g, '').toUpperCase() === normalized,
-    );
+    return this.store
+      .paymentSources()
+      .some(
+        (source) =>
+          source.kind === 'FASTAG' &&
+          source.id !== editingId &&
+          source.vehicleNumber?.replace(/[\s-]/g, '').toUpperCase() === normalized,
+      );
   }
 
   openFastagActions(source: PaymentSource): void {
@@ -397,7 +407,12 @@ export class WalletsPage {
 
   setWalletActivityKind(wallet: ConsumerWallet, value: string): void {
     if (!this.walletActivityKindsFor(wallet).some((option) => option.value === value)) return;
-    if (value === 'PURCHASE' || value === 'MANUAL_CREDIT' || value === 'PROMOTIONAL_CREDIT' || value === 'BALANCE')
+    if (
+      value === 'PURCHASE' ||
+      value === 'MANUAL_CREDIT' ||
+      value === 'PROMOTIONAL_CREDIT' ||
+      value === 'BALANCE'
+    )
       this.walletActivityForm.controls.kind.setValue(value);
   }
 
@@ -458,27 +473,34 @@ export class WalletsPage {
       .find((source) => source.id === this.editingFastagSourceId() && source.kind === 'FASTAG');
     const vehicleNumber = value.plate.trim();
     const normalizedVehicle = vehicleNumber.replace(/[\s-]/g, '').toUpperCase();
-    const duplicateVehicle = this.store.paymentSources().some(
-      (source) =>
-        source.kind === 'FASTAG' &&
-        source.id !== editing?.id &&
-        source.vehicleNumber?.replace(/[\s-]/g, '').toUpperCase() === normalizedVehicle,
-    );
+    const duplicateVehicle = this.store
+      .paymentSources()
+      .some(
+        (source) =>
+          source.kind === 'FASTAG' &&
+          source.id !== editing?.id &&
+          source.vehicleNumber?.replace(/[\s-]/g, '').toUpperCase() === normalizedVehicle,
+      );
     if (duplicateVehicle && !value.confirmDuplicateVehicle) {
-      this.error.set('Another FASTag uses this vehicle. Confirm that both registrations are intentional.');
+      this.error.set(
+        'Another FASTag uses this vehicle. Confirm that both registrations are intentional.',
+      );
       return;
     }
     this.saving.set(true);
     this.error.set(null);
     try {
       if (editing) {
-        await this.store.updatePaymentSource({
-          ...editing,
-          nickname: value.name.trim(),
-          institution: value.provider.trim() || undefined,
-          vehicleNumber,
-          fastagId: value.fastagId.trim() || undefined,
-        }, value.confirmDuplicateVehicle);
+        await this.store.updatePaymentSource(
+          {
+            ...editing,
+            nickname: value.name.trim(),
+            institution: value.provider.trim() || undefined,
+            vehicleNumber,
+            fastagId: value.fastagId.trim() || undefined,
+          },
+          value.confirmDuplicateVehicle,
+        );
         await this.wallets.refreshWalletRecords();
       } else {
         await this.wallets.saveFastagWallet(
@@ -567,8 +589,7 @@ export class WalletsPage {
       if (action.kind === 'ARCHIVE_FASTAG') {
         await this.store.updatePaymentSource({ ...action.source, archived: true });
         await this.wallets.refreshWalletRecords();
-      }
-      else if (action.kind === 'ARCHIVE_CONSUMER')
+      } else if (action.kind === 'ARCHIVE_CONSUMER')
         await this.wallets.archiveWallet(action.wallet.id);
       else await this.wallets.deleteWalletIfEmpty(action.wallet.id);
       this.pendingAction.set(null);
@@ -658,7 +679,8 @@ export class WalletsPage {
       return;
     }
     const explicitEnd = this.fastagPassValidityMode() === 'END_DATE' ? value.endDate.trim() : '';
-    const durationDays = this.fastagPassValidityMode() === 'DAYS' ? Number(value.durationDays) : undefined;
+    const durationDays =
+      this.fastagPassValidityMode() === 'DAYS' ? Number(value.durationDays) : undefined;
     if (!explicitEnd && (!Number.isSafeInteger(durationDays) || (durationDays ?? 0) <= 0)) {
       this.error.set('Enter a positive duration or an explicit end date.');
       return;
@@ -706,9 +728,22 @@ export class WalletsPage {
     }
   }
 
-  fastagPassStatus(pass: FastagPass): 'ACTIVE' | 'EXPIRED' | 'EXHAUSTED' {
+  fastagPassStatus(pass: FastagPass): 'SCHEDULED' | 'ACTIVE' | 'EXPIRED' | 'EXHAUSTED' {
     if (pass.usedCrossings >= pass.totalCrossings) return 'EXHAUSTED';
-    return indiaTodayIso() > pass.endDate ? 'EXPIRED' : 'ACTIVE';
+    const today = indiaTodayIso();
+    if (today < pass.startDate) return 'SCHEDULED';
+    return today > pass.endDate ? 'EXPIRED' : 'ACTIVE';
+  }
+
+  fastagPassStatusLabel(pass: FastagPass): string {
+    const status = this.fastagPassStatus(pass);
+    return status === 'SCHEDULED'
+      ? 'Scheduled'
+      : status === 'ACTIVE'
+        ? 'Active'
+        : status === 'EXPIRED'
+          ? 'Expired'
+          : 'Exhausted';
   }
 
   fastagPassRemaining(pass: FastagPass): number {
@@ -718,13 +753,17 @@ export class WalletsPage {
   fastagPassValidity(pass: FastagPass): string {
     const today = indiaTodayIso();
     const todayOrdinal = dateOrdinal(today);
+    const startOrdinal = dateOrdinal(pass.startDate);
     const endOrdinal = dateOrdinal(pass.endDate);
     if (this.fastagPassStatus(pass) === 'EXHAUSTED') return 'Crossings exhausted';
+    if (startOrdinal !== null && todayOrdinal !== null && today < pass.startDate)
+      return `Scheduled · starts in ${startOrdinal - todayOrdinal} days`;
     if (todayOrdinal === null || endOrdinal === null || today > pass.endDate) return 'Expired';
     let months = Math.max(
       0,
       (Number(pass.endDate.slice(0, 4)) - Number(today.slice(0, 4))) * 12 +
-        Number(pass.endDate.slice(5, 7)) - Number(today.slice(5, 7)),
+        Number(pass.endDate.slice(5, 7)) -
+        Number(today.slice(5, 7)),
     );
     while (months > 0 && addIsoMonths(today, months) > pass.endDate) months--;
     while (addIsoMonths(today, months + 1) <= pass.endDate) months++;
@@ -748,7 +787,10 @@ export class WalletsPage {
       });
       this.snackbar.show('Pass crossing recorded. FASTag wallet balance was not changed.');
     } catch (error: unknown) {
-      this.snackbar.show(error instanceof Error ? error.message : 'Crossing could not be recorded.', 'WARNING');
+      this.snackbar.show(
+        error instanceof Error ? error.message : 'Crossing could not be recorded.',
+        'WARNING',
+      );
     }
   }
 

@@ -97,11 +97,7 @@
                   />
                   <span>No tracked balance</span>
                 </label>
-                <button
-                  class="btn"
-                  type="button"
-                  (click)="openFastagActions(source)"
-                >
+                <button class="btn" type="button" (click)="openFastagActions(source)">
                   Add transaction
                 </button>
                 <button class="btn" type="button" (click)="editFastag(source)">
@@ -137,21 +133,34 @@
               @if (source.fastagPasses?.length) {
                 <div class="fastag-pass-list">
                   @for (pass of source.fastagPasses; track pass.id) {
-                    <article class="fastag-pass" [class.expired]="fastagPassStatus(pass) !== 'ACTIVE'">
+                    <article
+                      class="fastag-pass"
+                      [class.expired]="fastagPassStatus(pass) !== 'ACTIVE'"
+                    >
                       <div>
                         <strong>{{ pass.name }}</strong>
-                        <small>{{ money(pass.amountMinor) }} · {{ pass.startDate }} to {{ pass.endDate }}</small>
+                        <small
+                          >{{ money(pass.amountMinor) }} · {{ pass.startDate }} to
+                          {{ pass.endDate }}</small
+                        >
                         <small>Validity: {{ fastagPassValidity(pass) }}</small>
                         <small>
                           Crossings used: {{ pass.usedCrossings }}/{{ pass.totalCrossings }} ·
-                          Remaining: {{ fastagPassRemaining(pass) }} · {{ fastagPassStatus(pass) }}
+                          Remaining: {{ fastagPassRemaining(pass) }} ·
+                          {{ fastagPassStatusLabel(pass) }}
                         </small>
-                        @if (pass.notes) { <small>{{ pass.notes }}</small> }
+                        @if (pass.notes) {
+                          <small>{{ pass.notes }}</small>
+                        }
                       </div>
                       @if (!source.archived) {
                         <div class="fastag-pass-actions">
                           @if (fastagPassStatus(pass) === 'ACTIVE') {
-                            <button class="btn" type="button" (click)="recordFastagCrossing(source, pass)">
+                            <button
+                              class="btn"
+                              type="button"
+                              (click)="recordFastagCrossing(source, pass)"
+                            >
                               Record toll crossing
                             </button>
                           }
@@ -164,7 +173,9 @@
                   }
                 </div>
               } @else {
-                <p class="empty-state">No pass recorded. Add a pass to track validity and crossings.</p>
+                <p class="empty-state">
+                  No pass recorded. Add a pass to track validity and crossings.
+                </p>
               }
             </section>
           </article>
@@ -188,7 +199,12 @@
         <button class="btn" type="button" [disabled]="saving()" (click)="startFastagLoad()">
           <app-icon name="incoming" /> Load FASTag / top-up
         </button>
-        <button class="btn" type="button" [disabled]="saving()" (click)="startFastagBalance(source)">
+        <button
+          class="btn"
+          type="button"
+          [disabled]="saving()"
+          (click)="startFastagBalance(source)"
+        >
           <app-icon name="verified" /> Set verified balance
         </button>
       </div>
@@ -203,18 +219,45 @@
     >
       <form class="wallet-form" [formGroup]="fastagPassForm" (submit)="saveFastagPass($event)">
         <label>Pass name / type<input formControlName="name" maxlength="80" required /></label>
-        <label>Pass amount (₹)<input type="number" min="0.01" step="0.01" formControlName="amount" inputmode="decimal" required /></label>
+        <label
+          >Pass amount (₹)<input
+            type="number"
+            min="0.01"
+            step="0.01"
+            formControlName="amount"
+            inputmode="decimal"
+            required
+        /></label>
         <app-date-picker
           label="Start date"
           [value]="fastagPassForm.controls.startDate.value"
           (valueChange)="fastagPassForm.controls.startDate.setValue($event)"
         />
         <div class="validity-mode" role="group" aria-label="FASTag pass validity mode">
-          <button type="button" [class.active]="fastagPassValidityMode() === 'DAYS'" (click)="fastagPassValidityMode.set('DAYS')">Duration</button>
-          <button type="button" [class.active]="fastagPassValidityMode() === 'END_DATE'" (click)="fastagPassValidityMode.set('END_DATE')">End date</button>
+          <button
+            type="button"
+            [class.active]="fastagPassValidityMode() === 'DAYS'"
+            (click)="fastagPassValidityMode.set('DAYS')"
+          >
+            Duration
+          </button>
+          <button
+            type="button"
+            [class.active]="fastagPassValidityMode() === 'END_DATE'"
+            (click)="fastagPassValidityMode.set('END_DATE')"
+          >
+            End date
+          </button>
         </div>
         @if (fastagPassValidityMode() === 'DAYS') {
-          <label>Duration in days<input type="number" min="1" step="1" formControlName="durationDays" required /></label>
+          <label
+            >Duration in days<input
+              type="number"
+              min="1"
+              step="1"
+              formControlName="durationDays"
+              required
+          /></label>
         } @else {
           <app-date-picker
             label="End date"
@@ -222,12 +265,30 @@
             (valueChange)="fastagPassForm.controls.endDate.setValue($event)"
           />
         }
-        <label>Total allowed crossings<input type="number" min="1" step="1" formControlName="totalCrossings" required /></label>
-        <label>Used crossings<input type="number" min="0" step="1" formControlName="usedCrossings" required /></label>
+        <label
+          >Total allowed crossings<input
+            type="number"
+            min="1"
+            step="1"
+            formControlName="totalCrossings"
+            required
+        /></label>
+        <label
+          >Used crossings<input
+            type="number"
+            min="0"
+            step="1"
+            formControlName="usedCrossings"
+            required
+        /></label>
         <label>Notes (optional)<textarea formControlName="notes" maxlength="300"></textarea></label>
-        @if (error(); as message) { <p class="form-error" role="alert">{{ message }}</p> }
+        @if (error(); as message) {
+          <p class="form-error" role="alert">{{ message }}</p>
+        }
         <div class="modal-actions">
-          <button class="btn" type="button" [disabled]="saving()" (click)="closeFastagPass()">Cancel</button>
+          <button class="btn" type="button" [disabled]="saving()" (click)="closeFastagPass()">
+            Cancel
+          </button>
           <button class="btn btn-primary" type="submit" [disabled]="saving()">Save pass</button>
         </div>
       </form>
@@ -362,11 +423,15 @@
       <label>Wallet name<input formControlName="name" maxlength="80" required /></label>
       <label>Provider<input formControlName="provider" maxlength="80" /></label>
       <label>Vehicle registration<input formControlName="plate" maxlength="16" required /></label>
-      <label>FASTag ID (optional)<input formControlName="fastagId" inputmode="numeric" maxlength="32" /></label>
+      <label
+        >FASTag ID (optional)<input formControlName="fastagId" inputmode="numeric" maxlength="32"
+      /></label>
       @if (duplicateFastagVehicle()) {
         <label class="fastag-duplicate-confirm">
           <input type="checkbox" formControlName="confirmDuplicateVehicle" />
-          <span>This vehicle has another FASTag profile. Keep both registrations intentionally.</span>
+          <span
+            >This vehicle has another FASTag profile. Keep both registrations intentionally.</span
+          >
         </label>
       }
       @if (error(); as message) {
@@ -470,7 +535,10 @@
 
 @if (walletActivityWallet(); as wallet) {
   <app-profile-modal
-    [title]="(wallet.fastagSourceId ? 'Record FASTag activity · ' : 'Record activity · ') + walletName(wallet)"
+    [title]="
+      (wallet.fastagSourceId ? 'Record FASTag activity · ' : 'Record activity · ') +
+      walletName(wallet)
+    "
     [busy]="saving()"
     (closed)="closeWalletActivity()"
   >
@@ -509,7 +577,9 @@
         <label>Time (optional)<input formControlName="eventTime" type="time" /></label>
         @if (walletActivityPurchasePreview(); as preview) {
           <fieldset class="wallet-load-summary">
-            <legend>{{ wallet.fastagSourceId ? 'Review toll payment' : 'Review wallet purchase' }}</legend>
+            <legend>
+              {{ wallet.fastagSourceId ? 'Review toll payment' : 'Review wallet purchase' }}
+            </legend>
             <dl>
               <div>
                 <dt>Balance before</dt>
@@ -547,9 +617,18 @@
         <fieldset class="wallet-load-summary">
           <legend>Review verified balance</legend>
           <dl>
-            <div><dt>Previous balance</dt><dd>{{ money(preview.previousMinor) }}</dd></div>
-            <div><dt>New balance</dt><dd>{{ money(preview.nextMinor) }}</dd></div>
-            <div><dt>Adjustment</dt><dd>{{ money(preview.deltaMinor) }}</dd></div>
+            <div>
+              <dt>Previous balance</dt>
+              <dd>{{ money(preview.previousMinor) }}</dd>
+            </div>
+            <div>
+              <dt>New balance</dt>
+              <dd>{{ money(preview.nextMinor) }}</dd>
+            </div>
+            <div>
+              <dt>Adjustment</dt>
+              <dd>{{ money(preview.deltaMinor) }}</dd>
+            </div>
           </dl>
           <p>The adjustment changes wallet balance only. It is not income or an expense.</p>
           <label class="wallet-approval">

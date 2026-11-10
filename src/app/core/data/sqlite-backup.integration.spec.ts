@@ -60,7 +60,6 @@ vi.mock('@capacitor-community/sqlite', () => ({
     importFromJson: vi.fn(),
   },
 }));
-
 /** Native-plugin contract backed by real SQLite, including transactions and foreign keys. */
 describe('Durable first-run data, additive read migration and private portable backups', () => {
   let sql: DatabaseSyncType;
@@ -145,6 +144,7 @@ describe('Durable first-run data, additive read migration and private portable b
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     });
+    let expectedBalance = 0;
     for (const [id, debit, credit] of [
       ['fastag-equal', 100000, 100000],
       ['fastag-promo', 30000, 35000],
@@ -154,6 +154,9 @@ describe('Durable first-run data, additive read migration and private portable b
         walletId: fastag.id,
         loadedAmountMinor: credit,
       });
+      expectedBalance += credit;
+      await wallets.reloadFinancialHistory();
+      expect(wallets.balances().get(fastag.id)).toBe(expectedBalance);
     }
     const purchaseInput = {
       id: 'fastag-toll-info',
@@ -166,6 +169,8 @@ describe('Durable first-run data, additive read migration and private portable b
     await recordApprovedWalletPurchase(wallets, purchaseInput);
     expect(wallets.balances().get(fastag.id)).toBe(145500);
     expect(sumConsolidatedSpending(store.consolidatedSpending())).toBe(160000);
+    await wallets.reloadFinancialHistory();
+    expect(wallets.balances().get(fastag.id)).toBe(145500);
     expect(
       rows(
         'SELECT event_type,amount_minor,balance_delta_minor,fee_minor FROM consumer_wallet_events WHERE wallet_id=? ORDER BY event_type,amount_minor',
@@ -180,11 +185,16 @@ describe('Durable first-run data, additive read migration and private portable b
       },
       {
         event_type: 'FUNDED_LOAD',
+        amount_minor: 30000,
+        balance_delta_minor: 30000,
+        fee_minor: 0,
+      },
+      {
+        event_type: 'FUNDED_LOAD',
         amount_minor: 100000,
         balance_delta_minor: 100000,
         fee_minor: 0,
       },
-      { event_type: 'FUNDED_LOAD', amount_minor: 30000, balance_delta_minor: 30000, fee_minor: 0 },
       {
         event_type: 'PROMOTIONAL_CREDIT',
         amount_minor: 5000,
@@ -196,7 +206,10 @@ describe('Durable first-run data, additive read migration and private portable b
   });
   it('encrypts and restores FASTAG pass identity and TV recharge history', async () => {
     await database.initialise();
-    await TestBed.inject(CardNestStore).initialisePreferences();
+    const store = TestBed.inject(CardNestStore);
+    await store.initialisePreferences();
+    const wallets = TestBed.inject(ConsumerWalletService);
+    await wallets.initialise();
     const source: PaymentSource = {
       id: 'backup-fastag',
       nickname: 'Synthetic FASTag',
@@ -221,10 +234,10 @@ describe('Durable first-run data, additive read migration and private portable b
       autoLoad: false,
       archived: false,
     };
-    await database.run('INSERT INTO app_preferences(key,encrypted_value) VALUES(?,?)', [
-      'payment_sources',
-      JSON.stringify([source]),
-    ]);
+    await store.addWallet(source);
+    await wallets.initialise();
+    expect(wallets.fastagWallets()).toHaveLength(1);
+    expect(wallets.balances().get(source.id) ?? 0).toBe(0);
     const tvProfile = {
       id: 'backup-tv-profile',
       provider: 'OTHER',
@@ -297,7 +310,10 @@ describe('Durable first-run data, additive read migration and private portable b
       const [savedSources] = await database.query<{ encrypted_value: string }>(
         "SELECT encrypted_value FROM app_preferences WHERE key='payment_sources'",
       );
-      expect(JSON.parse(savedSources.encrypted_value)[0]).toMatchObject({
+      const restoredFastag = (JSON.parse(savedSources.encrypted_value) as PaymentSource[]).find(
+        (savedSource) => savedSource.id === source.id,
+      );
+      expect(restoredFastag).toMatchObject({
         fastagId: source.fastagId,
         fastagPasses: [expect.objectContaining({ id: 'backup-pass', usedCrossings: 10 })],
       });
@@ -3095,6 +3111,12 @@ describe('Durable first-run data, additive read migration and private portable b
       archived: false,
     };
     await store.addWallet(fastag);
+    await wallets.initialise();
+    expect(wallets.fastagWallets()).toHaveLength(1);
+    expect(wallets.balances().get(fastag.id)).toBe(76500);
+    await wallets.initialise();
+    expect(wallets.fastagWallets()).toHaveLength(1);
+    expect(wallets.balances().get(fastag.id)).toBe(76500);
 
     const eventRows = [
       {

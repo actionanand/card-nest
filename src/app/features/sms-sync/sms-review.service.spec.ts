@@ -64,7 +64,7 @@ describe('SMS approved import integrity', () => {
   const consumerWalletService = {
     events: signal<readonly ConsumerWalletEvent[]>([]),
     allocations: signal<readonly []>([]),
-    wallets: signal<readonly []>([]),
+    wallets: signal<readonly ConsumerWallet[]>([]),
     enabled: signal(false),
     balances: signal(new Map<string, number>()),
     reloadFinancialHistory: vi.fn().mockResolvedValue(undefined),
@@ -227,6 +227,7 @@ describe('SMS approved import integrity', () => {
     return { id: item.id, kind: item.kind, eventAt: item.eventAt, state: 'PENDING', item };
   }
   beforeEach(() => {
+    consumerWalletService.reloadFinancialHistory.mockClear();
     sql = new DatabaseSync(':memory:');
     queue = Promise.resolve();
     sql.exec('PRAGMA foreign_keys=ON');
@@ -487,7 +488,7 @@ describe('SMS approved import integrity', () => {
     expect(count('card_transactions')).toBe(0);
     expect(count('consumer_wallet_events')).toBe(3);
     expect(count('sms_reconciliation')).toBe(2);
-    expect(consumerWalletService.reloadFinancialHistory).toHaveBeenCalledOnce();
+    expect(consumerWalletService.reloadFinancialHistory).toHaveBeenCalledTimes(2);
   });
 
   it('approves a Bank SMS Wallet Loading once with the full debit, loaded principal and included fee', async () => {
@@ -779,23 +780,54 @@ describe('SMS approved import integrity', () => {
       source_transaction_id: debit.id,
     });
   });
-  it('rejects unapproved or over-debit card Wallet Loading before inserting any transaction', async () => {
+  it('rejects unapproved card Wallet Loading and records approved promotional excess once', async () => {
     const candidate = stage(evidence());
+    const wallet: ConsumerWallet = {
+      id: 'sms-card-load-wallet',
+      providerId: 'amazon-pay',
+      kind: 'STANDARD',
+      archived: false,
+      createdAt: 'before',
+      updatedAt: 'before',
+    };
+    consumerWalletService.enabled.set(true);
+    consumerWalletService.wallets.set([wallet]);
+    run(
+      'INSERT INTO consumer_wallets(id,provider_id,wallet_kind,payload,created_at,updated_at) VALUES(?,?,?,?,?,?)',
+      [
+        wallet.id,
+        wallet.providerId,
+        wallet.kind,
+        JSON.stringify(wallet),
+        wallet.createdAt,
+        wallet.updatedAt,
+      ],
+    );
+    run('INSERT INTO app_preferences(key,encrypted_value) VALUES(?,?)', [
+      'consumer_wallets_feature_state',
+      'ENABLED',
+    ]);
     await expect(
       service.approve(candidate, card.id, 45000, 'Wallet top-up', '', 'PENDING', false, '', 0, {
-        walletLoading: { walletId: 'wallet', loadedAmountMinor: 30000 },
+        walletLoading: { walletId: wallet.id, loadedAmountMinor: 30000 },
         walletLoadingApproved: false,
-      }),
-    ).rejects.toThrow('approve Wallet Loading');
-    await expect(
-      service.approve(candidate, card.id, 45000, 'Wallet top-up', '', 'PENDING', false, '', 0, {
-        walletLoading: { walletId: 'wallet', loadedAmountMinor: 45001 },
-        walletLoadingApproved: true,
       }),
     ).rejects.toThrow('approve Wallet Loading');
     expect(count('card_transactions')).toBe(0);
     expect(count('consumer_wallet_events')).toBe(0);
-    expect(count('sms_reconciliation')).toBe(0);
+    await service.approve(candidate, card.id, 45000, 'Wallet top-up', '', 'PENDING', false, '', 0, {
+      walletLoading: { walletId: wallet.id, loadedAmountMinor: 45001 },
+      walletLoadingApproved: true,
+    });
+    expect(count('card_transactions')).toBe(1);
+    expect(count('consumer_wallet_events')).toBe(2);
+    expect(
+      rows('SELECT event_type,amount_minor FROM consumer_wallet_events ORDER BY event_type'),
+    ).toEqual([
+      { event_type: 'FUNDED_LOAD', amount_minor: 45000 },
+      { event_type: 'PROMOTIONAL_CREDIT', amount_minor: 1 },
+    ]);
+    expect(count('sms_reconciliation')).toBe(1);
   });
   it('dismisses durably with exact Undo and guards against concurrent resolution and repeated Undo', async () => {
     const candidate = stage(evidence());
@@ -2810,9 +2842,74 @@ describe('SMS approved import integrity', () => {
       }),
     );
     await expect(service.approve(toll, 'tag-a', 9200, 'Toll')).rejects.toThrow('vehicle');
+    await expect(service.approve(toll, 'tag-b', 9200, 'Toll')).rejects.toThrow(
+      'FASTag wallet ledger is unavailable',
+    );
+    const linkedWallets: ConsumerWallet[] = wallets
+      .filter((source) => source.kind === 'FASTAG')
+      .map((source) => ({
+        id: source.id,
+        providerId: 'fastag',
+        kind: 'STANDARD',
+        nickname: source.nickname,
+        fastagSourceId: source.id,
+        vehicleNumber: source.vehicleNumber,
+        fastagId: source.fastagId,
+        fastagBalanceCutoverAt: '2026-10-17T00:00:00Z',
+        archived: false,
+        createdAt: '2026-10-17T00:00:00Z',
+        updatedAt: '2026-10-17T00:00:00Z',
+      }));
+    consumerWalletService.wallets.set(linkedWallets);
+    for (const [index, wallet] of linkedWallets.entries()) {
+      const balanceMinor = wallets[index + 1].balanceMinor ?? 0;
+      const baselineId = `historical-fastag-baseline:${wallet.fastagSourceId}`;
+      const baseline: ConsumerWalletEvent = {
+        id: baselineId,
+        walletId: wallet.id,
+        eventType: 'MANUAL_CREDIT',
+        eventDate: '2026-10-17',
+        amountMinor: balanceMinor,
+        balanceDeltaMinor: balanceMinor,
+        memo: 'Existing FASTag balance baseline',
+        createdAt: '2026-10-17T00:00:00Z',
+        updatedAt: '2026-10-17T00:00:00Z',
+      };
+      run(
+        'INSERT INTO consumer_wallets(id,provider_id,wallet_kind,payload,created_at,updated_at) VALUES(?,?,?,?,?,?)',
+        [
+          wallet.id,
+          wallet.providerId,
+          wallet.kind,
+          JSON.stringify(wallet),
+          wallet.createdAt,
+          wallet.updatedAt,
+        ],
+      );
+      run(
+        'INSERT INTO consumer_wallet_events(id,wallet_id,event_type,event_date,amount_minor,balance_delta_minor,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)',
+        [
+          baseline.id,
+          baseline.walletId,
+          baseline.eventType,
+          baseline.eventDate,
+          baseline.amountMinor,
+          baseline.balanceDeltaMinor,
+          JSON.stringify(baseline),
+          baseline.createdAt,
+          baseline.updatedAt,
+        ],
+      );
+    }
     await service.approve(toll, 'tag-b', 9200, 'Toll');
     expect(sources()[1].balanceMinor).toBe(10000);
-    expect(sources()[2].balanceMinor).toBe(10800);
+    expect(sources()[2].balanceMinor).toBe(20000);
+    expect(
+      rows<{ balance: number }>(
+        'SELECT SUM(balance_delta_minor) AS balance FROM consumer_wallet_events WHERE wallet_id=?',
+        ['tag-b'],
+      )[0].balance,
+    ).toBe(10800);
   });
   it('equal merchant and amount in different months remain distinct purchases', async () => {
     await service.approve(stage(evidence()), card.id, 45000, 'DEMO recurring');

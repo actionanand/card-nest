@@ -5,7 +5,14 @@ import { UtilitiesService } from './utilities.service';
 import { WhatsAppService } from './whatsapp.service';
 import { SnackbarService } from '../../core/services/snackbar.service';
 import { addCalendarDays, mobileActivitySummary, lpgUsageSummary } from './utilities-calculations';
-import { LpgEvent, LpgProfile, MobileProfile, MobileRecharge } from './utilities-model';
+import {
+  LpgEvent,
+  LpgProfile,
+  MobileProfile,
+  MobileRecharge,
+  TvProfile,
+  TvRecharge,
+} from './utilities-model';
 import { ProfileModal } from '../../shared/profile-modal';
 import { By } from '@angular/platform-browser';
 import { readFileSync } from 'node:fs';
@@ -16,6 +23,12 @@ describe('Indian Utilities page', () => {
   const lpg = signal<readonly LpgProfile[]>([]);
   const lpgEvents = signal<readonly LpgEvent[]>([]);
   const recharges = signal<readonly MobileRecharge[]>([]);
+  const tvProfiles = signal<readonly TvProfile[]>([]);
+  const tvRecharges = signal<readonly TvRecharge[]>([]);
+  const tvProviderOptions = [
+    { value: 'SUN', label: 'Sun' },
+    { value: 'OTHER', label: 'Other' },
+  ];
   const mock = {
     deleteMobileProfile: vi.fn().mockResolvedValue(undefined),
     deleteRecharge: vi.fn().mockResolvedValue(undefined),
@@ -32,6 +45,10 @@ describe('Indian Utilities page', () => {
     mobileRecharges: recharges,
     lpgProfiles: lpg,
     lpgEvents,
+    tvProfiles,
+    tvRechargesFor: (profileId: string) =>
+      tvRecharges().filter((row) => row.profileId === profileId),
+    tvProviderOptions,
     operatorOptions: [
       { value: 'BSNL', label: 'BSNL' },
       { value: 'JIO', label: 'JIO' },
@@ -106,6 +123,8 @@ describe('Indian Utilities page', () => {
     mock.deleteRecharge.mockReset().mockResolvedValue(undefined);
     mock.setMobileArchived.mockClear();
     recharges.set([]);
+    tvProfiles.set([]);
+    tvRecharges.set([]);
     state.set({ showIndianUtilities: true, utilityReminders: false });
     mobiles.set([]);
     lpg.set([]);
@@ -149,6 +168,64 @@ describe('Indian Utilities page', () => {
     fixture.detectChanges();
     expect(fixture.nativeElement.textContent).toContain('PNG · Coming Soon');
     expect(fixture.nativeElement.textContent).not.toContain('Add LPG connection');
+    fixture.destroy();
+  });
+  it('prefers the active TV recharge over a future one and reports scheduled, expired and same-day states', async () => {
+    const fixture = TestBed.createComponent(UtilitiesPage);
+    const page = fixture.componentInstance;
+    const profile: TvProfile = {
+      id: 'synthetic-tv',
+      kind: 'TV',
+      displayName: 'Living room',
+      provider: 'SUN',
+      archived: false,
+      createdAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+    };
+    const today = page.today;
+    const current: TvRecharge = {
+      id: 'tv-current',
+      profileId: profile.id,
+      amountMinor: 25000,
+      startDate: addCalendarDays(today, -10),
+      endDate: addCalendarDays(today, 19),
+      durationDays: 30,
+      createdAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+    };
+    const scheduled: TvRecharge = {
+      ...current,
+      id: 'tv-scheduled',
+      startDate: addCalendarDays(today, 20),
+      endDate: addCalendarDays(today, 50),
+      durationDays: 31,
+    };
+    tvProfiles.set([profile]);
+    tvRecharges.set([scheduled, current]);
+    fixture.detectChanges();
+    page.setSection('TV');
+    fixture.detectChanges();
+    expect(page.currentTvRecharge(profile)?.id).toBe(current.id);
+    expect(page.scheduledTvRecharge(profile)?.id).toBe(scheduled.id);
+    expect(page.latestTvRecharge(profile)?.id).toBe(current.id);
+    expect(page.tvProfileStatus(profile)).toBe('Active');
+    expect(page.tvRechargePeriod(profile)).toBe('19 days remaining');
+    expect(fixture.nativeElement.textContent).toContain(
+      `Next recharge scheduled: ${scheduled.startDate}`,
+    );
+
+    tvRecharges.set([scheduled]);
+    expect(page.tvProfileStatus(profile)).toBe('Scheduled');
+    expect(page.tvRechargePeriod(profile)).toContain('Scheduled · starts in 20 days');
+
+    tvRecharges.set([{ ...current, id: 'tv-same-day', endDate: today }]);
+    expect(page.tvProfileStatus(profile)).toBe('Active');
+    expect(page.tvRechargePeriod(profile)).toBe('0 days remaining');
+
+    tvRecharges.set([{ ...current, id: 'tv-expired', endDate: addCalendarDays(today, -1) }]);
+    expect(page.tvProfileStatus(profile)).toBe('Expired');
+    expect(page.tvRechargePeriod(profile)).toBe('Expired 1 days ago');
+    expect(addCalendarDays('2026-12-31', 1)).toBe('2027-01-01');
     fixture.destroy();
   });
   it('requires confirmation for recharge and cylinder deletion, preserves Cancel and reports persistence failure', async () => {

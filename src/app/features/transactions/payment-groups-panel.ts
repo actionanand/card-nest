@@ -253,24 +253,24 @@ function calendarDayOrdinal(value: string): number | null {
           }
         }
       </div>
+      @if (destructiveAction(); as action) {
+        <app-confirmation-dialog
+          [title]="
+            action.kind === 'DISSOLVE' ? 'Dissolve payment group?' : 'Remove payment from group?'
+          "
+          [message]="
+            action.kind === 'DISSOLVE'
+              ? 'The group relationship will be deleted. All original payments and refunds remain recorded; no financial balance or transaction will be deleted.'
+              : 'Only this payment’s membership in the group will be removed. The original transaction and its financial history remain in the ledger.'
+          "
+          [confirmLabel]="action.kind === 'DISSOLVE' ? 'Dissolve group' : 'Remove payment'"
+          [busy]="busy()"
+          [error]="error() || null"
+          (confirmed)="confirmDestructiveAction()"
+          (cancelled)="cancelDestructiveAction()"
+        />
+      }
     </app-profile-modal>
-    @if (destructiveAction(); as action) {
-      <app-confirmation-dialog
-        [title]="
-          action.kind === 'DISSOLVE' ? 'Dissolve payment group?' : 'Remove payment from group?'
-        "
-        [message]="
-          action.kind === 'DISSOLVE'
-            ? 'The group relationship will be deleted. All original payments and refunds remain recorded; no financial balance or transaction will be deleted.'
-            : 'Only this payment’s membership in the group will be removed. The original transaction and its financial history remain in the ledger.'
-        "
-        [confirmLabel]="action.kind === 'DISSOLVE' ? 'Dissolve group' : 'Remove payment'"
-        [busy]="busy()"
-        [error]="error() || null"
-        (confirmed)="confirmDestructiveAction()"
-        (cancelled)="cancelDestructiveAction()"
-      />
-    }
   `,
   styles: `
     :host {

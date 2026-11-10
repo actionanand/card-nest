@@ -2328,7 +2328,7 @@ export class SmsReviewService {
       return { transaction, sources, statement, balanceAdjustment, fundingTransfer };
     });
     if (result && 'fastagEvent' in result) {
-      await this.consumerWallets.reloadFinancialHistory();
+      if (result.fastagEvent === 'RECORDED') await this.consumerWallets.reloadFinancialHistory();
     } else if (result) {
       this.store.acceptCommittedImport(result.transaction, result.sources);
       if (edits.walletLoading) this.walletHistoryRefreshNeeded.set(true);

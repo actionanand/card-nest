@@ -203,7 +203,7 @@ describe('Logical payment groups with real SQLite constraints', () => {
     const datedGroup = await atomic(() =>
       attachPaymentGroup(tx, [datedCard.id], 'dated-wallet-purchase'),
     );
-    const [withRefund] = await readPaymentGroups(tx);
+    const withRefund = (await readPaymentGroups(tx)).find((group) => group.id === datedGroup)!;
     expect(withRefund.id).toBe(datedGroup);
     expect(withRefund.walletMembers).toEqual([
       expect.objectContaining({
