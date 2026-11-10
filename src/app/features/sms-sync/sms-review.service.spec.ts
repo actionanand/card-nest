@@ -13,6 +13,7 @@ import { AppLockService } from '../../core/services/app-lock.service';
 import {
   CardTransaction,
   CreditCard,
+  ConsumerWallet,
   ConsumerWalletEvent,
   PaymentSource,
   WalletLoadingDetails,
@@ -83,29 +84,6 @@ describe('SMS approved import integrity', () => {
           ...items.filter((item) => item.id !== transaction.id),
         ]);
       sources.set(wallets);
-    },
-    saveSmsFastagFunding: async (
-      tx: DatabaseSession,
-      transaction: CardTransaction,
-      input: WalletLoadingDetails,
-    ) => {
-      const now = new Date().toISOString();
-      await tx.run(
-        'INSERT INTO card_transactions(id,card_id,category_id,type,amount_minor,currency_code,transaction_date,payload,created_at,updated_at) VALUES(?,NULL,?,?,?,?,?,?,?,?)',
-        [
-          transaction.id,
-          transaction.categoryId,
-          transaction.type,
-          transaction.amountMinor,
-          transaction.currencyCode,
-          transaction.transactionDate,
-          JSON.stringify(transaction),
-          transaction.createdAt,
-          transaction.updatedAt,
-        ],
-      );
-      await store.saveApprovedWalletLoad(tx, transaction, input);
-      return { transaction, sources: sources() };
     },
     saveSmsFastagFunding: async (
       tx: DatabaseSession,

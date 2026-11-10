@@ -653,7 +653,7 @@ export class SqliteDatabase {
     }
     const activeWallets = (backupTables.get('consumer_wallets') ?? []).filter((row) => {
       const active = row['archived'] === 0 || row['archived'] === '0' || row['archived'] === false;
-      let isFastag = false;
+      let isFastag: boolean;
       try {
         isFastag = !!(JSON.parse(String(row['payload'] ?? '{}')) as { fastagSourceId?: string })
           .fastagSourceId;
