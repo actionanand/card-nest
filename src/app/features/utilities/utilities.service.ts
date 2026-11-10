@@ -13,6 +13,7 @@ import {
 } from './data/mobile-plan-types';
 import {
   addCalendarDays,
+  calendarDaysBetween,
   lpgUsageSummary,
   mobileVoiceCoveragePeriods,
   mobileActivitySummary,
@@ -25,6 +26,9 @@ import {
   LpgProfile,
   MobileProfile,
   MobileRecharge,
+  TvProfile,
+  TvProvider,
+  TvRecharge,
   UtilitySettings,
 } from './utilities-model';
 
@@ -118,6 +122,8 @@ export class UtilitiesService {
   readonly mobileRecharges = signal<readonly MobileRecharge[]>([]);
   readonly lpgProfiles = signal<readonly LpgProfile[]>([]);
   readonly lpgEvents = signal<readonly LpgEvent[]>([]);
+  readonly tvProfiles = signal<readonly TvProfile[]>([]);
+  readonly tvRecharges = signal<readonly TvRecharge[]>([]);
   readonly operatorOptions: readonly AppSelectOption[] = MOBILE_OPERATORS.map(
     ({ value, label }) => ({ value, label }),
   );
@@ -130,6 +136,15 @@ export class UtilitiesService {
   readonly lpgProviderOptions: readonly AppSelectOption[] = LPG_PROVIDERS.map(
     ({ value, label }) => ({ value, label }),
   );
+  readonly tvProviderOptions: readonly AppSelectOption[] = [
+    { value: 'SUN', label: 'Sun' },
+    { value: 'TATA_PLAY', label: 'Tata Play' },
+    { value: 'AIRTEL', label: 'Airtel' },
+    { value: 'VIDEOCON_D2H', label: 'Videocon d2h' },
+    { value: 'DISH_TV', label: 'Dish TV' },
+    { value: 'JIO_DTH', label: 'Jio DTH' },
+    { value: 'OTHER', label: 'Other' },
+  ];
   readonly cylinderOptions: readonly AppSelectOption[] = [
     { value: 'SMALL', label: 'Small' },
     { value: 'NORMAL', label: 'Normal' },
@@ -233,6 +248,109 @@ export class UtilitiesService {
 
   eventsFor(profileId: string): readonly LpgEvent[] {
     return this.lpgEvents().filter((item) => item.profileId === profileId);
+  }
+  tvRechargesFor(profileId: string): readonly TvRecharge[] {
+    return this.tvRecharges().filter((item) => item.profileId === profileId);
+  }
+  async saveTvProfile(input: {
+    id?: string;
+    displayName: string;
+    provider: TvProvider;
+    otherProviderName?: string;
+    customerId?: string;
+    mobileNumber?: string;
+  }): Promise<TvProfile> {
+    const displayName = input.displayName.trim();
+    const otherProviderName = input.otherProviderName?.trim();
+    const customerId = input.customerId?.trim();
+    if (!displayName || displayName.length > 80)
+      throw new Error('Enter a profile name of up to 80 characters.');
+    if (!this.tvProviderOptions.some((item) => item.value === input.provider))
+      throw new Error('Choose a supported TV provider.');
+    if (input.provider === 'OTHER' && !otherProviderName)
+      throw new Error('Enter the TV provider name.');
+    if ((otherProviderName?.length ?? 0) > 80 || (customerId?.length ?? 0) > 80)
+      throw new Error('Provider and customer IDs must be 80 characters or fewer.');
+    const mobileNumber = normalizeIndianMobileNumber(input.mobileNumber ?? '');
+    const timestamp = new Date().toISOString();
+    const existing = input.id
+      ? this.tvProfiles().find((item) => item.id === input.id)
+      : undefined;
+    if (input.id && !existing) throw new Error('TV profile not found.');
+    const profile: TvProfile = {
+      id: existing?.id ?? crypto.randomUUID(),
+      kind: 'TV',
+      displayName,
+      provider: input.provider,
+      otherProviderName: input.provider === 'OTHER' ? otherProviderName : undefined,
+      customerId: customerId || undefined,
+      mobileNumber,
+      archived: existing?.archived ?? false,
+      createdAt: existing?.createdAt ?? timestamp,
+      updatedAt: timestamp,
+    };
+    await this.database.run(
+      'INSERT INTO tv_profiles(id,provider,archived,payload,created_at,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET provider=excluded.provider,archived=excluded.archived,payload=excluded.payload,updated_at=excluded.updated_at',
+      [profile.id, profile.provider, profile.archived ? 1 : 0, JSON.stringify(profile), profile.createdAt, timestamp],
+    );
+    this.tvProfiles.update((items) => [profile, ...items.filter((item) => item.id !== profile.id)]);
+    return profile;
+  }
+  async setTvArchived(profileId: string, archived: boolean): Promise<void> {
+    const profile = this.tvProfiles().find((item) => item.id === profileId);
+    if (!profile) throw new Error('TV profile not found.');
+    const updated = { ...profile, archived, updatedAt: new Date().toISOString() };
+    await this.database.run('UPDATE tv_profiles SET archived=?,payload=?,updated_at=? WHERE id=?', [
+      archived ? 1 : 0,
+      JSON.stringify(updated),
+      updated.updatedAt,
+      profileId,
+    ]);
+    this.tvProfiles.update((items) => items.map((item) => (item.id === profileId ? updated : item)));
+  }
+  async saveTvRecharge(input: {
+    id?: string;
+    profileId: string;
+    amountMinor?: number;
+    startDate: string;
+    endDate?: string;
+    durationDays?: number;
+    notes?: string;
+  }): Promise<TvRecharge> {
+    const profile = this.tvProfiles().find((item) => item.id === input.profileId && !item.archived);
+    if (!profile) throw new Error('Choose an active TV profile.');
+    if (!validCalendarDate(input.startDate)) throw new Error('Enter a valid recharge start date.');
+    if (input.amountMinor !== undefined && (!Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0))
+      throw new Error('Enter a positive recharge amount.');
+    let endDate = input.endDate?.trim() ?? '';
+    if (!endDate) {
+      if (!Number.isSafeInteger(input.durationDays) || (input.durationDays ?? 0) <= 0)
+        throw new Error('Enter a valid end date or positive duration.');
+      endDate = addCalendarDays(input.startDate, (input.durationDays ?? 1) - 1);
+    }
+    if (!validCalendarDate(endDate) || endDate < input.startDate)
+      throw new Error('Recharge end date must be on or after its start date.');
+    const timestamp = new Date().toISOString();
+    const previous = input.id ? this.tvRecharges().find((item) => item.id === input.id) : undefined;
+    if (input.id && (!previous || previous.profileId !== input.profileId))
+      throw new Error('TV recharge was not found on this profile.');
+    const recharge: TvRecharge = {
+      id: previous?.id ?? crypto.randomUUID(),
+      profileId: input.profileId,
+      amountMinor: input.amountMinor,
+      startDate: input.startDate,
+      endDate,
+      durationDays: calendarDaysBetween(input.startDate, endDate) + 1,
+      notes: input.notes?.trim().slice(0, 300) || undefined,
+      createdAt: previous?.createdAt ?? timestamp,
+      updatedAt: timestamp,
+    };
+    await this.database.run(
+      'INSERT INTO tv_recharges(id,profile_id,start_date,end_date,amount_minor,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET start_date=excluded.start_date,end_date=excluded.end_date,amount_minor=excluded.amount_minor,payload=excluded.payload,updated_at=excluded.updated_at',
+      [recharge.id, recharge.profileId, recharge.startDate, recharge.endDate, recharge.amountMinor ?? null, JSON.stringify(recharge), recharge.createdAt, timestamp],
+    );
+    this.tvRecharges.update((items) => [recharge, ...items.filter((item) => item.id !== recharge.id)]);
+    return recharge;
   }
 
   suggestedRechargeStart(profileId: string): string {
@@ -567,7 +685,7 @@ export class UtilitiesService {
 
   async reload(): Promise<void> {
     if (!this.database.ready()) return;
-    const [profiles, recharges, events] = await Promise.all([
+    const [profiles, recharges, events, tvProfiles, tvRecharges] = await Promise.all([
       this.database.query<{ payload: string }>(
         "SELECT payload FROM utility_profiles WHERE kind='MOBILE' ORDER BY created_at DESC",
       ),
@@ -577,6 +695,8 @@ export class UtilitiesService {
       this.database.query<{ payload: string }>(
         'SELECT payload FROM lpg_events ORDER BY event_date,created_at,rowid',
       ),
+      this.database.query<{ payload: string }>('SELECT payload FROM tv_profiles ORDER BY created_at DESC'),
+      this.database.query<{ payload: string }>('SELECT payload FROM tv_recharges ORDER BY start_date DESC'),
     ]);
     const lpgProfiles = await this.database.query<{ payload: string }>(
       "SELECT payload FROM utility_profiles WHERE kind='LPG' ORDER BY created_at DESC",
@@ -585,6 +705,8 @@ export class UtilitiesService {
     this.mobileRecharges.set(recharges.map((row) => JSON.parse(row.payload) as MobileRecharge));
     this.lpgProfiles.set(lpgProfiles.map((row) => JSON.parse(row.payload) as LpgProfile));
     this.lpgEvents.set(events.map((row) => JSON.parse(row.payload) as LpgEvent));
+    this.tvProfiles.set(tvProfiles.map((row) => JSON.parse(row.payload) as TvProfile));
+    this.tvRecharges.set(tvRecharges.map((row) => JSON.parse(row.payload) as TvRecharge));
   }
 
   private async writeSetting(key: string, enabled: boolean): Promise<void> {

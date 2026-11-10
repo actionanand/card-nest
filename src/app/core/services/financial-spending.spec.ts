@@ -60,6 +60,21 @@ describe('consolidated financial projection', () => {
     expect(rows.filter((row) => row.kind === 'SOURCE_TRANSACTION')).toHaveLength(1);
   });
 
+  it('excludes legacy FASTAG toll rows from consolidated expenses while retaining bank funding debits', () => {
+    const toll = transaction({
+      id: 'legacy-fastag-toll',
+      cardId: 'fastag-source',
+      paymentMethod: undefined,
+      amountMinor: 15500,
+      transactionDate: '2026-11-09',
+      merchant: 'Synthetic toll plaza',
+    });
+    const loadDebit = transaction({ id: 'fastag-load-debit', cardId: 'bank', amountMinor: 100000 });
+    const rows = projectConsolidatedSpending([toll, loadDebit], [], [], new Set(['fastag-source']));
+    expect(rows.map((row) => row.sourceTransactionId)).toEqual(['fastag-load-debit']);
+    expect(sumConsolidatedSpending(rows)).toBe(100000);
+  });
+
   it('uses only durable funded-principal reversals on the actual return date', () => {
     const load = event('load', 'FUNDED_LOAD', {
       fundingSourceId: 'bank',

@@ -836,12 +836,16 @@ label small {
 .combined-purchase-details {
   display: grid;
   gap: 0.65rem;
-  padding: 0 1rem 1rem 4rem;
+  padding: 0.65rem 1rem 1rem 4rem;
 }
 .combined-purchase-actions {
   display: flex;
   flex-wrap: wrap;
+  justify-content: center;
   gap: 0.45rem;
+}
+.combined-purchase-actions .btn {
+  min-height: 44px;
 }
 .combined-refund-note {
   margin: 0;

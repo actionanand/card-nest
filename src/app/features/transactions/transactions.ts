@@ -914,19 +914,23 @@ export class TransactionsPage {
     this.formChanges();
     const options = paymentMethodsFor(this.manualPaymentContext());
     return this.canLoadConsumerWallet()
-      ? [...options, { value: 'WALLET_LOADING', label: 'Consumer wallet load' }]
+      ? [...options, { value: 'WALLET_LOADING', label: 'Wallet loading' }]
       : options;
   }
   readonly walletLoadWalletOptions = computed(() => {
     this.formChanges();
     if (!this.consumerWallets.enabled()) return [];
     return eligibleWalletLoadingDestinations(
-      this.consumerWallets.activeWallets(),
+      this.consumerWallets.activeLoadDestinations(),
       this.walletLoadingFundingKind(),
     ).map((wallet) => ({
       value: wallet.id,
       label: wallet.nickname || wallet.customName || wallet.providerId,
-      detail: wallet.kind === 'UPI_LITE' ? 'UPI Lite' : 'Consumer wallet',
+      detail: wallet.fastagSourceId
+        ? 'FASTag wallet'
+        : wallet.kind === 'UPI_LITE'
+          ? 'UPI Lite'
+          : 'Consumer wallet',
     }));
   });
   readonly walletLoadSummary = computed(() => {
@@ -976,7 +980,7 @@ export class TransactionsPage {
     if (
       this.form.controls.type.value !== 'PURCHASE' ||
       !this.consumerWallets.enabled() ||
-      !this.consumerWallets.activeWallets().length
+      !this.consumerWallets.activeLoadDestinations().length
     )
       return false;
     return this.walletLoadWalletOptions().length > 0;
@@ -1275,6 +1279,7 @@ export class TransactionsPage {
   }
   consumerWalletName(walletId: string): string {
     const wallet = this.consumerWallets.wallets().find((item) => item.id === walletId);
+    if (wallet?.fastagSourceId) return `${this.store.sourceName(wallet.fastagSourceId)} · FASTag`;
     return (
       wallet?.nickname ||
       wallet?.customName ||
@@ -1288,6 +1293,9 @@ export class TransactionsPage {
       : 'Unknown original wallet credit';
   }
   consumerWalletEventLabel(event: ConsumerWalletEvent): string {
+    const wallet = this.consumerWallets.wallets().find((item) => item.id === event.walletId);
+    if (wallet?.fastagSourceId && event.eventType === 'PURCHASE') return 'FASTag toll payment';
+    if (wallet?.fastagSourceId && event.eventType === 'FUNDED_LOAD') return 'FASTag top-up';
     if (event.eventType === 'MANUAL_CREDIT' && event.memo === 'Opening balance')
       return 'Opening balance';
     if (event.eventType === 'PURCHASE') return 'Wallet purchase';

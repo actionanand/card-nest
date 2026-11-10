@@ -887,6 +887,12 @@ label small.validation-error {
 .danger-item {
   color: var(--danger);
 }
+.expiry-advisory {
+  color: var(--muted);
+  font-size: 0.65rem;
+  font-style: normal;
+  overflow-wrap: anywhere;
+}
 .card-details {
   padding: 0.9rem 1rem 1rem 4.4rem;
   border-top: 1px solid var(--line);
@@ -914,7 +920,7 @@ label small.validation-error {
   color: var(--muted);
   font-size: 0.75rem;
 }
-.addon-profile-row > span,
+.addon-profile-row > span:not(.network-tile),
 .addon-profile-form label {
   display: grid;
   flex: 1;
@@ -956,6 +962,21 @@ label small.validation-error {
 }
 .utilisation progress {
   width: 100%;
+  .addon-card-copy {
+    overflow-wrap: anywhere;
+  }
+  .archived-addon-list {
+    display: grid;
+    gap: 0.55rem;
+  }
+  .archived-addon-list summary {
+    min-height: 44px;
+    align-content: center;
+    cursor: pointer;
+  }
+  .archived-addon-row {
+    opacity: 0.8;
+  }
   height: 0.45rem;
   margin: 0.35rem 0;
   accent-color: var(--accent);

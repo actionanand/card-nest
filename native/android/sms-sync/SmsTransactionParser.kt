@@ -35,7 +35,8 @@ object SmsTransactionParser {
     /** Informational card balance field; never the primary transaction amount. */
     val amountDueMinor: Long? = null,
     val accountMask: String? = null,
-    val counterpartyAccountMask: String? = null
+    val counterpartyAccountMask: String? = null,
+    val fastagId: String? = null
   )
   private data class AccountIdentifier(val suffix: String, val mask: String)
 
@@ -97,7 +98,7 @@ object SmsTransactionParser {
     val tag = has("fastag|toll paid|toll plaza")
     val bank = has("\\b(acct|acc|account|a/c)\\b")
     val card = !meal && !tag && has("card") && !has("debit card")
-    val debit = has("\\b(spent|debited|charged|sent|toll paid)\\b") || has("transaction of.+was made using|thank you for using.+card")
+    val debit = has("\\b(spent|debited|charged|sent|paid:|toll paid)\\b") || has("transaction of.+was made using|thank you for using.+card")
     val credit = has("\\b(credited|received)\\b")
     // The primary account is the one addressed as "your" (else the first mention). Its movement is
     // the verb grammatically attached to it, never a verb tied to a payee or counterparty account.
@@ -169,7 +170,7 @@ object SmsTransactionParser {
       meal && mealTopup && !mealDebit -> Kind.PLUXEE_TOPUP
       meal && mealDebit -> Kind.PLUXEE_PURCHASE
       tag && debit -> Kind.FASTAG_TOLL
-      tag && has("recharged|loaded|credited|topped up") -> Kind.FASTAG_TOPUP
+      tag && has("recharged|loaded|credited|topped up|added to.{0,50}fastag") -> Kind.FASTAG_TOPUP
       confirmed -> Kind.CARD_PAYMENT_RECEIVED
       aggregator && has("payment.{0,80}(received|processed)|sent|debited|paid") && !due && !loan -> Kind.PAYMENT_INITIATED
       statement && !purchase && !confirmed && !credit -> Kind.STATEMENT
@@ -214,9 +215,13 @@ object SmsTransactionParser {
       "Federal" to "federal", "BOBCARD" to "bobcard", "IDFC FIRST" to "idfc", "AU Bank" to "au bank", "Slice" to "slice",
       "Yes Bank" to "yes bank|yesbank", "IndusInd Bank" to "indusind",
       "IDBI Bank" to "idbi(?: bank)?")
-      .firstOrNull { has(it.second) }?.first
+      .firstOrNull { has(it.second) }?.first?.let { if (tag && it == "HDFC") "HDFC Bank" else it }
+    val fastagId = if (tag) rx("\\b(?:NETC\\s+)?FASTag\\s*(?:ID\\s*)?([0-9]{6,32})\\b").find(flat)?.groupValues?.get(1) else null
     val ref = rx("\\b(?:UPI\\s*(?:ref(?:erence)?\\s*(?:no\\.?)?)?|RRN|UTR|Ref(?:erence)?\\s*(?:No\\.?|ID)?)\\s*[:#.]?\\s*([A-Z0-9]{9,30})\\b")
       .find(flat)?.groupValues?.get(1)
+    val privateFastagMerchant = if (tag)
+      rx("\\bAt\\s*:\\s*(.+?)(?=\\s+On\\s*:?\\s*|\\s+Via\\b|$)").find(flat)?.groupValues?.get(1)
+    else null
     val bankEvent = kind in setOf(Kind.BANK_DEBIT, Kind.BANK_CREDIT, Kind.BANK_TRANSFER) ||
       (kind == Kind.PAYMENT_INITIATED && bank)
     // Counterparty names are descriptions only; an account mention is never a payee name.
@@ -229,7 +234,7 @@ object SmsTransactionParser {
         ?: payee("\\btowards\\s+([A-Za-z][^.;(]*?)(?=\\s+for\\b|\\s*[.;(]|$)")
     val cardUseMerchant = rx("\\b(?:credit\\s+)?card\\b.{0,50}\\b(?:(?:was|has been|has)\\s+)?used\\s+at\\s+(.+?)\\s+for\\s+(?:₹|\\bINR\\b|\\bRs\\.?)").find(flat)?.groupValues?.get(1)
     val feeMerchant = if (mealFee) rx("\\b(?:towards|for)\\s+(.+?\\bfee\\b)").find(flat)?.groupValues?.get(1) else null
-    val merchant = feeMerchant ?: if (bankEvent) counterparty else cardUseMerchant ?: rx("\\bfor (.+?) has been charged").find(flat)?.groupValues?.get(1)
+    val merchant = feeMerchant ?: privateFastagMerchant ?: if (bankEvent) counterparty else cardUseMerchant ?: rx("\\bfor (.+?) has been charged").find(flat)?.groupValues?.get(1)
       ?: rx("\\bby (.+?) on [0-9]{1,2}[-/]").find(flat)?.groupValues?.get(1)
       ?: rx("\\bat\\s+(.+?)(?=\\s+(?:on|via|through|avbl?\\.?|avl|wallet bal)\\b|\\s*\\.\\s*Avl|$)").find(flat)?.groupValues?.get(1)
       ?: safe.lines().getOrNull(3)?.takeIf { has("spent") && !it.contains("limit", true) }
@@ -282,6 +287,7 @@ object SmsTransactionParser {
       amountDueMinor = amountDue,
       accountMask = primaryIdentifier?.mask,
       counterpartyAccountMask = counterpartyIdentifier?.mask,
+      fastagId = fastagId,
       legacyId = if (kind == Kind.STATEMENT || kind == Kind.PAYMENT_REMINDER) fingerprint(text) else null)
   }
 

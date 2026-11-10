@@ -242,3 +242,49 @@ describe('Safe SMS list titles', () => {
     expect(ledgerType(item({ kind: 'PLUXEE_FEE' }))).toBe('FEE');
   });
 });
+
+describe('FASTag source matching', () => {
+  const fastag = (changes: Partial<PaymentSource> = {}): PaymentSource => ({
+    id: 'fastag-one',
+    nickname: 'Synthetic FASTag',
+    kind: 'FASTAG',
+    vehicleNumber: 'KA 05-MN 4826',
+    fastagId: '00019000098765432',
+    noLimit: false,
+    balanceMinor: 0,
+    autoLoad: false,
+    archived: false,
+    ...changes,
+  });
+
+  it('matches independently by normalized vehicle or FASTag ID', () => {
+    expect(
+      eligibleSources(item({ kind: 'FASTAG_TOLL', vehicleNumber: 'KA05MN4826' }), [], [fastag()]),
+    ).toEqual(['fastag-one']);
+    expect(
+      eligibleSources(
+        item({ kind: 'FASTAG_TOPUP', fastagId: '00019000098765432' }),
+        [],
+        [fastag()],
+      ),
+    ).toEqual(['fastag-one']);
+  });
+
+  it('requires both identifiers to agree and leaves unmatched evidence unselected', () => {
+    expect(
+      eligibleSources(
+        item({ kind: 'FASTAG_TOLL', vehicleNumber: 'KA05MN4826', fastagId: '19000000000000' }),
+        [],
+        [fastag()],
+      ),
+    ).toEqual([]);
+    expect(eligibleSources(item({ kind: 'FASTAG_TOLL' }), [], [fastag()])).toEqual([]);
+    expect(
+      eligibleSources(
+        item({ kind: 'FASTAG_TOPUP', fastagId: '00019000098765432' }),
+        [],
+        [fastag({ archived: true })],
+      ),
+    ).toEqual([]);
+  });
+});

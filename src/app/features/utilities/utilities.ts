@@ -27,6 +27,9 @@ import {
   LpgProfile,
   MobileProfile,
   MobileRecharge,
+  TvProfile,
+  TvProvider,
+  TvRecharge,
 } from './utilities-model';
 import {
   addCalendarDays,
@@ -36,7 +39,7 @@ import {
   validCalendarDate,
 } from './utilities-calculations';
 
-type UtilitySection = 'MOBILE' | 'GAS' | 'ELECTRICITY' | 'BROADBAND';
+type UtilitySection = 'MOBILE' | 'GAS' | 'ELECTRICITY' | 'BROADBAND' | 'TV';
 
 @Component({
   selector: 'app-utilities-page',
@@ -64,6 +67,13 @@ export class UtilitiesPage {
   private lpgHistoryTrigger: HTMLElement | null = null;
   private lpgHistoryRecordId: string | null = null;
   readonly section = signal<UtilitySection>('MOBILE');
+  readonly broadbandTvChoicesOpen = signal(false);
+  readonly broadbandComingSoonOpen = signal(false);
+  readonly tvProfileFormOpen = signal(false);
+  readonly editingTvProfileId = signal<string | null>(null);
+  readonly tvRechargeProfileId = signal<string | null>(null);
+  readonly editingTvRechargeId = signal<string | null>(null);
+  readonly tvValidityMode = signal<'DAYS' | 'END_DATE'>('DAYS');
   readonly gasType = signal<GasServiceType>('LPG');
   readonly mobileFormOpen = signal(false);
   readonly lpgFormOpen = signal(false);
@@ -120,6 +130,8 @@ export class UtilitiesPage {
   readonly lpgProfiles = computed(() =>
     this.utilities.lpgProfiles().filter((item) => !item.archived),
   );
+  readonly tvProfiles = computed(() => this.utilities.tvProfiles().filter((item) => !item.archived));
+  readonly archivedTvProfiles = computed(() => this.utilities.tvProfiles().filter((item) => item.archived));
   readonly archivedMobileProfiles = computed(() =>
     this.utilities.mobileProfiles().filter((item) => item.archived),
   );
@@ -130,6 +142,7 @@ export class UtilitiesPage {
   readonly subscriptionOptions = this.utilities.subscriptionOptions;
   readonly planOptions = this.utilities.mobilePlanOptions;
   readonly providerOptions = this.utilities.lpgProviderOptions;
+  readonly tvProviderOptions = this.utilities.tvProviderOptions;
   readonly gasServiceOptions: readonly AppSelectOption[] = GAS_SERVICE_TYPES.map(
     ({ value, label }) => ({ value, label }),
   );
@@ -207,6 +220,26 @@ export class UtilitiesPage {
     eventDate: new FormControl(this.today, { nonNullable: true, validators: Validators.required }),
     amount: new FormControl('', { nonNullable: true }),
     comment: new FormControl('', { nonNullable: true, validators: Validators.maxLength(300) }),
+  });
+  readonly tvForm = new FormGroup({
+    displayName: new FormControl('', {
+      nonNullable: true,
+      validators: [Validators.required, Validators.maxLength(80)],
+    }),
+    provider: new FormControl<TvProvider>('SUN', { nonNullable: true }),
+    otherProviderName: new FormControl('', { nonNullable: true, validators: [Validators.maxLength(80)] }),
+    customerId: new FormControl('', { nonNullable: true, validators: [Validators.maxLength(80)] }),
+    mobileNumber: new FormControl('', {
+      nonNullable: true,
+      validators: [Validators.pattern(/^(?:|[6-9]\d{9}|\+91[ -]?[6-9]\d{9})$/)],
+    }),
+  });
+  readonly tvRechargeForm = new FormGroup({
+    amount: new FormControl('', { nonNullable: true }),
+    startDate: new FormControl(this.today, { nonNullable: true, validators: [Validators.required] }),
+    validityDays: new FormControl('30', { nonNullable: true }),
+    endDate: new FormControl('', { nonNullable: true }),
+    notes: new FormControl('', { nonNullable: true, validators: [Validators.maxLength(300)] }),
   });
   private readonly lpgEventChanges = toSignal(this.lpgEventForm.valueChanges);
 
@@ -893,6 +926,202 @@ export class UtilitiesPage {
     if (!summary.callingCoverageActive && summary.daysWithoutCalling !== null)
       return `No recorded calling plan for ${summary.daysWithoutCalling} days`;
     return null;
+  }
+
+  openBroadbandTvChooser(): void {
+    this.broadbandTvChoicesOpen.set(true);
+  }
+
+  closeBroadbandTvChooser(): void {
+    this.broadbandTvChoicesOpen.set(false);
+  }
+
+  chooseBroadband(): void {
+    this.broadbandTvChoicesOpen.set(false);
+    this.broadbandComingSoonOpen.set(true);
+  }
+
+  chooseTv(): void {
+    this.broadbandTvChoicesOpen.set(false);
+    this.section.set('TV');
+  }
+
+  tvProviderLabel(profile: TvProfile): string {
+    if (profile.provider === 'OTHER') return profile.otherProviderName || 'Other';
+    return this.tvProviderOptions.find((item) => item.value === profile.provider)?.label ?? 'TV provider';
+  }
+
+  tvProfileRecharges(profile: TvProfile): readonly TvRecharge[] {
+    return this.utilities.tvRechargesFor(profile.id).slice().sort((a, b) => b.startDate.localeCompare(a.startDate));
+  }
+
+  latestTvRecharge(profile: TvProfile): TvRecharge | undefined {
+    return this.tvProfileRecharges(profile)[0];
+  }
+
+  tvProfileStatus(profile: TvProfile): string {
+    const recharge = this.latestTvRecharge(profile);
+    if (!recharge) return 'Inactive';
+    if (recharge.startDate > this.today) return 'Scheduled';
+    return recharge.endDate < this.today ? 'Expired' : 'Active';
+  }
+
+  tvRechargePeriod(profile: TvProfile): string {
+    const recharge = this.latestTvRecharge(profile);
+    if (!recharge) return 'No current recharge';
+    if (recharge.startDate > this.today)
+      return `Scheduled · starts in ${calendarDaysBetween(this.today, recharge.startDate)} days`;
+    if (recharge.endDate < this.today)
+      return `Expired ${calendarDaysBetween(recharge.endDate, this.today)} days ago`;
+    return `${calendarDaysBetween(this.today, recharge.endDate)} days remaining`;
+  }
+
+  startAddTvProfile(): void {
+    this.error.set(null);
+    this.editingTvProfileId.set(null);
+    this.tvForm.reset({
+      displayName: '',
+      provider: 'SUN',
+      otherProviderName: '',
+      customerId: '',
+      mobileNumber: '',
+    });
+    this.tvProfileFormOpen.set(true);
+  }
+
+  editTvProfile(profile: TvProfile): void {
+    this.error.set(null);
+    this.editingTvProfileId.set(profile.id);
+    let mobileNumber = profile.mobileNumber ?? '';
+    try {
+      mobileNumber = normalizeIndianMobileNumber(mobileNumber)?.slice(4) ?? '';
+    } catch {
+      // Keep malformed legacy data visible for correction.
+    }
+    this.tvForm.reset({
+      displayName: profile.displayName,
+      provider: profile.provider,
+      otherProviderName: profile.otherProviderName ?? '',
+      customerId: profile.customerId ?? '',
+      mobileNumber,
+    });
+    this.tvProfileFormOpen.set(true);
+  }
+
+  closeTvProfileForm(): void {
+    if (this.saving()) return;
+    this.tvProfileFormOpen.set(false);
+    this.editingTvProfileId.set(null);
+    this.error.set(null);
+  }
+
+  async saveTvProfile(event: Event): Promise<void> {
+    event.preventDefault();
+    this.tvForm.markAllAsTouched();
+    if (this.tvForm.invalid || this.saving()) return;
+    const value = this.tvForm.getRawValue();
+    if (value.provider === 'OTHER' && !value.otherProviderName.trim()) {
+      this.tvForm.controls.otherProviderName.setErrors({ required: true });
+      this.error.set('Enter the TV provider name.');
+      return;
+    }
+    this.saving.set(true);
+    this.error.set(null);
+    try {
+      await this.utilities.saveTvProfile({
+        id: this.editingTvProfileId() ?? undefined,
+        displayName: value.displayName,
+        provider: value.provider,
+        otherProviderName: value.otherProviderName,
+        customerId: value.customerId,
+        mobileNumber: value.mobileNumber,
+      });
+      this.closeTvProfileForm();
+      this.snackbar.show('TV profile saved.');
+    } catch (error: unknown) {
+      this.error.set(error instanceof Error ? error.message : 'TV profile could not be saved.');
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  async archiveTvProfile(profile: TvProfile): Promise<void> {
+    try {
+      await this.utilities.setTvArchived(profile.id, true);
+      this.snackbar.show('TV profile archived. Recharge history is kept.');
+    } catch (error: unknown) {
+      this.snackbar.show(error instanceof Error ? error.message : 'TV profile could not be archived.', 'WARNING');
+    }
+  }
+
+  async restoreTvProfile(profile: TvProfile): Promise<void> {
+    try {
+      await this.utilities.setTvArchived(profile.id, false);
+      this.snackbar.show('TV profile restored.');
+    } catch (error: unknown) {
+      this.snackbar.show(error instanceof Error ? error.message : 'TV profile could not be restored.', 'WARNING');
+    }
+  }
+
+  startTvRecharge(profile: TvProfile, recharge?: TvRecharge): void {
+    if (this.saving() || profile.archived) return;
+    this.error.set(null);
+    this.tvRechargeProfileId.set(profile.id);
+    this.editingTvRechargeId.set(recharge?.id ?? null);
+    this.tvValidityMode.set(recharge ? 'END_DATE' : 'DAYS');
+    this.tvRechargeForm.reset({
+      amount: recharge?.amountMinor === undefined ? '' : String(recharge.amountMinor / 100),
+      startDate: recharge?.startDate ?? this.today,
+      validityDays: String(recharge?.durationDays ?? 30),
+      endDate: recharge?.endDate ?? '',
+      notes: recharge?.notes ?? '',
+    });
+  }
+
+  closeTvRecharge(): void {
+    if (this.saving()) return;
+    this.tvRechargeProfileId.set(null);
+    this.editingTvRechargeId.set(null);
+    this.error.set(null);
+  }
+
+  async saveTvRecharge(event: Event): Promise<void> {
+    event.preventDefault();
+    this.tvRechargeForm.markAllAsTouched();
+    if (this.tvRechargeForm.invalid || this.saving()) return;
+    const value = this.tvRechargeForm.getRawValue();
+    const amountMinor = value.amount.trim() ? parseMoneyToMinor(value.amount) : undefined;
+    if (
+      value.amount.trim() &&
+      (amountMinor === null || amountMinor === undefined || amountMinor <= 0)
+    ) {
+      this.error.set('Enter a positive recharge amount or leave it empty.');
+      return;
+    }
+    const durationDays = this.tvValidityMode() === 'DAYS' ? Number(value.validityDays) : undefined;
+    if (durationDays !== undefined && (!Number.isSafeInteger(durationDays) || durationDays <= 0)) {
+      this.error.set('Enter a positive duration in days.');
+      return;
+    }
+    this.saving.set(true);
+    this.error.set(null);
+    try {
+      await this.utilities.saveTvRecharge({
+        id: this.editingTvRechargeId() ?? undefined,
+        profileId: this.tvRechargeProfileId()!,
+        amountMinor: amountMinor ?? undefined,
+        startDate: value.startDate,
+        endDate: this.tvValidityMode() === 'END_DATE' ? value.endDate : undefined,
+        durationDays,
+        notes: value.notes,
+      });
+      this.closeTvRecharge();
+      this.snackbar.show('TV recharge record saved.');
+    } catch (error: unknown) {
+      this.error.set(error instanceof Error ? error.message : 'TV recharge could not be saved.');
+    } finally {
+      this.saving.set(false);
+    }
   }
 
   setSection(section: UtilitySection): void {

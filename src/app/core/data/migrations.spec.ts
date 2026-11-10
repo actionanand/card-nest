@@ -239,6 +239,31 @@ describe('SMS upgrade of an existing version-6 database', () => {
     }
   });
 
+  it('adds portable TV profile and recharge tables without altering wallet schema', () => {
+    const sql = new DatabaseSync(':memory:');
+    try {
+      sql.exec('PRAGMA foreign_keys=ON');
+      for (const migration of DATABASE_MIGRATIONS.filter((item) => item.version < 19))
+        for (const statement of migration.statements) sql.exec(statement);
+      sql.exec('PRAGMA user_version=18');
+      const migration = DATABASE_MIGRATIONS.find((item) => item.version === 19)!;
+      for (const statement of migration.statements) sql.exec(statement);
+      sql.exec(`
+        INSERT INTO tv_profiles(id,provider,archived,payload,created_at,updated_at)
+          VALUES('tv-profile','OTHER',0,'{}','now','now');
+        INSERT INTO tv_recharges(id,profile_id,start_date,end_date,amount_minor,payload,created_at,updated_at)
+          VALUES('tv-recharge','tv-profile','2026-11-01','2026-11-30',25000,'{}','now','now');
+      `);
+      expect(sql.prepare('SELECT provider FROM tv_profiles WHERE id=?').get('tv-profile')).toEqual({
+        provider: 'OTHER',
+      });
+      expect(sql.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+      expect(DATABASE_MIGRATIONS.at(-1)?.version).toBe(19);
+    } finally {
+      sql.close();
+    }
+  });
+
   it('classifies historical adjustments only from positive audit provenance and preserves financial columns', () => {
     const sql = new DatabaseSync(':memory:');
     try {

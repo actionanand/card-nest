@@ -32,6 +32,7 @@ function setup(
   const intent = signal(setupIntent);
   const loadError = signal<string | null>(null);
   const activeWallets = computed(() => savedWallets().filter((wallet) => !wallet.archived));
+  const activeLoadDestinations = computed(() => savedWallets().filter((wallet) => !wallet.archived));
   const archivedWallets = computed(() => savedWallets().filter((wallet) => wallet.archived));
   const balances = computed(() => new Map<string, number>());
   const consumerWalletService = {
@@ -43,6 +44,7 @@ function setup(
     loadError,
     setupIntent: intent,
     activeWallets,
+    activeLoadDestinations,
     archivedWallets,
     activeWalletLimit: 15,
     balances,
@@ -68,7 +70,23 @@ function setup(
     }),
     restoreWallet: vi.fn(async () => undefined),
     deleteWalletIfEmpty: vi.fn(async () => undefined),
-    saveFastagWallet: vi.fn(async () => undefined),
+    saveFastagWallet: vi.fn(async (source: PaymentSource) => {
+      savedWallets.update((items) => [
+        ...items,
+        {
+          id: source.id,
+          providerId: 'fastag',
+          kind: 'STANDARD',
+          nickname: source.nickname,
+          fastagSourceId: source.id,
+          vehicleNumber: source.vehicleNumber,
+          fastagId: source.fastagId,
+          archived: false,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        },
+      ]);
+    }),
     registerWallet: vi.fn(
       async (input: {
         providerId: ConsumerWallet['providerId'];
@@ -176,6 +194,8 @@ describe('Wallets page Stage A', () => {
       name: 'Synthetic vehicle',
       provider: 'Fictional toll provider',
       plate: 'FICT001',
+      fastagId: '00019000098765432',
+      confirmDuplicateVehicle: false,
     });
     fixture.detectChanges();
     await page.saveFastag(new Event('submit'));
@@ -184,11 +204,47 @@ describe('Wallets page Stage A', () => {
         nickname: 'Synthetic vehicle',
         kind: 'FASTAG',
         vehicleNumber: 'FICT001',
+        fastagId: '00019000098765432',
         balanceMinor: 0,
       }),
       undefined,
     );
     expect(page.fastagOpen()).toBe(false);
+    fixture.destroy();
+  });
+  it('keeps FASTAG pass crossings independent from wallet balance and retains balance when tracking is disabled', async () => {
+    const source: PaymentSource = {
+      id: 'fastag-pass-source',
+      nickname: 'Synthetic FASTag',
+      kind: 'FASTAG',
+      vehicleNumber: 'KA05MN4826',
+      fastagId: '000123456789',
+      noLimit: false,
+      balanceMinor: 84500,
+      autoLoad: false,
+      archived: false,
+    };
+    const { fixture, paymentSources, consumerWalletService } = setup(true, null, {}, [source]);
+    const page = fixture.componentInstance;
+    page.openFastagPass(source);
+    page.fastagPassForm.patchValue({ usedCrossings: '10' });
+    await page.saveFastagPass(new Event('submit'));
+    const savedSource = paymentSources().find((item) => item.id === source.id)!;
+    expect(savedSource.fastagPasses?.[0]).toMatchObject({
+      amountMinor: 307500,
+      totalCrossings: 200,
+      usedCrossings: 10,
+    });
+    expect(consumerWalletService.events()).toEqual([]);
+    const pass = savedSource.fastagPasses![0];
+    await page.recordFastagCrossing(savedSource, pass);
+    expect(paymentSources().find((item) => item.id === source.id)?.fastagPasses?.[0].usedCrossings).toBe(11);
+    expect(consumerWalletService.events()).toEqual([]);
+    await page.toggleFastagBalance(paymentSources().find((item) => item.id === source.id)!);
+    expect(paymentSources().find((item) => item.id === source.id)).toMatchObject({
+      noLimit: true,
+      balanceMinor: 84500,
+    });
     fixture.destroy();
   });
 

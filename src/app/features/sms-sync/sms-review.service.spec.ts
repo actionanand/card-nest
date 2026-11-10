@@ -84,6 +84,51 @@ describe('SMS approved import integrity', () => {
         ]);
       sources.set(wallets);
     },
+    saveSmsFastagFunding: async (
+      tx: DatabaseSession,
+      transaction: CardTransaction,
+      input: WalletLoadingDetails,
+    ) => {
+      const now = new Date().toISOString();
+      await tx.run(
+        'INSERT INTO card_transactions(id,card_id,category_id,type,amount_minor,currency_code,transaction_date,payload,created_at,updated_at) VALUES(?,NULL,?,?,?,?,?,?,?,?)',
+        [
+          transaction.id,
+          transaction.categoryId,
+          transaction.type,
+          transaction.amountMinor,
+          transaction.currencyCode,
+          transaction.transactionDate,
+          JSON.stringify(transaction),
+          transaction.createdAt,
+          transaction.updatedAt,
+        ],
+      );
+      await store.saveApprovedWalletLoad(tx, transaction, input);
+      return { transaction, sources: sources() };
+    },
+    saveSmsFastagFunding: async (
+      tx: DatabaseSession,
+      transaction: CardTransaction,
+      input: WalletLoadingDetails,
+    ) => {
+      await tx.run(
+        'INSERT INTO card_transactions(id,card_id,category_id,type,amount_minor,currency_code,transaction_date,payload,created_at,updated_at) VALUES(?,NULL,?,?,?,?,?,?,?,?)',
+        [
+          transaction.id,
+          transaction.categoryId,
+          transaction.type,
+          transaction.amountMinor,
+          transaction.currencyCode,
+          transaction.transactionDate,
+          JSON.stringify(transaction),
+          transaction.createdAt,
+          transaction.updatedAt,
+        ],
+      );
+      await store.saveApprovedWalletLoad(tx, transaction, input);
+      return { transaction, sources: sources() };
+    },
     acceptCommittedStatement: vi.fn(),
     acceptCommittedTransfer: vi.fn(),
     saveApprovedWalletLoad: async (
@@ -94,17 +139,19 @@ describe('SMS approved import integrity', () => {
       if (transaction.type !== 'PURCHASE' || transaction.paymentMethod !== 'WALLET_LOADING')
         throw new Error('Invalid wallet load transaction.');
       const now = new Date().toISOString();
+      const fundedMinor = Math.min(input.loadedAmountMinor, transaction.amountMinor);
+      const promotionalMinor = Math.max(0, input.loadedAmountMinor - transaction.amountMinor);
       const event: ConsumerWalletEvent = {
         id: `sms-wallet-load-${transaction.id}`,
         walletId: input.walletId,
         eventType: 'FUNDED_LOAD',
         eventDate: transaction.transactionDate,
         eventTime: transaction.transactionTime,
-        amountMinor: input.loadedAmountMinor,
-        balanceDeltaMinor: input.loadedAmountMinor,
+        amountMinor: fundedMinor,
+        balanceDeltaMinor: fundedMinor,
         debitAmountMinor: transaction.amountMinor,
         loadedAmountMinor: input.loadedAmountMinor,
-        feeMinor: transaction.amountMinor - input.loadedAmountMinor,
+        feeMinor: transaction.amountMinor - fundedMinor,
         fundingSourceKind: store.cards().some((card) => card.id === transaction.cardId)
           ? 'CARD'
           : 'BANK',
@@ -139,6 +186,36 @@ describe('SMS approved import integrity', () => {
           now,
         ],
       );
+      if (promotionalMinor > 0) {
+        const promo: ConsumerWalletEvent = {
+          id: `wallet-load-promo:${transaction.id}`,
+          walletId: input.walletId,
+          eventType: 'PROMOTIONAL_CREDIT',
+          eventDate: transaction.transactionDate,
+          amountMinor: promotionalMinor,
+          balanceDeltaMinor: promotionalMinor,
+          sourceTransactionId: transaction.id,
+          memo: 'Promotional FASTag or wallet bonus',
+          createdAt: now,
+          updatedAt: now,
+        };
+        await tx.run(
+          'INSERT INTO consumer_wallet_events(id,wallet_id,event_type,event_date,event_time,amount_minor,balance_delta_minor,source_transaction_id,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+          [
+            promo.id,
+            promo.walletId,
+            promo.eventType,
+            promo.eventDate,
+            null,
+            promo.amountMinor,
+            promo.balanceDeltaMinor,
+            promo.sourceTransactionId,
+            JSON.stringify(promo),
+            now,
+            now,
+          ],
+        );
+      }
     },
   };
   function rows<T extends Record<string, unknown>>(
@@ -242,6 +319,199 @@ describe('SMS approved import integrity', () => {
     sql.close();
     vi.restoreAllMocks();
   });
+  it('requires explicit funding confirmation and records a FASTAG top-up once with promotional credit', async () => {
+    const bank: PaymentSource = {
+      id: 'fastag-topup-bank',
+      nickname: 'Synthetic Bank',
+      institution: 'HDFC Bank',
+      kind: 'DEBIT',
+      lastDigits: '419',
+      noLimit: true,
+      autoLoad: false,
+      archived: false,
+    };
+    const fastag: PaymentSource = {
+      id: 'fastag-topup-source',
+      nickname: 'Synthetic FASTag',
+      kind: 'FASTAG',
+      vehicleNumber: 'KA05MN4826',
+      fastagId: '00019000098765432',
+      noLimit: false,
+      balanceMinor: 0,
+      autoLoad: false,
+      archived: false,
+    };
+    const wallet: ConsumerWallet = {
+      id: fastag.id,
+      providerId: 'fastag',
+      kind: 'STANDARD',
+      nickname: fastag.nickname,
+      fastagSourceId: fastag.id,
+      vehicleNumber: fastag.vehicleNumber,
+      fastagId: fastag.fastagId,
+      archived: false,
+      createdAt: 'before',
+      updatedAt: 'before',
+    };
+    const candidate = stage(
+      evidence({
+        kind: 'FASTAG_TOPUP',
+        amountMinor: 35000,
+        issuer: 'HDFC Bank',
+        vehicleNumber: fastag.vehicleNumber,
+        fastagId: fastag.fastagId,
+        eventAt: '2026-10-18T12:00:00Z',
+        eventTime: '12:00:00',
+        eventTimeExplicit: true,
+        merchant: 'HDFC Bank NETC FASTag',
+      }),
+    );
+    sources.set([bank, fastag]);
+    run(
+      'INSERT INTO consumer_wallets(id,provider_id,wallet_kind,payload,created_at,updated_at) VALUES(?,?,?,?,?,?)',
+      [wallet.id, wallet.providerId, wallet.kind, JSON.stringify(wallet), 'before', 'before'],
+    );
+    run('INSERT INTO app_preferences(key,encrypted_value) VALUES(?,?)', [
+      'consumer_wallets_feature_state',
+      'ENABLED',
+    ]);
+    run('INSERT INTO app_preferences(key,encrypted_value) VALUES(?,?)', [
+      'payment_sources',
+      JSON.stringify([bank, fastag]),
+    ]);
+
+    await expect(
+      service.approveFastagTopup(candidate, fastag.id, bank.id, 30000, false),
+    ).rejects.toThrow('explicitly confirm');
+    await service.approveFastagTopup(candidate, fastag.id, bank.id, 30000, true);
+    await service.approveFastagTopup(candidate, fastag.id, bank.id, 30000, true);
+    expect(count('card_transactions')).toBe(1);
+    expect(count('sms_reconciliation')).toBe(1);
+    expect(
+      rows(
+        'SELECT event_type,amount_minor,balance_delta_minor FROM consumer_wallet_events ORDER BY event_type',
+      ),
+    ).toEqual([
+      { event_type: 'FUNDED_LOAD', amount_minor: 30000, balance_delta_minor: 30000 },
+      { event_type: 'PROMOTIONAL_CREDIT', amount_minor: 5000, balance_delta_minor: 5000 },
+    ]);
+    expect(
+      JSON.parse(String(rows('SELECT payload FROM card_transactions')[0]['payload'])),
+    ).toMatchObject({ cardId: bank.id, paymentMethod: 'WALLET_LOADING', amountMinor: 30000 });
+    expect(consumerWalletService.reloadFinancialHistory).toHaveBeenCalledOnce();
+  });
+
+  it('records an approved FASTAG toll as informational wallet activity and matches a replay', async () => {
+    const fastag: PaymentSource = {
+      id: 'fastag-toll-source',
+      nickname: 'Synthetic FASTag',
+      kind: 'FASTAG',
+      vehicleNumber: 'KA05MN4826',
+      fastagId: '00019000098765432',
+      noLimit: false,
+      balanceMinor: 0,
+      autoLoad: false,
+      archived: false,
+    };
+    const wallet: ConsumerWallet = {
+      id: fastag.id,
+      providerId: 'fastag',
+      kind: 'STANDARD',
+      nickname: fastag.nickname,
+      fastagSourceId: fastag.id,
+      vehicleNumber: fastag.vehicleNumber,
+      fastagId: fastag.fastagId,
+      archived: false,
+      createdAt: 'before',
+      updatedAt: 'before',
+    };
+    const candidate = stage(
+      evidence({
+        kind: 'FASTAG_TOLL',
+        amountMinor: 15500,
+        vehicleNumber: 'KA 05-MN 4826',
+        fastagId: fastag.fastagId,
+        merchant: 'Nanguneri Toll Plaza',
+        eventAt: '2026-10-18T12:00:00Z',
+        eventTime: '12:00:00',
+        eventTimeExplicit: true,
+      }),
+    );
+    sources.set([fastag]);
+    run(
+      'INSERT INTO consumer_wallets(id,provider_id,wallet_kind,payload,created_at,updated_at) VALUES(?,?,?,?,?,?)',
+      [wallet.id, wallet.providerId, wallet.kind, JSON.stringify(wallet), 'before', 'before'],
+    );
+    run(
+      'INSERT INTO consumer_wallet_events(id,wallet_id,event_type,event_date,amount_minor,balance_delta_minor,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)',
+      [
+        'fastag-opening-credit',
+        wallet.id,
+        'MANUAL_CREDIT',
+        '2026-10-17',
+        50000,
+        50000,
+        JSON.stringify({
+          id: 'fastag-opening-credit',
+          walletId: wallet.id,
+          eventType: 'MANUAL_CREDIT',
+          eventDate: '2026-10-17',
+          amountMinor: 50000,
+          balanceDeltaMinor: 50000,
+          createdAt: '2026-10-17T00:00:00Z',
+          updatedAt: '2026-10-17T00:00:00Z',
+        }),
+        '2026-10-17',
+        '2026-10-17',
+      ],
+    );
+    run('INSERT INTO app_preferences(key,encrypted_value) VALUES(?,?)', [
+      'payment_sources',
+      JSON.stringify([fastag]),
+    ]);
+
+    await service.approve(candidate, fastag.id, 15500, 'Nanguneri Toll Plaza');
+    await service.approve(candidate, fastag.id, 15500, 'Nanguneri Toll Plaza');
+    expect(count('card_transactions')).toBe(0);
+    expect(count('consumer_wallet_events')).toBe(2);
+    expect(count('consumer_wallet_event_allocations')).toBe(1);
+    expect(
+      rows(
+        "SELECT event_type,amount_minor,balance_delta_minor FROM consumer_wallet_events WHERE event_type='PURCHASE'",
+      ),
+    ).toEqual([{ event_type: 'PURCHASE', amount_minor: 15500, balance_delta_minor: -15500 }]);
+    expect(count('sms_reconciliation')).toBe(1);
+    const separateMessage = stage(
+      evidence({
+        id: 'b'.repeat(64),
+        kind: 'FASTAG_TOLL',
+        amountMinor: 15500,
+        vehicleNumber: 'KA05MN4826',
+        fastagId: fastag.fastagId,
+        merchant: 'Nanguneri Toll Plaza',
+        eventAt: '2026-10-18T12:00:00Z',
+        eventTime: '12:00:00',
+        eventTimeExplicit: true,
+      }),
+    );
+    await expect(
+      service.approve(separateMessage, fastag.id, 15500, 'Nanguneri Toll Plaza'),
+    ).rejects.toThrow('Possible duplicate FASTag toll');
+    await service.approve(
+      separateMessage,
+      fastag.id,
+      15500,
+      'Nanguneri Toll Plaza',
+      '',
+      'PENDING',
+      true,
+    );
+    expect(count('card_transactions')).toBe(0);
+    expect(count('consumer_wallet_events')).toBe(3);
+    expect(count('sms_reconciliation')).toBe(2);
+    expect(consumerWalletService.reloadFinancialHistory).toHaveBeenCalledOnce();
+  });
+
   it('approves a Bank SMS Wallet Loading once with the full debit, loaded principal and included fee', async () => {
     const bank: PaymentSource = {
       id: 'sms-bank',

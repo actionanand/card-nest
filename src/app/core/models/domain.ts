@@ -304,6 +304,8 @@ export interface PaymentSource {
   autoLoad: boolean;
   lastLoadedPeriod?: string;
   vehicleNumber?: string;
+  fastagId?: string;
+  fastagPasses?: readonly FastagPass[];
   balanceCutoverAt?: string;
   balanceSnapshotMinor?: Money;
   balanceCutoverReason?: 'MANUAL' | 'SMS_RECONCILIATION';
@@ -314,6 +316,20 @@ export interface PaymentSource {
   archived: boolean;
 }
 
+export interface FastagPass {
+  readonly id: string;
+  readonly name: string;
+  readonly amountMinor: Money;
+  readonly startDate: string;
+  readonly endDate: string;
+  readonly durationDays?: number;
+  readonly totalCrossings: number;
+  readonly usedCrossings: number;
+  readonly notes?: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
 export type ConsumerWalletKind = 'STANDARD' | 'UPI_LITE';
 
 export interface ConsumerWallet {
@@ -322,6 +338,10 @@ export interface ConsumerWallet {
   readonly kind: ConsumerWalletKind;
   readonly customName?: string;
   readonly nickname?: string;
+  readonly fastagSourceId?: string;
+  readonly vehicleNumber?: string;
+  readonly fastagId?: string;
+  readonly fastagBalanceCutoverAt?: string;
   readonly archived: boolean;
   readonly createdAt: string;
   readonly updatedAt: string;

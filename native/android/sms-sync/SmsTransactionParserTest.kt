@@ -174,6 +174,29 @@ class SmsTransactionParserTest {
     assertEquals("KA01AB1234", a.vehicleNumber)
   }
 
+  @Test fun fastagTopupsExtractIdAndEventTimeWithoutTreatingAutoRechargeAsEnabled() {
+    val topup = parse("FASTag Alert Rs.1000 added to HDFC Bank NETC FASTag 19000098765432 on 2026-08-06 21:54:59.0. Activate Auto-Recharge: https://example.invalid/auto-recharge/1")
+    assertEquals(SmsTransactionParser.Kind.FASTAG_TOPUP, topup.kind)
+    assertEquals(100000L, topup.amountMinor)
+    assertEquals("19000098765432", topup.fastagId)
+    assertEquals("HDFC Bank", topup.issuer)
+    assertEquals("2026-08-06", topup.eventDate)
+    assertEquals("21:54:59", topup.eventTime)
+    assertNull(topup.vehicleNumber)
+  }
+
+  @Test fun fastagPrivateTollExtractsMerchantVehicleTimeAndInformationalBalance() {
+    val toll = parse("Paid: Rs.90 At: Nexus Shantiniketan On: 2026-09-11 16:45:21 Vehicle KA05MN4826 Via HDFC Bank NETC FASTag Bal: Rs 350.00 Reload: https://example.invalid/toll/e")
+    assertEquals(SmsTransactionParser.Kind.FASTAG_TOLL, toll.kind)
+    assertEquals(9000L, toll.amountMinor)
+    assertEquals("Nexus Shantiniketan", toll.merchant)
+    assertEquals("KA05MN4826", toll.vehicleNumber)
+    assertEquals("2026-09-11", toll.eventDate)
+    assertEquals("16:45:21", toll.eventTime)
+    assertEquals(35000L, toll.reportedBalanceMinor)
+    assertEquals("HDFC Bank", toll.issuer)
+  }
+
   @Test fun statementsNeverBecomePurchases() {
     val a = parse("Your statement for Axis Bank Credit Card no. XX6666 is generated. Due on: 01-08-26 Total amt: INR Dr. 1623.28 Min amt due: INR Dr. 100.00")
     assertEquals(SmsTransactionParser.Kind.STATEMENT, a.kind)

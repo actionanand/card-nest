@@ -11,6 +11,7 @@ import { AppDatePipe } from '../../core/services/date-format.service';
 import { SnackbarService } from '../../core/services/snackbar.service';
 import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
 import { AppDatePicker } from '../../shared/app-date-picker';
+import { ProfileModal } from '../../shared/profile-modal';
 import { indiaCurrentMonth, indiaTodayIso } from '../../core/services/india-date';
 import { createEmiSchedule } from '../../core/services/emi';
 
@@ -26,6 +27,7 @@ type CommitmentOwner = 'ALL' | 'ME' | 'FRIENDS';
     ConfirmationDialog,
     AppSelectPicker,
     AppDatePicker,
+    ProfileModal,
   ],
   templateUrl: './loans.html',
   styleUrl: './loans.scss',

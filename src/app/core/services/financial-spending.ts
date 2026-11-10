@@ -25,8 +25,10 @@ export function projectConsolidatedSpending(
   transactions: readonly CardTransaction[],
   walletEvents: readonly ConsumerWalletEvent[],
   walletExpenseReversals: readonly ConsumerWalletExpenseReversal[],
+  informationalSourceIds: ReadonlySet<string> = new Set<string>(),
 ): readonly ConsolidatedSpendingEntry[] {
   const entries: ConsolidatedSpendingEntry[] = transactions.flatMap((transaction) => {
+    if (informationalSourceIds.has(transaction.cardId)) return [];
     const contribution = spendingContribution(transaction);
     return contribution
       ? [

@@ -132,6 +132,123 @@
   gap: 1rem;
   margin-top: 0.4rem;
 }
+.broadband-tv-choices {
+  display: grid;
+  gap: 0.6rem;
+}
+.broadband-tv-choices .btn {
+  justify-content: flex-start;
+  min-height: 48px;
+}
+.coming-soon-message {
+  margin: 0;
+  color: var(--muted);
+}
+.tv-profile-list {
+  display: grid;
+  gap: 0.7rem;
+}
+.tv-profile {
+  display: grid;
+  gap: 0.65rem;
+  min-width: 0;
+  padding: 1rem;
+}
+.tv-profile > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+.tv-profile > header h3,
+.tv-profile > header p,
+.tv-profile > p {
+  margin: 0;
+}
+.tv-profile > p,
+.tv-profile > header small {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.tv-recharge-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 0.55rem;
+  margin: 0;
+}
+.tv-recharge-summary > div {
+  display: grid;
+  gap: 0.15rem;
+  padding: 0.55rem;
+  border-radius: 0.45rem;
+  background: var(--surface-2);
+}
+.tv-recharge-summary dt {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+.tv-recharge-summary dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.tv-profile-actions,
+.tv-recharge-row,
+.archived-profile-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.tv-recharge-history {
+  display: grid;
+  gap: 0.3rem;
+  padding-top: 0.55rem;
+  border-top: 1px solid var(--line);
+}
+.tv-recharge-history summary {
+  min-height: 44px;
+  align-content: center;
+  cursor: pointer;
+}
+.tv-recharge-row {
+  min-height: 44px;
+  padding-block: 0.3rem;
+  border-bottom: 1px solid var(--line);
+}
+.tv-recharge-row > span,
+.archived-profile-row > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.archived-profiles {
+  display: grid;
+  gap: 0.45rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--line);
+}
+.archived-profiles summary {
+  min-height: 44px;
+  align-content: center;
+  cursor: pointer;
+}
+.validity-mode {
+  display: flex;
+  gap: 0.35rem;
+}
+.validity-mode button {
+  min-height: 44px;
+  flex: 1;
+  border: 1px solid var(--line);
+  border-radius: 0.55rem;
+  color: var(--ink);
+  background: var(--surface);
+}
+.validity-mode button.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
 .feature-heading h2 {
   margin: 0.1rem 0 0;
   font-size: 1.2rem;

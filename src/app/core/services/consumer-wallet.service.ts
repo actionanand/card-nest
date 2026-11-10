@@ -256,8 +256,18 @@ export class ConsumerWalletService {
   readonly loadError = signal<string | null>(null);
   readonly enabled = computed(() => this.featureState() === 'ENABLED');
   readonly setupIntent = signal<WalletSetupIntent | null>(null);
-  readonly activeWallets = computed(() => this.wallets().filter((wallet) => !wallet.archived));
-  readonly archivedWallets = computed(() => this.wallets().filter((wallet) => wallet.archived));
+  readonly activeWallets = computed(() =>
+    this.wallets().filter((wallet) => !wallet.archived && !wallet.fastagSourceId),
+  );
+  readonly archivedWallets = computed(() =>
+    this.wallets().filter((wallet) => wallet.archived && !wallet.fastagSourceId),
+  );
+  readonly fastagWallets = computed(() =>
+    this.wallets().filter((wallet) => !!wallet.fastagSourceId),
+  );
+  readonly activeLoadDestinations = computed(() =>
+    this.wallets().filter((wallet) => !wallet.archived),
+  );
   readonly hasEligibleWallets = computed(
     () =>
       this.wallets().length > 0 ||
@@ -295,9 +305,89 @@ export class ConsumerWalletService {
           [WALLETS_FEATURE_STATE_KEY, WALLETS_SETUP_INTENT_KEY, 'payment_sources'],
         );
         const values = new Map(preferences.map((row) => [row.key, row.encrypted_value]));
-        const wallets = await tx.query<{ payload: string }>(
-          'SELECT payload FROM consumer_wallets ORDER BY created_at,id',
+        const walletRows = await tx.query<{ id: string; payload: string }>(
+          'SELECT id,payload FROM consumer_wallets ORDER BY created_at,id',
         );
+        const fastagSources = (() => {
+          try {
+            return (JSON.parse(values.get('payment_sources') ?? '[]') as PaymentSource[]).filter(
+              (source) => source.kind === 'FASTAG',
+            );
+          } catch {
+            return [];
+          }
+        })();
+        const wallets = walletRows.map((row) => JSON.parse(row.payload) as ConsumerWallet);
+        const occupiedIds = new Set(walletRows.map((row) => row.id));
+        for (const source of fastagSources) {
+          let wallet = wallets.find((item) => item.fastagSourceId === source.id);
+          if (!wallet) {
+            const timestamp = new Date().toISOString();
+            const id = occupiedIds.has(source.id) ? `fastag:${source.id}` : source.id;
+            wallet = {
+              id,
+              providerId: 'fastag',
+              kind: 'STANDARD',
+              nickname: source.nickname,
+              fastagSourceId: source.id,
+              vehicleNumber: source.vehicleNumber,
+              fastagId: source.fastagId,
+              fastagBalanceCutoverAt: source.balanceMinor
+                ? (source.balanceCutoverAt ?? timestamp)
+                : undefined,
+              archived: source.archived,
+              createdAt: timestamp,
+              updatedAt: timestamp,
+            };
+            await this.insertWallet(tx, wallet);
+            wallets.push(wallet);
+            occupiedIds.add(id);
+          } else if (
+            wallet.archived !== source.archived ||
+            wallet.nickname !== source.nickname ||
+            wallet.vehicleNumber !== source.vehicleNumber ||
+            wallet.fastagId !== source.fastagId
+          ) {
+            wallet = {
+              ...wallet,
+              archived: source.archived,
+              nickname: source.nickname,
+              vehicleNumber: source.vehicleNumber,
+              fastagId: source.fastagId,
+              fastagBalanceCutoverAt: source.balanceMinor
+                ? (source.balanceCutoverAt ??
+                  wallet.fastagBalanceCutoverAt ??
+                  new Date().toISOString())
+                : undefined,
+              updatedAt: new Date().toISOString(),
+            };
+            await tx.run(
+              'UPDATE consumer_wallets SET archived=?,payload=?,updated_at=? WHERE id=?',
+              [wallet.archived ? 1 : 0, JSON.stringify(wallet), wallet.updatedAt, wallet.id],
+            );
+            wallets[wallets.findIndex((item) => item.fastagSourceId === source.id)] = wallet;
+          }
+          const [eventCount] = await tx.query<{ count: number }>(
+            'SELECT COUNT(*) AS count FROM consumer_wallet_events WHERE wallet_id=?',
+            [wallet.id],
+          );
+          if (!eventCount.count && (source.balanceMinor ?? 0) > 0) {
+            const timestamp = new Date().toISOString();
+            const baseline: ConsumerWalletEvent = {
+              id: `fastag-baseline:${source.id}`,
+              walletId: wallet.id,
+              eventType: 'UNKNOWN_BALANCE',
+              eventDate: source.balanceCutoverAt?.slice(0, 10) ?? indiaTodayIso(),
+              eventTime: source.balanceCutoverAt?.slice(11, 19),
+              amountMinor: source.balanceMinor!,
+              balanceDeltaMinor: source.balanceMinor!,
+              memo: 'Existing FASTag balance baseline',
+              createdAt: timestamp,
+              updatedAt: timestamp,
+            };
+            await this.insertEvent(tx, baseline);
+          }
+        }
         const savedState = values.get(WALLETS_FEATURE_STATE_KEY);
         let featureState: WalletsFeatureState =
           savedState === 'ENABLED' || savedState === 'DISABLED' || savedState === 'NEVER_CONFIGURED'
@@ -316,7 +406,10 @@ export class ConsumerWalletService {
               return false;
             }
           })();
-          featureState = wallets.length || hasFastag ? 'ENABLED' : 'NEVER_CONFIGURED';
+          featureState =
+            wallets.some((wallet) => !wallet.fastagSourceId) || hasFastag
+              ? 'ENABLED'
+              : 'NEVER_CONFIGURED';
           await this.writePreference(tx, WALLETS_FEATURE_STATE_KEY, featureState);
         }
         // A setup form interrupted by process death is never allowed to enable the feature later.
@@ -341,7 +434,7 @@ export class ConsumerWalletService {
         }>('SELECT * FROM consumer_wallet_expense_reversals ORDER BY created_at');
         return {
           featureState,
-          wallets: wallets.map((row) => JSON.parse(row.payload) as ConsumerWallet),
+          wallets,
           events: events.map((row) => JSON.parse(row.payload) as ConsumerWalletEvent),
           allocations: allocations.map((row) => ({
             id: row.id,
@@ -376,6 +469,11 @@ export class ConsumerWalletService {
     } finally {
       this.loading.set(false);
     }
+  }
+
+  async refreshWalletRecords(): Promise<void> {
+    if (!this.database.ready()) return;
+    this.wallets.set(await this.database.atomic((tx) => this.readWallets(tx)));
   }
 
   async setEnabled(enabled: boolean): Promise<void> {
@@ -470,7 +568,10 @@ export class ConsumerWalletService {
     const result = await this.database.atomic(async (tx) => {
       await this.assertSetupIntent(tx, input.setupIntentId, 'CONSUMER');
       const current = await this.readWallets(tx);
-      if (current.filter((item) => !item.archived).length >= this.activeWalletLimit)
+      if (
+        current.filter((item) => !item.archived && !item.fastagSourceId).length >=
+        this.activeWalletLimit
+      )
         throw new Error(
           `You can register up to ${this.activeWalletLimit} active wallets. Archive or delete an eligible wallet first.`,
         );
@@ -507,7 +608,11 @@ export class ConsumerWalletService {
     return wallet;
   }
 
-  async saveFastagWallet(source: PaymentSource, setupIntentId?: string): Promise<void> {
+  async saveFastagWallet(
+    source: PaymentSource,
+    setupIntentId?: string,
+    confirmDuplicateVehicle = false,
+  ): Promise<void> {
     if (
       source.kind !== 'FASTAG' ||
       !source.id.trim() ||
@@ -515,7 +620,8 @@ export class ConsumerWalletService {
       source.nickname.trim().length > 80 ||
       (source.institution?.trim().length ?? 0) > 80 ||
       source.archived ||
-      !/^[A-Z0-9]{5,16}$/.test(source.vehicleNumber ?? '')
+      !/^[A-Z0-9]{5,16}$/.test((source.vehicleNumber ?? '').replace(/[\s-]/g, '').toUpperCase()) ||
+      (source.fastagId !== undefined && !/^\d{1,32}$/.test(source.fastagId))
     )
       throw new Error('Enter a wallet name and vehicle registration.');
     const result = await this.database.atomic(async (tx) => {
@@ -528,15 +634,68 @@ export class ConsumerWalletService {
         ? (JSON.parse(row.encrypted_value) as PaymentSource[])
         : this.store.paymentSources().map((item) => ({ ...item }));
       if (stored.some((item) => item.id === source.id)) throw new Error('Wallet already exists.');
+      const normalizedVehicle = (source.vehicleNumber ?? '').replace(/[\s-]/g, '').toUpperCase();
+      if (
+        stored.some(
+          (item) =>
+            item.kind === 'FASTAG' &&
+            item.vehicleNumber?.replace(/[\s-]/g, '').toUpperCase() === normalizedVehicle,
+        ) &&
+        !confirmDuplicateVehicle
+      )
+        throw new Error(
+          'Another FASTag uses this vehicle. Confirm both registrations are intentional.',
+        );
+      if (
+        source.fastagId &&
+        stored.some((item) => item.kind === 'FASTAG' && item.fastagId === source.fastagId)
+      )
+        throw new Error('This FASTag ID is already registered.');
+      const timestamp = new Date().toISOString();
+      const wallet: ConsumerWallet = {
+        id: source.id,
+        providerId: 'fastag',
+        kind: 'STANDARD',
+        nickname: source.nickname,
+        fastagSourceId: source.id,
+        vehicleNumber: source.vehicleNumber,
+        fastagId: source.fastagId,
+        fastagBalanceCutoverAt: source.balanceMinor
+          ? (source.balanceCutoverAt ?? timestamp)
+          : undefined,
+        archived: false,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      };
       const next = [...stored, source];
       await this.writePreference(tx, 'payment_sources', JSON.stringify(next));
+      await this.insertWallet(tx, wallet);
+      if ((source.balanceMinor ?? 0) > 0) {
+        const timestamp = new Date().toISOString();
+        const baseline: ConsumerWalletEvent = {
+          id: `fastag-baseline:${source.id}`,
+          walletId: wallet.id,
+          eventType: 'UNKNOWN_BALANCE',
+          eventDate: source.balanceCutoverAt?.slice(0, 10) ?? indiaTodayIso(),
+          eventTime: source.balanceCutoverAt?.slice(11, 19),
+          amountMinor: source.balanceMinor!,
+          balanceDeltaMinor: source.balanceMinor!,
+          memo: 'Existing FASTag balance baseline',
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        };
+        await this.insertEvent(tx, baseline);
+        await assertChronologicalConsumerWalletLedger(tx, wallet.id);
+      }
       if (setupIntentId || featureState !== 'DISABLED') await this.completeSetup(tx, setupIntentId);
       return {
         sources: next,
+        wallets: [...(await this.readWallets(tx)).filter((item) => item.id !== wallet.id), wallet],
         featureState: setupIntentId || featureState !== 'DISABLED' ? 'ENABLED' : 'DISABLED',
       } as const;
     });
     this.store.paymentSources.set(result.sources);
+    this.wallets.set(result.wallets);
     this.featureState.set(result.featureState);
     if (setupIntentId) this.setupIntent.set(null);
   }
@@ -626,8 +785,22 @@ export class ConsumerWalletService {
       };
       const historicalBalance = await this.balanceIn(tx, input.walletId, position);
       const deltaMinor = input.newBalanceMinor - historicalBalance;
-      if (deltaMinor === 0)
+      const [walletRow] = await tx.query<{ payload: string }>(
+        'SELECT payload FROM consumer_wallets WHERE id=?',
+        [input.walletId],
+      );
+      const wallet = walletRow ? (JSON.parse(walletRow.payload) as ConsumerWallet) : null;
+      if (deltaMinor === 0) {
+        if (wallet?.fastagSourceId) {
+          const updatedWallet = { ...wallet, fastagBalanceCutoverAt: new Date().toISOString() };
+          await tx.run('UPDATE consumer_wallets SET payload=?,updated_at=? WHERE id=?', [
+            JSON.stringify(updatedWallet),
+            updatedWallet.updatedAt,
+            input.walletId,
+          ]);
+        }
         return { event: null, allocations: [] as ConsumerWalletEventAllocation[] };
+      }
       const record: ConsumerWalletEvent = {
         id: input.id,
         walletId: input.walletId,
@@ -642,6 +815,18 @@ export class ConsumerWalletService {
       await this.insertEvent(tx, record);
       const allocations =
         deltaMinor < 0 ? await allocateConsumerWalletDebit(tx, record, Math.abs(deltaMinor)) : [];
+      if (wallet?.fastagSourceId) {
+        const updatedWallet = {
+          ...wallet,
+          fastagBalanceCutoverAt: timestamp,
+          updatedAt: timestamp,
+        };
+        await tx.run('UPDATE consumer_wallets SET payload=?,updated_at=? WHERE id=?', [
+          JSON.stringify(updatedWallet),
+          timestamp,
+          input.walletId,
+        ]);
+      }
       await assertChronologicalConsumerWalletLedger(tx, input.walletId);
       return { event: record, allocations };
     });
@@ -780,6 +965,7 @@ export class ConsumerWalletService {
         createdAt: timestamp,
         updatedAt: timestamp,
       };
+      await this.assertFastagEventAfterBaseline(tx, input.walletId, event);
       const balanceBeforeMinor = await this.balanceIn(tx, input.walletId, event);
       if (balanceBeforeMinor < input.amountMinor)
         throw new Error('Purchase exceeds the available historical wallet balance.');
@@ -1592,6 +1778,7 @@ export class ConsumerWalletService {
         createdAt: timestamp,
         updatedAt: timestamp,
       };
+      await this.assertFastagEventAfterBaseline(tx, input.walletId, event);
       const historicalBalance = await this.balanceIn(tx, input.walletId, event);
       if (historicalBalance < input.amountMinor)
         throw new Error('Return exceeds the available historical UPI Lite balance.');
@@ -2014,7 +2201,7 @@ export class ConsumerWalletService {
       const wallets = await this.readWallets(tx);
       const target = wallets.find((item) => item.id === walletId && item.archived);
       if (!target) throw new Error('Archived wallet not found.');
-      const active = wallets.filter((item) => !item.archived);
+      const active = wallets.filter((item) => !item.archived && !item.fastagSourceId);
       if (active.length > this.activeWalletLimit)
         throw new Error(
           `This database has more than ${this.activeWalletLimit} active wallets. Archive active wallets before restoring another.`,
@@ -2136,6 +2323,43 @@ export class ConsumerWalletService {
       [walletId],
     );
     if (!row || row.archived !== 0) throw new Error('Choose an active registered consumer wallet.');
+  }
+
+  private async assertFastagEventAfterBaseline(
+    tx: DatabaseSession,
+    walletId: string,
+    event: ConsumerWalletEventPosition,
+  ): Promise<void> {
+    const [walletRow] = await tx.query<{ payload: string }>(
+      'SELECT payload FROM consumer_wallets WHERE id=?',
+      [walletId],
+    );
+    if (!walletRow) return;
+    const wallet = JSON.parse(walletRow.payload) as ConsumerWallet;
+    if (!wallet.fastagSourceId) return;
+    if (wallet.fastagBalanceCutoverAt) {
+      const eventInstant = Date.parse(`${event.eventDate}T${event.eventTime ?? '00:00:00'}+05:30`);
+      const cutoverInstant = Date.parse(wallet.fastagBalanceCutoverAt);
+      if (
+        Number.isFinite(eventInstant) &&
+        Number.isFinite(cutoverInstant) &&
+        eventInstant < cutoverInstant
+      )
+        throw new Error(
+          'This FASTag event predates the verified balance baseline. Verify the current balance before applying an out-of-order event.',
+        );
+      return;
+    }
+    const [baselineRow] = await tx.query<{ payload: string }>(
+      'SELECT payload FROM consumer_wallet_events WHERE id=?',
+      [`fastag-baseline:${wallet.fastagSourceId}`],
+    );
+    if (!baselineRow) return;
+    const baseline = JSON.parse(baselineRow.payload) as ConsumerWalletEventPosition;
+    if (compareConsumerWalletEvents(event, baseline) < 0)
+      throw new Error(
+        'This FASTag event predates the verified balance baseline. Verify the current balance before applying an out-of-order event.',
+      );
   }
 
   private async readIdempotentEvent(

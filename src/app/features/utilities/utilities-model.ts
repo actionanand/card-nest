@@ -65,3 +65,31 @@ export interface LpgEvent {
   readonly createdAt: string;
   readonly updatedAt: string;
 }
+
+export type TvProvider =
+  'SUN' | 'TATA_PLAY' | 'AIRTEL' | 'VIDEOCON_D2H' | 'DISH_TV' | 'JIO_DTH' | 'OTHER';
+
+export interface TvProfile {
+  readonly id: string;
+  readonly kind: 'TV';
+  readonly displayName: string;
+  readonly provider: TvProvider;
+  readonly otherProviderName?: string;
+  readonly customerId?: string;
+  readonly mobileNumber?: string;
+  readonly archived: boolean;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface TvRecharge {
+  readonly id: string;
+  readonly profileId: string;
+  readonly amountMinor?: number;
+  readonly startDate: string;
+  readonly endDate: string;
+  readonly durationDays: number;
+  readonly notes?: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}

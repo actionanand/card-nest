@@ -95,6 +95,14 @@ export function paymentGroupHistoryCount(
   return group.memberIds.length + group.walletMembers.length;
 }
 
+function calendarDayOrdinal(value: string): number | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const timestamp = Date.parse(`${value}T00:00:00Z`);
+  return Number.isFinite(timestamp) && new Date(timestamp).toISOString().slice(0, 10) === value
+    ? timestamp / 86_400_000
+    : null;
+}
+
 export async function linkWalletRefundToPaymentGroup(
   tx: DatabaseSession,
   purchaseEventId: string,
@@ -205,11 +213,12 @@ export async function attachPaymentGroup(
     id: string;
     wallet_id: string;
     event_type: string;
+    event_date: string;
     amount_minor: number;
     balance_delta_minor: number;
     reversal_of_event_id: string | null;
   }>(
-    `SELECT id,wallet_id,event_type,amount_minor,balance_delta_minor,reversal_of_event_id
+    `SELECT id,wallet_id,event_type,event_date,amount_minor,balance_delta_minor,reversal_of_event_id
      FROM consumer_wallet_events WHERE id IN (${walletIds.map(() => '?').join(',') || "''"})`,
     walletIds,
   );
@@ -243,6 +252,30 @@ export async function attachPaymentGroup(
   }
   if (entries.length + walletPurchases.length < 2)
     throw new Error('A payment group needs at least two distinct payments.');
+  const addsMembership =
+    memberIds.some((id) => !group?.memberIds.includes(id)) ||
+    walletEventIds.some(
+      (id) => !group?.walletMembers.some((member) => member.walletEventId === id),
+    );
+  if (addsMembership) {
+    const dates = [
+      ...entries.map((entry) => entry.transactionDate),
+      ...walletRows
+        .filter(
+          (event) =>
+            event.event_type === 'PURCHASE' && event.balance_delta_minor === -event.amount_minor,
+        )
+        .map((event) => event.event_date),
+    ];
+    const ordinals = dates.map(calendarDayOrdinal);
+    if (ordinals.some((day) => day === null))
+      throw new Error('A payment has an invalid event date and cannot be grouped.');
+    const dayNumbers = ordinals as number[];
+    if (Math.max(...dayNumbers) - Math.min(...dayNumbers) > 1)
+      throw new Error(
+        'Combined payments may span only one calendar day between earliest and latest.',
+      );
+  }
   const primaryAnchor = anchor ?? entries[0];
   const currency = primaryAnchor?.currencyCode ?? 'INR';
   if (entries.some((entry) => entry.currencyCode !== currency))

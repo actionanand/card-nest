@@ -22,6 +22,7 @@ import { ConsumerWalletService } from '../../core/services/consumer-wallet.servi
 import { AppSelectPicker } from '../../shared/app-select-picker';
 import { PaymentBreakdown, WalletGroupBreakdownEntry } from '../../shared/payment-breakdown';
 import { ProfileModal } from '../../shared/profile-modal';
+import { ConfirmationDialog } from '../../shared/confirmation-dialog';
 
 interface PaymentMemberChoice {
   readonly key: string;
@@ -33,9 +34,23 @@ interface PaymentMemberChoice {
   readonly amountMinor: number;
 }
 
+function calendarDayOrdinal(value: string): number | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const timestamp = Date.parse(`${value}T00:00:00Z`);
+  return Number.isFinite(timestamp) && new Date(timestamp).toISOString().slice(0, 10) === value
+    ? timestamp / 86_400_000
+    : null;
+}
+
 @Component({
   selector: 'app-payment-groups-panel',
-  imports: [ReactiveFormsModule, AppSelectPicker, PaymentBreakdown, ProfileModal],
+  imports: [
+    ReactiveFormsModule,
+    AppSelectPicker,
+    PaymentBreakdown,
+    ProfileModal,
+    ConfirmationDialog,
+  ],
   template: `
     <app-profile-modal title="Combine Payments" [busy]="busy()" (closed)="closed.emit()">
       <div class="combine-flow">
@@ -111,13 +126,17 @@ interface PaymentMemberChoice {
                     ><input
                       type="checkbox"
                       [checked]="selected().has(entry.key)"
+                      [disabled]="!!dateSpanError(entry)"
                       (change)="toggle(entry.key)"
                     />
                     <span
                       >{{ entry.kind === 'WALLET' ? 'Wallet purchase' : entry.label }} ·
                       {{ entry.date }}<br />{{ entry.source }} ·
-                      {{ money(entry.amountMinor) }}</span
-                    ></label
+                      {{ money(entry.amountMinor) }}
+                      @if (dateSpanError(entry); as warning) {
+                        <small class="member-warning">{{ warning }}</small>
+                      }
+                    </span></label
                   >
                 } @empty {
                   <p class="step-note">No additional eligible recorded payments are available.</p>
@@ -141,7 +160,7 @@ interface PaymentMemberChoice {
                       <div class="group-member">
                         <span>{{ entryLabel(entry) }} · {{ money(entryAmount(entry)) }}</span>
                         <button
-                          class="btn"
+                          class="btn remove-payment"
                           type="button"
                           [disabled]="busy()"
                           (click)="removeEntry(entry)"
@@ -156,7 +175,12 @@ interface PaymentMemberChoice {
                       Show more members
                     </button>
                   }
-                  <button class="btn" type="button" [disabled]="busy()" (click)="dissolve()">
+                  <button
+                    class="btn dissolve-group"
+                    type="button"
+                    [disabled]="busy()"
+                    (click)="dissolve()"
+                  >
                     Dissolve group, keep every payment
                   </button>
                 </details>
@@ -230,6 +254,23 @@ interface PaymentMemberChoice {
         }
       </div>
     </app-profile-modal>
+    @if (destructiveAction(); as action) {
+      <app-confirmation-dialog
+        [title]="
+          action.kind === 'DISSOLVE' ? 'Dissolve payment group?' : 'Remove payment from group?'
+        "
+        [message]="
+          action.kind === 'DISSOLVE'
+            ? 'The group relationship will be deleted. All original payments and refunds remain recorded; no financial balance or transaction will be deleted.'
+            : 'Only this payment’s membership in the group will be removed. The original transaction and its financial history remain in the ledger.'
+        "
+        [confirmLabel]="action.kind === 'DISSOLVE' ? 'Dissolve group' : 'Remove payment'"
+        [busy]="busy()"
+        [error]="error() || null"
+        (confirmed)="confirmDestructiveAction()"
+        (cancelled)="cancelDestructiveAction()"
+      />
+    }
   `,
   styles: `
     :host {
@@ -379,6 +420,24 @@ interface PaymentMemberChoice {
       min-width: 0;
       overflow-wrap: anywhere;
     }
+    .member-warning {
+      display: block;
+      margin-top: 0.25rem;
+      color: var(--danger);
+      font-size: 0.75rem;
+    }
+    .remove-payment {
+      flex: 0 0 auto;
+      border-color: var(--danger);
+      color: var(--danger);
+      background: var(--surface);
+    }
+    .dissolve-group {
+      margin-top: 0.55rem;
+      border-color: color-mix(in srgb, #b85b18 45%, var(--line));
+      color: var(--ink);
+      background: color-mix(in srgb, #e6a14b 22%, var(--surface));
+    }
     fieldset {
       min-width: 0;
       border: 1px solid var(--line);
@@ -411,6 +470,11 @@ export class PaymentGroupsPanel {
   readonly selected = signal<ReadonlySet<string>>(new Set());
   readonly busy = signal(false);
   readonly error = signal('');
+  readonly destructiveAction = signal<
+    | { readonly kind: 'REMOVE'; readonly id: string }
+    | { readonly kind: 'DISSOLVE'; readonly id: string }
+    | null
+  >(null);
   readonly limit = signal(20);
   readonly memberLimit = signal(20);
   readonly title = new FormControl('', { nonNullable: true });
@@ -486,6 +550,46 @@ export class PaymentGroupsPanel {
           .includes(this.term()),
     ),
   );
+  dateSpanError(entry: PaymentMemberChoice): string | null {
+    return this.dateSpanErrorFor([...this.currentGroupPaymentDates(), entry.date]);
+  }
+  private currentDateSpanError(): string | null {
+    return this.selected().size ? this.dateSpanErrorFor(this.currentGroupPaymentDates()) : null;
+  }
+  private dateSpanErrorFor(dates: readonly string[]): string | null {
+    if (!dates.length) return null;
+    const ordinals = dates.map(calendarDayOrdinal);
+    if (ordinals.some((day) => day === null)) return 'This payment has an invalid event date.';
+    const days = ordinals as number[];
+    return Math.max(...days) - Math.min(...days) > 1
+      ? 'A group can include payments from only two adjacent calendar dates.'
+      : null;
+  }
+  private currentGroupPaymentDates(): string[] {
+    const group = this.group();
+    const cardIds = new Set(group?.memberIds ?? []);
+    const walletIds = new Set(
+      group?.walletMembers
+        .filter((member) => member.memberKind === 'WALLET_PURCHASE')
+        .map((member) => member.walletEventId) ?? [],
+    );
+    if (!group && this.target().startsWith('CARD:')) cardIds.add(this.target().slice(5));
+    if (!group && this.target().startsWith('WALLET:')) walletIds.add(this.target().slice(7));
+    for (const key of this.selected()) {
+      if (key.startsWith('CARD:')) cardIds.add(key.slice(5));
+      else if (key.startsWith('WALLET:')) walletIds.add(key.slice(7));
+    }
+    return [
+      ...this.store
+        .transactions()
+        .filter((item) => cardIds.has(item.id))
+        .map((item) => item.transactionDate),
+      ...this.walletService
+        .events()
+        .filter((event) => walletIds.has(event.id) && event.eventType === 'PURCHASE')
+        .map((event) => event.eventDate),
+    ];
+  }
   readonly preview = computed<readonly (CardTransaction | WalletGroupBreakdownEntry)[]>(() => {
     const group = this.group();
     const keys = new Set([
@@ -617,6 +721,11 @@ export class PaymentGroupsPanel {
       : entry.amountMinor;
   }
   reviewSave(): void {
+    const dateError = this.currentDateSpanError();
+    if (dateError) {
+      this.error.set(dateError);
+      return;
+    }
     const bill = this.billValue();
     if (this.bill.value.trim() && bill === null) {
       this.error.set('Enter a valid bill total.');
@@ -627,6 +736,13 @@ export class PaymentGroupsPanel {
   }
   toggle(id: string): void {
     const member = this.memberChoices().find((item) => item.id === id);
+    if (!member) return;
+    const dateError = this.dateSpanError(member);
+    if (dateError) {
+      this.error.set(dateError);
+      return;
+    }
+    this.error.set('');
     const key = member?.key ?? id;
     this.selected.update((ids) => {
       const next = new Set(ids);
@@ -636,6 +752,11 @@ export class PaymentGroupsPanel {
     });
   }
   async save(): Promise<void> {
+    const dateError = this.currentDateSpanError();
+    if (dateError) {
+      this.error.set(dateError);
+      return;
+    }
     await this.run(async () => {
       const bill = this.billValue();
       if (this.bill.value.trim() && bill === null) throw new Error('Enter a valid bill total.');
@@ -672,15 +793,33 @@ export class PaymentGroupsPanel {
     });
   }
   async removeEntry(entry: CardTransaction | WalletGroupBreakdownEntry): Promise<void> {
-    await this.remove(`${'kind' in entry ? 'WALLET' : 'CARD'}:${entry.id}`);
+    if (this.busy()) return;
+    this.error.set('');
+    this.destructiveAction.set({
+      kind: 'REMOVE',
+      id: `${'kind' in entry ? 'WALLET' : 'CARD'}:${entry.id}`,
+    });
   }
   async dissolve(): Promise<void> {
     const group = this.group();
-    if (group)
-      await this.run(async () => {
-        await this.store.removePaymentMember(group.id, true);
-        this.chooseTarget('');
-      });
+    if (!group || this.busy()) return;
+    this.error.set('');
+    this.destructiveAction.set({ kind: 'DISSOLVE', id: group.id });
+  }
+  cancelDestructiveAction(): void {
+    if (this.busy()) return;
+    this.destructiveAction.set(null);
+    this.error.set('');
+  }
+  async confirmDestructiveAction(): Promise<void> {
+    const action = this.destructiveAction();
+    if (!action || this.busy()) return;
+    await this.run(async () => {
+      await this.store.removePaymentMember(action.id, action.kind === 'DISSOLVE');
+      this.destructiveAction.set(null);
+      this.selected.set(new Set());
+      if (action.kind === 'DISSOLVE' || !this.group()) this.chooseTarget('');
+    });
   }
   private async run(work: () => Promise<void>): Promise<void> {
     if (this.busy()) return;

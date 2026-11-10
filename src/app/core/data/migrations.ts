@@ -210,4 +210,13 @@ export const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = [
          AND (SELECT COUNT(*) FROM consumer_wallet_credit_provenance p2 WHERE p2.credit_event_id=p.credit_event_id)=1`,
     ],
   },
+  {
+    version: 19,
+    statements: [
+      `CREATE TABLE tv_profiles (id TEXT PRIMARY KEY NOT NULL, provider TEXT NOT NULL, archived INTEGER NOT NULL DEFAULT 0 CHECK(archived IN (0,1)), payload TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+      `CREATE INDEX idx_tv_profiles_active ON tv_profiles(archived,provider)`,
+      `CREATE TABLE tv_recharges (id TEXT PRIMARY KEY NOT NULL, profile_id TEXT NOT NULL, start_date TEXT NOT NULL, end_date TEXT NOT NULL, amount_minor INTEGER CHECK(amount_minor IS NULL OR amount_minor >= 0), payload TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, FOREIGN KEY(profile_id) REFERENCES tv_profiles(id) ON DELETE CASCADE)`,
+      `CREATE INDEX idx_tv_recharges_profile_dates ON tv_recharges(profile_id,start_date,end_date)`,
+    ],
+  },
 ];

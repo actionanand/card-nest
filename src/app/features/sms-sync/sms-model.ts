@@ -76,6 +76,7 @@ export interface SmsEvidence {
   reportedBalanceMinor?: number;
   balancePosition?: 'AFTER' | 'BEFORE' | 'UNKNOWN';
   vehicleNumber?: string;
+  fastagId?: string;
   availableLimitMinor?: number;
   statementTotalMinor?: number;
   minimumDueMinor?: number;
@@ -121,6 +122,7 @@ export interface ApprovalEdits {
   smsAdditionalComment?: string;
   walletLoading?: WalletLoadingDetails;
   walletLoadingApproved?: boolean;
+  fastagIdentityConfirmed?: boolean;
 }
 export interface PurchaseReviewDraft {
   categoryOverridden?: boolean;
@@ -231,6 +233,7 @@ export function validEvidence(value: unknown): value is SmsEvidence {
     (item['direction'] === undefined || ['DEBIT', 'CREDIT'].includes(String(item['direction']))) &&
     (item['counterpartyAccountDigits'] === undefined ||
       /^\d{3,5}$/.test(String(item['counterpartyAccountDigits']))) &&
+    (item['fastagId'] === undefined || /^\d{1,32}$/.test(String(item['fastagId']))) &&
     typeof item['receivedAt'] === 'number' &&
     typeof item['providerId'] === 'string' &&
     (item['sourceMessageId'] === undefined || typeof item['sourceMessageId'] === 'string')
@@ -253,16 +256,21 @@ export function eligibleSources(
         : [];
     return !item.accountDigits && wallets.length === 1 ? [wallets[0].id] : [];
   }
-  if (item.kind.startsWith('FASTAG'))
+  if (item.kind.startsWith('FASTAG')) {
+    const normalizeVehicle = (value: string | undefined) =>
+      value?.replace(/[\s-]/g, '').toUpperCase();
+    if (!item.vehicleNumber && !item.fastagId) return [];
     return sources
       .filter(
-        (s) =>
-          s.kind === 'FASTAG' &&
-          !!item.vehicleNumber &&
-          s.vehicleNumber === item.vehicleNumber &&
-          !s.archived,
+        (source) =>
+          source.kind === 'FASTAG' &&
+          !source.archived &&
+          (!item.vehicleNumber ||
+            normalizeVehicle(source.vehicleNumber) === normalizeVehicle(item.vehicleNumber)) &&
+          (!item.fastagId || source.fastagId === item.fastagId),
       )
-      .map((s) => s.id);
+      .map((source) => source.id);
+  }
   if (!ledgerType(item)) return [];
   return cards
     .filter((card) => {

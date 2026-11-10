@@ -1,6 +1,152 @@
 <div class="page utilities-page">
   <header class="page-header utilities-header">
     <div>
+      @if (broadbandTvChoicesOpen()) {
+        <app-profile-modal title="Broadband &amp; TV" (closed)="closeBroadbandTvChooser()">
+          <div class="broadband-tv-choices">
+            <button class="btn" type="button" (click)="chooseBroadband()">
+              <app-icon name="wifi" /> Broadband
+            </button>
+            <button class="btn" type="button" (click)="chooseTv()">
+              <app-icon name="tv" /> TV
+            </button>
+          </div>
+        </app-profile-modal>
+      }
+
+      @if (broadbandComingSoonOpen()) {
+        <app-profile-modal title="Broadband" (closed)="broadbandComingSoonOpen.set(false)">
+          <p class="coming-soon-message">Broadband - Coming soon</p>
+        </app-profile-modal>
+      }
+
+      @if (tvProfileFormOpen()) {
+        <app-profile-modal
+          [title]="editingTvProfileId() ? 'Edit TV profile' : 'Register TV profile'"
+          [busy]="saving()"
+          (closed)="closeTvProfileForm()"
+        >
+          <form class="utility-form" [formGroup]="tvForm" (submit)="saveTvProfile($event)">
+            <div class="form-grid">
+              <label
+                >Profile / display name<input formControlName="displayName" maxlength="80" required
+              /></label>
+              <app-select-picker
+                label="Provider"
+                formControlName="provider"
+                [options]="tvProviderOptions"
+              />
+              @if (tvForm.controls.provider.value === 'OTHER') {
+                <label
+                  >Provider name<input formControlName="otherProviderName" maxlength="80" required
+                /></label>
+              }
+              <label
+                >DTH / cable customer ID (optional)<input
+                  formControlName="customerId"
+                  maxlength="80"
+              /></label>
+              <label class="phone-field-label">
+                Registered mobile number (optional)
+                <span class="phone-field">
+                  <span class="country-prefix" aria-hidden="true">+91</span>
+                  <input
+                    appIndianPhone
+                    formControlName="mobileNumber"
+                    inputmode="numeric"
+                    maxlength="10"
+                    placeholder="10-digit mobile number"
+                    [attr.aria-invalid]="
+                      tvForm.controls.mobileNumber.invalid && tvForm.controls.mobileNumber.touched
+                    "
+                  />
+                </span>
+              </label>
+              @if (tvForm.controls.mobileNumber.invalid && tvForm.controls.mobileNumber.touched) {
+                <p class="form-error" role="alert">
+                  Enter 10 digits starting with 6, 7, 8 or 9, or leave it empty.
+                </p>
+              }
+            </div>
+            @if (error(); as message) {
+              <p class="form-error" role="alert">{{ message }}</p>
+            }
+            <div class="modal-actions">
+              <button
+                class="btn"
+                type="button"
+                [disabled]="saving()"
+                (click)="closeTvProfileForm()"
+              >
+                Cancel
+              </button>
+              <button class="btn btn-primary" type="submit" [disabled]="saving()">
+                Save TV profile
+              </button>
+            </div>
+          </form>
+        </app-profile-modal>
+      }
+
+      @if (tvRechargeProfileId(); as profileId) {
+        <app-profile-modal
+          [title]="editingTvRechargeId() ? 'Edit TV recharge' : 'Add TV recharge'"
+          [busy]="saving()"
+          (closed)="closeTvRecharge()"
+        >
+          <form class="utility-form" [formGroup]="tvRechargeForm" (submit)="saveTvRecharge($event)">
+            <label
+              >Recharge amount (optional)<input
+                formControlName="amount"
+                inputmode="decimal"
+                placeholder="0.00"
+            /></label>
+            <label>Start date<input type="date" formControlName="startDate" required /></label>
+            <div class="validity-mode" role="group" aria-label="TV recharge validity mode">
+              <button
+                type="button"
+                [class.active]="tvValidityMode() === 'DAYS'"
+                (click)="tvValidityMode.set('DAYS')"
+              >
+                Duration
+              </button>
+              <button
+                type="button"
+                [class.active]="tvValidityMode() === 'END_DATE'"
+                (click)="tvValidityMode.set('END_DATE')"
+              >
+                End date
+              </button>
+            </div>
+            @if (tvValidityMode() === 'DAYS') {
+              <label
+                >Duration in days<input
+                  type="number"
+                  min="1"
+                  step="1"
+                  formControlName="validityDays"
+                  required
+              /></label>
+            } @else {
+              <label>End date<input type="date" formControlName="endDate" required /></label>
+            }
+            <label
+              >Notes (optional)<textarea formControlName="notes" maxlength="300"></textarea>
+            </label>
+            @if (error(); as message) {
+              <p class="form-error" role="alert">{{ message }}</p>
+            }
+            <div class="modal-actions">
+              <button class="btn" type="button" [disabled]="saving()" (click)="closeTvRecharge()">
+                Cancel
+              </button>
+              <button class="btn btn-primary" type="submit" [disabled]="saving()">
+                Save recharge
+              </button>
+            </div>
+          </form>
+        </app-profile-modal>
+      }
       <p class="eyebrow">Household services</p>
       <h1>Indian Utilities</h1>
       <p class="subtitle">Keep recharge plans and cylinder events in one place.</p>
@@ -100,8 +246,8 @@
       <button
         class="utility-image-card broadband-card"
         type="button"
-        [class.selected]="section() === 'BROADBAND'"
-        (click)="setSection('BROADBAND')"
+        [class.selected]="section() === 'BROADBAND' || section() === 'TV'"
+        (click)="openBroadbandTvChooser()"
       >
         <app-icon class="category-fallback" name="wifi" />
         <img
@@ -110,9 +256,125 @@
           height="360"
           alt="Broadband router"
         />
-        <span><strong>Broadband</strong><small>Coming Soon</small></span>
+        <span
+          ><strong>Broadband &amp; TV</strong
+          ><small>Broadband tracker · TV subscriptions</small></span
+        >
       </button>
     </section>
+
+    @if (section() === 'TV') {
+      <section class="feature-heading">
+        <div>
+          <p class="eyebrow">Television</p>
+          <h2>TV / DTH profiles</h2>
+        </div>
+        <button class="btn btn-primary" type="button" (click)="startAddTvProfile()">
+          <app-icon name="plus" /> Add TV profile
+        </button>
+      </section>
+      @if (tvProfiles().length) {
+        <section class="tv-profile-list" aria-label="Active TV profiles">
+          @for (profile of tvProfiles(); track profile.id) {
+            @let recharge = latestTvRecharge(profile);
+            <article class="panel tv-profile">
+              <header>
+                <div>
+                  <p class="eyebrow">{{ tvProviderLabel(profile) }}</p>
+                  <h3>{{ profile.displayName }}</h3>
+                </div>
+                <span class="status-badge" [class.active]="tvProfileStatus(profile) === 'Active'">
+                  {{ tvProfileStatus(profile) }}
+                </span>
+              </header>
+              @if (profile.customerId) {
+                <p>Customer ID · {{ profile.customerId }}</p>
+              }
+              @if (profile.mobileNumber) {
+                <p>{{ profile.mobileNumber }}</p>
+              }
+              @if (recharge) {
+                <dl class="tv-recharge-summary">
+                  @if (recharge.amountMinor !== undefined) {
+                    <div>
+                      <dt>Last recharge</dt>
+                      <dd>{{ money(recharge.amountMinor) }}</dd>
+                    </div>
+                  }
+                  <div>
+                    <dt>Validity</dt>
+                    <dd>{{ recharge.startDate }} to {{ recharge.endDate }}</dd>
+                  </div>
+                  <div>
+                    <dt>Status</dt>
+                    <dd>{{ tvRechargePeriod(profile) }}</dd>
+                  </div>
+                </dl>
+              } @else {
+                <p class="form-note">No current recharge · Add recharge</p>
+              }
+              <div class="tv-profile-actions">
+                <button class="btn btn-primary" type="button" (click)="startTvRecharge(profile)">
+                  <app-icon name="plus" /> Add recharge
+                </button>
+                <button class="btn" type="button" (click)="editTvProfile(profile)">
+                  Edit profile
+                </button>
+                <button class="btn" type="button" (click)="archiveTvProfile(profile)">
+                  Archive
+                </button>
+              </div>
+              @if (tvProfileRecharges(profile).length) {
+                <details class="tv-recharge-history">
+                  <summary>Recharge history ({{ tvProfileRecharges(profile).length }})</summary>
+                  @for (entry of tvProfileRecharges(profile); track entry.id) {
+                    <div class="tv-recharge-row">
+                      <span>
+                        {{ entry.startDate }} to {{ entry.endDate }}
+                        @if (entry.amountMinor !== undefined) {
+                          · {{ money(entry.amountMinor) }}
+                        }
+                        @if (entry.notes) {
+                          · {{ entry.notes }}
+                        }
+                      </span>
+                      <button
+                        class="icon-action"
+                        type="button"
+                        [disabled]="saving()"
+                        aria-label="Edit recharge"
+                        (click)="startTvRecharge(profile, entry)"
+                      >
+                        <app-icon name="edit" />
+                      </button>
+                    </div>
+                  }
+                </details>
+              }
+            </article>
+          }
+        </section>
+      } @else {
+        <div class="panel empty">
+          <h2>No TV profiles</h2>
+          <p>Add a DTH or cable profile to track recharges.</p>
+        </div>
+      }
+      @if (archivedTvProfiles().length) {
+        <details class="archived-profiles">
+          <summary>Archived TV profiles ({{ archivedTvProfiles().length }})</summary>
+          @for (profile of archivedTvProfiles(); track profile.id) {
+            <div class="archived-profile-row">
+              <span
+                >{{ profile.displayName }} · {{ tvProviderLabel(profile) }} ·
+                {{ tvProfileRecharges(profile).length }} recharges retained</span
+              >
+              <button class="btn" type="button" (click)="restoreTvProfile(profile)">Restore</button>
+            </div>
+          }
+        </details>
+      }
+    }
 
     @if (section() === 'MOBILE') {
       <section class="feature-heading">

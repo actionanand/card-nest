@@ -823,87 +823,162 @@
 
   @if (showAddOnCards()) {
     <section class="card-list addon-directory" aria-label="Family Add-On cards">
-      @for (row of visibleAddOnProfiles(); track row.profile.id) {
-        <article class="card-list-item panel">
-          <div class="addon-profile-row">
-            <span class="network-tile">
-              <app-card-network-logo [network]="row.profile.network ?? row.primaryCard.network" />
-            </span>
-            <span>
-              <strong>{{ row.primaryCard.nickname }} · {{ row.profile.name }}</strong>
-              <small>
-                {{ addOnNetwork(row.primaryCard, row.profile) }} ·
-                {{ addOnRelationship(row.profile) }}
-                @if (row.profile.lastDigits) {
-                  · {{ row.profile.lastDigits }}
-                }
-                @if (row.profile.deletedAt) {
-                  · Deleted; history retained
-                } @else if (row.profile.archived) {
-                  · Archived
-                }
-                @if (row.primaryCard.deletedAt) {
-                  · Primary card deleted
-                } @else if (row.primaryCard.archived) {
-                  · Primary card archived
-                }
-                @if (!addOnCardsEnabled(row.primaryCard)) {
-                  · Disabled
-                }
-              </small>
-            </span>
-            <div class="addon-actions">
-              <button class="btn" type="button" (click)="viewAddOnTransactions(row)">
-                View Transactions
-              </button>
-              @if (
-                !row.primaryCard.archived && !row.primaryCard.deletedAt && !row.profile.deletedAt
-              ) {
+      <section class="addon-active-list" aria-label="Active Add-On cards">
+        @for (row of activeAddOnProfiles(); track row.profile.id) {
+          <article class="card-list-item panel addon-card-row">
+            <div class="addon-profile-row">
+              <span class="network-tile">
+                <app-card-network-logo [network]="row.profile.network ?? row.primaryCard.network" />
+              </span>
+              <span class="addon-card-copy">
+                <strong>{{ row.primaryCard.nickname }} · {{ row.profile.name }}</strong>
+                <small>
+                  {{ addOnRelationship(row.profile) }} ·
+                  {{ addOnNetwork(row.primaryCard, row.profile) }}
+                  @if (row.profile.lastDigits) {
+                    · {{ row.profile.lastDigits }}
+                  }
+                  @if (row.primaryCard.archived) {
+                    · Primary card archived
+                  }
+                  @if (!addOnCardsEnabled(row.primaryCard)) {
+                    · Disabled
+                  }
+                </small>
+              </span>
+              <div class="menu-anchor addon-menu-anchor" data-action-menu>
                 <button
-                  class="icon-button"
+                  class="menu-button"
                   type="button"
-                  [disabled]="!addOnCardsEnabled(row.primaryCard)"
-                  [attr.aria-label]="'Edit ' + row.profile.name"
-                  [attr.title]="'Edit ' + row.profile.name"
-                  (click)="editAddOnProfile(row.primaryCard, row.profile)"
+                  (click)="toggleAddOnActionMenu($event, row)"
+                  [attr.aria-expanded]="actionMenuId() === 'addon:' + row.profile.id"
+                  [attr.aria-label]="'Actions for ' + row.profile.name"
                 >
-                  <app-icon name="edit" />
+                  <app-icon name="more" />
                 </button>
-                <button
-                  class="icon-button"
-                  type="button"
-                  [attr.aria-label]="
-                    (row.profile.archived ? 'Restore ' : 'Archive ') + row.profile.name
-                  "
-                  [attr.title]="(row.profile.archived ? 'Restore ' : 'Archive ') + row.profile.name"
-                  (click)="
-                    requestAddOnProfileAction(
-                      row.primaryCard,
-                      row.profile,
-                      row.profile.archived ? 'RESTORE' : 'ARCHIVE'
-                    )
-                  "
-                >
-                  <app-icon name="archive" />
-                </button>
-                <button
-                  class="icon-button danger-item"
-                  type="button"
-                  [attr.aria-label]="'Delete ' + row.profile.name"
-                  [attr.title]="'Delete ' + row.profile.name"
-                  (click)="requestAddOnProfileAction(row.primaryCard, row.profile, 'DELETE')"
-                >
-                  <app-icon name="delete" />
-                </button>
-              }
+                @if (actionMenuId() === 'addon:' + row.profile.id) {
+                  <div class="action-menu" [class.menu-up]="actionMenuOpensUp()" role="menu">
+                    <button type="button" role="menuitem" (click)="viewAddOnTransactions(row)">
+                      <app-icon name="activity" /> View Transactions
+                    </button>
+                    @if (!row.primaryCard.archived && !row.primaryCard.deletedAt) {
+                      <button
+                        type="button"
+                        role="menuitem"
+                        (click)="editAddOnProfile(row.primaryCard, row.profile)"
+                      >
+                        <app-icon name="edit" /> Edit
+                      </button>
+                    }
+                    @if (!row.primaryCard.archived && !row.primaryCard.deletedAt) {
+                      <button
+                        type="button"
+                        role="menuitem"
+                        (click)="requestAddOnProfileAction(row.primaryCard, row.profile, 'ARCHIVE')"
+                      >
+                        <app-icon name="archive" /> Archive
+                      </button>
+                    }
+                    <button
+                      class="danger-item"
+                      type="button"
+                      role="menuitem"
+                      (click)="requestAddOnProfileAction(row.primaryCard, row.profile, 'DELETE')"
+                    >
+                      <app-icon name="delete" /> Delete
+                    </button>
+                  </div>
+                }
+              </div>
             </div>
+          </article>
+        } @empty {
+          @if (!archivedAddOnProfiles().length) {
+            <div class="panel empty">
+              <h2>No Add-On cards</h2>
+              <p>Enable Add-On cards in a primary card's details to create a profile.</p>
+            </div>
+          }
+        }
+      </section>
+      @if (archivedAddOnProfiles().length) {
+        <details
+          class="archived-addon-list"
+          [open]="showArchivedAddOn()"
+          (toggle)="showArchivedAddOn.set($any($event.target).open)"
+        >
+          <summary>Archived Add-On cards ({{ archivedAddOnProfiles().length }})</summary>
+          <div class="addon-active-list">
+            @for (row of archivedAddOnProfiles(); track row.profile.id) {
+              <article class="card-list-item panel addon-card-row archived-addon-row">
+                <div class="addon-profile-row">
+                  <span class="network-tile">
+                    <app-card-network-logo
+                      [network]="row.profile.network ?? row.primaryCard.network"
+                    />
+                  </span>
+                  <span class="addon-card-copy">
+                    <strong>{{ row.primaryCard.nickname }} · {{ row.profile.name }}</strong>
+                    <small>
+                      {{ addOnRelationship(row.profile) }} ·
+                      {{ addOnNetwork(row.primaryCard, row.profile) }}
+                      @if (row.profile.lastDigits) {
+                        · {{ row.profile.lastDigits }}
+                      }
+                      @if (row.profile.deletedAt) {
+                        · Deleted; history retained
+                      } @else {
+                        · Archived
+                      }
+                      @if (row.primaryCard.archived) {
+                        · Primary card archived
+                      }
+                    </small>
+                  </span>
+                  <div class="menu-anchor addon-menu-anchor" data-action-menu>
+                    <button
+                      class="menu-button"
+                      type="button"
+                      (click)="toggleAddOnActionMenu($event, row)"
+                      [attr.aria-expanded]="actionMenuId() === 'addon:' + row.profile.id"
+                      [attr.aria-label]="'Actions for ' + row.profile.name"
+                    >
+                      <app-icon name="more" />
+                    </button>
+                    @if (actionMenuId() === 'addon:' + row.profile.id) {
+                      <div class="action-menu" [class.menu-up]="actionMenuOpensUp()" role="menu">
+                        <button type="button" role="menuitem" (click)="viewAddOnTransactions(row)">
+                          <app-icon name="activity" /> View Transactions
+                        </button>
+                        @if (!row.profile.deletedAt) {
+                          <button
+                            type="button"
+                            role="menuitem"
+                            (click)="
+                              requestAddOnProfileAction(row.primaryCard, row.profile, 'RESTORE')
+                            "
+                          >
+                            <app-icon name="archive" /> Restore
+                          </button>
+                          <button
+                            class="danger-item"
+                            type="button"
+                            role="menuitem"
+                            (click)="
+                              requestAddOnProfileAction(row.primaryCard, row.profile, 'DELETE')
+                            "
+                          >
+                            <app-icon name="delete" /> Delete
+                          </button>
+                        }
+                      </div>
+                    }
+                  </div>
+                </div>
+              </article>
+            }
           </div>
-        </article>
-      } @empty {
-        <div class="panel empty">
-          <h2>No Add-On cards</h2>
-          <p>Enable Add-On cards in a primary card's details to create a profile.</p>
-        </div>
+        </details>
       }
     </section>
   } @else {
@@ -958,6 +1033,11 @@
                 </span>
                 @if (card.subtype) {
                   <em class="compact-subtype">{{ card.subtype }}</em>
+                }
+                @if (!card.archived && primaryCardExpiryPassed(card)) {
+                  <em class="expiry-advisory"
+                    >Card expiry date has passed. Update it if renewed.</em
+                  >
                 }
                 @if (card.archived) {
                   <em class="archived-badge">Archived {{ archivedDate(card) }}</em>
@@ -1115,55 +1195,6 @@
                       </div>
                     }
                   </div>
-                }
-                @if (addOnProfileFormOpen() && editingAddOnCardId() === card.id) {
-                  <form
-                    class="addon-profile-form"
-                    (submit)="$event.preventDefault(); saveAddOnProfile(card)"
-                  >
-                    <app-select-picker
-                      label="Relationship"
-                      [options]="addOnRelationshipOptions"
-                      [value]="addOnProfileRelationship()"
-                      (valueChange)="setAddOnProfileRelationship($event)"
-                    />
-                    <label
-                      >Cardholder name
-                      <input
-                        required
-                        maxlength="50"
-                        [value]="addOnProfileName()"
-                        (input)="addOnProfileName.set($any($event.target).value)"
-                      />
-                    </label>
-                    <label
-                      >Last four digits (optional)
-                      <input
-                        inputmode="numeric"
-                        maxlength="4"
-                        placeholder="Optional"
-                        [value]="addOnProfileDigits()"
-                        (input)="setAddOnProfileDigits($any($event.target).value)"
-                      />
-                    </label>
-                    <app-select-picker
-                      label="Network (optional, defaults to primary)"
-                      [options]="addOnNetworkOptions"
-                      [value]="addOnProfileNetwork()"
-                      (valueChange)="setAddOnProfileNetwork($event)"
-                    />
-                    @if (addOnProfileError(); as error) {
-                      <small role="alert">{{ error }}</small>
-                    }
-                    <div>
-                      <button class="btn btn-primary" type="submit">
-                        {{ editingAddOnProfileId() ? 'Save changes' : 'Add profile' }}
-                      </button>
-                      <button class="btn" type="button" (click)="cancelAddOnProfileEdit()">
-                        Cancel
-                      </button>
-                    </div>
-                  </form>
                 }
               </section>
               @if (card.archived) {
@@ -1436,6 +1467,56 @@
   /></a>
 </div>
 
+@if (addOnProfileFormOpen() && addOnEditingCard(); as card) {
+  <app-profile-modal
+    [title]="editingAddOnProfileId() ? 'Edit Add-On card' : 'Add Add-On card'"
+    (closed)="cancelAddOnProfileEdit()"
+  >
+    <form class="addon-profile-form" (submit)="$event.preventDefault(); saveAddOnProfile(card)">
+      <app-select-picker
+        label="Relationship"
+        [options]="addOnRelationshipOptions"
+        [value]="addOnProfileRelationship()"
+        (valueChange)="setAddOnProfileRelationship($event)"
+      />
+      <label>
+        Cardholder name
+        <input
+          required
+          maxlength="50"
+          [value]="addOnProfileName()"
+          (input)="addOnProfileName.set($any($event.target).value)"
+        />
+      </label>
+      <label>
+        Last four digits (optional)
+        <input
+          inputmode="numeric"
+          maxlength="4"
+          placeholder="Optional"
+          [value]="addOnProfileDigits()"
+          (input)="setAddOnProfileDigits($any($event.target).value)"
+        />
+      </label>
+      <app-select-picker
+        label="Network (optional, defaults to primary)"
+        [options]="addOnNetworkOptions"
+        [value]="addOnProfileNetwork()"
+        (valueChange)="setAddOnProfileNetwork($event)"
+      />
+      @if (addOnProfileError(); as error) {
+        <small role="alert">{{ error }}</small>
+      }
+      <div>
+        <button class="btn" type="button" (click)="cancelAddOnProfileEdit()">Cancel</button>
+        <button class="btn btn-primary" type="submit">
+          {{ editingAddOnProfileId() ? 'Save changes' : 'Add profile' }}
+        </button>
+      </div>
+    </form>
+  </app-profile-modal>
+}
+
 @if (deleteCandidate(); as card) {
   <app-confirmation-dialog
     title="Delete card?"
@@ -1487,10 +1568,9 @@
             candidate.profile.name +
             '? Existing transactions will remain attributed and the profile ' +
             'will no longer be selectable for new transactions.'
-          : 'Restore ' +
-            candidate.profile.name +
-            ' so it can be selected ' +
-            'for new transactions?'
+          : candidate.card.archived
+            ? 'The primary card is archived. Restore or renew it explicitly in Cards first; this Add-On profile will remain archived.'
+            : 'Restore ' + candidate.profile.name + ' so it can be selected for new transactions?'
     "
     [confirmLabel]="
       candidate.action === 'DELETE'
@@ -1503,6 +1583,22 @@
     [error]="addOnActionError()"
     (confirmed)="confirmAddOnAction()"
     (cancelled)="cancelAddOnAction()"
+  />
+}
+
+@if (addOnRenewalCandidate(); as candidate) {
+  <app-confirmation-dialog
+    title="Update primary card expiry?"
+    [message]="
+      'The primary card ' +
+      candidate.card.nickname +
+      ' expires before the current India-local month. Update its expiry before restoring ' +
+      candidate.profile.name +
+      '. The Add-On profile will remain archived until you confirm restoration after saving.'
+    "
+    confirmLabel="Update expiry"
+    (confirmed)="beginAddOnExpiryRenewal()"
+    (cancelled)="cancelAddOnRenewal()"
   />
 }
 

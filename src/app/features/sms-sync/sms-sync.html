@@ -854,22 +854,106 @@
                 [options]="sourceOptions()"
                 [searchable]="true"
               />
-              <label
-                >Amount (INR)<input formControlName="amount" inputmode="decimal" required
-              /></label>
-              <label
-                >Merchant / description<input formControlName="merchant" maxlength="100"
-              /></label>
+              @if (candidate.kind.startsWith('FASTAG') && fastagIdentityNeedsConfirmation()) {
+                <label class="check">
+                  <input type="checkbox" formControlName="fastagIdentityConfirmed" />
+                  <span>
+                    Vehicle / FASTag ID did not uniquely identify this wallet. I verified this
+                    selection.
+                  </span>
+                </label>
+              }
+              @if (candidate.kind === 'FASTAG_TOLL' && fastagTollPossibleDuplicate()) {
+                <aside class="review-notice" role="status">
+                  <app-icon name="warning" />
+                  <div>
+                    <strong>Possible duplicate toll</strong>
+                    <p>
+                      A FASTAG activity has the same wallet, date, amount, plaza and time. Confirm
+                      only if this is a distinct crossing.
+                    </p>
+                    <label class="check">
+                      <input type="checkbox" formControlName="separate" />
+                      <span>I confirmed this is a separate toll transaction.</span>
+                    </label>
+                  </div>
+                </aside>
+              }
+              @if (candidate.kind === 'FASTAG_TOPUP') {
+                <label>
+                  FASTag credit amount from SMS (INR)
+                  <input
+                    [value]="candidate.item?.amountMinor ? candidate.item.amountMinor / 100 : ''"
+                    readonly
+                  />
+                </label>
+                <fieldset class="wallet-loading-review">
+                  <legend>Confirm FASTag funding source</legend>
+                  <app-select-picker
+                    label="Bank/UPI or credit card that funded this top-up"
+                    formControlName="fastagFundingSource"
+                    [options]="fastagFundingOptions()"
+                    [searchable]="true"
+                  />
+                  @if (fastagIdentityNeedsConfirmation()) {
+                    <label class="check">
+                      <input type="checkbox" formControlName="fastagIdentityConfirmed" />
+                      <span
+                        >I verified this FASTag wallet even though the identifiers did not match
+                        uniquely.</span
+                      >
+                    </label>
+                  }
+                  <label>
+                    Amount debited (INR)
+                    <input formControlName="fastagDebitAmount" inputmode="decimal" required />
+                  </label>
+                  @if (fastagExistingFundingOptions().length) {
+                    <app-select-picker
+                      label="Link an existing matching debit (optional)"
+                      formControlName="fastagExistingFunding"
+                      [options]="[
+                        { value: '', label: 'Create a new confirmed debit' },
+                        ...fastagExistingFundingOptions(),
+                      ]"
+                      [searchable]="true"
+                    />
+                  }
+                  <p class="muted">{{ fastagFundingSummary() }}</p>
+                  <p class="muted">
+                    The FASTag credit alone does not identify its funding source. No source debit is
+                    created until you confirm.
+                  </p>
+                  <label class="check">
+                    <input
+                      type="checkbox"
+                      [checked]="fastagFundingApproved()"
+                      [disabled]="!fastagFundingConfirmationKey()"
+                      (change)="confirmFastagFunding($event)"
+                    />
+                    <span>I verified the FASTag wallet, funding source and debit amount.</span>
+                  </label>
+                </fieldset>
+              } @else {
+                <label
+                  >Amount (INR)<input formControlName="amount" inputmode="decimal" required
+                /></label>
+                <label
+                  >Merchant / description<input formControlName="merchant" maxlength="100"
+                /></label>
+              }
               <label
                 >Event date to record<input type="date" formControlName="transactionDate" required
               /></label>
-              <app-select-picker
-                label="Category"
-                [value]="editor.controls.category.value"
-                (valueChange)="chooseReviewCategory($event, false)"
-                [options]="categoryOptions()"
-                [searchable]="true"
-              />
+              @if (candidate.kind !== 'FASTAG_TOPUP') {
+                <app-select-picker
+                  label="Category"
+                  [value]="editor.controls.category.value"
+                  (valueChange)="chooseReviewCategory($event, false)"
+                  [options]="categoryOptions()"
+                  [searchable]="true"
+                />
+              }
               @if (cardAnnotationsVisible()) {
                 <app-select-picker
                   label="Payment Method"
@@ -910,13 +994,13 @@
                       [checked]="editor.controls.walletLoading.value"
                       (change)="setCardWalletLoadingFromEvent($event)"
                     />
-                    <span>This debit explicitly funded a consumer wallet</span>
+                    <span>This debit explicitly funded a consumer or FASTag wallet</span>
                   </label>
                   @if (editor.controls.walletLoading.value) {
                     <app-select-picker
-                      label="Consumer wallet destination"
+                      label="Consumer or FASTag wallet destination"
                       formControlName="walletDestination"
-                      [options]="walletLoadingOptions()"
+                      [options]="walletLoadingOptions('CARD')"
                       [searchable]="true"
                     />
                     <label
@@ -933,7 +1017,7 @@
                         [disabled]="!walletLoadingFormValid('CARD')"
                         (change)="confirmWalletLoading('CARD', $event)"
                       />
-                      <span>I confirm this debit successfully loaded the selected wallet.</span>
+                      <span>I confirm this source debit funded the selected wallet.</span>
                     </label>
                   }
                 </fieldset>
@@ -1123,9 +1207,11 @@
                 "
               >
                 {{
-                  editor.controls.existing.value
-                    ? 'Approve match existing'
-                    : 'Approve and add transaction'
+                  candidate.kind === 'FASTAG_TOPUP'
+                    ? 'Confirm funding & record FASTag credit'
+                    : editor.controls.existing.value
+                      ? 'Approve match existing'
+                      : 'Approve and add transaction'
                 }}
               </button>
             </form>
@@ -1241,9 +1327,9 @@
                 <fieldset class="wallet-loading-review">
                   <legend>Confirm wallet funding details</legend>
                   <app-select-picker
-                    label="Consumer wallet destination"
+                    label="Consumer or FASTAG wallet destination"
                     formControlName="walletDestination"
-                    [options]="walletLoadingOptions()"
+                    [options]="walletLoadingOptions('BANK')"
                     [searchable]="true"
                   />
                   <label
@@ -1260,7 +1346,7 @@
                       [disabled]="!walletLoadingFormValid('BANK')"
                       (change)="confirmWalletLoading('BANK', $event)"
                     />
-                    <span>I confirm this debit successfully loaded the selected wallet.</span>
+                    <span>I confirm this source debit funded the selected wallet.</span>
                   </label>
                 </fieldset>
               }

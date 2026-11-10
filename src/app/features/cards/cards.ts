@@ -33,7 +33,9 @@ import { AppIcon } from '../../shared/app-icon';
 import { ConfirmationDialog } from '../../shared/confirmation-dialog';
 import { DateFormatService } from '../../core/services/date-format.service';
 import { CardExpiryService } from '../../core/services/card-expiry.service';
+import { DeviceCalendarClock } from '../../core/services/device-date';
 import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
+import { ProfileModal } from '../../shared/profile-modal';
 
 type PaymentMode = 'DUE' | 'OUTSTANDING' | 'CUSTOM';
 type ArchiveAction = 'ARCHIVE' | 'RESTORE';
@@ -61,6 +63,7 @@ interface AddOnCardRow {
     AppIcon,
     ConfirmationDialog,
     AppSelectPicker,
+    ProfileModal,
   ],
   templateUrl: './cards.html',
   styleUrl: './cards.scss',
@@ -79,6 +82,7 @@ export class CardsPage {
   private readonly sanitizer = inject(DomSanitizer);
   private readonly dates = inject(DateFormatService);
   private readonly cardExpiry = inject(CardExpiryService);
+  private readonly calendarClock = inject(DeviceCalendarClock);
   private readonly uiPreferences = inject(UiPreferencesService);
   private readonly requestedEditId = this.route.snapshot.queryParamMap.get('edit');
   private requestedEditHandled = false;
@@ -86,6 +90,7 @@ export class CardsPage {
   readonly editingId = signal<string | null>(null);
   readonly selectedCardId = signal<string | null>(this.route.snapshot.queryParamMap.get('open'));
   readonly showAddOnCards = signal(false);
+  readonly showArchivedAddOn = signal(false);
   readonly addOnProfileName = signal('');
   readonly addOnProfileDigits = signal('');
   readonly addOnProfileRelationship = signal<AddOnRelationship | ''>('');
@@ -93,6 +98,9 @@ export class CardsPage {
   readonly editingAddOnProfileId = signal<string | null>(null);
   readonly editingAddOnCardId = signal<string | null>(null);
   readonly addOnProfileFormOpen = signal(false);
+  readonly addOnEditingCard = computed(
+    () => this.store.cards().find((card) => card.id === this.editingAddOnCardId()) ?? null,
+  );
   readonly addOnProfileError = signal<string | null>(null);
   readonly showArchived = signal(false);
   readonly actionMenuId = signal<string | null>(null);
@@ -106,6 +114,10 @@ export class CardsPage {
   } | null>(null);
   readonly addOnActionSaving = signal(false);
   readonly addOnActionError = signal<string | null>(null);
+  readonly addOnRenewalCandidate = signal<{ card: CreditCard; profile: AddOnCardProfile } | null>(
+    null,
+  );
+  readonly pendingAddOnRestore = signal<{ cardId: string; profileId: string } | null>(null);
   readonly paymentCard = signal<CreditCard | null>(null);
   readonly paymentMode = signal<PaymentMode>('CUSTOM');
   readonly paymentAmount = signal('');
@@ -236,6 +248,12 @@ export class CardsPage {
           left.profile.name.localeCompare(right.profile.name),
       );
   });
+  readonly activeAddOnProfiles = computed(() =>
+    this.visibleAddOnProfiles().filter(({ profile }) => !profile.archived && !profile.deletedAt),
+  );
+  readonly archivedAddOnProfiles = computed(() =>
+    this.visibleAddOnProfiles().filter(({ profile }) => profile.archived || !!profile.deletedAt),
+  );
   readonly filteredActiveCardCount = computed(
     () =>
       this.store
@@ -675,6 +693,7 @@ export class CardsPage {
   showAddOnProfileTab(): void {
     this.showArchived.set(false);
     this.showAddOnCards.set(true);
+    this.showArchivedAddOn.set(false);
     this.selectedCardId.set(null);
     this.hideRevealedSecrets();
     this.expandedBenefitId.set(null);
@@ -684,6 +703,14 @@ export class CardsPage {
   }
   addOnProfileCount(card: CreditCard): number {
     return (card.addOnProfiles ?? []).filter((profile) => !profile.deletedAt).length;
+  }
+  primaryExpiryCurrentOrLater(card: CreditCard): boolean {
+    if (!card.expiryMonth || !card.expiryYear) return false;
+    const currentMonth = this.calendarClock.calendar().dateIso.slice(0, 7);
+    return `${card.expiryYear}-${String(card.expiryMonth).padStart(2, '0')}` >= currentMonth;
+  }
+  primaryCardExpiryPassed(card: CreditCard): boolean {
+    return !!card.expiryMonth && !!card.expiryYear && !this.primaryExpiryCurrentOrLater(card);
   }
   setAddOnCardsEnabled(card: CreditCard, event: Event): void {
     if (card.archived || card.deletedAt) return;
@@ -699,9 +726,13 @@ export class CardsPage {
     return (profile.network ?? card.network).replaceAll('_', ' ');
   }
   viewAddOnTransactions(row: AddOnCardRow): void {
+    this.actionMenuId.set(null);
     void this.router.navigate(['/transactions'], {
       queryParams: { source: `add-on:${row.profile.id}` },
     });
+  }
+  toggleAddOnActionMenu(event: MouseEvent, row: AddOnCardRow): void {
+    this.toggleActionMenu(event, `addon:${row.profile.id}`);
   }
   openAdd(): void {
     this.showArchived.set(false);
@@ -714,13 +745,7 @@ export class CardsPage {
     this.showForm.set(true);
   }
   editAddOnProfile(card: CreditCard, profile: AddOnCardProfile): void {
-    if (this.showAddOnCards()) {
-      this.showAddOnCards.set(false);
-      this.showArchived.set(false);
-      this.search.set('');
-      this.uiPreferences.setCardsFilter('ALL');
-      this.selectedCardId.set(card.id);
-    }
+    if (card.archived || card.deletedAt || profile.archived || profile.deletedAt) return;
     this.editingAddOnCardId.set(card.id);
     this.addOnProfileFormOpen.set(true);
     this.editingAddOnProfileId.set(profile.id);
@@ -731,6 +756,7 @@ export class CardsPage {
     this.addOnProfileError.set(null);
   }
   cancelAddOnProfileEdit(): void {
+    if (this.addOnActionSaving()) return;
     this.addOnProfileFormOpen.set(false);
     this.editingAddOnCardId.set(null);
     this.editingAddOnProfileId.set(null);
@@ -837,7 +863,14 @@ export class CardsPage {
     profile: AddOnCardProfile,
     action: AddOnProfileAction,
   ): void {
-    if (card.archived || card.deletedAt || profile.deletedAt) return;
+    if (card.deletedAt || profile.deletedAt) return;
+    this.actionMenuId.set(null);
+    if (action === 'ARCHIVE' && (card.archived || profile.archived)) return;
+    if (action === 'RESTORE' && !profile.archived) return;
+    if (action === 'RESTORE' && !card.archived && !this.primaryExpiryCurrentOrLater(card)) {
+      this.addOnRenewalCandidate.set({ card, profile });
+      return;
+    }
     this.addOnActionError.set(null);
     this.addOnAction.set({ card, profile, action });
   }
@@ -849,6 +882,19 @@ export class CardsPage {
   async confirmAddOnAction(): Promise<void> {
     const candidate = this.addOnAction();
     if (!candidate || this.addOnActionSaving()) return;
+    if (candidate.action === 'RESTORE') {
+      if (candidate.card.archived || candidate.card.deletedAt) {
+        this.addOnActionError.set(
+          'Restore the primary card explicitly before restoring this Add-On profile.',
+        );
+        return;
+      }
+      if (!this.primaryExpiryCurrentOrLater(candidate.card)) {
+        this.addOnAction.set(null);
+        this.addOnRenewalCandidate.set(candidate);
+        return;
+      }
+    }
     this.addOnActionSaving.set(true);
     this.addOnActionError.set(null);
     try {
@@ -876,6 +922,17 @@ export class CardsPage {
     } finally {
       this.addOnActionSaving.set(false);
     }
+  }
+  cancelAddOnRenewal(): void {
+    this.addOnRenewalCandidate.set(null);
+    this.pendingAddOnRestore.set(null);
+  }
+  beginAddOnExpiryRenewal(): void {
+    const candidate = this.addOnRenewalCandidate();
+    if (!candidate || candidate.card.archived || candidate.card.deletedAt) return;
+    this.pendingAddOnRestore.set({ cardId: candidate.card.id, profileId: candidate.profile.id });
+    this.addOnRenewalCandidate.set(null);
+    this.edit(candidate.card);
   }
   edit(card: CreditCard): void {
     if (card.archived) return;
@@ -925,6 +982,14 @@ export class CardsPage {
     globalThis.scrollTo?.({ top: 0, behavior: 'smooth' });
   }
   closeForm(): void {
+    if (this.actionMenuId()) {
+      this.actionMenuId.set(null);
+      return;
+    }
+    if (this.addOnProfileFormOpen()) {
+      this.cancelAddOnProfileEdit();
+      return;
+    }
     if (this.addOnAction()) {
       this.cancelAddOnAction();
       return;
@@ -945,6 +1010,7 @@ export class CardsPage {
       this.paymentCard.set(null);
       return;
     }
+    this.pendingAddOnRestore.set(null);
     this.showForm.set(false);
     this.editingId.set(null);
     this.resetForm();
@@ -1059,7 +1125,12 @@ export class CardsPage {
       value.expiryMonth && value.expiryYear
         ? this.cardExpiry.date(value.expiryYear, value.expiryMonth)
         : null;
-    if (expiryIncomplete || (expiryDate && expiryDate < new Date())) {
+    const currentMonth = this.calendarClock.calendar().dateIso.slice(0, 7);
+    const expiryMonth =
+      value.expiryMonth && value.expiryYear
+        ? `${value.expiryYear}-${String(value.expiryMonth).padStart(2, '0')}`
+        : '';
+    if (expiryIncomplete || (expiryDate && expiryMonth < currentMonth)) {
       this.form.controls.expiryMonth.setErrors({ expiry: true });
       this.form.controls.expiryYear.setErrors({ expiry: true });
     }
@@ -1159,6 +1230,32 @@ export class CardsPage {
         relationshipGroupId,
         updatedAt: timestamp,
       });
+    }
+    const pendingRestore = this.pendingAddOnRestore();
+    if (pendingRestore?.cardId === card.id) {
+      if (!this.primaryExpiryCurrentOrLater(card)) {
+        this.formError.set(
+          'Set a primary-card expiry in the current month or later before restoring the Add-On card.',
+        );
+        return;
+      }
+      try {
+        await this.store.updateCardAndWait(card);
+      } catch (error: unknown) {
+        this.formError.set(
+          error instanceof Error ? error.message : 'Primary card expiry could not be saved.',
+        );
+        return;
+      }
+      this.pendingAddOnRestore.set(null);
+      this.showForm.set(false);
+      this.editingId.set(null);
+      this.resetForm();
+      this.formError.set(null);
+      const profile = card.addOnProfiles?.find((item) => item.id === pendingRestore.profileId);
+      if (profile) this.requestAddOnProfileAction(card, profile, 'RESTORE');
+      this.snackbar.show('Primary card expiry updated. Confirm Add-On restoration separately.');
+      return;
     }
     if (existing) this.store.updateCard(card);
     else this.store.addCard(card);

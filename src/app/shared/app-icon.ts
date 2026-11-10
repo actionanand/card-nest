@@ -190,6 +190,7 @@ const ICONS: Readonly<Record<string, LucideIconInput>> = {
   backup: LucideDatabaseBackup,
   appearance: LucidePalette,
   system_theme: LucideMonitor,
+  tv: LucideMonitor,
   light_theme: LucideSun,
   dark_theme: LucideMoon,
   fingerprint: LucideFingerprint,

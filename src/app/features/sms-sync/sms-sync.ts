@@ -841,6 +841,10 @@ export class SmsSyncPage {
     walletLoading: new FormControl(false, { nonNullable: true }),
     walletDestination: new FormControl('', { nonNullable: true }),
     walletLoadedAmount: new FormControl('', { nonNullable: true }),
+    fastagFundingSource: new FormControl('', { nonNullable: true }),
+    fastagDebitAmount: new FormControl('', { nonNullable: true }),
+    fastagExistingFunding: new FormControl('', { nonNullable: true }),
+    fastagIdentityConfirmed: new FormControl(false, { nonNullable: true }),
     smsAdditionalComment: new FormControl('', {
       nonNullable: true,
       validators: [Validators.maxLength(500)],
@@ -1044,6 +1048,7 @@ export class SmsSyncPage {
   });
   private readonly bankEditorChanges = toSignal(this.bankEditor.valueChanges);
   readonly walletLoadingApprovalKey = signal('');
+  readonly fastagFundingApprovalKey = signal('');
   readonly bankItem = computed(() => {
     const item = this.selected()?.item;
     return isBankEvidence(item) ? item : null;
@@ -1056,18 +1061,148 @@ export class SmsSyncPage {
     this.bankEditorChanges();
     return this.bankEditor.controls.purpose.value;
   });
-  walletLoadingOptions(): readonly AppSelectOption[] {
+  walletLoadingOptions(mode: 'CARD' | 'BANK'): readonly AppSelectOption[] {
+    const form = mode === 'CARD' ? this.editor : this.bankEditor;
+    const sourceId = form.controls.source.value;
+    const card = this.store.cards().find((item) => item.id === sourceId && !item.deletedAt);
+    const isCardFunding = !!card && !card.archived && card.currencyCode === 'INR';
     return [
       { value: '', label: 'Choose destination wallet' },
-      ...this.consumerWallets.activeWallets().map((wallet) => ({
-        value: wallet.id,
-        label: wallet.nickname || wallet.customName || wallet.providerId,
-        detail: `${wallet.kind === 'UPI_LITE' ? 'UPI Lite' : 'Consumer wallet'} · ${this.money(this.consumerWallets.balances().get(wallet.id) ?? 0)}`,
-      })),
+      ...this.consumerWallets
+        .activeLoadDestinations()
+        .filter((wallet) => !isCardFunding || wallet.kind !== 'UPI_LITE')
+        .map((wallet) => ({
+          value: wallet.id,
+          label: wallet.nickname || wallet.customName || wallet.providerId,
+          detail: `${wallet.fastagSourceId ? 'FASTag wallet' : wallet.kind === 'UPI_LITE' ? 'UPI Lite' : 'Consumer wallet'} · ${this.money(this.consumerWallets.balances().get(wallet.id) ?? 0)}`,
+        })),
     ];
   }
+  fastagFundingOptions(): readonly AppSelectOption[] {
+    return [
+      ...this.store
+        .cards()
+        .filter((card) => !card.archived && !card.deletedAt && card.currencyCode === 'INR')
+        .map((card) => ({
+          value: card.id,
+          label: `${card.nickname} · ${card.lastDigits}`,
+          detail: 'Credit card',
+        })),
+      ...this.store
+        .paymentSources()
+        .filter((source) => source.kind === 'DEBIT' && !source.archived)
+        .map((source) => ({
+          value: source.id,
+          label: `${source.institution || 'Bank/UPI'} · ${source.nickname}${source.lastDigits ? ` · ${source.lastDigits}` : ''}`,
+          detail: 'Bank / UPI',
+        })),
+    ];
+  }
+  fastagExistingFundingOptions(): readonly AppSelectOption[] {
+    const sourceId = this.editor.controls.fastagFundingSource.value;
+    const debit = parseMoneyToMinor(this.editor.controls.fastagDebitAmount.value);
+    const date = this.selected()?.item?.eventDate;
+    if (!sourceId || !debit || !date) return [];
+    return this.store
+      .transactions()
+      .filter(
+        (transaction) =>
+          transaction.cardId === sourceId &&
+          transaction.type === 'PURCHASE' &&
+          transaction.amountMinor === debit &&
+          transaction.currencyCode === 'INR' &&
+          transaction.transactionDate === date,
+      )
+      .map((transaction) => ({
+        value: transaction.id,
+        label: `${transaction.transactionDate} · ${transaction.merchant || transaction.type} · ${this.money(transaction.amountMinor)}`,
+      }));
+  }
+  fastagFundingSummary(): string {
+    const sourceId = this.editor.controls.fastagFundingSource.value;
+    const debitMinor = parseMoneyToMinor(this.editor.controls.fastagDebitAmount.value);
+    const item = this.selected()?.item;
+    const fastag = this.store
+      .paymentSources()
+      .find((source) => source.id === this.editor.controls.source.value);
+    const source =
+      this.store.cards().find((card) => card.id === sourceId) ??
+      this.store.paymentSources().find((paymentSource) => paymentSource.id === sourceId);
+    if (!item || !fastag || !source || !debitMinor)
+      return 'Choose a FASTag wallet, funding source and debit amount.';
+    const delta = debitMinor - item.amountMinor;
+    const difference =
+      delta >= 0 ? `included fee ${this.money(delta)}` : `promotional credit ${this.money(-delta)}`;
+    return `${this.store.sourceDetail(sourceId)} debit ${this.money(debitMinor)}; ${this.money(item.amountMinor)} credited to ${fastag.nickname}; ${difference}. ${this.editor.controls.fastagExistingFunding.value ? 'The existing debit will be linked; no duplicate debit will be created.' : 'A new debit will be created only after confirmation.'}`;
+  }
+  fastagFundingConfirmationKey(): string {
+    const item = this.selected()?.item;
+    const debitMinor = parseMoneyToMinor(this.editor.controls.fastagDebitAmount.value);
+    const sourceId = this.editor.controls.fastagFundingSource.value;
+    const walletId = this.editor.controls.source.value;
+    return item && debitMinor && sourceId && walletId
+      ? JSON.stringify([
+          item.id,
+          walletId,
+          sourceId,
+          debitMinor,
+          item.eventDate,
+          item.eventAt,
+          this.editor.controls.fastagExistingFunding.value,
+          this.editor.controls.fastagIdentityConfirmed.value,
+        ])
+      : '';
+  }
+  fastagFundingApproved(): boolean {
+    const key = this.fastagFundingConfirmationKey();
+    return !!key && this.fastagFundingApprovalKey() === key;
+  }
+  fastagIdentityNeedsConfirmation(): boolean {
+    const item = this.selected()?.item;
+    const sourceId = this.editor.controls.source.value;
+    if (!item || !sourceId || (!item.vehicleNumber && !item.fastagId)) return false;
+    const matches = eligibleSources(item, this.store.cards(), this.store.paymentSources());
+    return matches.length !== 1 || matches[0] !== sourceId;
+  }
+  fastagTollPossibleDuplicate(): boolean {
+    const item = this.selected()?.item;
+    if (!item || item.kind !== 'FASTAG_TOLL') return false;
+    const sourceId = this.editor.controls.source.value;
+    const wallet = this.consumerWallets
+      .wallets()
+      .find((candidate) => candidate.fastagSourceId === sourceId);
+    if (!wallet) return false;
+    const merchant = (item.merchant ?? '')
+      .toLocaleLowerCase()
+      .replace(/[^a-z0-9]+/g, ' ')
+      .trim();
+    if (!merchant) return false;
+    return this.consumerWallets.events().some(
+      (event) =>
+        event.walletId === wallet.id &&
+        event.eventType === 'PURCHASE' &&
+        event.eventDate === item.eventDate &&
+        event.amountMinor === item.amountMinor &&
+        (item.reference
+          ? event.reference === item.reference
+          : item.eventTimeExplicit === true
+            ? event.eventTime === item.eventTime
+            : true) &&
+        event.merchant
+          ?.toLocaleLowerCase()
+          .replace(/[^a-z0-9]+/g, ' ')
+          .trim() === merchant,
+    );
+  }
+  confirmFastagFunding(event: Event): void {
+    this.fastagFundingApprovalKey.set(
+      (event.target as HTMLInputElement).checked ? this.fastagFundingConfirmationKey() : '',
+    );
+  }
   canOfferWalletLoading(): boolean {
-    return this.consumerWallets.enabled() && this.consumerWallets.activeWallets().length > 0;
+    return (
+      this.consumerWallets.enabled() && this.consumerWallets.activeLoadDestinations().length > 0
+    );
   }
   private walletLoadingFingerprint(mode: 'CARD' | 'BANK'): string {
     const form = mode === 'CARD' ? this.editor : this.bankEditor;
@@ -1104,12 +1239,15 @@ export class SmsSyncPage {
     return (
       this.consumerWallets.enabled() &&
       this.consumerWallets
-        .activeWallets()
-        .some((wallet) => wallet.id === value.walletDestination) &&
+        .activeLoadDestinations()
+        .some(
+          (wallet) =>
+            wallet.id === value.walletDestination &&
+            !(mode === 'CARD' && wallet.kind === 'UPI_LITE'),
+        ) &&
       !!value.source &&
       !!debit &&
       !!loaded &&
-      loaded <= debit &&
       !!this.walletLoadingFingerprint(mode)
     );
   }
@@ -1134,7 +1272,12 @@ export class SmsSyncPage {
       mode === 'CARD'
         ? this.editor.controls.merchant.value
         : this.bankEditor.controls.description.value;
-    return `${this.store.sourceDetail(sourceId)} debit ${this.money(debitMinor)} on ${value.transactionDate} at ${eventTime}; ${this.money(loadedMinor)} loaded into ${wallet.nickname || wallet.customName || wallet.providerId}; included fee/difference ${this.money(debitMinor - loadedMinor)}. Merchant: ${merchant || 'not supplied'}. Reference: ${item?.reference || 'not supplied'}.`;
+    const difference = debitMinor - loadedMinor;
+    const differenceLabel =
+      difference >= 0
+        ? `included fee ${this.money(difference)}`
+        : `promotional credit ${this.money(-difference)}`;
+    return `${this.store.sourceDetail(sourceId)} debit ${this.money(debitMinor)} on ${value.transactionDate} at ${eventTime}; ${this.money(loadedMinor)} credited to ${wallet.nickname || wallet.customName || wallet.providerId} (${wallet.fastagSourceId ? 'FASTag' : 'wallet'}); ${differenceLabel}. Merchant: ${merchant || 'not supplied'}. Reference: ${item?.reference || 'not supplied'}.`;
   }
   setCardWalletLoading(enabled: boolean): void {
     this.editor.controls.walletLoading.setValue(enabled);
@@ -1666,9 +1809,10 @@ export class SmsSyncPage {
   });
   constructor() {
     const destroyRef = inject(DestroyRef);
-    this.editor.valueChanges
-      .pipe(takeUntilDestroyed(destroyRef))
-      .subscribe(() => this.walletLoadingApprovalKey.set(''));
+    this.editor.valueChanges.pipe(takeUntilDestroyed(destroyRef)).subscribe(() => {
+      this.walletLoadingApprovalKey.set('');
+      this.fastagFundingApprovalKey.set('');
+    });
     this.bankEditor.valueChanges
       .pipe(takeUntilDestroyed(destroyRef))
       .subscribe(() => this.walletLoadingApprovalKey.set(''));
@@ -2121,6 +2265,11 @@ export class SmsSyncPage {
       paymentMethodCustom: '',
       smsAdditionalComment: '',
     });
+    this.editor.controls.fastagFundingSource.setValue('');
+    this.editor.controls.fastagDebitAmount.setValue('');
+    this.editor.controls.fastagExistingFunding.setValue('');
+    this.editor.controls.fastagIdentityConfirmed.setValue(false);
+    this.fastagFundingApprovalKey.set('');
     this.hydratingReview = false;
     this.suggestReviewCategory();
     const revision = this.reviewRevision;
@@ -2237,6 +2386,37 @@ export class SmsSyncPage {
     const candidate = this.selected();
     if (!candidate || this.saving()) return;
     const value = this.editor.getRawValue();
+    if (candidate.kind === 'FASTAG_TOPUP') {
+      const debitAmountMinor = parseMoneyToMinor(value.fastagDebitAmount);
+      if (!value.source || !value.fastagFundingSource || !debitAmountMinor) {
+        this.error.set('Select the FASTag, funding source and positive debit amount.');
+        return;
+      }
+      if (!this.fastagFundingApproved()) {
+        this.error.set('Review and explicitly confirm the FASTag funding details.');
+        return;
+      }
+      this.saving.set(true);
+      void this.run(async () => {
+        try {
+          await this.sync.approveFastagTopup(
+            candidate,
+            value.source,
+            value.fastagFundingSource,
+            debitAmountMinor,
+            this.fastagFundingApproved(),
+            value.fastagExistingFunding || undefined,
+            value.fastagIdentityConfirmed,
+          );
+          this.notice.set(this.sync.notice());
+          this.closeEditor();
+          this.snackbar.show(this.notice());
+        } finally {
+          this.saving.set(false);
+        }
+      });
+      return;
+    }
     const amount = parseMoneyToMinor(value.amount);
     const statementDue = parseMoneyToMinor(value.statementDue);
     if (value.reconciliation === 'FULLY_PAID' && statementDue === null) {
@@ -2289,6 +2469,7 @@ export class SmsSyncPage {
                 }
               : undefined,
             walletLoadingApproved: value.walletLoading ? this.walletLoadingApproved('CARD') : false,
+            fastagIdentityConfirmed: value.fastagIdentityConfirmed,
             ...annotation,
           },
         );

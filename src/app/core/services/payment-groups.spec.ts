@@ -163,6 +163,59 @@ describe('Logical payment groups with real SQLite constraints', () => {
     expect(ledger()).toHaveLength(6);
     expect(await readPaymentGroups(tx)).toHaveLength(1);
   });
+  it('limits newly combined payments to two adjacent calendar dates, including wallet purchases', async () => {
+    const late = add('late-night', 1000, {
+      transactionDate: '2026-11-09',
+      transactionTime: '23:59',
+    });
+    const midnight = add('after-midnight', 2000, {
+      transactionDate: '2026-11-10',
+      transactionTime: '00:01',
+    });
+    const adjacentGroup = await atomic(() => attachPaymentGroup(tx, [midnight.id], late.id));
+    const [existingGroup] = await readPaymentGroups(tx);
+    expect(existingGroup.id).toBe(adjacentGroup);
+    const tooLate = add('third-calendar-day', 3000, {
+      transactionDate: '2026-11-11',
+      transactionTime: '00:00',
+    });
+    await expect(atomic(() => attachPaymentGroup(tx, [tooLate.id], adjacentGroup))).rejects.toThrow(
+      'one calendar day',
+    );
+    expect((await readPaymentGroups(tx))[0].memberIds).toEqual([late.id, midnight.id]);
+
+    const nov8 = add('nov-eight', 500, { transactionDate: '2026-11-08' });
+    const nov10 = add('nov-ten', 700, { transactionDate: '2026-11-10' });
+    await expect(atomic(() => attachPaymentGroup(tx, [nov10.id], nov8.id))).rejects.toThrow(
+      'one calendar day',
+    );
+
+    await tx.run(
+      "INSERT INTO consumer_wallets(id,provider_id,wallet_kind,payload,created_at,updated_at) VALUES('dated-wallet','amazon','STANDARD','{}','before','before')",
+    );
+    await tx.run(
+      "INSERT INTO consumer_wallet_events(id,wallet_id,event_type,event_date,amount_minor,balance_delta_minor,reversal_of_event_id,payload,created_at,updated_at) VALUES('dated-wallet-purchase','dated-wallet','PURCHASE','2026-11-08',800,-800,NULL,'{}','before','before')",
+    );
+    await tx.run(
+      "INSERT INTO consumer_wallet_events(id,wallet_id,event_type,event_date,amount_minor,balance_delta_minor,reversal_of_event_id,payload,created_at,updated_at) VALUES('dated-wallet-refund','dated-wallet','REFUND','2026-11-20',100,100,'dated-wallet-purchase','{}','later','later')",
+    );
+    const datedCard = add('dated-card', 900, { transactionDate: '2026-11-09' });
+    const datedGroup = await atomic(() =>
+      attachPaymentGroup(tx, [datedCard.id], 'dated-wallet-purchase'),
+    );
+    const [withRefund] = await readPaymentGroups(tx);
+    expect(withRefund.id).toBe(datedGroup);
+    expect(withRefund.walletMembers).toEqual([
+      expect.objectContaining({
+        walletEventId: 'dated-wallet-purchase',
+        memberKind: 'WALLET_PURCHASE',
+      }),
+      expect.objectContaining({
+        walletEventId: 'dated-wallet-refund',
+        memberKind: 'WALLET_REFUND',
+      }),
+    ]);
+  });
   it('projects typed wallet purchase members without treating their IDs as card transactions', async () => {
     add('card-member', 10000);
     add('second-card-member', 5000);

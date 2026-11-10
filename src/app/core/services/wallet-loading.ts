@@ -7,6 +7,7 @@ export interface WalletLoadAmounts {
   readonly debitAmountMinor: number;
   readonly loadedAmountMinor: number;
   readonly feeMinor: number;
+  readonly promotionalMinor: number;
 }
 
 export function walletLoadConfirmationKey(
@@ -22,6 +23,7 @@ export function walletLoadConfirmationKey(
     amounts.debitAmountMinor,
     amounts.loadedAmountMinor,
     amounts.feeMinor,
+    amounts.promotionalMinor,
   ].join('|');
 }
 
@@ -49,13 +51,13 @@ export function resolveWalletLoadAmounts(
   if (
     loadedAmountMinor === null ||
     !Number.isSafeInteger(loadedAmountMinor) ||
-    loadedAmountMinor <= 0 ||
-    loadedAmountMinor > debitAmountMinor
+    loadedAmountMinor <= 0
   )
     return null;
   return {
     debitAmountMinor,
     loadedAmountMinor,
-    feeMinor: debitAmountMinor - loadedAmountMinor,
+    feeMinor: Math.max(0, debitAmountMinor - loadedAmountMinor),
+    promotionalMinor: Math.max(0, loadedAmountMinor - debitAmountMinor),
   };
 }

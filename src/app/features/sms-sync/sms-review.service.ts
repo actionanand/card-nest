@@ -3,6 +3,10 @@ import type { CategoryCatalogEntry } from '../../core/data/category-catalog';
 import { Service, computed, inject, signal } from '@angular/core';
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import { SqliteDatabase, DatabaseSession } from '../../core/data/sqlite-database';
+import {
+  allocateConsumerWalletDebit,
+  assertChronologicalConsumerWalletLedger,
+} from '../../core/data/consumer-wallet-ledger';
 import { CardNestStore } from '../../core/services/card-nest-store';
 import { ConsumerWalletService } from '../../core/services/consumer-wallet.service';
 import { AppLockService } from '../../core/services/app-lock.service';
@@ -14,6 +18,8 @@ import {
   CardTransaction,
   CardStatement,
   Category,
+  ConsumerWallet,
+  ConsumerWalletEvent,
   EmiInstallment,
   PaymentSource,
   SmsPaymentMethod,
@@ -79,6 +85,7 @@ import {
   bankPurposes,
   bankSourceConflict,
   isBankEvidence,
+  eligibleSources,
 } from './sms-model';
 
 export interface BankApproval {
@@ -110,6 +117,13 @@ export interface BankApproval {
 
 function hasAnnotationValues(annotation: ValidatedSmsPaymentAnnotation): boolean {
   return annotation.paymentMethod !== 'NONE' || !!annotation.smsAdditionalComment;
+}
+
+function normalizedFastagMerchant(value: string | undefined): string {
+  return (value ?? '')
+    .toLocaleLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
 }
 
 function annotateSmsRecord<T extends CardTransaction | SourceTransfer>(
@@ -1317,6 +1331,151 @@ export class SmsReviewService {
     });
   }
 
+  async approveFastagTopup(
+    candidate: SmsCandidate,
+    fastagSourceId: string,
+    fundingSourceId: string,
+    debitAmountMinor: number,
+    confirmed: boolean,
+    existingTransactionId = '',
+    identityConfirmed = false,
+  ): Promise<void> {
+    this.assertUnlocked();
+    if (!confirmed) throw new Error('Review and explicitly confirm the FASTag funding debit.');
+    if (!Number.isSafeInteger(debitAmountMinor) || debitAmountMinor <= 0)
+      throw new Error('Enter a positive funding debit amount.');
+    const result = await this.database.atomic(async (tx) => {
+      const [row] = await tx.query<{ state: string; payload: string | null }>(
+        'SELECT state,payload FROM sms_candidates WHERE id=?',
+        [candidate.id],
+      );
+      if (!row) throw new Error('Saved FASTag suggestion is unavailable.');
+      if (['IMPORTED', 'MATCHED_EXISTING'].includes(row.state)) return null;
+      if (!row.payload || !['PENDING', 'DEFERRED'].includes(row.state))
+        throw new Error('Reopen this FASTag item for review first.');
+      const parsed: unknown = JSON.parse(row.payload);
+      if (!validEvidence(parsed) || parsed.kind !== 'FASTAG_TOPUP')
+        throw new Error('This item is not a FASTag top-up alert.');
+      if (parsed.dateFallback)
+        throw new Error(
+          'The FASTag top-up event date is not explicit. Verify its date before funding.',
+        );
+      const [pref] = await tx.query<{ encrypted_value: string }>(
+        "SELECT encrypted_value FROM app_preferences WHERE key='payment_sources'",
+      );
+      const sources = pref
+        ? (JSON.parse(pref.encrypted_value) as PaymentSource[])
+        : this.store.paymentSources().map((source) => ({ ...source }));
+      const fastag = sources.find((source) => source.id === fastagSourceId);
+      if (!fastag || fastag.kind !== 'FASTAG' || fastag.archived)
+        throw new Error('Choose an active FASTag wallet.');
+      const hasFastagIdentifiers = !!parsed.vehicleNumber || !!parsed.fastagId;
+      const matchingFastags = eligibleSources(parsed, this.store.cards(), sources);
+      if (
+        hasFastagIdentifiers &&
+        (matchingFastags.length !== 1 || matchingFastags[0] !== fastag.id) &&
+        !identityConfirmed
+      )
+        throw new Error(
+          'Confirm the selected FASTag because vehicle/ID evidence is unmatched or ambiguous.',
+        );
+      const [walletRow] = await tx.query<{ id: string; archived: number; payload: string }>(
+        "SELECT id,archived,payload FROM consumer_wallets WHERE json_extract(payload,'$.fastagSourceId')=?",
+        [fastag.id],
+      );
+      if (!walletRow || walletRow.archived)
+        throw new Error('FASTag wallet ledger is unavailable. Reload Wallets and retry.');
+      const wallet = JSON.parse(walletRow.payload) as ConsumerWallet;
+      if (wallet.fastagSourceId !== fastag.id)
+        throw new Error('FASTag wallet identity does not match this source.');
+      if (
+        wallet.fastagBalanceCutoverAt &&
+        Date.parse(parsed.eventAt) < Date.parse(wallet.fastagBalanceCutoverAt)
+      )
+        throw new Error(
+          'This FASTag top-up predates the verified balance baseline. Verify the current balance before applying it.',
+        );
+      const fundingCard = this.store.cards().find((card) => card.id === fundingSourceId);
+      const fundingSource = sources.find((source) => source.id === fundingSourceId);
+      if (
+        fundingCard &&
+        (fundingCard.archived || fundingCard.deletedAt || fundingCard.currencyCode !== 'INR')
+      )
+        throw new Error('Choose an active INR credit card as the funding source.');
+      if (
+        !fundingCard &&
+        (!fundingSource || fundingSource.kind !== 'DEBIT' || fundingSource.archived)
+      )
+        throw new Error('Choose an active Bank/UPI source or credit card.');
+      let transaction: CardTransaction;
+      if (existingTransactionId) {
+        const [existingRow] = await tx.query<{ payload: string }>(
+          'SELECT payload FROM card_transactions WHERE id=?',
+          [existingTransactionId],
+        );
+        const existing = existingRow ? (JSON.parse(existingRow.payload) as CardTransaction) : null;
+        if (
+          !existing ||
+          existing.cardId !== fundingSourceId ||
+          existing.type !== 'PURCHASE' ||
+          existing.amountMinor !== debitAmountMinor ||
+          existing.currencyCode !== 'INR' ||
+          existing.transactionDate !== parsed.eventDate
+        )
+          throw new Error('Choose a matching existing source debit for this FASTag top-up.');
+        transaction = {
+          ...existing,
+          paymentMethod: 'WALLET_LOADING',
+          updatedAt: new Date().toISOString(),
+        };
+      } else {
+        const timestamp = new Date().toISOString();
+        transaction = {
+          id: `fastag-funding-sms-${parsed.id}`,
+          cardId: fundingSourceId,
+          type: 'PURCHASE',
+          amountMinor: debitAmountMinor,
+          currencyCode: 'INR',
+          transactionDate: parsed.eventDate,
+          transactionTime: parsed.eventTimeExplicit ? parsed.eventTime : undefined,
+          merchant: `FASTag top-up · ${fastag.nickname}`,
+          categoryId: 'other',
+          attachmentIds: [],
+          origin: 'MANUAL',
+          paymentMethod: 'WALLET_LOADING',
+          notes: `Confirmed from FASTag credit SMS ${parsed.id}`,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        };
+      }
+      const saved = await this.store.saveSmsFastagFunding(tx, transaction, {
+        walletId: wallet.id,
+        loadedAmountMinor: parsed.amountMinor,
+      });
+      const now = new Date().toISOString();
+      const decision = `FASTAG_TOPUP_FUNDED:${fastag.id}:${fundingSourceId}`;
+      await tx.run(
+        "UPDATE sms_candidates SET state='IMPORTED',transaction_id=?,decision=?,updated_at=?,read_at=COALESCE(read_at,?) WHERE id=?",
+        [saved.transaction.id, decision, now, now, parsed.id],
+      );
+      await tx.run(
+        'INSERT INTO sms_reconciliation(id,candidate_id,target_id,decision,amount_minor,created_at) VALUES(?,?,?,?,?,?)',
+        [crypto.randomUUID(), parsed.id, saved.transaction.id, decision, parsed.amountMinor, now],
+      );
+      return { transaction: saved.transaction, sources: saved.sources };
+    });
+    if (!result) {
+      this.notice.set(
+        'This FASTag top-up was already resolved. No additional funding debit was created.',
+      );
+      return;
+    }
+    this.store.acceptCommittedImport(result.transaction, result.sources);
+    await this.consumerWallets.reloadFinancialHistory();
+    this.notice.set('FASTag credit linked to the explicitly confirmed funding debit.');
+    await this.refresh();
+  }
+
   async approve(
     candidate: SmsCandidate,
     sourceId: string,
@@ -1360,8 +1519,7 @@ export class SmsReviewService {
             !!edits.splitTargetId ||
             !edits.walletLoading.walletId.trim() ||
             !Number.isSafeInteger(edits.walletLoading.loadedAmountMinor) ||
-            edits.walletLoading.loadedAmountMinor <= 0 ||
-            edits.walletLoading.loadedAmountMinor > amountMinor)) ||
+            edits.walletLoading.loadedAmountMinor <= 0)) ||
         (!edits.walletLoading && edits.walletLoadingApproved)
       )
         throw new Error('Review and approve Wallet Loading only for a separate purchase debit.');
@@ -1396,12 +1554,17 @@ export class SmsReviewService {
         throw new Error(
           'Currency differs from this card. Use manual entry with an explicit currency conversion.',
         );
-      if (
-        source?.kind === 'FASTAG' &&
-        item.vehicleNumber &&
-        source.vehicleNumber !== item.vehicleNumber
-      )
-        throw new Error('Choose the wallet for this vehicle.');
+      if (source?.kind === 'FASTAG') {
+        const fastagMatches = eligibleSources(item, this.store.cards(), sources);
+        if (
+          (item.vehicleNumber || item.fastagId) &&
+          (fastagMatches.length !== 1 || fastagMatches[0] !== source.id) &&
+          edits.fastagIdentityConfirmed !== true
+        )
+          throw new Error(
+            'Confirm the selected FASTag because vehicle/ID evidence is unmatched or ambiguous.',
+          );
+      }
       if (
         item.kind.startsWith('PLUXEE') &&
         (!source ||
@@ -1437,6 +1600,126 @@ export class SmsReviewService {
         new Date(transactionDate).toISOString().slice(0, 10) !== transactionDate
       )
         throw new Error('Enter a valid event date.');
+      if (item.kind === 'FASTAG_TOLL') {
+        if (!source || source.kind !== 'FASTAG' || source.archived)
+          throw new Error('Choose an active FASTag wallet.');
+        if (existingId) throw new Error('Choose FASTag wallet activity, not a card transaction.');
+        if (transactionDate !== item.eventDate)
+          throw new Error('Keep the FASTag toll date from the SMS event timestamp.');
+        const [walletRow] = await tx.query<{ id: string; payload: string; archived: number }>(
+          "SELECT id,payload,archived FROM consumer_wallets WHERE json_extract(payload,'$.fastagSourceId')=?",
+          [source.id],
+        );
+        if (!walletRow || walletRow.archived)
+          throw new Error('FASTag wallet ledger is unavailable. Reload Wallets and retry.');
+        const wallet = JSON.parse(walletRow.payload) as ConsumerWallet;
+        if (wallet.fastagSourceId !== source.id)
+          throw new Error('FASTag wallet identity does not match the selected source.');
+        if (
+          wallet.fastagBalanceCutoverAt &&
+          Date.parse(item.eventAt) < Date.parse(wallet.fastagBalanceCutoverAt)
+        )
+          throw new Error(
+            'This toll predates the verified balance baseline. Verify the current balance before applying it.',
+          );
+        const eventTime = item.eventTimeExplicit === true ? item.eventTime : undefined;
+        const eventId = `fastag-sms-${item.id}`;
+        const [sameIdRow] = await tx.query<{ payload: string }>(
+          'SELECT payload FROM consumer_wallet_events WHERE id=?',
+          [eventId],
+        );
+        const exactExisting = sameIdRow
+          ? (JSON.parse(sameIdRow.payload) as ConsumerWalletEvent)
+          : undefined;
+        if (
+          exactExisting &&
+          (exactExisting.walletId !== walletRow.id ||
+            exactExisting.eventType !== 'PURCHASE' ||
+            exactExisting.eventDate !== item.eventDate ||
+            exactExisting.amountMinor !== amountMinor ||
+            exactExisting.eventTime !== eventTime)
+        )
+          throw new Error('This FASTag SMS identity was already used for a different toll event.');
+        const candidates = exactExisting
+          ? []
+          : await tx.query<{ payload: string }>(
+              "SELECT payload FROM consumer_wallet_events WHERE wallet_id=? AND event_type='PURCHASE' AND event_date=? AND amount_minor=?",
+              [walletRow.id, item.eventDate, amountMinor],
+            );
+        const normalizedMerchant = normalizedFastagMerchant(item.merchant);
+        const likelyDuplicate = candidates
+          .map((candidate) => JSON.parse(candidate.payload) as ConsumerWalletEvent)
+          .find(
+            (event) =>
+              !!normalizedMerchant &&
+              normalizedFastagMerchant(event.merchant) === normalizedMerchant &&
+              ((item.reference && event.reference === item.reference) ||
+                (item.eventTimeExplicit === true && event.eventTime === item.eventTime) ||
+                item.eventTimeExplicit !== true),
+          );
+        if (likelyDuplicate && !allowSeparate)
+          throw new Error(
+            'Possible duplicate FASTag toll: verify the plaza and exact event time, then confirm if this is a separate crossing.',
+          );
+        const duplicate = exactExisting;
+        const now = new Date().toISOString();
+        if (duplicate) {
+          const decision = `FASTAG_TOLL_MATCHED:${duplicate.id}`;
+          await tx.run(
+            "UPDATE sms_candidates SET state='MATCHED_EXISTING',transaction_id=NULL,decision=?,updated_at=?,read_at=COALESCE(read_at,?) WHERE id=?",
+            [decision, now, now, item.id],
+          );
+          await tx.run(
+            'INSERT INTO sms_reconciliation(id,candidate_id,target_id,decision,amount_minor,created_at) VALUES(?,?,?,?,?,?)',
+            [crypto.randomUUID(), item.id, duplicate.id, decision, amountMinor, now],
+          );
+          return { fastagEvent: 'MATCHED' as const };
+        }
+        const event: ConsumerWalletEvent = {
+          id: eventId,
+          walletId: walletRow.id,
+          eventType: 'PURCHASE',
+          eventDate: item.eventDate,
+          eventTime,
+          amountMinor,
+          balanceDeltaMinor: -amountMinor,
+          merchant: merchant.trim().slice(0, 100) || item.merchant,
+          reference: item.reference,
+          memo: 'FASTag toll approved from SMS',
+          createdAt: now,
+          updatedAt: now,
+        };
+        await tx.run(
+          'INSERT INTO consumer_wallet_events(id,wallet_id,event_type,event_date,event_time,amount_minor,balance_delta_minor,merchant,notes,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
+          [
+            event.id,
+            event.walletId,
+            event.eventType,
+            event.eventDate,
+            event.eventTime ?? null,
+            event.amountMinor,
+            event.balanceDeltaMinor,
+            event.merchant ?? null,
+            event.memo ?? null,
+            JSON.stringify(event),
+            event.createdAt,
+            event.updatedAt,
+          ],
+        );
+        await allocateConsumerWalletDebit(tx, event, amountMinor);
+        await assertChronologicalConsumerWalletLedger(tx, walletRow.id);
+        const decision = `FASTAG_TOLL_RECORDED:${event.id}`;
+        await tx.run(
+          "UPDATE sms_candidates SET state='IMPORTED',transaction_id=NULL,decision=?,updated_at=?,read_at=COALESCE(read_at,?) WHERE id=?",
+          [decision, now, now, item.id],
+        );
+        await tx.run(
+          'INSERT INTO sms_reconciliation(id,candidate_id,target_id,decision,amount_minor,created_at) VALUES(?,?,?,?,?,?)',
+          [crypto.randomUUID(), item.id, event.id, decision, amountMinor, now],
+        );
+        await tx.run('DELETE FROM app_preferences WHERE key=?', [`sms_purchase_review:${item.id}`]);
+        return { fastagEvent: 'RECORDED' as const };
+      }
       const linkedTransaction = existingId
         ? ledger.find((entry) => entry.id === existingId)
         : undefined;
@@ -2044,7 +2327,9 @@ export class SmsReviewService {
       }
       return { transaction, sources, statement, balanceAdjustment, fundingTransfer };
     });
-    if (result) {
+    if (result && 'fastagEvent' in result) {
+      await this.consumerWallets.reloadFinancialHistory();
+    } else if (result) {
       this.store.acceptCommittedImport(result.transaction, result.sources);
       if (edits.walletLoading) this.walletHistoryRefreshNeeded.set(true);
       if (edits.splitTargetId) await this.store.refreshPaymentLedger();
@@ -2058,11 +2343,15 @@ export class SmsReviewService {
     this.notice.set(
       !result
         ? 'This suggestion was already resolved. No additional transaction was added.'
-        : existingId
-          ? reconciliation === 'REPAIR_EXISTING'
-            ? 'Existing wallet top-up repaired and matched.'
-            : 'Matched existing transaction. Its recorded details are retained.'
-          : 'Transaction approved and saved.',
+        : result && 'fastagEvent' in result
+          ? result.fastagEvent === 'MATCHED'
+            ? 'Duplicate FASTag toll matched to existing wallet activity; no second debit was recorded.'
+            : 'FASTag toll recorded in wallet history; consolidated expenses were unchanged.'
+          : existingId
+            ? reconciliation === 'REPAIR_EXISTING'
+              ? 'Existing wallet top-up repaired and matched.'
+              : 'Matched existing transaction. Its recorded details are retained.'
+            : 'Transaction approved and saved.',
     );
     // The ledger is already durable. A bridge/permission/inbox refresh error must not
     // tell the user the financial write failed or encourage a second manual entry.
@@ -2206,8 +2495,7 @@ export class SmsReviewService {
             approval.walletLoadingApproved !== true ||
             !approval.walletLoading.walletId.trim() ||
             !Number.isSafeInteger(approval.walletLoading.loadedAmountMinor) ||
-            approval.walletLoading.loadedAmountMinor <= 0 ||
-            approval.walletLoading.loadedAmountMinor > approval.amountMinor)) ||
+            approval.walletLoading.loadedAmountMinor <= 0)) ||
         (approval.purpose !== 'WALLET_LOADING' && approval.walletLoading)
       )
         throw new Error(

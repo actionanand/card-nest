@@ -61,6 +61,8 @@ const BACKUP_TABLES = [
   'category_catalog_conflicts',
   'utility_profiles',
   'mobile_recharges',
+  'tv_profiles',
+  'tv_recharges',
   'lpg_events',
   'bank_activity_profiles',
   'bank_activity_events',
@@ -86,6 +88,8 @@ const DELETE_TABLES = [
   'bank_activity_candidates',
   'bank_activity_events',
   'bank_activity_profiles',
+  'tv_recharges',
+  'tv_profiles',
   'lpg_events',
   'mobile_recharges',
   'utility_profiles',
@@ -647,9 +651,17 @@ export class SqliteDatabase {
       }
       backupTables.set(item['name'], item['rows'] as readonly Record<string, unknown>[]);
     }
-    const activeWallets = (backupTables.get('consumer_wallets') ?? []).filter(
-      (row) => row['archived'] === 0 || row['archived'] === '0' || row['archived'] === false,
-    );
+    const activeWallets = (backupTables.get('consumer_wallets') ?? []).filter((row) => {
+      const active = row['archived'] === 0 || row['archived'] === '0' || row['archived'] === false;
+      let isFastag = false;
+      try {
+        isFastag = !!(JSON.parse(String(row['payload'] ?? '{}')) as { fastagSourceId?: string })
+          .fastagSourceId;
+      } catch {
+        isFastag = false;
+      }
+      return active && !isFastag;
+    });
     if (activeWallets.length > this.environment.maxWallets)
       throw new Error(
         `This backup exceeds the configured limit of ${this.environment.maxWallets} active consumer wallets.`,
@@ -819,7 +831,8 @@ export class SqliteDatabase {
   private async assertConsumerWalletLimit(): Promise<void> {
     const result = await CapacitorSQLite.query({
       database: this.databaseName,
-      statement: 'SELECT COUNT(*) AS count FROM consumer_wallets WHERE archived=0',
+      statement:
+        "SELECT COUNT(*) AS count FROM consumer_wallets WHERE archived=0 AND json_extract(payload,'$.fastagSourceId') IS NULL",
       values: [],
     });
     const count = Number(result.values?.[0]?.['count'] ?? 0);

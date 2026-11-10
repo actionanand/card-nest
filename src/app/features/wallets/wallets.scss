@@ -187,6 +187,93 @@
   min-height: 40px;
 }
 
+.fastag-action-list {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.fastag-action-list .btn {
+  justify-content: flex-start;
+  min-height: 48px;
+}
+
+.fastag-duplicate-confirm {
+  display: flex !important;
+  min-height: 44px;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.fastag-duplicate-confirm input[type='checkbox'] {
+  width: 19px;
+  min-width: 19px;
+  height: 19px;
+  min-height: 19px;
+  flex: 0 0 19px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.fastag-pass-tracker {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 0.55rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--line);
+}
+
+.fastag-pass-tracker > header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.fastag-pass-tracker h4 {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.fastag-pass-list {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.fastag-pass {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+  padding: 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: 0.55rem;
+  background: var(--surface);
+}
+
+.fastag-pass > div:first-child {
+  display: grid;
+  min-width: 0;
+  gap: 0.15rem;
+}
+
+.fastag-pass small {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.fastag-pass.expired {
+  opacity: 0.8;
+}
+
+.fastag-pass-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
 .archived-wallets summary {
   width: fit-content;
   padding-block: 0.5rem;
@@ -329,5 +416,10 @@
   .wallet-actions {
     grid-column: 1 / -1;
     justify-content: start;
+  }
+
+  .fastag-pass {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }

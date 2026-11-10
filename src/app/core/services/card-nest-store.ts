@@ -459,6 +459,11 @@ export class CardNestStore {
       this.transactions(),
       this.walletFinancialEvents(),
       this.walletExpenseReversals(),
+      new Set(
+        this.paymentSources()
+          .filter((source) => source.kind === 'FASTAG')
+          .map((source) => source.id),
+      ),
     ),
   );
 
@@ -967,6 +972,14 @@ export class CardNestStore {
     assertValidAddOnProfiles(updated.addOnProfiles, previous?.addOnProfiles, enabled);
     this.cards.update((cards) => cards.map((card) => (card.id === updated.id ? updated : card)));
     void this.persistCard(updated);
+  }
+  async updateCardAndWait(updated: CreditCard): Promise<void> {
+    const previous = this.cards().find((card) => card.id === updated.id);
+    const enabled =
+      updated.addOnCardsEnabled ?? previous?.addOnCardsEnabled ?? !!previous?.addOnProfiles?.length;
+    assertValidAddOnProfiles(updated.addOnProfiles, previous?.addOnProfiles, enabled);
+    await this.persistCard(updated);
+    this.cards.update((cards) => cards.map((card) => (card.id === updated.id ? updated : card)));
   }
   async setAddOnProfileArchived(
     cardId: string,
@@ -1874,7 +1887,10 @@ export class CardNestStore {
     });
     this.recurringRules.update((rules) => rules.map((rule) => (rule.id === ruleId ? saved : rule)));
   }
-  async updatePaymentSource(updated: PaymentSource): Promise<void> {
+  async updatePaymentSource(
+    updated: PaymentSource,
+    confirmDuplicateVehicle = false,
+  ): Promise<void> {
     if (!this.database.ready()) throw new Error('Database is not ready.');
     const previous = this.paymentSources().find((source) => source.id === updated.id);
     if (!previous || previous.kind !== updated.kind)
@@ -1921,6 +1937,17 @@ export class CardNestStore {
     const changed = Object.keys(updated).filter(
       (key) => updated[key as keyof PaymentSource] !== previous[key as keyof PaymentSource],
     );
+    if (
+      updated.kind === 'FASTAG' &&
+      changed.some((key) => key === 'vehicleNumber' || key === 'fastagId')
+    ) {
+      if (
+        !/^[A-Z0-9]{5,16}$/.test((updated.vehicleNumber ?? '').replace(/[\s-]/g, '').toUpperCase())
+      )
+        throw new Error('Enter a vehicle registration to edit this FASTag wallet.');
+      if (updated.fastagId !== undefined && !/^\d{1,32}$/.test(updated.fastagId))
+        throw new Error('Enter a FASTag ID using up to 32 digits.');
+    }
     if (!changed.length) return;
     if (
       isBankOrCash(updated) &&
@@ -1946,6 +1973,8 @@ export class CardNestStore {
       )
     )
       throw new Error('Use Set Current Balance to audit a meal-wallet balance change.');
+    if (updated.kind === 'FASTAG' && changed.includes('balanceMinor'))
+      throw new Error('Use Set verified balance to audit a FASTag balance change.');
     const sources = await this.database.atomic(async (tx) => {
       const stored = await this.readStoredSources(tx);
       const current = stored.find((source) => source.id === updated.id);
@@ -1957,6 +1986,32 @@ export class CardNestStore {
         ...Object.entries(current),
         ...changed.map((key) => [key, updated[key as keyof PaymentSource]]),
       ]) as unknown as PaymentSource;
+      if (
+        merged.kind === 'FASTAG' &&
+        changed.some((key) => key === 'vehicleNumber' || key === 'fastagId')
+      ) {
+        const normalizedVehicle = (merged.vehicleNumber ?? '').replace(/[\s-]/g, '').toUpperCase();
+        const duplicateVehicle = stored.some(
+          (source) =>
+            source.id !== merged.id &&
+            source.kind === 'FASTAG' &&
+            source.vehicleNumber?.replace(/[\s-]/g, '').toUpperCase() === normalizedVehicle,
+        );
+        if (duplicateVehicle && !confirmDuplicateVehicle)
+          throw new Error(
+            'Another FASTag uses this vehicle. Confirm both registrations are intentional.',
+          );
+        if (
+          merged.fastagId &&
+          stored.some(
+            (source) =>
+              source.id !== merged.id &&
+              source.kind === 'FASTAG' &&
+              source.fastagId === merged.fastagId,
+          )
+        )
+          throw new Error('This FASTag ID is already registered.');
+      }
       if (
         merged.kind === 'DEBIT' &&
         (current.lastDigits || merged.lastDigits) &&
@@ -2027,6 +2082,34 @@ export class CardNestStore {
         return source;
       });
       await this.writeStoredSources(tx, next);
+      if (merged.kind === 'FASTAG') {
+        const [walletRow] = await tx.query<{ id: string; payload: string }>(
+          "SELECT id,payload FROM consumer_wallets WHERE json_extract(payload,'$.fastagSourceId')=?",
+          [merged.id],
+        );
+        if (walletRow) {
+          const wallet = JSON.parse(walletRow.payload) as ConsumerWallet;
+          const updatedWallet: ConsumerWallet = {
+            ...wallet,
+            nickname: merged.nickname,
+            vehicleNumber: merged.vehicleNumber,
+            fastagId: merged.fastagId,
+            fastagBalanceCutoverAt: merged.balanceMinor
+              ? (merged.balanceCutoverAt ??
+                wallet.fastagBalanceCutoverAt ??
+                new Date().toISOString())
+              : undefined,
+            archived: merged.archived,
+            updatedAt: new Date().toISOString(),
+          };
+          await tx.run('UPDATE consumer_wallets SET archived=?,payload=?,updated_at=? WHERE id=?', [
+            updatedWallet.archived ? 1 : 0,
+            JSON.stringify(updatedWallet),
+            updatedWallet.updatedAt,
+            walletRow.id,
+          ]);
+        }
+      }
       return next;
     });
     this.paymentSources.set(sources);
@@ -3575,7 +3658,7 @@ export class CardNestStore {
       const load = JSON.parse(existing.payload) as ConsumerWalletEvent;
       if (
         load.walletId !== input.walletId ||
-        load.amountMinor !== input.loadedAmountMinor ||
+        (load.loadedAmountMinor ?? load.amountMinor) !== input.loadedAmountMinor ||
         load.debitAmountMinor !== transaction.amountMinor ||
         load.fundingSourceId !== transaction.cardId ||
         load.eventDate !== transaction.transactionDate ||
@@ -3589,6 +3672,25 @@ export class CardNestStore {
     await this.saveWalletLoadEvent(tx, transaction, input, null);
   }
 
+  async saveSmsFastagFunding(
+    tx: DatabaseSession,
+    transaction: CardTransaction,
+    input: WalletLoadingDetails,
+  ): Promise<{ transaction: CardTransaction; sources: PaymentSource[] }> {
+    if (transaction.type !== 'PURCHASE' || transaction.paymentMethod !== 'WALLET_LOADING')
+      throw new Error('FASTag funding requires an explicitly approved purchase debit.');
+    const [previousLoadRow] = await tx.query<{ payload: string }>(
+      "SELECT payload FROM consumer_wallet_events WHERE event_type='FUNDED_LOAD' AND source_transaction_id=?",
+      [transaction.id],
+    );
+    const previousLoad = previousLoadRow
+      ? (JSON.parse(previousLoadRow.payload) as ConsumerWalletEvent)
+      : null;
+    const result = await this.writeTransaction(tx, transaction, true);
+    await this.saveWalletLoadEvent(tx, result.persisted, input, previousLoad);
+    return { transaction: result.persisted, sources: result.wallets };
+  }
+
   private async saveWalletLoadEvent(
     tx: DatabaseSession,
     transaction: CardTransaction,
@@ -3597,10 +3699,9 @@ export class CardNestStore {
   ): Promise<void> {
     if (!Number.isSafeInteger(input.loadedAmountMinor) || input.loadedAmountMinor <= 0)
       throw new Error('Enter a positive wallet loaded amount.');
-    if (input.loadedAmountMinor > transaction.amountMinor)
-      throw new Error(
-        'Loaded amount cannot exceed the debit. Record excess value as a separate bonus.',
-      );
+    const fundedAmountMinor = Math.min(input.loadedAmountMinor, transaction.amountMinor);
+    const promotionalMinor = Math.max(0, input.loadedAmountMinor - transaction.amountMinor);
+    const promotionalEventId = `wallet-load-promo:${transaction.id}`;
     const [feature] = await tx.query<{ encrypted_value: string }>(
       'SELECT encrypted_value FROM app_preferences WHERE key=?',
       ['consumer_wallets_feature_state'],
@@ -3614,7 +3715,24 @@ export class CardNestStore {
     if (!walletRow || walletRow.archived !== 0)
       throw new Error('Choose an active registered consumer wallet.');
     const consumerWallet = JSON.parse(walletRow.payload) as ConsumerWallet;
+    if (consumerWallet.fastagSourceId && consumerWallet.fastagBalanceCutoverAt) {
+      const eventInstant = Date.parse(
+        `${transaction.transactionDate}T${transaction.transactionTime ?? '00:00:00'}+05:30`,
+      );
+      if (
+        Number.isFinite(eventInstant) &&
+        eventInstant < Date.parse(consumerWallet.fastagBalanceCutoverAt)
+      )
+        throw new Error(
+          'This FASTag load predates the verified balance baseline. Verify the current balance before applying an out-of-order load.',
+        );
+    }
     const sources = await this.readStoredSources(tx);
+    if (consumerWallet.fastagSourceId) {
+      const fastag = sources.find((item) => item.id === consumerWallet.fastagSourceId);
+      if (!fastag || fastag.kind !== 'FASTAG' || fastag.archived)
+        throw new Error('Choose an active registered FASTag wallet.');
+    }
     const source = sources.find((item) => item.id === transaction.cardId);
     const card = this.cards().find((item) => item.id === transaction.cardId);
     if (card && (card.archived || card.deletedAt || card.currencyCode !== 'INR'))
@@ -3628,16 +3746,31 @@ export class CardNestStore {
     if (transaction.currencyCode !== 'INR')
       throw new Error('Consumer wallet loads must be denominated in INR.');
 
+    const [previousPromoRow] = await tx.query<{ id: string; payload: string }>(
+      'SELECT id,payload FROM consumer_wallet_events WHERE id=?',
+      [promotionalEventId],
+    );
+    const previousPromo = previousPromoRow
+      ? (JSON.parse(previousPromoRow.payload) as ConsumerWalletEvent)
+      : null;
+
     if (previous) {
       const [usedRow] = await tx.query<{ allocated: number }>(
         'SELECT COALESCE(SUM(allocated_minor),0) AS allocated FROM consumer_wallet_event_allocations WHERE credit_event_id=?',
         [previous.id],
       );
       const consumed = Number(usedRow?.allocated ?? 0);
+      const [usedPromoRow] = previousPromo
+        ? await tx.query<{ allocated: number }>(
+            'SELECT COALESCE(SUM(allocated_minor),0) AS allocated FROM consumer_wallet_event_allocations WHERE credit_event_id=?',
+            [previousPromo.id],
+          )
+        : [];
+      const consumedPromo = Number(usedPromoRow?.allocated ?? 0);
       if (
-        consumed > 0 &&
+        (consumed > 0 || consumedPromo > 0) &&
         (previous.walletId !== input.walletId ||
-          previous.amountMinor !== input.loadedAmountMinor ||
+          (previous.loadedAmountMinor ?? previous.amountMinor) !== input.loadedAmountMinor ||
           previous.eventDate !== transaction.transactionDate ||
           previous.debitAmountMinor !== transaction.amountMinor ||
           previous.fundingSourceId !== transaction.cardId ||
@@ -3653,7 +3786,14 @@ export class CardNestStore {
       [input.walletId],
     );
     const previousDelta = previous?.walletId === input.walletId ? previous.balanceDeltaMinor : 0;
-    const nextBalance = Number(balanceRow?.balance ?? 0) - previousDelta + input.loadedAmountMinor;
+    const previousPromoDelta =
+      previousPromo?.walletId === input.walletId ? previousPromo.balanceDeltaMinor : 0;
+    const nextBalance =
+      Number(balanceRow?.balance ?? 0) -
+      previousDelta -
+      previousPromoDelta +
+      fundedAmountMinor +
+      promotionalMinor;
     if (!Number.isSafeInteger(nextBalance) || nextBalance < 0)
       throw new Error('Wallet balance would exceed the supported amount.');
     if (previous && previous.walletId !== input.walletId) {
@@ -3661,7 +3801,10 @@ export class CardNestStore {
         'SELECT COALESCE(SUM(balance_delta_minor),0) AS balance FROM consumer_wallet_events WHERE wallet_id=?',
         [previous.walletId],
       );
-      const oldBalance = Number(oldBalanceRow?.balance ?? 0) - previous.balanceDeltaMinor;
+      const oldBalance =
+        Number(oldBalanceRow?.balance ?? 0) -
+        previous.balanceDeltaMinor -
+        (previousPromo?.walletId === previous.walletId ? previousPromo.balanceDeltaMinor : 0);
       if (!Number.isSafeInteger(oldBalance) || oldBalance < 0)
         throw new Error('The previous wallet balance cannot safely remove this load.');
     }
@@ -3673,11 +3816,11 @@ export class CardNestStore {
       eventType: 'FUNDED_LOAD',
       eventDate: transaction.transactionDate,
       eventTime: transaction.transactionTime,
-      amountMinor: input.loadedAmountMinor,
-      balanceDeltaMinor: input.loadedAmountMinor,
+      amountMinor: fundedAmountMinor,
+      balanceDeltaMinor: fundedAmountMinor,
       debitAmountMinor: transaction.amountMinor,
       loadedAmountMinor: input.loadedAmountMinor,
-      feeMinor: transaction.amountMinor - input.loadedAmountMinor,
+      feeMinor: transaction.amountMinor - fundedAmountMinor,
       fundingSourceKind: card ? 'CARD' : 'BANK',
       fundingSourceId: transaction.cardId,
       sourceTransactionId: transaction.id,
@@ -3715,6 +3858,49 @@ export class CardNestStore {
         event.updatedAt,
       ],
     );
+    if (promotionalMinor > 0) {
+      const promotional: ConsumerWalletEvent = {
+        id: promotionalEventId,
+        walletId: input.walletId,
+        eventType: 'PROMOTIONAL_CREDIT',
+        eventDate: transaction.transactionDate,
+        eventTime: transaction.transactionTime,
+        amountMinor: promotionalMinor,
+        balanceDeltaMinor: promotionalMinor,
+        sourceTransactionId: transaction.id,
+        memo: 'Promotional FASTag or wallet bonus',
+        createdAt: previousPromo?.createdAt ?? now,
+        updatedAt: now,
+      };
+      await tx.run(
+        `INSERT INTO consumer_wallet_events(id,wallet_id,event_type,event_date,event_time,amount_minor,balance_delta_minor,source_transaction_id,payload,created_at,updated_at)
+         VALUES(?,?,?,?,?,?,?,?,?,?,?)
+         ON CONFLICT(id) DO UPDATE SET wallet_id=excluded.wallet_id,event_date=excluded.event_date,event_time=excluded.event_time,amount_minor=excluded.amount_minor,balance_delta_minor=excluded.balance_delta_minor,source_transaction_id=excluded.source_transaction_id,payload=excluded.payload,updated_at=excluded.updated_at`,
+        [
+          promotional.id,
+          promotional.walletId,
+          promotional.eventType,
+          promotional.eventDate,
+          promotional.eventTime ?? null,
+          promotional.amountMinor,
+          promotional.balanceDeltaMinor,
+          promotional.sourceTransactionId ?? null,
+          JSON.stringify(promotional),
+          promotional.createdAt,
+          promotional.updatedAt,
+        ],
+      );
+    } else if (previousPromo) {
+      if (previousPromo.walletId !== input.walletId)
+        throw new Error('Reverse the prior promotional credit before moving this wallet load.');
+      const [usedPromoRow] = await tx.query<{ allocated: number }>(
+        'SELECT COALESCE(SUM(allocated_minor),0) AS allocated FROM consumer_wallet_event_allocations WHERE credit_event_id=?',
+        [previousPromo.id],
+      );
+      if (Number(usedPromoRow?.allocated ?? 0) > 0)
+        throw new Error('This promotional wallet credit has already been spent.');
+      await tx.run('DELETE FROM consumer_wallet_events WHERE id=?', [previousPromo.id]);
+    }
     await assertChronologicalConsumerWalletLedger(tx, input.walletId);
     if (previous && previous.walletId !== input.walletId)
       await assertChronologicalConsumerWalletLedger(tx, previous.walletId);
@@ -3996,17 +4182,31 @@ export class CardNestStore {
       "SELECT id,wallet_id FROM consumer_wallet_events WHERE event_type='FUNDED_LOAD' AND source_transaction_id=?",
       [id],
     );
-    if (walletLoad) {
-      const [used] = await tx.query<{ allocated: number }>(
-        'SELECT COALESCE(SUM(allocated_minor),0) AS allocated FROM consumer_wallet_event_allocations WHERE credit_event_id=?',
-        [walletLoad.id],
-      );
-      if (Number(used?.allocated ?? 0) > 0)
-        throw new Error(
-          'This wallet load has already been spent or returned; reverse linked wallet activity first.',
+    const [walletPromo] = await tx.query<{ id: string; wallet_id: string }>(
+      "SELECT id,wallet_id FROM consumer_wallet_events WHERE id=? AND event_type='PROMOTIONAL_CREDIT'",
+      [`wallet-load-promo:${id}`],
+    );
+    if (walletLoad || walletPromo) {
+      for (const credit of [walletLoad, walletPromo].filter(
+        (item): item is { id: string; wallet_id: string } => !!item,
+      )) {
+        const [used] = await tx.query<{ allocated: number }>(
+          'SELECT COALESCE(SUM(allocated_minor),0) AS allocated FROM consumer_wallet_event_allocations WHERE credit_event_id=?',
+          [credit.id],
         );
-      await tx.run('DELETE FROM consumer_wallet_events WHERE id=?', [walletLoad.id]);
-      await assertChronologicalConsumerWalletLedger(tx, walletLoad.wallet_id);
+        if (Number(used?.allocated ?? 0) > 0)
+          throw new Error(
+            'This wallet load has already been spent or returned; reverse linked wallet activity first.',
+          );
+      }
+      if (walletLoad)
+        await tx.run('DELETE FROM consumer_wallet_events WHERE id=?', [walletLoad.id]);
+      if (walletPromo)
+        await tx.run('DELETE FROM consumer_wallet_events WHERE id=?', [walletPromo.id]);
+      for (const walletId of new Set(
+        [walletLoad?.wallet_id, walletPromo?.wallet_id].filter(Boolean),
+      ))
+        await assertChronologicalConsumerWalletLedger(tx, walletId!);
     }
     applyWalletTransaction(wallets, previous, -1);
     reverseBalanceEffect(wallets, previous?.balanceEffect, settings);

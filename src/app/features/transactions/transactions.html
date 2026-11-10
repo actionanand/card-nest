@@ -432,7 +432,7 @@
               />
               @if (form.controls.paymentMethod.value === 'WALLET_LOADING') {
                 <app-select-picker
-                  label="Consumer wallet"
+                  label="Consumer wallet or FASTag wallet"
                   [options]="walletLoadWalletOptions()"
                   [value]="form.controls.walletId.value"
                   (valueChange)="setWalletLoadDestination($event)"
@@ -468,6 +468,12 @@
                         <dt>Included fee</dt>
                         <dd>{{ money(summary.feeMinor, 'INR') }}</dd>
                       </div>
+                      @if (summary.promotionalMinor > 0) {
+                        <div>
+                          <dt>Promotional credit</dt>
+                          <dd>{{ money(summary.promotionalMinor, 'INR') }}</dd>
+                        </div>
+                      }
                     </dl>
                     <p>
                       The full debit is counted as an expense; wallet credit is not counted again.

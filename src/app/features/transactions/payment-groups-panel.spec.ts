@@ -163,6 +163,159 @@ describe('Combine payments controls', () => {
     );
     fixture.destroy();
   });
+  it('disables third-calendar-date candidates and confirms remove/dissolve before mutating', async () => {
+    const nov9 = { ...first, id: 'nov9', transactionDate: '2026-11-09' };
+    const nov10 = { ...first, id: 'nov10', transactionDate: '2026-11-10' };
+    const nov11 = { ...first, id: 'nov11', transactionDate: '2026-11-11' };
+    store.transactions.set([nov9, nov10, nov11]);
+    const group: PaymentGroup = {
+      id: 'two-date-group',
+      kind: 'PAYMENTS',
+      anchorId: nov9.id,
+      title: 'Two-date bill',
+      currency: 'INR',
+      billTotalMinor: null,
+      createdAt: '2026-11-09T00:00:00Z',
+      updatedAt: '2026-11-10T00:00:00Z',
+      memberIds: [nov9.id, nov10.id],
+      walletMembers: [],
+    };
+    store.paymentGroups.set([group]);
+    const fixture = TestBed.createComponent(PaymentGroupsPanel);
+    fixture.componentRef.setInput('groupId', group.id);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const page = fixture.componentInstance;
+    page.step.set(2);
+    fixture.detectChanges();
+    const third = page.memberChoices().find((entry) => entry.id === nov11.id)!;
+    expect(page.dateSpanError(third)).toContain('adjacent calendar dates');
+    page.toggle(third.id);
+    expect(page.selected().size).toBe(0);
+
+    const groupSummary = fixture.nativeElement.querySelector(
+      '.group-management summary',
+    ) as HTMLElement;
+    groupSummary.click();
+    fixture.detectChanges();
+    const removeButton = [
+      ...fixture.nativeElement.querySelectorAll('.group-member button'),
+    ][0] as HTMLButtonElement;
+    removeButton.click();
+    fixture.detectChanges();
+    expect(store.removePaymentMember).not.toHaveBeenCalled();
+    expect(fixture.nativeElement.textContent).toContain('Only this payment’s membership');
+    const cancelButton = [
+      ...fixture.nativeElement.querySelectorAll('.confirmation-dialog button'),
+    ].find(
+      (button: HTMLButtonElement) => button.textContent?.trim() === 'Cancel',
+    ) as HTMLButtonElement;
+    cancelButton.click();
+    fixture.detectChanges();
+    expect(store.removePaymentMember).not.toHaveBeenCalled();
+    removeButton.click();
+    fixture.detectChanges();
+    const confirmRemove = [
+      ...fixture.nativeElement.querySelectorAll('.confirmation-dialog button'),
+    ].find((button: HTMLButtonElement) =>
+      button.textContent?.includes('Remove payment'),
+    ) as HTMLButtonElement;
+    confirmRemove.click();
+    await fixture.whenStable();
+    expect(store.removePaymentMember).toHaveBeenLastCalledWith('CARD:nov9');
+
+    (fixture.nativeElement.querySelector('.dissolve-group') as HTMLButtonElement).click();
+    fixture.detectChanges();
+    expect(fixture.nativeElement.textContent).toContain(
+      'All original payments and refunds remain recorded',
+    );
+    const confirmDissolve = [
+      ...fixture.nativeElement.querySelectorAll('.confirmation-dialog button'),
+    ].find((button: HTMLButtonElement) =>
+      button.textContent?.includes('Dissolve group'),
+    ) as HTMLButtonElement;
+    confirmDissolve.click();
+    await fixture.whenStable();
+    expect(store.removePaymentMember).toHaveBeenLastCalledWith(group.id, true);
+    fixture.destroy();
+  });
+  it('disables third-date additions and confirms removal or dissolution before changing membership', async () => {
+    const nov9 = { ...first, id: 'nov9', transactionDate: '2026-11-09' };
+    const nov10 = { ...first, id: 'nov10', transactionDate: '2026-11-10' };
+    const nov11 = { ...first, id: 'nov11', transactionDate: '2026-11-11' };
+    store.transactions.set([nov9, nov10, nov11]);
+    const group: PaymentGroup = {
+      id: 'two-day-group',
+      kind: 'PAYMENTS',
+      anchorId: nov9.id,
+      title: 'Two-date bill',
+      currency: 'INR',
+      billTotalMinor: null,
+      createdAt: '2026-11-09T00:00:00Z',
+      updatedAt: '2026-11-10T00:00:00Z',
+      memberIds: [nov9.id, nov10.id],
+      walletMembers: [],
+    };
+    store.paymentGroups.set([group]);
+    const fixture = TestBed.createComponent(PaymentGroupsPanel);
+    fixture.componentRef.setInput('groupId', group.id);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const page = fixture.componentInstance;
+    page.step.set(2);
+    fixture.detectChanges();
+    const third = page.memberChoices().find((entry) => entry.id === nov11.id)!;
+    expect(page.dateSpanError(third)).toContain('two adjacent calendar dates');
+    page.toggle(third.id);
+    expect(page.selected().size).toBe(0);
+    expect(page.error()).toContain('two adjacent calendar dates');
+
+    const manage = fixture.nativeElement.querySelector('.group-management summary') as HTMLElement;
+    manage.click();
+    fixture.detectChanges();
+    const remove = [...fixture.nativeElement.querySelectorAll('button')].find(
+      (button: HTMLButtonElement) => button.textContent?.trim() === 'Remove',
+    ) as HTMLButtonElement;
+    remove.click();
+    fixture.detectChanges();
+    expect(store.removePaymentMember).not.toHaveBeenCalled();
+    expect(fixture.nativeElement.textContent).toContain('Only this payment’s membership');
+    const cancel = [...fixture.nativeElement.querySelectorAll('.confirmation-dialog button')].find(
+      (button: HTMLButtonElement) => button.textContent?.trim() === 'Cancel',
+    ) as HTMLButtonElement;
+    cancel.click();
+    fixture.detectChanges();
+    expect(store.removePaymentMember).not.toHaveBeenCalled();
+
+    remove.click();
+    fixture.detectChanges();
+    const confirmRemove = [
+      ...fixture.nativeElement.querySelectorAll('.confirmation-dialog button'),
+    ].find((button: HTMLButtonElement) =>
+      button.textContent?.includes('Remove payment'),
+    ) as HTMLButtonElement;
+    confirmRemove.click();
+    await fixture.whenStable();
+    expect(store.removePaymentMember).toHaveBeenLastCalledWith('CARD:nov9');
+
+    const dissolve = [
+      ...fixture.nativeElement.querySelectorAll('.dissolve-group'),
+    ][0] as HTMLButtonElement;
+    dissolve.click();
+    fixture.detectChanges();
+    expect(fixture.nativeElement.textContent).toContain(
+      'All original payments and refunds remain recorded',
+    );
+    const confirmDissolve = [
+      ...fixture.nativeElement.querySelectorAll('.confirmation-dialog button'),
+    ].find((button: HTMLButtonElement) =>
+      button.textContent?.includes('Dissolve group'),
+    ) as HTMLButtonElement;
+    confirmDissolve.click();
+    await fixture.whenStable();
+    expect(store.removePaymentMember).toHaveBeenLastCalledWith(group.id, true);
+    fixture.destroy();
+  });
   it.each([false, true])(
     'paginates 25 wallet payments and excludes refunds from payment count (mixed card member: %s)',
     async (includeCard) => {

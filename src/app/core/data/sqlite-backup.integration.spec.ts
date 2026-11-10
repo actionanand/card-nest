@@ -111,6 +111,203 @@ describe('Durable first-run data, additive read migration and private portable b
     await wallets.initialise();
     expect(wallets.balances().get(wallet.id)).toBe(7345);
   });
+  it('counts FASTAG funding debits once across fees, bonuses and later informational tolls', async () => {
+    await database.initialise();
+    const store = TestBed.inject(CardNestStore);
+    await store.initialisePreferences();
+    const wallets = TestBed.inject(ConsumerWalletService);
+    await wallets.initialise();
+    const bank = await store.addBankAccount({ institution: 'Synthetic Bank', lastDigits: '419' });
+    await wallets.saveFastagWallet({
+      id: 'fastag-ledger-account',
+      nickname: 'Synthetic FASTag',
+      kind: 'FASTAG',
+      institution: 'Synthetic Bank',
+      vehicleNumber: 'KA05MN4826',
+      fastagId: '00019000098765432',
+      noLimit: false,
+      balanceMinor: 0,
+      autoLoad: false,
+      archived: false,
+    });
+    const fastag = wallets.fastagWallets()[0];
+    const makeDebit = (id: string, amountMinor: number): CardTransaction => ({
+      id,
+      cardId: bank.id,
+      type: 'PURCHASE',
+      amountMinor,
+      currencyCode: 'INR',
+      transactionDate: indiaTodayIso(),
+      merchant: 'Synthetic FASTag funding',
+      categoryId: 'other',
+      attachmentIds: [],
+      paymentMethod: 'WALLET_LOADING',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    for (const [id, debit, credit] of [
+      ['fastag-equal', 100000, 100000],
+      ['fastag-promo', 30000, 35000],
+      ['fastag-fee', 30000, 26000],
+    ] as const) {
+      await store.saveManualTransaction(makeDebit(id, debit), '', false, undefined, '', {
+        walletId: fastag.id,
+        loadedAmountMinor: credit,
+      });
+    }
+    const purchaseInput = {
+      id: 'fastag-toll-info',
+      walletId: fastag.id,
+      amountMinor: 15500,
+      eventDate: indiaTodayIso(),
+      categoryId: 'other',
+      merchant: 'Synthetic Toll Plaza',
+    };
+    await recordApprovedWalletPurchase(wallets, purchaseInput);
+    expect(wallets.balances().get(fastag.id)).toBe(145500);
+    expect(sumConsolidatedSpending(store.consolidatedSpending())).toBe(160000);
+    expect(
+      rows(
+        'SELECT event_type,amount_minor,balance_delta_minor,fee_minor FROM consumer_wallet_events WHERE wallet_id=? ORDER BY event_type,amount_minor',
+        [fastag.id],
+      ),
+    ).toEqual([
+      {
+        event_type: 'FUNDED_LOAD',
+        amount_minor: 26000,
+        balance_delta_minor: 26000,
+        fee_minor: 4000,
+      },
+      {
+        event_type: 'FUNDED_LOAD',
+        amount_minor: 100000,
+        balance_delta_minor: 100000,
+        fee_minor: 0,
+      },
+      { event_type: 'FUNDED_LOAD', amount_minor: 30000, balance_delta_minor: 30000, fee_minor: 0 },
+      {
+        event_type: 'PROMOTIONAL_CREDIT',
+        amount_minor: 5000,
+        balance_delta_minor: 5000,
+        fee_minor: null,
+      },
+      { event_type: 'PURCHASE', amount_minor: 15500, balance_delta_minor: -15500, fee_minor: null },
+    ]);
+  });
+  it('encrypts and restores FASTAG pass identity and TV recharge history', async () => {
+    await database.initialise();
+    await TestBed.inject(CardNestStore).initialisePreferences();
+    const source: PaymentSource = {
+      id: 'backup-fastag',
+      nickname: 'Synthetic FASTag',
+      kind: 'FASTAG',
+      vehicleNumber: 'KA05MN4826',
+      fastagId: '00019000098765432',
+      fastagPasses: [
+        {
+          id: 'backup-pass',
+          name: 'Synthetic pass',
+          amountMinor: 307500,
+          startDate: '2026-01-01',
+          endDate: '2026-12-31',
+          totalCrossings: 200,
+          usedCrossings: 10,
+          createdAt: '2026-01-01T00:00:00Z',
+          updatedAt: '2026-01-01T00:00:00Z',
+        },
+      ],
+      noLimit: false,
+      balanceMinor: 0,
+      autoLoad: false,
+      archived: false,
+    };
+    await database.run('INSERT INTO app_preferences(key,encrypted_value) VALUES(?,?)', [
+      'payment_sources',
+      JSON.stringify([source]),
+    ]);
+    const tvProfile = {
+      id: 'backup-tv-profile',
+      provider: 'OTHER',
+      archived: false,
+      payload: JSON.stringify({
+        id: 'backup-tv-profile',
+        kind: 'TV',
+        displayName: 'Synthetic TV',
+        provider: 'OTHER',
+        otherProviderName: 'Synthetic Cable',
+        archived: false,
+        createdAt: '2026-01-01T00:00:00Z',
+        updatedAt: '2026-01-01T00:00:00Z',
+      }),
+      createdAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+    };
+    const tvRecharge = {
+      id: 'backup-tv-recharge',
+      profileId: tvProfile.id,
+      startDate: '2026-11-01',
+      endDate: '2026-11-30',
+      amountMinor: 25000,
+      payload: JSON.stringify({
+        id: 'backup-tv-recharge',
+        profileId: tvProfile.id,
+        startDate: '2026-11-01',
+        endDate: '2026-11-30',
+        amountMinor: 25000,
+        durationDays: 30,
+      }),
+      createdAt: '2026-11-01T00:00:00Z',
+      updatedAt: '2026-11-01T00:00:00Z',
+    };
+    await database.run(
+      'INSERT INTO tv_profiles(id,provider,archived,payload,created_at,updated_at) VALUES(?,?,0,?,?,?)',
+      [
+        tvProfile.id,
+        tvProfile.provider,
+        tvProfile.payload,
+        tvProfile.createdAt,
+        tvProfile.updatedAt,
+      ],
+    );
+    await database.run(
+      'INSERT INTO tv_recharges(id,profile_id,start_date,end_date,amount_minor,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)',
+      [
+        tvRecharge.id,
+        tvRecharge.profileId,
+        tvRecharge.startDate,
+        tvRecharge.endDate,
+        tvRecharge.amountMinor,
+        tvRecharge.payload,
+        tvRecharge.createdAt,
+        tvRecharge.updatedAt,
+      ],
+    );
+    vi.stubGlobal('crypto', webcrypto);
+    vi.stubGlobal('CompressionStream', undefined);
+    vi.stubGlobal('DecompressionStream', undefined);
+    try {
+      const backupService = TestBed.inject(BackupService);
+      const backup = await backupService.create('synthetic-fastag-tv-passphrase');
+      await database.run('DELETE FROM tv_recharges');
+      await database.run('DELETE FROM tv_profiles');
+      await database.run(
+        "UPDATE app_preferences SET encrypted_value='[]' WHERE key='payment_sources'",
+      );
+      await backupService.restore(backup.contents, 'synthetic-fastag-tv-passphrase');
+      const [savedSources] = await database.query<{ encrypted_value: string }>(
+        "SELECT encrypted_value FROM app_preferences WHERE key='payment_sources'",
+      );
+      expect(JSON.parse(savedSources.encrypted_value)[0]).toMatchObject({
+        fastagId: source.fastagId,
+        fastagPasses: [expect.objectContaining({ id: 'backup-pass', usedCrossings: 10 })],
+      });
+      expect(await database.query('SELECT id FROM tv_profiles')).toEqual([{ id: tvProfile.id }]);
+      expect(await database.query('SELECT id FROM tv_recharges')).toEqual([{ id: tvRecharge.id }]);
+      expect(rows('PRAGMA foreign_key_check')).toEqual([]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
   it('approves Bank SMS wallet loading through the real store atomically and idempotently', async () => {
     await database.initialise();
     const store = TestBed.inject(CardNestStore);

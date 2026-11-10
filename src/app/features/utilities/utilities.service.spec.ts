@@ -125,6 +125,61 @@ describe('Indian Utilities service', () => {
       commercial: false,
       cylinderSize: 'SMALL',
       estimatedUsageDays: 25,
+          it('validates TV provider, optional Indian mobile and editable recharge history without finance writes', async () => {
+            await expect(
+              utilities.saveTvProfile({ displayName: 'Living room', provider: 'OTHER' }),
+            ).rejects.toThrow('provider name');
+            await expect(
+              utilities.saveTvProfile({
+                displayName: 'Living room',
+                provider: 'SUN',
+                mobileNumber: '1234567890',
+              }),
+            ).rejects.toThrow('ten-digit Indian mobile');
+            const profile = await utilities.saveTvProfile({
+              displayName: 'Living room',
+              provider: 'OTHER',
+              otherProviderName: 'Synthetic Cable',
+              customerId: '00004567',
+              mobileNumber: '9876543210',
+            });
+            expect(profile).toMatchObject({
+              kind: 'TV',
+              otherProviderName: 'Synthetic Cable',
+              customerId: '00004567',
+              mobileNumber: '+91-9876543210',
+            });
+            const recharge = await utilities.saveTvRecharge({
+              profileId: profile.id,
+              amountMinor: 25000,
+              startDate: '2026-11-09',
+              durationDays: 30,
+              notes: 'Synthetic recharge',
+            });
+            expect(recharge).toMatchObject({
+              profileId: profile.id,
+              startDate: '2026-11-09',
+              endDate: addCalendarDays('2026-11-09', 29),
+              amountMinor: 25000,
+            });
+            const extended = await utilities.saveTvRecharge({
+              ...recharge,
+              endDate: '2027-01-15',
+            });
+            expect(extended.id).toBe(recharge.id);
+            expect(extended.endDate).toBe('2027-01-15');
+            await expect(
+              utilities.saveTvRecharge({
+                profileId: profile.id,
+                startDate: '2026-11-10',
+                endDate: '2026-11-09',
+              }),
+            ).rejects.toThrow('on or after');
+            expect(database.run).toHaveBeenCalledWith(
+              expect.stringContaining('INSERT INTO tv_recharges'),
+              expect.any(Array),
+            );
+          });
     });
     const saved = await utilities.saveLpgEvent({
       profileId: profile.id,

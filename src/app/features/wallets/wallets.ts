@@ -3,7 +3,7 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, NavigationEnd, Router, RouterLink } from '@angular/router';
 import { filter } from 'rxjs';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
-import { ConsumerWallet, PaymentSource } from '../../core/models/domain';
+import { ConsumerWallet, FastagPass, PaymentSource } from '../../core/models/domain';
 import {
   ConsumerWalletService,
   WalletPurchasePreview,
@@ -16,12 +16,39 @@ import { AppIcon } from '../../shared/app-icon';
 import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker';
 import { ProfileModal } from '../../shared/profile-modal';
 import { ConfirmationDialog } from '../../shared/confirmation-dialog';
+import { AppDatePicker } from '../../shared/app-date-picker';
 import {
   CONSUMER_WALLET_PROVIDERS,
   ConsumerWalletProviderId,
   consumerWalletProviderLabel,
 } from './consumer-wallet-providers';
 import { SnackbarService } from '../../core/services/snackbar.service';
+
+function dateOrdinal(value: string): number | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const timestamp = Date.parse(`${value}T00:00:00Z`);
+  return Number.isFinite(timestamp) && new Date(timestamp).toISOString().slice(0, 10) === value
+    ? timestamp / 86_400_000
+    : null;
+}
+
+function addIsoDays(value: string, days: number): string {
+  const timestamp = dateOrdinal(value);
+  return timestamp === null ? '' : new Date((timestamp + days) * 86_400_000).toISOString().slice(0, 10);
+}
+
+function addIsoMonths(value: string, months: number): string {
+  const [year, month, day] = value.split('-').map(Number);
+  const nextMonthIndex = year * 12 + month - 1 + months;
+  const nextYear = Math.floor(nextMonthIndex / 12);
+  const nextMonth = nextMonthIndex % 12 + 1;
+  const nextDay = Math.min(day, daysInMonth(nextYear, nextMonth));
+  return `${nextYear}-${String(nextMonth).padStart(2, '0')}-${String(nextDay).padStart(2, '0')}`;
+}
+
+function daysInMonth(year: number, month: number): number {
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
 
 @Component({
   selector: 'app-wallets-page',
@@ -30,6 +57,7 @@ import { SnackbarService } from '../../core/services/snackbar.service';
     AppSelectPicker,
     ProfileModal,
     ConfirmationDialog,
+    AppDatePicker,
     ReactiveFormsModule,
     RouterLink,
   ],
@@ -43,6 +71,10 @@ export class WalletsPage {
   private readonly router = inject(Router);
   private readonly snackbar = inject(SnackbarService);
   readonly fastagOpen = signal(false);
+  readonly editingFastagSourceId = signal<string | null>(null);
+  readonly fastagPassSourceId = signal<string | null>(null);
+  readonly editingFastagPassId = signal<string | null>(null);
+  readonly fastagPassValidityMode = signal<'DAYS' | 'END_DATE'>('DAYS');
   readonly consumerOpen = signal(false);
   readonly historyWalletId = signal<string | null>(null);
   readonly walletActivityId = signal<string | null>(null);
@@ -50,6 +82,14 @@ export class WalletsPage {
   readonly walletActivityError = signal<string | null>(null);
   readonly walletActivityPurchasePreview = signal<WalletPurchasePreview | null>(null);
   readonly walletActivityPurchaseApprovedFor = signal('');
+  readonly walletActivityBalancePreview = signal<{
+    readonly previousMinor: number;
+    readonly nextMinor: number;
+    readonly deltaMinor: number;
+    readonly confirmationKey: string;
+  } | null>(null);
+  readonly walletActivityBalanceApprovedFor = signal('');
+  readonly fastagActionSource = signal<PaymentSource | null>(null);
   readonly returnWalletId = signal<string | null>(null);
   readonly returnEventId = signal('');
   readonly returnPreview = signal<UpiLiteReturnPreview | null>(null);
@@ -187,6 +227,24 @@ export class WalletsPage {
       nonNullable: true,
       validators: [Validators.required, Validators.pattern(/^[A-Za-z0-9 -]{5,16}$/)],
     }),
+    fastagId: new FormControl('', {
+      nonNullable: true,
+      validators: [Validators.pattern(/^\d{0,32}$/)],
+    }),
+    confirmDuplicateVehicle: new FormControl(false, { nonNullable: true }),
+  });
+  readonly fastagPassForm = new FormGroup({
+    name: new FormControl('Annual Highway Pass', {
+      nonNullable: true,
+      validators: [Validators.required, Validators.maxLength(80)],
+    }),
+    amount: new FormControl('3075', { nonNullable: true, validators: [Validators.required] }),
+    startDate: new FormControl(indiaTodayIso(), { nonNullable: true, validators: [Validators.required] }),
+    durationDays: new FormControl('365', { nonNullable: true }),
+    endDate: new FormControl('', { nonNullable: true }),
+    totalCrossings: new FormControl('200', { nonNullable: true, validators: [Validators.required] }),
+    usedCrossings: new FormControl('0', { nonNullable: true, validators: [Validators.required] }),
+    notes: new FormControl('', { nonNullable: true, validators: [Validators.maxLength(300)] }),
   });
   readonly consumerForm = new FormGroup({
     providerId: new FormControl<ConsumerWalletProviderId>('amazon-pay', { nonNullable: true }),
@@ -203,6 +261,8 @@ export class WalletsPage {
     this.walletActivityForm.valueChanges.pipe(takeUntilDestroyed()).subscribe(() => {
       this.walletActivityPurchasePreview.set(null);
       this.walletActivityPurchaseApprovedFor.set('');
+      this.walletActivityBalancePreview.set(null);
+      this.walletActivityBalanceApprovedFor.set('');
     });
     this.returnForm.valueChanges.pipe(takeUntilDestroyed()).subscribe(() => {
       this.returnPreview.set(null);
@@ -263,16 +323,123 @@ export class WalletsPage {
     return this.wallets.balances().get(wallet.id) ?? 0;
   }
 
+  fastagWallet(source: PaymentSource): ConsumerWallet | undefined {
+    return this.wallets.wallets().find((wallet) => wallet.fastagSourceId === source.id);
+  }
+
+  fastagBalance(source: PaymentSource): number {
+    const wallet = this.fastagWallet(source);
+    return wallet ? (this.wallets.balances().get(wallet.id) ?? 0) : (source.balanceMinor ?? 0);
+  }
+
+  duplicateFastagVehicle(): boolean {
+    const normalized = this.fastagForm.controls.plate.value.replace(/[\s-]/g, '').toUpperCase();
+    if (!normalized) return false;
+    const editingId = this.editingFastagSourceId();
+    return this.store.paymentSources().some(
+      (source) =>
+        source.kind === 'FASTAG' &&
+        source.id !== editingId &&
+        source.vehicleNumber?.replace(/[\s-]/g, '').toUpperCase() === normalized,
+    );
+  }
+
+  openFastagActions(source: PaymentSource): void {
+    if (source.archived || this.saving()) return;
+    this.fastagActionSource.set(source);
+  }
+
+  closeFastagActions(): void {
+    if (!this.saving()) this.fastagActionSource.set(null);
+  }
+
+  startFastagToll(source: PaymentSource): void {
+    const wallet = this.fastagWallet(source);
+    if (!wallet) {
+      this.error.set('FASTag wallet history is still being prepared. Reload Wallets and retry.');
+      this.fastagActionSource.set(null);
+      return;
+    }
+    this.fastagActionSource.set(null);
+    this.openWalletActivity(wallet);
+    this.walletActivityForm.controls.kind.setValue('PURCHASE');
+    this.walletActivityForm.controls.merchant.setValue('');
+  }
+
+  startFastagLoad(): void {
+    if (this.saving()) return;
+    this.fastagActionSource.set(null);
+    void this.router.navigate(['/transactions'], { queryParams: { add: true } });
+  }
+
+  startFastagBalance(source: PaymentSource): void {
+    const wallet = this.fastagWallet(source);
+    if (!wallet) {
+      this.error.set('FASTag wallet history is still being prepared. Reload Wallets and retry.');
+      this.fastagActionSource.set(null);
+      return;
+    }
+    this.fastagActionSource.set(null);
+    this.openWalletActivity(wallet);
+    this.walletActivityForm.patchValue({
+      kind: 'BALANCE',
+      amount: (this.wallets.balances().get(wallet.id) ?? source.balanceMinor ?? 0) / 100 + '',
+    });
+  }
+
+  walletActivityKindsFor(wallet: ConsumerWallet): readonly AppSelectOption[] {
+    if (!wallet.fastagSourceId) return this.walletActivityKinds;
+    return [
+      { value: 'PURCHASE', label: 'Toll payment / debit' },
+      { value: 'BALANCE', label: 'Set verified balance' },
+    ];
+  }
+
+  setWalletActivityKind(wallet: ConsumerWallet, value: string): void {
+    if (!this.walletActivityKindsFor(wallet).some((option) => option.value === value)) return;
+    if (value === 'PURCHASE' || value === 'MANUAL_CREDIT' || value === 'PROMOTIONAL_CREDIT' || value === 'BALANCE')
+      this.walletActivityForm.controls.kind.setValue(value);
+  }
+
+  confirmWalletActivityBalance(event: Event): void {
+    const preview = this.walletActivityBalancePreview();
+    this.walletActivityBalanceApprovedFor.set(
+      preview && (event.target as HTMLInputElement).checked ? preview.confirmationKey : '',
+    );
+  }
+
   openFastag(): void {
     if (this.saving()) return;
     this.error.set(null);
-    this.fastagForm.reset({ name: '', provider: '', plate: '' });
+    this.editingFastagSourceId.set(null);
+    this.fastagForm.reset({
+      name: '',
+      provider: '',
+      plate: '',
+      fastagId: '',
+      confirmDuplicateVehicle: false,
+    });
+    this.fastagOpen.set(true);
+  }
+
+  editFastag(source: PaymentSource): void {
+    if (this.saving() || source.archived) return;
+    this.error.set(null);
+    this.editingFastagSourceId.set(source.id);
+    this.fastagForm.reset({
+      name: source.nickname,
+      provider: source.institution ?? '',
+      plate: source.vehicleNumber ?? '',
+      fastagId: source.fastagId ?? '',
+      confirmDuplicateVehicle: false,
+    });
     this.fastagOpen.set(true);
   }
 
   closeFastag(): void {
     if (this.saving()) return;
     this.fastagOpen.set(false);
+    this.editingFastagSourceId.set(null);
     this.error.set(null);
     void this.cancelMatchingSetup('FASTAG');
   }
@@ -286,27 +453,62 @@ export class WalletsPage {
       this.error.set('Enter a wallet name.');
       return;
     }
+    const editing = this.store
+      .paymentSources()
+      .find((source) => source.id === this.editingFastagSourceId() && source.kind === 'FASTAG');
+    const vehicleNumber = value.plate.trim();
+    const normalizedVehicle = vehicleNumber.replace(/[\s-]/g, '').toUpperCase();
+    const duplicateVehicle = this.store.paymentSources().some(
+      (source) =>
+        source.kind === 'FASTAG' &&
+        source.id !== editing?.id &&
+        source.vehicleNumber?.replace(/[\s-]/g, '').toUpperCase() === normalizedVehicle,
+    );
+    if (duplicateVehicle && !value.confirmDuplicateVehicle) {
+      this.error.set('Another FASTag uses this vehicle. Confirm that both registrations are intentional.');
+      return;
+    }
     this.saving.set(true);
     this.error.set(null);
     try {
-      await this.wallets.saveFastagWallet(
-        {
-          id: crypto.randomUUID(),
+      if (editing) {
+        await this.store.updatePaymentSource({
+          ...editing,
           nickname: value.name.trim(),
-          kind: 'FASTAG',
-          institution: value.provider.trim(),
-          vehicleNumber: value.plate.replace(/[ -]/g, '').toUpperCase(),
-          noLimit: false,
-          balanceMinor: 0,
-          autoLoad: false,
-          archived: false,
-        },
-        this.setupIntentId('FASTAG'),
-      );
+          institution: value.provider.trim() || undefined,
+          vehicleNumber,
+          fastagId: value.fastagId.trim() || undefined,
+        }, value.confirmDuplicateVehicle);
+        await this.wallets.refreshWalletRecords();
+      } else {
+        await this.wallets.saveFastagWallet(
+          {
+            id: crypto.randomUUID(),
+            nickname: value.name.trim(),
+            kind: 'FASTAG',
+            institution: value.provider.trim(),
+            vehicleNumber,
+            fastagId: value.fastagId.trim() || undefined,
+            noLimit: false,
+            balanceMinor: 0,
+            autoLoad: false,
+            archived: false,
+          },
+          this.setupIntentId('FASTAG'),
+          value.confirmDuplicateVehicle,
+        );
+      }
       this.fastagOpen.set(false);
-      this.fastagForm.reset({ name: '', provider: '', plate: '' });
+      this.editingFastagSourceId.set(null);
+      this.fastagForm.reset({
+        name: '',
+        provider: '',
+        plate: '',
+        fastagId: '',
+        confirmDuplicateVehicle: false,
+      });
       this.clearSetupQuery();
-      this.snackbar.show('FASTag wallet created.');
+      this.snackbar.show(editing ? 'FASTag wallet updated.' : 'FASTag wallet created.');
     } catch (error: unknown) {
       this.error.set(error instanceof Error ? error.message : 'Wallet could not be saved.');
     } finally {
@@ -362,8 +564,10 @@ export class WalletsPage {
     this.saving.set(true);
     this.actionError.set(null);
     try {
-      if (action.kind === 'ARCHIVE_FASTAG')
+      if (action.kind === 'ARCHIVE_FASTAG') {
         await this.store.updatePaymentSource({ ...action.source, archived: true });
+        await this.wallets.refreshWalletRecords();
+      }
       else if (action.kind === 'ARCHIVE_CONSUMER')
         await this.wallets.archiveWallet(action.wallet.id);
       else await this.wallets.deleteWalletIfEmpty(action.wallet.id);
@@ -385,6 +589,7 @@ export class WalletsPage {
   async setFastagArchived(source: PaymentSource, archived: boolean): Promise<void> {
     try {
       await this.store.updatePaymentSource({ ...source, archived });
+      await this.wallets.refreshWalletRecords();
       this.snackbar.show(
         archived ? 'FASTag wallet archived. History is kept.' : 'FASTag wallet restored.',
       );
@@ -396,17 +601,154 @@ export class WalletsPage {
     }
   }
 
-  async updateFastagBalance(source: PaymentSource, event: Event): Promise<void> {
-    const amountMinor = parseMoneyToMinor((event.target as HTMLInputElement).value);
-    if (amountMinor === null || amountMinor < 0 || source.archived) return;
+  openFastagPass(source: PaymentSource, pass?: FastagPass): void {
+    if (this.saving() || source.archived) return;
+    this.error.set(null);
+    this.fastagPassSourceId.set(source.id);
+    this.editingFastagPassId.set(pass?.id ?? null);
+    this.fastagPassValidityMode.set(pass?.durationDays ? 'DAYS' : pass ? 'END_DATE' : 'DAYS');
+    this.fastagPassForm.reset({
+      name: pass?.name ?? 'Annual Highway Pass',
+      amount: pass ? String(pass.amountMinor / 100) : '3075',
+      startDate: pass?.startDate ?? indiaTodayIso(),
+      durationDays: String(
+        pass?.durationDays ??
+          (pass ? (dateOrdinal(pass.endDate) ?? 0) - (dateOrdinal(pass.startDate) ?? 0) + 1 : 365),
+      ),
+      endDate: pass && !pass.durationDays ? pass.endDate : '',
+      totalCrossings: String(pass?.totalCrossings ?? 200),
+      usedCrossings: String(pass?.usedCrossings ?? 0),
+      notes: pass?.notes ?? '',
+    });
+  }
+
+  closeFastagPass(): void {
+    if (this.saving()) return;
+    this.fastagPassSourceId.set(null);
+    this.editingFastagPassId.set(null);
+    this.error.set(null);
+  }
+
+  async saveFastagPass(event: Event): Promise<void> {
+    event.preventDefault();
+    if (this.saving()) return;
+    this.fastagPassForm.markAllAsTouched();
+    if (this.fastagPassForm.invalid) return;
+    const source = this.store
+      .paymentSources()
+      .find((item) => item.id === this.fastagPassSourceId() && item.kind === 'FASTAG');
+    if (!source || source.archived) return;
+    const value = this.fastagPassForm.getRawValue();
+    const amountMinor = parseMoneyToMinor(value.amount);
+    const startOrdinal = dateOrdinal(value.startDate);
+    const totalCrossings = Number(value.totalCrossings);
+    const usedCrossings = Number(value.usedCrossings);
+    if (!value.name.trim() || amountMinor === null || amountMinor <= 0 || startOrdinal === null) {
+      this.error.set('Enter a pass name, positive amount and valid start date.');
+      return;
+    }
+    if (
+      !Number.isSafeInteger(totalCrossings) ||
+      totalCrossings <= 0 ||
+      !Number.isSafeInteger(usedCrossings) ||
+      usedCrossings < 0 ||
+      usedCrossings > totalCrossings
+    ) {
+      this.error.set('Used crossings must be between zero and the total allowed crossings.');
+      return;
+    }
+    const explicitEnd = this.fastagPassValidityMode() === 'END_DATE' ? value.endDate.trim() : '';
+    const durationDays = this.fastagPassValidityMode() === 'DAYS' ? Number(value.durationDays) : undefined;
+    if (!explicitEnd && (!Number.isSafeInteger(durationDays) || (durationDays ?? 0) <= 0)) {
+      this.error.set('Enter a positive duration or an explicit end date.');
+      return;
+    }
+    const endDate = explicitEnd || addIsoDays(value.startDate, (durationDays ?? 1) - 1);
+    const endOrdinal = dateOrdinal(endDate);
+    if (endOrdinal === null || endOrdinal < startOrdinal) {
+      this.error.set('The pass end date must be on or after its start date.');
+      return;
+    }
+    const timestamp = new Date().toISOString();
+    const pass: FastagPass = {
+      id: this.editingFastagPassId() ?? crypto.randomUUID(),
+      name: value.name.trim().slice(0, 80),
+      amountMinor,
+      startDate: value.startDate,
+      endDate,
+      durationDays,
+      totalCrossings,
+      usedCrossings,
+      notes: value.notes.trim().slice(0, 300) || undefined,
+      createdAt:
+        source.fastagPasses?.find((item) => item.id === this.editingFastagPassId())?.createdAt ??
+        timestamp,
+      updatedAt: timestamp,
+    };
+    const editing = !!this.editingFastagPassId();
+    const passes = source.fastagPasses ?? [];
+    this.saving.set(true);
+    this.error.set(null);
     try {
-      await this.store.updatePaymentSource({ ...source, balanceMinor: amountMinor });
-      this.snackbar.show(`${source.nickname} balance updated.`);
+      await this.store.updatePaymentSource({
+        ...source,
+        fastagPasses: this.editingFastagPassId()
+          ? passes.map((item) => (item.id === pass.id ? pass : item))
+          : [...passes, pass],
+      });
+      this.fastagPassSourceId.set(null);
+      this.editingFastagPassId.set(null);
+      this.snackbar.show(editing ? 'FASTag pass updated.' : 'FASTag pass saved.');
     } catch (error: unknown) {
-      this.snackbar.show(
-        error instanceof Error ? error.message : 'FASTag balance could not be updated.',
-        'WARNING',
-      );
+      this.error.set(error instanceof Error ? error.message : 'FASTag pass could not be saved.');
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  fastagPassStatus(pass: FastagPass): 'ACTIVE' | 'EXPIRED' | 'EXHAUSTED' {
+    if (pass.usedCrossings >= pass.totalCrossings) return 'EXHAUSTED';
+    return indiaTodayIso() > pass.endDate ? 'EXPIRED' : 'ACTIVE';
+  }
+
+  fastagPassRemaining(pass: FastagPass): number {
+    return Math.max(0, pass.totalCrossings - pass.usedCrossings);
+  }
+
+  fastagPassValidity(pass: FastagPass): string {
+    const today = indiaTodayIso();
+    const todayOrdinal = dateOrdinal(today);
+    const endOrdinal = dateOrdinal(pass.endDate);
+    if (this.fastagPassStatus(pass) === 'EXHAUSTED') return 'Crossings exhausted';
+    if (todayOrdinal === null || endOrdinal === null || today > pass.endDate) return 'Expired';
+    let months = Math.max(
+      0,
+      (Number(pass.endDate.slice(0, 4)) - Number(today.slice(0, 4))) * 12 +
+        Number(pass.endDate.slice(5, 7)) - Number(today.slice(5, 7)),
+    );
+    while (months > 0 && addIsoMonths(today, months) > pass.endDate) months--;
+    while (addIsoMonths(today, months + 1) <= pass.endDate) months++;
+    const remainingDays = endOrdinal - (dateOrdinal(addIsoMonths(today, months)) ?? todayOrdinal);
+    return months > 0
+      ? `${months} months, ${remainingDays} days remaining`
+      : `${endOrdinal - todayOrdinal} days remaining`;
+  }
+
+  async recordFastagCrossing(source: PaymentSource, pass: FastagPass): Promise<void> {
+    if (this.saving() || source.archived || this.fastagPassStatus(pass) !== 'ACTIVE') return;
+    const timestamp = new Date().toISOString();
+    try {
+      await this.store.updatePaymentSource({
+        ...source,
+        fastagPasses: (source.fastagPasses ?? []).map((item) =>
+          item.id === pass.id
+            ? { ...item, usedCrossings: item.usedCrossings + 1, updatedAt: timestamp }
+            : item,
+        ),
+      });
+      this.snackbar.show('Pass crossing recorded. FASTag wallet balance was not changed.');
+    } catch (error: unknown) {
+      this.snackbar.show(error instanceof Error ? error.message : 'Crossing could not be recorded.', 'WARNING');
     }
   }
 
@@ -696,6 +1038,8 @@ export class WalletsPage {
     this.walletActivityError.set(null);
     this.walletActivityPurchasePreview.set(null);
     this.walletActivityPurchaseApprovedFor.set('');
+    this.walletActivityBalancePreview.set(null);
+    this.walletActivityBalanceApprovedFor.set('');
     this.walletActivityId.set(wallet.id);
     this.walletActivityEventId.set(crypto.randomUUID());
     this.walletActivityForm.reset({
@@ -714,6 +1058,8 @@ export class WalletsPage {
     this.walletActivityError.set(null);
     this.walletActivityPurchasePreview.set(null);
     this.walletActivityPurchaseApprovedFor.set('');
+    this.walletActivityBalancePreview.set(null);
+    this.walletActivityBalanceApprovedFor.set('');
   }
 
   confirmWalletActivityPurchase(event: Event): void {
@@ -773,7 +1119,25 @@ export class WalletsPage {
           eventDate: value.eventDate,
           memo: value.memo,
         });
-      else
+      else {
+        const previousMinor = this.wallets.balances().get(wallet.id) ?? 0;
+        const confirmationKey = JSON.stringify([
+          wallet.id,
+          previousMinor,
+          amountMinor,
+          value.eventDate,
+          value.memo.trim(),
+        ]);
+        if (this.walletActivityBalanceApprovedFor() !== confirmationKey) {
+          this.walletActivityBalancePreview.set({
+            previousMinor,
+            nextMinor: amountMinor,
+            deltaMinor: amountMinor - previousMinor,
+            confirmationKey,
+          });
+          this.walletActivityBalanceApprovedFor.set('');
+          return;
+        }
         await this.wallets.updateWalletBalance({
           id: this.walletActivityEventId(),
           walletId: wallet.id,
@@ -781,6 +1145,7 @@ export class WalletsPage {
           eventDate: value.eventDate,
           memo: value.memo,
         });
+      }
       this.walletActivityId.set(null);
       this.snackbar.show('Wallet activity recorded.');
     } catch (error: unknown) {

@@ -51,6 +51,7 @@ describe('Wallet Loading form rules', () => {
       debitAmountMinor: 5200,
       loadedAmountMinor: 5200,
       feeMinor: 0,
+      promotionalMinor: 0,
     });
   });
 
@@ -59,11 +60,20 @@ describe('Wallet Loading form rules', () => {
       debitAmountMinor: 5200,
       loadedAmountMinor: 5001,
       feeMinor: 199,
+      promotionalMinor: 0,
     });
   });
 
-  it('rejects invalid, zero, unsafe or over-debit credited amounts', () => {
-    expect(resolveWalletLoadAmounts(5200, '52.01')).toBeNull();
+  it('treats a credit above the source debit as promotional value', () => {
+    expect(resolveWalletLoadAmounts(30000, '350')).toEqual({
+      debitAmountMinor: 30000,
+      loadedAmountMinor: 35000,
+      feeMinor: 0,
+      promotionalMinor: 5000,
+    });
+  });
+
+  it('rejects invalid, zero and unsafe credited amounts', () => {
     expect(resolveWalletLoadAmounts(5200, '0')).toBeNull();
     expect(resolveWalletLoadAmounts(5200, 'not money')).toBeNull();
     expect(resolveWalletLoadAmounts(Number.MAX_SAFE_INTEGER + 1, '')).toBeNull();

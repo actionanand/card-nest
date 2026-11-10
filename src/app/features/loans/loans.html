@@ -69,13 +69,7 @@
     </div>
   </section>
   @if (showForm()) {
-    <section class="panel loan-form">
-      <div class="form-heading">
-        <button type="button" (click)="showForm.set(false)" aria-label="Back">
-          <app-icon name="back" />
-        </button>
-        <h2>Add loan or external EMI</h2>
-      </div>
+    <app-profile-modal title="Add loan or external EMI" (closed)="showForm.set(false)">
       <form [formGroup]="form" (ngSubmit)="save()">
         <div class="form-grid">
           <label>Name<input formControlName="name" placeholder="Home loan" /></label
@@ -113,7 +107,7 @@
           ><button class="btn btn-primary" type="submit">Save commitment</button>
         </div>
       </form>
-    </section>
+    </app-profile-modal>
   }
   @if (visibleRepeats().length) {
     <section class="repeat-list" aria-labelledby="recurring-heading">
