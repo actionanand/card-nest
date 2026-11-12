@@ -7,6 +7,13 @@ import { SnackbarService } from '../../core/services/snackbar.service';
 import { LoansPage } from './loans';
 
 describe('Loans page add commitment dialog', () => {
+  let fixtureToCleanUp: { destroy(): void } | undefined;
+
+  afterEach(() => {
+    fixtureToCleanUp?.destroy();
+    fixtureToCleanUp = undefined;
+  });
+
   it('shows validation and persistence errors, preserves the draft, and closes after success', async () => {
     const loanRows = signal<readonly unknown[]>([]);
     const store = {
@@ -28,6 +35,7 @@ describe('Loans page add commitment dialog', () => {
       ],
     });
     const fixture = TestBed.createComponent(LoansPage);
+    fixtureToCleanUp = fixture;
     const page = fixture.componentInstance;
     page.showForm.set(true);
     fixture.detectChanges();
@@ -36,9 +44,11 @@ describe('Loans page add commitment dialog', () => {
     await page.save();
     fixture.detectChanges();
     expect(store.addLoan).not.toHaveBeenCalled();
-    expect(fixture.nativeElement.querySelector('[role="alert"]')?.textContent).toContain(
-      'positive principal amount',
+    const validationMessages = Array.from(
+      fixture.nativeElement.querySelectorAll('[role="alert"]'),
+      (element: Element) => element.textContent?.trim() ?? '',
     );
+    expect(validationMessages).toContain('Enter a positive principal amount.');
 
     page.form.patchValue({
       name: 'Synthetic loan',
@@ -65,5 +75,6 @@ describe('Loans page add commitment dialog', () => {
     expect(store.addLoan).toHaveBeenCalledTimes(2);
     expect(snackbar.show).toHaveBeenCalledWith('Loan commitment saved.');
     fixture.destroy();
+    fixtureToCleanUp = undefined;
   });
 });
