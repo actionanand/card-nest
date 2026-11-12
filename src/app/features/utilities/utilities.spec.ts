@@ -223,7 +223,10 @@ describe('Indian Utilities page', () => {
     expect(page.latestTvRecharge(profile)?.id).toBe(current.id);
     expect(page.tvProfileStatus(profile)).toBe('Active');
     expect(page.tvRechargePeriod(profile)).toBe('19 days remaining');
-    expect(fixture.nativeElement.textContent).toContain(`Next recharge scheduled: 02-12-2026`);
+    const [year, month, day] = scheduled.startDate.split('-');
+    expect(fixture.nativeElement.textContent).toContain(
+      `Next recharge scheduled: ${day}-${month}-${year}`,
+    );
 
     tvRecharges.set([scheduled]);
     expect(page.tvProfileStatus(profile)).toBe('Scheduled');

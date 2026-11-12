@@ -1039,7 +1039,9 @@ export class TransactionsPage {
       return;
     }
     if (!this.consumerWallets.enabled() || !this.walletLoadWalletOptions().length) {
-      this.form.patchValue({ walletId: '', walletLoadConfirmedFor: '' });
+      // Patching unchanged values re-emits valueChanges and re-triggers the form effect forever.
+      if (this.form.controls.walletId.value || this.form.controls.walletLoadConfirmedFor.value)
+        this.form.patchValue({ walletId: '', walletLoadConfirmedFor: '' });
       return;
     }
     const selectedWalletId = this.form.controls.walletId.value;

@@ -56,6 +56,10 @@ jobs:
         run: npm run lint
 
       - name: Run Angular unit tests
+        # A hung worker must fail this step instead of consuming the 60-minute job budget.
+        timeout-minutes: 20
+        env:
+          VITEST_MAX_WORKERS: '2'
         run: npm test -- --watch=false
 
       - name: Build Android-specific frontend for Capacitor
