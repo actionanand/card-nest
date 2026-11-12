@@ -163,6 +163,64 @@ describe('Combine payments controls', () => {
     );
     fixture.destroy();
   });
+  it('moves from Payments to Review after selecting two same-card same-day purchases', async () => {
+    const second: CardTransaction = {
+      ...first,
+      id: 'same-card-second-purchase',
+      amountMinor: 12500,
+      merchant: 'Synthetic second purchase',
+      createdAt: '2026-10-26T23:59:00Z',
+      updatedAt: '2026-10-26T23:59:00Z',
+    };
+    store.transactions.set([first, second]);
+    const fixture = TestBed.createComponent(PaymentGroupsPanel);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const page = fixture.componentInstance;
+    page.chooseTarget(first.id);
+    page.step.set(2);
+    page.toggle(second.id);
+    fixture.detectChanges();
+    const review = [...fixture.nativeElement.querySelectorAll('button')].find(
+      (button: HTMLButtonElement) => button.textContent?.trim() === 'Review grouping',
+    ) as HTMLButtonElement;
+    expect(review.disabled).toBe(false);
+    review.click();
+    fixture.detectChanges();
+    expect(page.step()).toBe(3);
+    expect(page.previewPaymentCount()).toBe(2);
+    expect(store.combinePayments).not.toHaveBeenCalled();
+    fixture.destroy();
+  });
+  it('advances Step 2 to Review for two same-card purchases on the same calendar date', async () => {
+    const sameCardSecond: CardTransaction = {
+      ...first,
+      id: 'same-card-second',
+      amountMinor: 12500,
+      merchant: 'Synthetic second purchase',
+      createdAt: '2026-10-26T23:59:00Z',
+      updatedAt: '2026-10-26T23:59:00Z',
+    };
+    store.transactions.set([first, sameCardSecond]);
+    const fixture = TestBed.createComponent(PaymentGroupsPanel);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const page = fixture.componentInstance;
+    page.chooseTarget(first.id);
+    page.step.set(2);
+    page.toggle(sameCardSecond.id);
+    fixture.detectChanges();
+    const review = [...fixture.nativeElement.querySelectorAll('button')].find(
+      (button: HTMLButtonElement) => button.textContent?.trim() === 'Review grouping',
+    ) as HTMLButtonElement;
+    expect(review.disabled).toBe(false);
+    review.click();
+    fixture.detectChanges();
+    expect(page.step()).toBe(3);
+    expect(page.previewPaymentCount()).toBe(2);
+    expect(store.combinePayments).not.toHaveBeenCalled();
+    fixture.destroy();
+  });
   it('disables third-calendar-date candidates and confirms remove/dissolve before mutating', async () => {
     const nov9 = { ...first, id: 'nov9', transactionDate: '2026-11-09' };
     const nov10 = { ...first, id: 'nov10', transactionDate: '2026-11-10' };

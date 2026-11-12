@@ -154,6 +154,26 @@
   min-width: 0;
   padding: 1rem;
 }
+.tv-empty-state {
+  display: grid;
+  gap: 0.55rem;
+  padding: 1rem;
+}
+.tv-empty-state h2,
+.tv-empty-state p {
+  margin: 0;
+}
+.tv-empty-state {
+  line-height: 1.45;
+}
+.tv-phone-field:focus-within {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+.tv-phone-field input:focus {
+  outline: 0;
+  box-shadow: none;
+}
 .tv-profile > header {
   display: flex;
   align-items: flex-start;

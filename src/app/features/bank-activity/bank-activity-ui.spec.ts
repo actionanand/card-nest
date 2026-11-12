@@ -562,12 +562,25 @@ describe('Bank profile popup and confirmation-only discovery UI', () => {
     expect(page.canSetBalance(familyCard)).toBe(false);
 
     const updateSource = vi.spyOn(TestBed.inject(CardNestStore), 'updatePaymentSource');
-    await page.archiveMoneySource(ownSource);
+    page.archiveMoneySource(ownSource);
+    expect(updateSource).not.toHaveBeenCalled();
+    expect(page.managementConfirmationTitle()).toBe('Archive Money Source?');
+    await page.confirmManagementAction();
     expect(updateSource).toHaveBeenCalledWith({ ...ownSource, archived: true });
     expect(activity.setArchived).not.toHaveBeenCalled();
-    await page.archive(profile);
+    page.archive(profile);
+    expect(activity.setArchived).not.toHaveBeenCalled();
+    await page.confirmManagementAction();
     expect(activity.setArchived).toHaveBeenCalledWith(profile.id, true);
     expect(updateSource).toHaveBeenCalledTimes(1);
+    page.restoreMoneySource({ ...ownSource, archived: true });
+    expect(updateSource).toHaveBeenCalledTimes(1);
+    await page.confirmManagementAction();
+    expect(updateSource).toHaveBeenLastCalledWith({ ...ownSource, archived: false });
+    page.restoreMonitoring({ ...profile, archived: true });
+    expect(activity.setArchived).toHaveBeenCalledTimes(1);
+    await page.confirmManagementAction();
+    expect(activity.setArchived).toHaveBeenLastCalledWith(profile.id, false);
     fixture.destroy();
   });
   it('edits OWN bank identity in a dialog without changing its source ID or balance', async () => {

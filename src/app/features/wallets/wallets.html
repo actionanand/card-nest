@@ -115,7 +115,7 @@
                 class="btn"
                 type="button"
                 (click)="
-                  source.archived ? setFastagArchived(source, false) : requestFastagArchive(source)
+                  source.archived ? requestFastagRestore(source) : requestFastagArchive(source)
                 "
               >
                 {{ source.archived ? 'Restore' : 'Archive' }}
@@ -233,7 +233,7 @@
           [value]="fastagPassForm.controls.startDate.value"
           (valueChange)="fastagPassForm.controls.startDate.setValue($event)"
         />
-        <div class="validity-mode" role="group" aria-label="FASTag pass validity mode">
+        <div class="fastag-pass-validity-mode" role="group" aria-label="FASTag pass validity mode">
           <button
             type="button"
             [class.active]="fastagPassValidityMode() === 'DAYS'"
@@ -833,9 +833,7 @@
   <app-confirmation-dialog
     [title]="pendingActionTitle()"
     [message]="pendingActionMessage()"
-    [confirmLabel]="
-      pendingAction()?.kind === 'DELETE_CONSUMER' ? 'Delete wallet' : 'Archive wallet'
-    "
+    [confirmLabel]="pendingActionLabel()"
     [busy]="saving()"
     [error]="actionError()"
     (confirmed)="confirmPendingAction()"

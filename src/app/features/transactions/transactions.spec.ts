@@ -411,4 +411,46 @@ describe('Transactions wallet purchase approval and lifecycle UI', () => {
     expect(fixture.nativeElement.textContent).toContain('Combined purchase');
     expect(fixture.nativeElement.textContent).toContain('3 payments');
   });
+  it('offers manual Wallet Loading for an INR card and explains missing destinations', () => {
+    const store = TestBed.inject(CardNestStore);
+    const card: CreditCard = {
+      id: 'manual-load-card',
+      nickname: 'Synthetic load card',
+      issuerName: 'Synthetic issuer',
+      lastDigits: '2468',
+      network: 'VISA',
+      theme: 'green',
+      statementDay: 1,
+      dueDateMode: 'DAYS_AFTER_STATEMENT',
+      daysAfterStatement: 20,
+      adjustDueDateOnWeekend: false,
+      currencyCode: 'INR',
+      openingBalanceMinor: 0,
+      remindToSettle: false,
+      annualFeeEnabled: false,
+      emergencyPhones: [],
+      supportEmails: [],
+      archived: false,
+      createdAt: '2026-11-01T00:00:00Z',
+      updatedAt: '2026-11-01T00:00:00Z',
+    };
+    store.cards.set([card]);
+    page.form.patchValue({ type: 'PURCHASE', cardId: card.id, amount: '300' });
+    fixture.detectChanges();
+    expect(page.manualPaymentMethods().some((item) => item.value === 'WALLET_LOADING')).toBe(true);
+    expect(page.walletLoadWalletOptions().map((item) => item.value)).toEqual(['wallet']);
+    page.setManualPaymentMethod('WALLET_LOADING');
+    page.form.controls.walletLoadedAmount.setValue('350');
+    fixture.detectChanges();
+    expect(page.walletLoadSummary()).toMatchObject({
+      debitAmountMinor: 30000,
+      loadedAmountMinor: 35000,
+      promotionalMinor: 5000,
+    });
+
+    wallets.wallets.set([]);
+    fixture.detectChanges();
+    expect(page.manualPaymentMethods().some((item) => item.value === 'WALLET_LOADING')).toBe(true);
+    expect(page.walletLoadingUnavailableMessage()).toContain('Register an active');
+  });
 });

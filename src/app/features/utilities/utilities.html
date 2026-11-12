@@ -48,7 +48,7 @@
               /></label>
               <label class="phone-field-label">
                 Registered mobile number (optional)
-                <span class="phone-field">
+                <span class="phone-field tv-phone-field">
                   <span class="country-prefix" aria-hidden="true">+91</span>
                   <input
                     appIndianPhone
@@ -299,13 +299,29 @@
                 <dl class="tv-recharge-summary">
                   @if (recharge.amountMinor !== undefined) {
                     <div>
-                      <dt>Last recharge</dt>
+                      <dt>
+                        {{
+                          currentRecharge
+                            ? 'Current recharge'
+                            : scheduledRecharge
+                              ? 'Scheduled recharge'
+                              : 'Last recharge'
+                        }}
+                      </dt>
                       <dd>{{ money(recharge.amountMinor) }}</dd>
                     </div>
                   }
                   <div>
-                    <dt>Validity</dt>
-                    <dd>{{ recharge.startDate }} to {{ recharge.endDate }}</dd>
+                    <dt>
+                      {{
+                        currentRecharge
+                          ? 'Current validity'
+                          : scheduledRecharge
+                            ? 'Scheduled validity'
+                            : 'Last validity'
+                      }}
+                    </dt>
+                    <dd>{{ recharge.startDate | appDate }} to {{ recharge.endDate | appDate }}</dd>
                   </div>
                   <div>
                     <dt>Status</dt>
@@ -317,28 +333,77 @@
               }
               @if (currentRecharge && scheduledRecharge) {
                 <p class="form-note">
-                  Next recharge scheduled: {{ scheduledRecharge.startDate }} to
-                  {{ scheduledRecharge.endDate }}
+                  Next recharge scheduled: {{ scheduledRecharge.startDate | appDate }} to
+                  {{ scheduledRecharge.endDate | appDate }}
                 </p>
               }
               <div class="tv-profile-actions">
-                <button class="btn btn-primary" type="button" (click)="startTvRecharge(profile)">
-                  <app-icon name="plus" /> Add recharge
-                </button>
+                @if (currentRecharge) {
+                  <button
+                    class="btn btn-primary"
+                    type="button"
+                    (click)="startTvRecharge(profile, currentRecharge)"
+                  >
+                    <app-icon name="edit" /> Edit active recharge
+                  </button>
+                  <button
+                    class="btn delete-mobile"
+                    type="button"
+                    (click)="requestTvRechargeDeletion(profile, currentRecharge)"
+                  >
+                    <app-icon name="delete" /> Delete active recharge
+                  </button>
+                } @else if (scheduledRecharge) {
+                  <button
+                    class="btn btn-primary"
+                    type="button"
+                    (click)="startTvRecharge(profile, scheduledRecharge)"
+                  >
+                    <app-icon name="edit" /> Edit scheduled recharge
+                  </button>
+                  <button
+                    class="btn delete-mobile"
+                    type="button"
+                    (click)="requestTvRechargeDeletion(profile, scheduledRecharge)"
+                  >
+                    <app-icon name="delete" /> Cancel scheduled recharge
+                  </button>
+                } @else {
+                  <button class="btn btn-primary" type="button" (click)="startTvRecharge(profile)">
+                    <app-icon name="plus" /> Add recharge
+                  </button>
+                }
                 <button class="btn" type="button" (click)="editTvProfile(profile)">
                   Edit profile
                 </button>
-                <button class="btn" type="button" (click)="archiveTvProfile(profile)">
+                <button
+                  class="btn"
+                  type="button"
+                  (click)="requestTvProfileAction(profile, 'ARCHIVE')"
+                >
                   Archive
+                </button>
+                <button
+                  class="btn delete-mobile"
+                  type="button"
+                  (click)="requestTvProfileAction(profile, 'DELETE')"
+                >
+                  <app-icon name="delete" /> Delete profile
                 </button>
               </div>
               @if (tvProfileRecharges(profile).length) {
                 <details class="tv-recharge-history">
                   <summary>Recharge history ({{ tvProfileRecharges(profile).length }})</summary>
-                  @for (entry of tvProfileRecharges(profile); track entry.id) {
+                  @if (tvProfileRecharges(profile).length > 10) {
+                    <small class="form-note"
+                      >Showing the 10 most recent of
+                      {{ tvProfileRecharges(profile).length }} records.</small
+                    >
+                  }
+                  @for (entry of tvRechargeHistory(profile); track entry.id) {
                     <div class="tv-recharge-row">
                       <span>
-                        {{ entry.startDate }} to {{ entry.endDate }}
+                        {{ entry.startDate | appDate }} to {{ entry.endDate | appDate }}
                         @if (entry.amountMinor !== undefined) {
                           · {{ money(entry.amountMinor) }}
                         }
@@ -346,15 +411,32 @@
                           · {{ entry.notes }}
                         }
                       </span>
-                      <button
-                        class="icon-action"
-                        type="button"
-                        [disabled]="saving()"
-                        aria-label="Edit recharge"
-                        (click)="startTvRecharge(profile, entry)"
-                      >
-                        <app-icon name="edit" />
-                      </button>
+                      @if (entry.endDate >= today) {
+                        <div class="history-actions">
+                          <button
+                            class="icon-action"
+                            type="button"
+                            [disabled]="saving()"
+                            [attr.aria-label]="
+                              entry.startDate > today
+                                ? 'Edit scheduled recharge'
+                                : 'Edit active recharge'
+                            "
+                            (click)="startTvRecharge(profile, entry)"
+                          >
+                            <app-icon name="edit" />
+                          </button>
+                          <button
+                            class="icon-action"
+                            type="button"
+                            [disabled]="saving()"
+                            aria-label="Delete active or scheduled recharge"
+                            (click)="requestTvRechargeDeletion(profile, entry)"
+                          >
+                            <app-icon name="delete" />
+                          </button>
+                        </div>
+                      }
                     </div>
                   }
                 </details>
@@ -363,7 +445,7 @@
           }
         </section>
       } @else {
-        <div class="panel empty">
+        <div class="panel empty tv-empty-state">
           <h2>No TV profiles</h2>
           <p>Add a DTH or cable profile to track recharges.</p>
         </div>
@@ -377,7 +459,20 @@
                 >{{ profile.displayName }} · {{ tvProviderLabel(profile) }} ·
                 {{ tvProfileRecharges(profile).length }} recharges retained</span
               >
-              <button class="btn" type="button" (click)="restoreTvProfile(profile)">Restore</button>
+              <button
+                class="btn"
+                type="button"
+                (click)="requestTvProfileAction(profile, 'RESTORE')"
+              >
+                Restore
+              </button>
+              <button
+                class="btn delete-mobile"
+                type="button"
+                (click)="requestTvProfileAction(profile, 'DELETE')"
+              >
+                <app-icon name="delete" /> Delete
+              </button>
             </div>
           }
         </details>
@@ -686,11 +781,7 @@
               <div class="archived-mobile-actions">
                 <button class="btn" type="button" (click)="openRechargeHistory(profile)">
                   <app-icon name="history" /> Recharge history</button
-                ><button
-                  class="btn"
-                  type="button"
-                  (click)="utilities.setMobileArchived(profile.id, false)"
-                >
+                ><button class="btn" type="button" (click)="requestMobileArchive(profile, false)">
                   Restore</button
                 ><button
                   class="btn delete-mobile"
@@ -1028,11 +1119,7 @@
                 <div class="archived-mobile-actions">
                   <button class="btn" type="button" (click)="openLpgHistory(profile)">
                     <app-icon name="history" /> Cylinder history</button
-                  ><button
-                    class="btn"
-                    type="button"
-                    (click)="utilities.setLpgArchived(profile.id, false)"
-                  >
+                  ><button class="btn" type="button" (click)="requestLpgArchive(profile, false)">
                     Restore</button
                   ><button
                     class="btn delete-mobile"
@@ -1219,6 +1306,8 @@
     "
     [title]="choice.title"
     [message]="choice.message"
+    [confirmLabel]="choice.confirmLabel ?? 'Delete'"
+    [confirmLabel]="choice.confirmLabel ?? 'Delete'"
     [busy]="saving()"
     [error]="error()"
     (confirmed)="confirmDeletion()"

@@ -69,14 +69,29 @@
     </div>
   </section>
   @if (showForm()) {
-    <app-profile-modal title="Add loan or external EMI" (closed)="showForm.set(false)">
-      <form [formGroup]="form" (ngSubmit)="save()">
+    <app-profile-modal
+      title="Add loan or external EMI"
+      [busy]="formSaving()"
+      (closed)="closeForm()"
+    >
+      <form [formGroup]="form" novalidate (ngSubmit)="save()">
         <div class="form-grid">
-          <label>Name<input formControlName="name" placeholder="Home loan" /></label
+          <label
+            >Name<input formControlName="name" placeholder="Home loan" required />
+            @if (form.controls.name.touched && form.controls.name.invalid) {
+              <small class="form-error" role="alert">Enter a commitment name.</small>
+            }</label
           ><label>Lender<input formControlName="lender" /></label
-          ><label>Original principal<input formControlName="principal" inputmode="decimal" /></label
           ><label
-            >Monthly installment<input formControlName="installment" inputmode="decimal" /></label
+            >Original principal<input formControlName="principal" inputmode="decimal" required />
+            @if (form.controls.principal.touched && form.controls.principal.invalid) {
+              <small class="form-error" role="alert">Enter a positive principal amount.</small>
+            }</label
+          ><label
+            >Monthly installment<input formControlName="installment" inputmode="decimal" required />
+            @if (form.controls.installment.touched && form.controls.installment.invalid) {
+              <small class="form-error" role="alert">Enter a positive monthly installment.</small>
+            }</label
           ><app-select-picker
             label="Debit date"
             [options]="debitDayOptions"
@@ -88,11 +103,17 @@
             [value]="form.controls.startDate.value"
             (valueChange)="setStartDate($event)"
           />
+          @if (form.controls.startDate.touched && form.controls.startDate.invalid) {
+            <small class="form-error" role="alert">Choose a valid start date.</small>
+          }
           <app-date-picker
             label="End date"
             [value]="form.controls.endDate.value"
             (valueChange)="setEndDate($event)"
           />
+          @if (form.controls.endDate.touched && form.controls.endDate.invalid) {
+            <small class="form-error" role="alert">Choose a valid end date.</small>
+          }
           <label class="full">Notes<textarea formControlName="notes"></textarea></label>
           <label class="full ownership-checkbox">
             <input type="checkbox" formControlName="forFriendsOrRelatives" />
@@ -102,9 +123,16 @@
             </span>
           </label>
         </div>
+        @if (formError(); as message) {
+          <p class="form-error" role="alert">{{ message }}</p>
+        }
         <div class="form-actions">
-          <button class="btn" type="button" (click)="showForm.set(false)">Cancel</button
-          ><button class="btn btn-primary" type="submit">Save commitment</button>
+          <button class="btn" type="button" [disabled]="formSaving()" (click)="closeForm()">
+            Cancel
+          </button>
+          <button class="btn btn-primary" type="submit" [disabled]="formSaving()">
+            {{ formSaving() ? 'Saving…' : 'Save commitment' }}
+          </button>
         </div>
       </form>
     </app-profile-modal>

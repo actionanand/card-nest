@@ -273,9 +273,7 @@ export class UtilitiesService {
       throw new Error('Provider and customer IDs must be 80 characters or fewer.');
     const mobileNumber = normalizeIndianMobileNumber(input.mobileNumber ?? '');
     const timestamp = new Date().toISOString();
-    const existing = input.id
-      ? this.tvProfiles().find((item) => item.id === input.id)
-      : undefined;
+    const existing = input.id ? this.tvProfiles().find((item) => item.id === input.id) : undefined;
     if (input.id && !existing) throw new Error('TV profile not found.');
     const profile: TvProfile = {
       id: existing?.id ?? crypto.randomUUID(),
@@ -291,7 +289,14 @@ export class UtilitiesService {
     };
     await this.database.run(
       'INSERT INTO tv_profiles(id,provider,archived,payload,created_at,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET provider=excluded.provider,archived=excluded.archived,payload=excluded.payload,updated_at=excluded.updated_at',
-      [profile.id, profile.provider, profile.archived ? 1 : 0, JSON.stringify(profile), profile.createdAt, timestamp],
+      [
+        profile.id,
+        profile.provider,
+        profile.archived ? 1 : 0,
+        JSON.stringify(profile),
+        profile.createdAt,
+        timestamp,
+      ],
     );
     this.tvProfiles.update((items) => [profile, ...items.filter((item) => item.id !== profile.id)]);
     return profile;
@@ -306,7 +311,9 @@ export class UtilitiesService {
       updated.updatedAt,
       profileId,
     ]);
-    this.tvProfiles.update((items) => items.map((item) => (item.id === profileId ? updated : item)));
+    this.tvProfiles.update((items) =>
+      items.map((item) => (item.id === profileId ? updated : item)),
+    );
   }
   async saveTvRecharge(input: {
     id?: string;
@@ -317,10 +324,11 @@ export class UtilitiesService {
     durationDays?: number;
     notes?: string;
   }): Promise<TvRecharge> {
-    const profile = this.tvProfiles().find((item) => item.id === input.profileId && !item.archived);
-    if (!profile) throw new Error('Choose an active TV profile.');
     if (!validCalendarDate(input.startDate)) throw new Error('Enter a valid recharge start date.');
-    if (input.amountMinor !== undefined && (!Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0))
+    if (
+      input.amountMinor !== undefined &&
+      (!Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0)
+    )
       throw new Error('Enter a positive recharge amount.');
     let endDate = input.endDate?.trim() ?? '';
     if (!endDate) {
@@ -331,26 +339,86 @@ export class UtilitiesService {
     if (!validCalendarDate(endDate) || endDate < input.startDate)
       throw new Error('Recharge end date must be on or after its start date.');
     const timestamp = new Date().toISOString();
-    const previous = input.id ? this.tvRecharges().find((item) => item.id === input.id) : undefined;
-    if (input.id && (!previous || previous.profileId !== input.profileId))
-      throw new Error('TV recharge was not found on this profile.');
-    const recharge: TvRecharge = {
-      id: previous?.id ?? crypto.randomUUID(),
-      profileId: input.profileId,
-      amountMinor: input.amountMinor,
-      startDate: input.startDate,
-      endDate,
-      durationDays: calendarDaysBetween(input.startDate, endDate) + 1,
-      notes: input.notes?.trim().slice(0, 300) || undefined,
-      createdAt: previous?.createdAt ?? timestamp,
-      updatedAt: timestamp,
-    };
-    await this.database.run(
-      'INSERT INTO tv_recharges(id,profile_id,start_date,end_date,amount_minor,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET start_date=excluded.start_date,end_date=excluded.end_date,amount_minor=excluded.amount_minor,payload=excluded.payload,updated_at=excluded.updated_at',
-      [recharge.id, recharge.profileId, recharge.startDate, recharge.endDate, recharge.amountMinor ?? null, JSON.stringify(recharge), recharge.createdAt, timestamp],
-    );
-    this.tvRecharges.update((items) => [recharge, ...items.filter((item) => item.id !== recharge.id)]);
+    const today = indiaTodayIso();
+    const recharge = await this.database.atomic(async (tx) => {
+      const [profileRow] = await tx.query<{ payload: string }>(
+        'SELECT payload FROM tv_profiles WHERE id=? AND archived=0',
+        [input.profileId],
+      );
+      if (!profileRow) throw new Error('Choose an active TV profile.');
+      const rows = await tx.query<{ payload: string }>(
+        'SELECT payload FROM tv_recharges WHERE profile_id=? ORDER BY start_date DESC,id',
+        [input.profileId],
+      );
+      const records = rows.map((row) => JSON.parse(row.payload) as TvRecharge);
+      const previous = input.id ? records.find((item) => item.id === input.id) : undefined;
+      if (input.id && !previous) throw new Error('TV recharge was not found on this profile.');
+      if (previous && previous.endDate < today)
+        throw new Error('Expired TV recharge history is read-only. Create a new recharge instead.');
+      const others = records.filter((item) => item.id !== previous?.id);
+      if (!previous && others.some((item) => item.endDate >= today))
+        throw new Error('An active or scheduled recharge already exists. Edit or cancel it first.');
+      if (others.some((item) => input.startDate <= item.endDate && endDate >= item.startDate))
+        throw new Error('TV recharge dates overlap another saved recharge.');
+      const saved: TvRecharge = {
+        id: previous?.id ?? crypto.randomUUID(),
+        profileId: input.profileId,
+        amountMinor: input.amountMinor,
+        startDate: input.startDate,
+        endDate,
+        durationDays: calendarDaysBetween(input.startDate, endDate) + 1,
+        notes: input.notes?.trim().slice(0, 300) || undefined,
+        createdAt: previous?.createdAt ?? timestamp,
+        updatedAt: timestamp,
+      };
+      await tx.run(
+        'INSERT INTO tv_recharges(id,profile_id,start_date,end_date,amount_minor,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET start_date=excluded.start_date,end_date=excluded.end_date,amount_minor=excluded.amount_minor,payload=excluded.payload,updated_at=excluded.updated_at',
+        [
+          saved.id,
+          saved.profileId,
+          saved.startDate,
+          saved.endDate,
+          saved.amountMinor ?? null,
+          JSON.stringify(saved),
+          saved.createdAt,
+          timestamp,
+        ],
+      );
+      return saved;
+    });
+    this.tvRecharges.update((items) => [
+      recharge,
+      ...items.filter((item) => item.id !== recharge.id),
+    ]);
     return recharge;
+  }
+
+  async deleteTvRecharge(id: string): Promise<void> {
+    await this.database.atomic(async (tx) => {
+      const [row] = await tx.query<{ payload: string }>(
+        'SELECT payload FROM tv_recharges WHERE id=?',
+        [id],
+      );
+      if (!row) throw new Error('TV recharge was not found.');
+      const recharge = JSON.parse(row.payload) as TvRecharge;
+      if (recharge.endDate < indiaTodayIso())
+        throw new Error('Expired TV recharge history is read-only.');
+      await tx.run('DELETE FROM tv_recharges WHERE id=?', [id]);
+    });
+    this.tvRecharges.update((items) => items.filter((item) => item.id !== id));
+  }
+
+  async deleteTvProfile(profileId: string): Promise<void> {
+    await this.database.atomic(async (tx) => {
+      const [row] = await tx.query<{ id: string }>('SELECT id FROM tv_profiles WHERE id=?', [
+        profileId,
+      ]);
+      if (!row) throw new Error('TV profile was not found.');
+      await tx.run('DELETE FROM tv_recharges WHERE profile_id=?', [profileId]);
+      await tx.run('DELETE FROM tv_profiles WHERE id=?', [profileId]);
+    });
+    this.tvRecharges.update((items) => items.filter((item) => item.profileId !== profileId));
+    this.tvProfiles.update((items) => items.filter((item) => item.id !== profileId));
   }
 
   suggestedRechargeStart(profileId: string): string {
@@ -695,8 +763,12 @@ export class UtilitiesService {
       this.database.query<{ payload: string }>(
         'SELECT payload FROM lpg_events ORDER BY event_date,created_at,rowid',
       ),
-      this.database.query<{ payload: string }>('SELECT payload FROM tv_profiles ORDER BY created_at DESC'),
-      this.database.query<{ payload: string }>('SELECT payload FROM tv_recharges ORDER BY start_date DESC'),
+      this.database.query<{ payload: string }>(
+        'SELECT payload FROM tv_profiles ORDER BY created_at DESC',
+      ),
+      this.database.query<{ payload: string }>(
+        'SELECT payload FROM tv_recharges ORDER BY start_date DESC',
+      ),
     ]);
     const lpgProfiles = await this.database.query<{ payload: string }>(
       "SELECT payload FROM utility_profiles WHERE kind='LPG' ORDER BY created_at DESC",

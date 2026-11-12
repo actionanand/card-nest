@@ -111,7 +111,9 @@ export class WalletsPage {
   readonly restoreError = signal<string | null>(null);
   readonly pendingAction = signal<
     | { kind: 'ARCHIVE_FASTAG'; source: PaymentSource }
+    | { kind: 'RESTORE_FASTAG'; source: PaymentSource }
     | { kind: 'ARCHIVE_CONSUMER'; wallet: ConsumerWallet }
+    | { kind: 'RESTORE_CONSUMER'; wallet: ConsumerWallet }
     | { kind: 'DELETE_CONSUMER'; wallet: ConsumerWallet }
     | null
   >(null);
@@ -451,12 +453,19 @@ export class WalletsPage {
     this.fastagOpen.set(true);
   }
 
-  closeFastag(): void {
+  async closeFastag(): Promise<void> {
     if (this.saving()) return;
     this.fastagOpen.set(false);
     this.editingFastagSourceId.set(null);
     this.error.set(null);
-    void this.cancelMatchingSetup('FASTAG');
+    this.fastagForm.reset({
+      name: '',
+      provider: '',
+      plate: '',
+      fastagId: '',
+      confirmDuplicateVehicle: false,
+    });
+    await this.cancelMatchingSetup('FASTAG');
   }
 
   async saveFastag(event: Event): Promise<void> {
@@ -543,6 +552,11 @@ export class WalletsPage {
     this.pendingAction.set({ kind: 'ARCHIVE_FASTAG', source });
   }
 
+  requestFastagRestore(source: PaymentSource): void {
+    this.actionError.set(null);
+    this.pendingAction.set({ kind: 'RESTORE_FASTAG', source });
+  }
+
   requestConsumerArchive(wallet: ConsumerWallet): void {
     this.actionError.set(null);
     this.pendingAction.set({ kind: 'ARCHIVE_CONSUMER', wallet });
@@ -556,7 +570,10 @@ export class WalletsPage {
 
   pendingActionTitle(): string {
     const action = this.pendingAction();
-    return action?.kind === 'DELETE_CONSUMER' ? 'Delete empty wallet?' : 'Archive wallet?';
+    if (action?.kind === 'DELETE_CONSUMER') return 'Delete empty wallet?';
+    if (action?.kind === 'RESTORE_FASTAG' || action?.kind === 'RESTORE_CONSUMER')
+      return 'Restore wallet?';
+    return 'Archive wallet?';
   }
 
   pendingActionMessage(): string {
@@ -564,10 +581,23 @@ export class WalletsPage {
     if (!action) return '';
     if (action.kind === 'ARCHIVE_FASTAG')
       return `Archive ${action.source.nickname}? Its balance, tolls, top-ups and history will be kept.`;
+    if (action.kind === 'RESTORE_FASTAG')
+      return `Restore ${action.source.nickname}? It becomes active again with its saved FASTag balance and toll history.`;
     const wallet = action.wallet;
-    return action.kind === 'DELETE_CONSUMER'
-      ? `Permanently delete empty wallet ${this.walletName(wallet)}? This wallet has no saved events.`
-      : `Archive ${this.walletName(wallet)}? Its balance and financial history will be kept.`;
+    if (action.kind === 'DELETE_CONSUMER')
+      return `Permanently delete empty wallet ${this.walletName(wallet)}? This wallet has no saved events.`;
+    if (action.kind === 'RESTORE_CONSUMER')
+      return `Restore ${this.walletName(wallet)}? It becomes active again with its balance and history.`;
+    return `Archive ${this.walletName(wallet)}? Its balance and financial history will be kept.`;
+  }
+
+  pendingActionLabel(): string {
+    const action = this.pendingAction();
+    if (!action) return 'Confirm';
+    if (action.kind === 'DELETE_CONSUMER') return 'Delete wallet';
+    if (action.kind === 'ARCHIVE_FASTAG' || action.kind === 'ARCHIVE_CONSUMER')
+      return 'Archive wallet';
+    return 'Restore wallet';
   }
 
   cancelPendingAction(): void {
@@ -577,7 +607,11 @@ export class WalletsPage {
   async confirmPendingAction(): Promise<void> {
     const action = this.pendingAction();
     if (!action || this.saving()) return;
-    if (action.kind !== 'ARCHIVE_FASTAG' && !this.wallets.enabled()) {
+    if (
+      action.kind !== 'ARCHIVE_FASTAG' &&
+      action.kind !== 'RESTORE_FASTAG' &&
+      !this.wallets.enabled()
+    ) {
       this.actionError.set(
         'Wallets is off. Enable Wallets in Settings before changing consumer wallets.',
       );
@@ -586,11 +620,14 @@ export class WalletsPage {
     this.saving.set(true);
     this.actionError.set(null);
     try {
-      if (action.kind === 'ARCHIVE_FASTAG') {
-        await this.store.updatePaymentSource({ ...action.source, archived: true });
+      if (action.kind === 'ARCHIVE_FASTAG' || action.kind === 'RESTORE_FASTAG') {
+        const archived = action.kind === 'ARCHIVE_FASTAG';
+        await this.store.updatePaymentSource({ ...action.source, archived });
         await this.wallets.refreshWalletRecords();
       } else if (action.kind === 'ARCHIVE_CONSUMER')
         await this.wallets.archiveWallet(action.wallet.id);
+      else if (action.kind === 'RESTORE_CONSUMER')
+        await this.wallets.restoreWallet(action.wallet.id);
       else await this.wallets.deleteWalletIfEmpty(action.wallet.id);
       this.pendingAction.set(null);
       this.snackbar.show(
@@ -598,7 +635,11 @@ export class WalletsPage {
           ? 'Empty wallet deleted.'
           : action.kind === 'ARCHIVE_FASTAG'
             ? 'FASTag wallet archived. History is kept.'
-            : 'Wallet archived. Its history and balance are kept.',
+            : action.kind === 'RESTORE_FASTAG'
+              ? 'FASTag wallet restored.'
+              : action.kind === 'RESTORE_CONSUMER'
+                ? 'Wallet restored. Its history and balance are kept.'
+                : 'Wallet archived. Its history and balance are kept.',
       );
     } catch (error: unknown) {
       this.actionError.set(error instanceof Error ? error.message : 'Wallet could not be updated.');
@@ -607,19 +648,9 @@ export class WalletsPage {
     }
   }
 
-  async setFastagArchived(source: PaymentSource, archived: boolean): Promise<void> {
-    try {
-      await this.store.updatePaymentSource({ ...source, archived });
-      await this.wallets.refreshWalletRecords();
-      this.snackbar.show(
-        archived ? 'FASTag wallet archived. History is kept.' : 'FASTag wallet restored.',
-      );
-    } catch (error: unknown) {
-      this.snackbar.show(
-        error instanceof Error ? error.message : 'FASTag wallet could not be updated.',
-        'WARNING',
-      );
-    }
+  setFastagArchived(source: PaymentSource, archived: boolean): void {
+    if (archived) this.requestFastagArchive(source);
+    else this.requestFastagRestore(source);
   }
 
   openFastagPass(source: PaymentSource, pass?: FastagPass): void {
@@ -819,11 +850,17 @@ export class WalletsPage {
     this.consumerOpen.set(true);
   }
 
-  closeConsumerWallet(): void {
+  async closeConsumerWallet(): Promise<void> {
     if (this.saving()) return;
     this.consumerOpen.set(false);
     this.error.set(null);
-    void this.cancelMatchingSetup('CONSUMER');
+    this.consumerForm.reset({
+      providerId: 'amazon-pay',
+      customName: '',
+      nickname: '',
+      openingBalance: '0',
+    });
+    await this.cancelMatchingSetup('CONSUMER');
   }
 
   async saveConsumerWallet(event: Event): Promise<void> {
@@ -870,17 +907,8 @@ export class WalletsPage {
     }
   }
 
-  async archiveConsumerWallet(wallet: ConsumerWallet): Promise<void> {
-    if (!this.wallets.enabled()) return;
-    try {
-      await this.wallets.archiveWallet(wallet.id);
-      this.snackbar.show('Wallet archived. Its history and balance are kept.');
-    } catch (error: unknown) {
-      this.snackbar.show(
-        error instanceof Error ? error.message : 'Wallet could not be archived.',
-        'WARNING',
-      );
-    }
+  archiveConsumerWallet(wallet: ConsumerWallet): void {
+    this.requestConsumerArchive(wallet);
   }
 
   async restoreConsumerWallet(wallet: ConsumerWallet): Promise<void> {
@@ -891,14 +919,8 @@ export class WalletsPage {
       this.replacementWalletId.set(this.activeWallets()[0]?.id ?? '');
       return;
     }
-    try {
-      await this.wallets.restoreWallet(wallet.id);
-      this.snackbar.show('Wallet restored.');
-    } catch (error: unknown) {
-      this.restoreError.set(
-        error instanceof Error ? error.message : 'Wallet could not be restored.',
-      );
-    }
+    this.actionError.set(null);
+    this.pendingAction.set({ kind: 'RESTORE_CONSUMER', wallet });
   }
 
   closeRestore(): void {
@@ -1211,8 +1233,19 @@ export class WalletsPage {
   private async cancelMatchingSetup(kind: 'FASTAG' | 'CONSUMER'): Promise<void> {
     const intent = this.wallets.setupIntent();
     if (intent?.kind !== kind) return;
-    await this.wallets.cancelSetup(intent.id);
-    this.clearSetupQuery();
+    try {
+      await this.wallets.cancelSetup(intent.id);
+      if (this.wallets.enabled()) {
+        this.clearSetupQuery();
+        return;
+      }
+      const navigated = await this.router.navigate(['/settings'], { replaceUrl: true });
+      if (!navigated) this.error.set('Setup was cancelled, but Settings could not be opened.');
+    } catch (error: unknown) {
+      this.error.set(
+        error instanceof Error ? error.message : 'Wallet setup could not be cancelled.',
+      );
+    }
   }
 
   private clearSetupQuery(): void {

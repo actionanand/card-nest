@@ -18,6 +18,7 @@ import { By } from '@angular/platform-browser';
 import { readFileSync } from 'node:fs';
 
 describe('Indian Utilities page', () => {
+  const timestamp = '2026-11-11T12:00:00.000Z';
   const state = signal({ showIndianUtilities: true, utilityReminders: false });
   const mobiles = signal<readonly { id: string }[]>([]);
   const lpg = signal<readonly LpgProfile[]>([]);
@@ -29,6 +30,7 @@ describe('Indian Utilities page', () => {
     { value: 'SUN', label: 'Sun' },
     { value: 'OTHER', label: 'Other' },
   ];
+  const snackbar = { show: vi.fn() };
   const mock = {
     deleteMobileProfile: vi.fn().mockResolvedValue(undefined),
     deleteRecharge: vi.fn().mockResolvedValue(undefined),
@@ -38,6 +40,11 @@ describe('Indian Utilities page', () => {
     saveRecharge: vi.fn().mockResolvedValue({ id: 'saved-recharge' }),
     saveMobileProfile: vi.fn().mockResolvedValue({ id: 'saved-mobile' }),
     saveLpgProfile: vi.fn().mockResolvedValue({ id: 'saved-lpg' }),
+    saveTvProfile: vi.fn(),
+    saveTvRecharge: vi.fn(),
+    deleteTvProfile: vi.fn().mockResolvedValue(undefined),
+    deleteTvRecharge: vi.fn().mockResolvedValue(undefined),
+    setTvArchived: vi.fn().mockResolvedValue(undefined),
     settings: state,
     showIndianUtilities: computed(() => state().showIndianUtilities),
     utilityReminders: computed(() => state().utilityReminders),
@@ -118,6 +125,12 @@ describe('Indian Utilities page', () => {
   beforeEach(() => {
     mock.saveMobileProfile.mockReset().mockResolvedValue({ id: 'saved-mobile' });
     mock.saveLpgProfile.mockReset().mockResolvedValue({ id: 'saved-lpg' });
+    mock.saveTvProfile.mockReset();
+    mock.saveTvRecharge.mockReset();
+    mock.deleteTvProfile.mockReset().mockResolvedValue(undefined);
+    mock.deleteTvRecharge.mockReset().mockResolvedValue(undefined);
+    mock.setTvArchived.mockReset().mockResolvedValue(undefined);
+    snackbar.show.mockReset();
     mock.saveRecharge.mockReset().mockResolvedValue({ id: 'saved-recharge' });
     mock.deleteMobileProfile.mockReset().mockResolvedValue(undefined);
     mock.deleteRecharge.mockReset().mockResolvedValue(undefined);
@@ -136,7 +149,7 @@ describe('Indian Utilities page', () => {
       providers: [
         { provide: UtilitiesService, useValue: mock },
         { provide: WhatsAppService, useValue: { open: vi.fn(), choose: vi.fn() } },
-        { provide: SnackbarService, useValue: { show: vi.fn() } },
+        { provide: SnackbarService, useValue: snackbar },
       ],
     });
   });
@@ -210,9 +223,7 @@ describe('Indian Utilities page', () => {
     expect(page.latestTvRecharge(profile)?.id).toBe(current.id);
     expect(page.tvProfileStatus(profile)).toBe('Active');
     expect(page.tvRechargePeriod(profile)).toBe('19 days remaining');
-    expect(fixture.nativeElement.textContent).toContain(
-      `Next recharge scheduled: ${scheduled.startDate}`,
-    );
+    expect(fixture.nativeElement.textContent).toContain(`Next recharge scheduled: 02-12-2026`);
 
     tvRecharges.set([scheduled]);
     expect(page.tvProfileStatus(profile)).toBe('Scheduled');
@@ -226,6 +237,126 @@ describe('Indian Utilities page', () => {
     expect(page.tvProfileStatus(profile)).toBe('Expired');
     expect(page.tvRechargePeriod(profile)).toBe('Expired 1 days ago');
     expect(addCalendarDays('2026-12-31', 1)).toBe('2027-01-01');
+    fixture.destroy();
+  });
+
+  it('closes TV profile and recharge popups only after successful saves and preserves failed drafts', async () => {
+    const profile: TvProfile = {
+      id: 'tv-save-lifecycle',
+      kind: 'TV',
+      displayName: 'Synthetic television',
+      provider: 'SUN',
+      archived: false,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    const recharge: TvRecharge = {
+      id: 'tv-recharge-lifecycle',
+      profileId: profile.id,
+      amountMinor: 12300,
+      startDate: '2026-11-12',
+      endDate: '2026-12-11',
+      durationDays: 30,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    const fixture = TestBed.createComponent(UtilitiesPage);
+    const page = fixture.componentInstance;
+    mock.saveTvProfile
+      .mockRejectedValueOnce(new Error('Synthetic TV profile write failure'))
+      .mockResolvedValueOnce(profile);
+    page.startAddTvProfile();
+    page.tvForm.patchValue({ displayName: profile.displayName });
+    fixture.detectChanges();
+    await page.saveTvProfile(new Event('submit'));
+    fixture.detectChanges();
+    expect(page.tvProfileFormOpen()).toBe(true);
+    expect(page.tvForm.controls.displayName.value).toBe(profile.displayName);
+    expect(fixture.nativeElement.textContent).toContain('Synthetic TV profile write failure');
+    await page.saveTvProfile(new Event('submit'));
+    fixture.detectChanges();
+    expect(page.tvProfileFormOpen()).toBe(false);
+    expect(page.saving()).toBe(false);
+
+    tvProfiles.set([profile]);
+    mock.saveTvRecharge
+      .mockRejectedValueOnce(new Error('Synthetic TV recharge write failure'))
+      .mockResolvedValueOnce(recharge);
+    page.startTvRecharge(profile);
+    page.tvRechargeForm.patchValue({ amount: '123', startDate: recharge.startDate });
+    fixture.detectChanges();
+    await page.saveTvRecharge(new Event('submit'));
+    fixture.detectChanges();
+    expect(page.tvRechargeProfileId()).toBe(profile.id);
+    expect(page.tvRechargeForm.controls.amount.value).toBe('123');
+    expect(fixture.nativeElement.textContent).toContain('Synthetic TV recharge write failure');
+    await page.saveTvRecharge(new Event('submit'));
+    fixture.detectChanges();
+    expect(page.tvRechargeProfileId()).toBeNull();
+    expect(page.editingTvRechargeId()).toBeNull();
+    expect(page.saving()).toBe(false);
+    expect(snackbar.show).toHaveBeenCalledWith('TV profile saved.');
+    expect(snackbar.show).toHaveBeenCalledWith('TV recharge record saved.');
+    fixture.destroy();
+  });
+
+  it('limits displayed TV recharge history to ten without trimming stored records', () => {
+    const profile: TvProfile = {
+      id: 'tv-history-limit',
+      kind: 'TV',
+      displayName: 'Synthetic history profile',
+      provider: 'SUN',
+      archived: false,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    const records: TvRecharge[] = Array.from({ length: 12 }, (_, index) => ({
+      id: `tv-history-${index}`,
+      profileId: profile.id,
+      startDate: `2026-${String(12 - index).padStart(2, '0')}-01`,
+      endDate: `2026-${String(12 - index).padStart(2, '0')}-20`,
+      durationDays: 20,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    }));
+    tvProfiles.set([profile]);
+    tvRecharges.set(records);
+    const fixture = TestBed.createComponent(UtilitiesPage);
+    const page = fixture.componentInstance;
+    page.setSection('TV');
+    fixture.detectChanges();
+    expect(page.tvProfileRecharges(profile)).toHaveLength(12);
+    expect(page.tvRechargeHistory(profile)).toHaveLength(10);
+    expect(fixture.nativeElement.textContent).toContain('Recharge history (12)');
+    expect(fixture.nativeElement.textContent).toContain(
+      'Showing the 10 most recent of 12 records.',
+    );
+    fixture.destroy();
+  });
+
+  it('requires confirmation before archiving or restoring utility profiles', async () => {
+    const profile: MobileProfile = {
+      id: 'archive-mobile-profile',
+      kind: 'MOBILE',
+      personName: 'Synthetic mobile',
+      operator: 'JIO',
+      subscriptionType: 'PREPAID',
+      archived: false,
+      createdAt: 'before',
+      updatedAt: 'before',
+    };
+    mobiles.set([profile]);
+    const fixture = TestBed.createComponent(UtilitiesPage);
+    const page = fixture.componentInstance;
+    page.archiveMobile(profile);
+    expect(mock.setMobileArchived).not.toHaveBeenCalled();
+    expect(page.deletion()?.kind).toBe('MOBILE_ARCHIVE');
+    page.cancelDeletion();
+    expect(mock.setMobileArchived).not.toHaveBeenCalled();
+    page.requestMobileArchive(profile, true);
+    await page.confirmDeletion();
+    expect(mock.setMobileArchived).toHaveBeenCalledWith(profile.id, true);
+    expect(page.deletion()).toBeNull();
     fixture.destroy();
   });
   it('requires confirmation for recharge and cylinder deletion, preserves Cancel and reports persistence failure', async () => {

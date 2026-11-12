@@ -2141,9 +2141,10 @@ export class CardNestStore {
     });
     this.paymentSources.set(sources);
   }
-  addLoan(loan: LoanCommitment): void {
+  async addLoan(loan: LoanCommitment): Promise<void> {
+    if (!this.database.ready()) throw new Error('Database is not ready.');
+    await this.persistLoan(loan);
     this.loans.update((loans) => [loan, ...loans]);
-    void this.persistLoan(loan);
   }
   updateLoan(updated: LoanCommitment): void {
     this.loans.update((loans) => loans.map((loan) => (loan.id === updated.id ? updated : loan)));

@@ -1,5 +1,6 @@
 import { TestBed } from '@angular/core/testing';
 import { DatabaseSession, SqliteDatabase } from '../../core/data/sqlite-database';
+import { indiaTodayIso } from '../../core/services/india-date';
 import { normalizeIndianMobileNumber } from './utilities.service';
 import { UtilitiesService } from './utilities.service';
 import { addCalendarDays } from './utilities-calculations';
@@ -52,14 +53,24 @@ describe('Indian Utilities service', () => {
                   archived: profile.archived ? 1 : 0,
                   payload: JSON.stringify(profile),
                 }))
-            : utilities
-                .lpgEvents()
-                .filter((event) =>
-                  statement.includes('WHERE id=')
-                    ? event.id === values[0]
-                    : event.profileId === values[0],
-                )
-                .map((event) => ({ payload: JSON.stringify(event) }));
+            : statement.includes('tv_profiles')
+              ? utilities
+                  .tvProfiles()
+                  .filter((profile) => profile.id === values[0] && !profile.archived)
+                  .map((profile) => ({ id: profile.id, payload: JSON.stringify(profile) }))
+              : statement.includes('tv_recharges')
+                ? (statement.includes('WHERE id=')
+                    ? utilities.tvRecharges().filter((recharge) => recharge.id === values[0])
+                    : utilities.tvRechargesFor(String(values[0]))
+                  ).map((recharge) => ({ id: recharge.id, payload: JSON.stringify(recharge) }))
+                : utilities
+                    .lpgEvents()
+                    .filter((event) =>
+                      statement.includes('WHERE id=')
+                        ? event.id === values[0]
+                        : event.profileId === values[0],
+                    )
+                    .map((event) => ({ payload: JSON.stringify(event) }));
           return records as unknown as T[];
         },
       }),
@@ -185,10 +196,80 @@ describe('Indian Utilities service', () => {
         endDate: '2026-11-09',
       }),
     ).rejects.toThrow('on or after');
-    expect(database.run).toHaveBeenCalledWith(
+    expect(database.atomic).toHaveBeenCalled();
+    expect(database.run).not.toHaveBeenCalledWith(
       expect.stringContaining('INSERT INTO tv_recharges'),
       expect.any(Array),
     );
+  });
+
+  it('prevents a second current/scheduled TV recharge, keeps expired history read-only, and allows explicit removal', async () => {
+    const profile = await utilities.saveTvProfile({
+      displayName: 'Synthetic TV',
+      provider: 'SUN',
+    });
+    const today = indiaTodayIso();
+    const active = await utilities.saveTvRecharge({
+      profileId: profile.id,
+      startDate: today,
+      durationDays: 30,
+    });
+    await expect(
+      utilities.saveTvRecharge({
+        profileId: profile.id,
+        startDate: addCalendarDays(today, 30),
+        durationDays: 30,
+      }),
+    ).rejects.toThrow('active or scheduled recharge already exists');
+    const extended = await utilities.saveTvRecharge({
+      ...active,
+      endDate: addCalendarDays(today, 44),
+    });
+    expect(extended.id).toBe(active.id);
+    await utilities.deleteTvRecharge(active.id);
+    expect(utilities.tvRechargesFor(profile.id)).toHaveLength(0);
+    const next = await utilities.saveTvRecharge({
+      profileId: profile.id,
+      startDate: today,
+      durationDays: 15,
+    });
+    expect(next.id).not.toBe(active.id);
+  });
+
+  it('rejects editing expired TV history and prevents overlapping scheduled recharge intervals', async () => {
+    const profile = await utilities.saveTvProfile({
+      displayName: 'Synthetic scheduled TV',
+      provider: 'SUN',
+    });
+    const today = indiaTodayIso();
+    const expired = await utilities.saveTvRecharge({
+      profileId: profile.id,
+      startDate: addCalendarDays(today, -30),
+      endDate: addCalendarDays(today, -1),
+    });
+    await expect(utilities.saveTvRecharge({ ...expired, endDate: today })).rejects.toThrow(
+      'history is read-only',
+    );
+    const scheduled = await utilities.saveTvRecharge({
+      profileId: profile.id,
+      startDate: addCalendarDays(today, 5),
+      durationDays: 20,
+    });
+    await expect(
+      utilities.saveTvRecharge({
+        profileId: profile.id,
+        startDate: addCalendarDays(today, 10),
+        durationDays: 10,
+      }),
+    ).rejects.toThrow('active or scheduled recharge already exists');
+    await expect(
+      utilities.saveTvRecharge({
+        ...scheduled,
+        startDate: addCalendarDays(today, 6),
+        endDate: addCalendarDays(today, 30),
+      }),
+    ).resolves.toMatchObject({ id: scheduled.id });
+    expect(utilities.tvRechargesFor(profile.id)).toContainEqual(expired);
   });
 
   it('schedules only uninterrupted voice coverage and supports Data-only plan reminders', async () => {

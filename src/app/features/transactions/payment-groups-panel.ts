@@ -194,8 +194,8 @@ function calendarDayOrdinal(value: string): number | null {
               <button
                 class="btn btn-primary"
                 type="button"
-                [disabled]="preview().length < 2"
-                (click)="step.set(3)"
+                [disabled]="previewPaymentCount() < 2 || !!currentDateSpanError()"
+                (click)="reviewGrouping()"
               >
                 Review grouping
               </button>
@@ -553,7 +553,7 @@ export class PaymentGroupsPanel {
   dateSpanError(entry: PaymentMemberChoice): string | null {
     return this.dateSpanErrorFor([...this.currentGroupPaymentDates(), entry.date]);
   }
-  private currentDateSpanError(): string | null {
+  currentDateSpanError(): string | null {
     return this.selected().size ? this.dateSpanErrorFor(this.currentGroupPaymentDates()) : null;
   }
   private dateSpanErrorFor(dates: readonly string[]): string | null {
@@ -733,6 +733,20 @@ export class PaymentGroupsPanel {
     }
     this.error.set('');
     this.step.set(4);
+  }
+  reviewGrouping(): void {
+    if (this.busy()) return;
+    const dateError = this.currentDateSpanError();
+    if (dateError) {
+      this.error.set(dateError);
+      return;
+    }
+    if (this.previewPaymentCount() < 2) {
+      this.error.set('Select at least two recorded payments to review this group.');
+      return;
+    }
+    this.error.set('');
+    this.step.set(3);
   }
   toggle(id: string): void {
     const member = this.memberChoices().find((item) => item.id === id);

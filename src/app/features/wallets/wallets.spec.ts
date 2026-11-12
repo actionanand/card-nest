@@ -1,6 +1,6 @@
 import { TestBed } from '@angular/core/testing';
 import { computed, signal } from '@angular/core';
-import { ActivatedRoute, convertToParamMap, provideRouter } from '@angular/router';
+import { ActivatedRoute, convertToParamMap, provideRouter, Router } from '@angular/router';
 import { of } from 'rxjs';
 import {
   CardTransaction,
@@ -72,6 +72,7 @@ function setup(
       );
     }),
     restoreWallet: vi.fn(async () => undefined),
+    refreshWalletRecords: vi.fn(async () => undefined),
     deleteWalletIfEmpty: vi.fn(async () => undefined),
     saveFastagWallet: vi.fn(async (source: PaymentSource) => {
       savedWallets.update((items) => [
@@ -326,6 +327,75 @@ describe('Wallets page Stage A', () => {
     fixture.destroy();
   });
 
+  it('cancels a first-time Settings Wallet setup without enabling and returns to Settings', async () => {
+    const intent = {
+      id: 'synthetic-consumer-cancel',
+      kind: 'CONSUMER' as const,
+      createdAt: timestamp,
+    };
+    const { fixture, consumerWalletService } = setup(false, intent, { setup: intent.id });
+    const router = TestBed.inject(Router);
+    const navigate = vi.spyOn(router, 'navigate').mockResolvedValue(true);
+    const page = fixture.componentInstance;
+    page.openConsumerWallet();
+    await page.closeConsumerWallet();
+    expect(consumerWalletService.cancelSetup).toHaveBeenCalledWith(intent.id);
+    expect(consumerWalletService.registerWallet).not.toHaveBeenCalled();
+    expect(consumerWalletService.enabled()).toBe(false);
+    expect(navigate).toHaveBeenCalledWith(['/settings'], { replaceUrl: true });
+    expect(page.consumerOpen()).toBe(false);
+    fixture.destroy();
+  });
+
+  it('completes first-time Settings Wallet setup once and activates only after registration', async () => {
+    const intent: WalletSetupIntent = {
+      id: 'fresh-consumer-setup',
+      kind: 'CONSUMER',
+      createdAt: timestamp,
+    };
+    const { fixture, consumerWalletService } = setup(false, intent, { setup: intent.id });
+    const page = fixture.componentInstance;
+    page.openConsumerWallet();
+    page.consumerForm.patchValue({
+      providerId: 'other',
+      customName: 'Synthetic gift wallet',
+      nickname: 'Rewards',
+      openingBalance: '12.50',
+    });
+    await page.saveConsumerWallet(new Event('submit'));
+    expect(consumerWalletService.registerWallet).toHaveBeenCalledWith({
+      providerId: 'other',
+      customName: 'Synthetic gift wallet',
+      nickname: 'Rewards',
+      openingBalanceMinor: 1250,
+      setupIntentId: intent.id,
+    });
+    expect(consumerWalletService.enabled()).toBe(true);
+    expect(consumerWalletService.setupIntent()).toBeNull();
+    expect(page.consumerOpen()).toBe(false);
+    fixture.destroy();
+  });
+
+  it('cancels first-time Wallet setup, remains disabled, and returns to Settings', async () => {
+    const intent: WalletSetupIntent = {
+      id: 'cancel-consumer-setup',
+      kind: 'CONSUMER',
+      createdAt: timestamp,
+    };
+    const { fixture, consumerWalletService } = setup(false, intent, { setup: intent.id });
+    const router = TestBed.inject(Router);
+    const navigate = vi.spyOn(router, 'navigate').mockResolvedValue(true);
+    const page = fixture.componentInstance;
+    page.openConsumerWallet();
+    await page.closeConsumerWallet();
+    expect(consumerWalletService.cancelSetup).toHaveBeenCalledWith(intent.id);
+    expect(consumerWalletService.enabled()).toBe(false);
+    expect(consumerWalletService.registerWallet).not.toHaveBeenCalled();
+    expect(navigate).toHaveBeenCalledWith(['/settings'], { replaceUrl: true });
+    expect(page.consumerOpen()).toBe(false);
+    fixture.destroy();
+  });
+
   it('requires confirmation before archiving a consumer wallet', () => {
     const { fixture, consumerWalletService } = setup();
     const wallet: ConsumerWallet = {
@@ -361,6 +431,47 @@ describe('Wallets page Stage A', () => {
     confirm.click();
     fixture.detectChanges();
     expect(consumerWalletService.archiveWallet).toHaveBeenCalledOnce();
+    fixture.destroy();
+  });
+
+  it('requires confirmation before restoring a FASTag wallet', async () => {
+    const source: PaymentSource = {
+      id: 'restore-fastag-confirmation',
+      nickname: 'Synthetic archived FASTag',
+      kind: 'FASTAG',
+      vehicleNumber: 'FICT009',
+      noLimit: false,
+      balanceMinor: 12345,
+      autoLoad: false,
+      archived: true,
+    };
+    const { fixture, paymentSources, store, consumerWalletService } = setup(true, null, {}, [
+      source,
+    ]);
+    const page = fixture.componentInstance;
+    fixture.detectChanges();
+    const restore = [...fixture.nativeElement.querySelectorAll('.wallet-actions button')].find(
+      (button: HTMLButtonElement) => button.textContent?.trim() === 'Restore',
+    ) as HTMLButtonElement;
+    restore.click();
+    fixture.detectChanges();
+    expect(store.updatePaymentSource).not.toHaveBeenCalled();
+    expect(fixture.nativeElement.textContent).toContain('Restore Synthetic archived FASTag?');
+    const cancel = [
+      ...fixture.nativeElement.querySelectorAll('app-confirmation-dialog button'),
+    ].find(
+      (button: HTMLButtonElement) => button.textContent?.trim() === 'Cancel',
+    ) as HTMLButtonElement;
+    cancel.click();
+    fixture.detectChanges();
+    expect(store.updatePaymentSource).not.toHaveBeenCalled();
+    expect(paymentSources()[0].archived).toBe(true);
+
+    page.requestFastagRestore(source);
+    await page.confirmPendingAction();
+    expect(store.updatePaymentSource).toHaveBeenCalledWith({ ...source, archived: false });
+    expect(consumerWalletService.refreshWalletRecords).toHaveBeenCalledOnce();
+    expect(paymentSources()[0].archived).toBe(false);
     fixture.destroy();
   });
 

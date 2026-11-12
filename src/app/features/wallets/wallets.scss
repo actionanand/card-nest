@@ -196,6 +196,60 @@
   justify-content: flex-start;
   min-height: 48px;
 }
+.fastag-pass-validity-mode {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.35rem;
+}
+.fastag-pass-validity-mode button {
+  min-width: 0;
+  min-height: 44px;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 0.6rem;
+  color: var(--ink);
+  background: var(--surface-2);
+  font: inherit;
+}
+.fastag-pass-validity-mode button.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+  font-weight: 700;
+}
+.fastag-pass-validity-mode button:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.fastag-pass-validity-mode {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.35rem;
+}
+
+.fastag-pass-validity-mode button {
+  min-width: 0;
+  min-height: 44px;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 0.6rem;
+  color: var(--ink);
+  background: var(--surface-2);
+  font: inherit;
+}
+
+.fastag-pass-validity-mode button.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+  font-weight: 700;
+}
+
+.fastag-pass-validity-mode button:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
 
 .fastag-duplicate-confirm {
   display: flex !important;

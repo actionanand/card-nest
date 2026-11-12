@@ -913,9 +913,22 @@ export class TransactionsPage {
   manualPaymentMethods() {
     this.formChanges();
     const options = paymentMethodsFor(this.manualPaymentContext());
-    return this.canLoadConsumerWallet()
+    return this.walletLoadingFundingKind() !== 'UNSUPPORTED' &&
+      this.form.controls.type.value === 'PURCHASE'
       ? [...options, { value: 'WALLET_LOADING', label: 'Wallet loading' }]
       : options;
+  }
+  walletLoadingUnavailableMessage(): string | null {
+    if (this.form.controls.type.value !== 'PURCHASE') return null;
+    if (this.walletLoadingFundingKind() === 'UNSUPPORTED')
+      return 'Wallet Loading requires an INR credit card or a Bank/UPI source.';
+    if (!this.consumerWallets.enabled())
+      return 'Enable Wallets and register a destination before recording a load.';
+    if (!this.consumerWallets.activeLoadDestinations().length)
+      return 'Register an active consumer or FASTag wallet to receive this load.';
+    if (!this.walletLoadWalletOptions().length)
+      return 'No active destination is eligible for this funding source.';
+    return null;
   }
   readonly walletLoadWalletOptions = computed(() => {
     this.formChanges();
@@ -985,6 +998,12 @@ export class TransactionsPage {
       return false;
     return this.walletLoadWalletOptions().length > 0;
   }
+  private walletLoadingFundingSupported(): boolean {
+    return (
+      this.form.controls.type.value === 'PURCHASE' &&
+      this.walletLoadingFundingKind() !== 'UNSUPPORTED'
+    );
+  }
   readonly manualPaymentDetail = paymentMethodDetailConfig;
   setManualPaymentMethod(value: string): void {
     if (!this.manualPaymentMethods().some((item) => item.value === value)) return;
@@ -1010,13 +1029,17 @@ export class TransactionsPage {
   }
   private revalidateWalletLoadSelection(): void {
     if (this.form.controls.paymentMethod.value !== 'WALLET_LOADING') return;
-    if (!this.canLoadConsumerWallet()) {
+    if (!this.walletLoadingFundingSupported()) {
       this.form.patchValue({
         paymentMethod: 'NONE',
         walletId: '',
         walletLoadedAmount: '',
         walletLoadConfirmedFor: '',
       });
+      return;
+    }
+    if (!this.consumerWallets.enabled() || !this.walletLoadWalletOptions().length) {
+      this.form.patchValue({ walletId: '', walletLoadConfirmedFor: '' });
       return;
     }
     const selectedWalletId = this.form.controls.walletId.value;

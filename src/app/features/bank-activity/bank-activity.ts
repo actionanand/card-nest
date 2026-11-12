@@ -69,6 +69,13 @@ export class BankActivityPage {
   readonly tabs = ['Discovered Accounts', 'Find Banks', 'Bank Activities'] as const;
   readonly activeTab = signal(0);
   readonly deletion = signal<BankActivityEvent | null>(null);
+  readonly managementConfirmation = signal<
+    | { readonly kind: 'ARCHIVE_SOURCE'; readonly source: PaymentSource }
+    | { readonly kind: 'RESTORE_SOURCE'; readonly source: PaymentSource }
+    | { readonly kind: 'ARCHIVE_PROFILE'; readonly profile: BankActivityProfile }
+    | { readonly kind: 'RESTORE_PROFILE'; readonly profile: BankActivityProfile }
+    | null
+  >(null);
   readonly primaryBankConfirmation = signal<PaymentSource | null>(null);
   readonly accountSync = inject(BankAccountSyncService);
   readonly balanceMovement = signal<{ sourceId: string } | null>(null);
@@ -767,21 +774,78 @@ export class BankActivityPage {
     }
   }
 
-  async archiveMoneySource(source: PaymentSource): Promise<void> {
+  archiveMoneySource(source: PaymentSource): void {
+    this.requestManagementConfirmation({ kind: 'ARCHIVE_SOURCE', source });
+  }
+
+  requestManagementConfirmation(
+    action:
+      | { readonly kind: 'ARCHIVE_SOURCE'; readonly source: PaymentSource }
+      | { readonly kind: 'RESTORE_SOURCE'; readonly source: PaymentSource }
+      | { readonly kind: 'ARCHIVE_PROFILE'; readonly profile: BankActivityProfile }
+      | { readonly kind: 'RESTORE_PROFILE'; readonly profile: BankActivityProfile },
+  ): void {
     if (this.saving()) return;
+    this.error.set(null);
+    this.managementConfirmation.set(action);
+  }
+
+  managementConfirmationTitle(): string {
+    const action = this.managementConfirmation();
+    if (!action) return '';
+    if (action.kind === 'ARCHIVE_SOURCE') return 'Archive Money Source?';
+    if (action.kind === 'RESTORE_SOURCE') return 'Restore Money Source?';
+    if (action.kind === 'ARCHIVE_PROFILE') return 'Archive monitoring profile?';
+    return 'Restore monitoring profile?';
+  }
+
+  managementConfirmationMessage(): string {
+    const action = this.managementConfirmation();
+    if (!action) return '';
+    if (action.kind === 'ARCHIVE_SOURCE')
+      return `Archive ${action.source.nickname}? It becomes unavailable for new activity. Its balance, transactions and monitoring history are preserved.`;
+    if (action.kind === 'RESTORE_SOURCE')
+      return `Restore ${action.source.nickname}? It becomes available again with its saved balance and transaction history. Existing identity checks still apply.`;
+    if (action.kind === 'ARCHIVE_PROFILE')
+      return `Archive ${this.profileLabel(action.profile)} monitoring? Activity history and its linked Money Source will remain unchanged.`;
+    return `Restore ${this.profileLabel(action.profile)} monitoring? Existing account identity and financial records remain unchanged.`;
+  }
+
+  async confirmManagementAction(): Promise<void> {
+    const action = this.managementConfirmation();
+    if (!action || this.saving()) return;
     this.saving.set(true);
+    this.error.set(null);
     try {
-      await this.store.updatePaymentSource({ ...source, archived: true });
-      this.discoveryNotice.set(
-        `${source.nickname} Money Source archived. Its monitoring profile and financial history were not changed.`,
-      );
+      if (action.kind === 'ARCHIVE_SOURCE' || action.kind === 'RESTORE_SOURCE') {
+        const archived = action.kind === 'ARCHIVE_SOURCE';
+        await this.store.updatePaymentSource({ ...action.source, archived });
+        this.discoveryNotice.set(
+          archived
+            ? `${action.source.nickname} Money Source archived. Its balance and financial history are kept.`
+            : `${action.source.nickname} Money Source restored with its saved balance and history.`,
+        );
+      } else {
+        const archived = action.kind === 'ARCHIVE_PROFILE';
+        await this.activity.setArchived(action.profile.id, archived);
+        this.discoveryNotice.set(
+          archived
+            ? `${this.profileLabel(action.profile)} monitoring archived. Activity history is kept.`
+            : `${this.profileLabel(action.profile)} monitoring restored.`,
+        );
+      }
+      this.managementConfirmation.set(null);
     } catch (error: unknown) {
-      this.error.set(
-        error instanceof Error ? error.message : 'Money Source could not be archived.',
-      );
+      this.error.set(error instanceof Error ? error.message : 'Account management action failed.');
     } finally {
       this.saving.set(false);
     }
+  }
+
+  cancelManagementConfirmation(): void {
+    if (this.saving()) return;
+    this.managementConfirmation.set(null);
+    this.error.set(null);
   }
 
   requestPrimaryBankSwitch(source: PaymentSource): void {
@@ -805,32 +869,12 @@ export class BankActivityPage {
     }
   }
 
-  async restoreMoneySource(source: PaymentSource): Promise<void> {
-    if (this.saving()) return;
-    this.saving.set(true);
-    try {
-      await this.store.updatePaymentSource({ ...source, archived: false });
-      this.discoveryNotice.set(
-        `${source.nickname} Money Source restored. Its saved balance and history are unchanged.`,
-      );
-    } catch (error: unknown) {
-      this.error.set(
-        error instanceof Error ? error.message : 'Money Source could not be restored.',
-      );
-    } finally {
-      this.saving.set(false);
-    }
+  restoreMoneySource(source: PaymentSource): void {
+    this.requestManagementConfirmation({ kind: 'RESTORE_SOURCE', source });
   }
 
-  async restoreMonitoring(profile: BankActivityProfile): Promise<void> {
-    try {
-      await this.activity.setArchived(profile.id, false);
-      this.discoveryNotice.set(`${this.profileLabel(profile)} monitoring restored.`);
-    } catch (error: unknown) {
-      this.error.set(
-        error instanceof Error ? error.message : 'Monitoring profile could not be restored.',
-      );
-    }
+  restoreMonitoring(profile: BankActivityProfile): void {
+    this.requestManagementConfirmation({ kind: 'RESTORE_PROFILE', profile });
   }
 
   profileLabel(profile: BankActivityProfile): string {
@@ -942,8 +986,8 @@ export class BankActivityPage {
     }
   }
 
-  async archive(profile: BankActivityProfile): Promise<void> {
-    await this.activity.setArchived(profile.id, true);
+  archive(profile: BankActivityProfile): void {
+    this.requestManagementConfirmation({ kind: 'ARCHIVE_PROFILE', profile });
   }
 
   startEvent(profile: BankActivityProfile): void {

@@ -10,6 +10,7 @@ import { AppSelectOption, AppSelectPicker } from '../../shared/app-select-picker
 import { AppIcon } from '../../shared/app-icon';
 import { parseMoneyToMinor, formatMoney } from '../../core/services/money';
 import { IndiaTodayClock } from '../../core/services/india-date';
+import { AppDatePipe } from '../../core/services/date-format.service';
 import { SnackbarService } from '../../core/services/snackbar.service';
 import { WhatsAppAppChooser } from '../../shared/whatsapp-app-chooser';
 import { WhatsAppPackage, WhatsAppService } from './whatsapp.service';
@@ -52,6 +53,7 @@ type UtilitySection = 'MOBILE' | 'GAS' | 'ELECTRICITY' | 'BROADBAND' | 'TV';
     AppIcon,
     AppSelectPicker,
     WhatsAppAppChooser,
+    AppDatePipe,
   ],
   templateUrl: './utilities.html',
   styleUrl: './utilities.scss',
@@ -102,9 +104,22 @@ export class UtilitiesPage {
   readonly saving = signal(false);
   readonly deletion = signal<{
     id: string;
-    kind: 'RECHARGE' | 'LPG' | 'MOBILE_PROFILE' | 'LPG_PROFILE';
+    kind:
+      | 'RECHARGE'
+      | 'LPG'
+      | 'MOBILE_PROFILE'
+      | 'LPG_PROFILE'
+      | 'TV_PROFILE'
+      | 'TV_RECHARGE'
+      | 'TV_ARCHIVE'
+      | 'TV_RESTORE'
+      | 'MOBILE_ARCHIVE'
+      | 'MOBILE_RESTORE'
+      | 'LPG_ARCHIVE'
+      | 'LPG_RESTORE';
     title: string;
     message: string;
+    confirmLabel?: string;
   } | null>(null);
   readonly whatsappPackages = signal<readonly WhatsAppPackage[]>([]);
   readonly whatsappNumber = signal('');
@@ -319,9 +334,22 @@ export class UtilitiesPage {
     }
   }
 
-  async archiveMobile(profile: MobileProfile): Promise<void> {
-    await this.utilities.setMobileArchived(profile.id, true);
-    this.snackbar.show('Mobile profile archived. Recharge history is kept.', 'INFO');
+  archiveMobile(profile: MobileProfile): void {
+    this.requestMobileArchive(profile, true);
+  }
+
+  requestMobileArchive(profile: MobileProfile, archived: boolean): void {
+    if (this.saving()) return;
+    this.error.set(null);
+    this.deletion.set({
+      id: profile.id,
+      kind: archived ? 'MOBILE_ARCHIVE' : 'MOBILE_RESTORE',
+      title: archived ? 'Archive mobile profile?' : 'Restore mobile profile?',
+      message: archived
+        ? `Archive ${profile.personName}? The profile becomes inactive; its recharge history is preserved.`
+        : `Restore ${profile.personName}? The profile and saved recharge history will become active again.`,
+      confirmLabel: archived ? 'Archive profile' : 'Restore profile',
+    });
   }
 
   openRechargeHistory(profile: MobileProfile): void {
@@ -551,9 +579,22 @@ export class UtilitiesPage {
     }
   }
 
-  async archiveLpg(profile: LpgProfile): Promise<void> {
-    await this.utilities.setLpgArchived(profile.id, true);
-    this.snackbar.show('LPG connection archived. Refill history is kept.', 'INFO');
+  archiveLpg(profile: LpgProfile): void {
+    this.requestLpgArchive(profile, true);
+  }
+
+  requestLpgArchive(profile: LpgProfile, archived: boolean): void {
+    if (this.saving()) return;
+    this.error.set(null);
+    this.deletion.set({
+      id: profile.id,
+      kind: archived ? 'LPG_ARCHIVE' : 'LPG_RESTORE',
+      title: archived ? 'Archive LPG connection?' : 'Restore LPG connection?',
+      message: archived
+        ? `Archive ${profile.connectionName}? Its cylinder events will remain saved.`
+        : `Restore ${profile.connectionName}? The connection and its cylinder history will become active again.`,
+      confirmLabel: archived ? 'Archive connection' : 'Restore connection',
+    });
   }
 
   startLpgEvent(profile: LpgProfile, eventType: LpgEventType = 'STARTED'): void {
@@ -729,7 +770,15 @@ export class UtilitiesPage {
     this.error.set(null);
     try {
       if (choice.kind === 'RECHARGE') await this.utilities.deleteRecharge(choice.id);
-      else if (choice.kind === 'MOBILE_PROFILE') {
+      else if (choice.kind === 'TV_PROFILE') await this.utilities.deleteTvProfile(choice.id);
+      else if (choice.kind === 'TV_RECHARGE') await this.utilities.deleteTvRecharge(choice.id);
+      else if (choice.kind === 'TV_ARCHIVE' || choice.kind === 'TV_RESTORE') {
+        await this.utilities.setTvArchived(choice.id, choice.kind === 'TV_ARCHIVE');
+      } else if (choice.kind === 'MOBILE_ARCHIVE' || choice.kind === 'MOBILE_RESTORE') {
+        await this.utilities.setMobileArchived(choice.id, choice.kind === 'MOBILE_ARCHIVE');
+      } else if (choice.kind === 'LPG_ARCHIVE' || choice.kind === 'LPG_RESTORE') {
+        await this.utilities.setLpgArchived(choice.id, choice.kind === 'LPG_ARCHIVE');
+      } else if (choice.kind === 'MOBILE_PROFILE') {
         await this.utilities.deleteMobileProfile(choice.id);
         if (this.rechargeHistoryProfileId() === choice.id) this.rechargeHistoryProfileId.set(null);
         afterNextRender(() => document.getElementById('add-mobile-profile')?.focus(), {
@@ -745,16 +794,22 @@ export class UtilitiesPage {
       this.deletion.set(null);
       this.restoreHistoryFocus();
       this.restoreLpgHistoryFocus();
-      this.snackbar.show(
-        choice.kind === 'RECHARGE'
-          ? 'Recharge removed from history.'
-          : choice.kind === 'MOBILE_PROFILE'
-            ? 'Mobile profile and recharge history permanently deleted.'
-            : choice.kind === 'LPG_PROFILE'
-              ? 'LPG connection and cylinder history permanently deleted.'
-              : 'Cylinder event deleted.',
-        'INFO',
-      );
+      const successMessage: Record<typeof choice.kind, string> = {
+        RECHARGE: 'Recharge removed from history.',
+        LPG: 'Cylinder event deleted.',
+        MOBILE_PROFILE: 'Mobile profile and recharge history permanently deleted.',
+        LPG_PROFILE: 'LPG connection and cylinder history permanently deleted.',
+        TV_PROFILE: 'TV profile and tracker history deleted. Financial records were preserved.',
+        TV_RECHARGE: 'TV recharge removed from tracker history.',
+        TV_ARCHIVE: 'TV profile archived. Recharge history is kept.',
+        TV_RESTORE: 'TV profile restored.',
+        MOBILE_ARCHIVE: 'Mobile profile archived. Recharge history is kept.',
+        MOBILE_RESTORE: 'Mobile profile restored.',
+        LPG_ARCHIVE: 'LPG connection archived. Cylinder history is kept.',
+        LPG_RESTORE: 'LPG connection restored.',
+      };
+      const destructive = choice.kind === 'TV_PROFILE' || choice.kind === 'TV_RECHARGE';
+      this.snackbar.show(successMessage[choice.kind], destructive ? 'WARNING' : 'INFO');
     } catch (error: unknown) {
       this.error.set(error instanceof Error ? error.message : 'The record could not be deleted.');
     } finally {
@@ -970,6 +1025,14 @@ export class UtilitiesPage {
       .sort((a, b) => b.startDate.localeCompare(a.startDate));
   }
 
+  tvRechargeHistory(profile: TvProfile): readonly TvRecharge[] {
+    return this.tvProfileRecharges(profile).slice(0, 10);
+  }
+
+  canAddTvRecharge(profile: TvProfile): boolean {
+    return !this.currentTvRecharge(profile) && !this.scheduledTvRecharge(profile);
+  }
+
   currentTvRecharge(profile: TvProfile): TvRecharge | undefined {
     return this.tvProfileRecharges(profile).find(
       (recharge) => recharge.startDate <= this.today && recharge.endDate >= this.today,
@@ -1048,6 +1111,13 @@ export class UtilitiesPage {
     this.tvProfileFormOpen.set(false);
     this.editingTvProfileId.set(null);
     this.error.set(null);
+    this.tvForm.reset({
+      displayName: '',
+      provider: 'SUN',
+      otherProviderName: '',
+      customerId: '',
+      mobileNumber: '',
+    });
   }
 
   async saveTvProfile(event: Event): Promise<void> {
@@ -1071,13 +1141,26 @@ export class UtilitiesPage {
         customerId: value.customerId,
         mobileNumber: value.mobileNumber,
       });
-      this.closeTvProfileForm();
+      this.resetTvProfileFormState();
       this.snackbar.show('TV profile saved.');
     } catch (error: unknown) {
       this.error.set(error instanceof Error ? error.message : 'TV profile could not be saved.');
     } finally {
       this.saving.set(false);
     }
+  }
+
+  private resetTvProfileFormState(): void {
+    this.tvProfileFormOpen.set(false);
+    this.editingTvProfileId.set(null);
+    this.error.set(null);
+    this.tvForm.reset({
+      displayName: '',
+      provider: 'SUN',
+      otherProviderName: '',
+      customerId: '',
+      mobileNumber: '',
+    });
   }
 
   async archiveTvProfile(profile: TvProfile): Promise<void> {
@@ -1106,6 +1189,14 @@ export class UtilitiesPage {
 
   startTvRecharge(profile: TvProfile, recharge?: TvRecharge): void {
     if (this.saving() || profile.archived) return;
+    if (recharge && recharge.endDate < this.today) {
+      this.error.set('Expired TV recharge history is read-only. Add a new recharge instead.');
+      return;
+    }
+    if (!recharge && !this.canAddTvRecharge(profile)) {
+      this.error.set('Edit the active or scheduled recharge before creating another one.');
+      return;
+    }
     this.error.set(null);
     this.tvRechargeProfileId.set(profile.id);
     this.editingTvRechargeId.set(recharge?.id ?? null);
@@ -1119,11 +1210,54 @@ export class UtilitiesPage {
     });
   }
 
+  requestTvProfileAction(profile: TvProfile, action: 'ARCHIVE' | 'RESTORE' | 'DELETE'): void {
+    if (this.saving()) return;
+    this.error.set(null);
+    this.deletion.set({
+      id: profile.id,
+      kind: action === 'DELETE' ? 'TV_PROFILE' : action === 'ARCHIVE' ? 'TV_ARCHIVE' : 'TV_RESTORE',
+      title:
+        action === 'DELETE'
+          ? 'Delete TV profile and recharge history?'
+          : action === 'ARCHIVE'
+            ? 'Archive TV profile?'
+            : 'Restore TV profile?',
+      message:
+        action === 'DELETE'
+          ? `Permanently delete ${profile.displayName} and its TV recharge tracker history? Financial transactions and wallet records are not affected.`
+          : action === 'ARCHIVE'
+            ? `Archive ${profile.displayName}? The profile becomes inactive; its recharge history is preserved.`
+            : `Restore ${profile.displayName}? The profile and saved recharge history will become active again.`,
+      confirmLabel:
+        action === 'DELETE' ? 'Delete TV profile' : action === 'ARCHIVE' ? 'Archive' : 'Restore',
+    });
+  }
+
+  requestTvRechargeDeletion(profile: TvProfile, recharge: TvRecharge): void {
+    if (this.saving() || recharge.endDate < this.today) return;
+    this.error.set(null);
+    this.deletion.set({
+      id: recharge.id,
+      kind: 'TV_RECHARGE',
+      title: 'Delete TV recharge?',
+      message: `Delete the ${recharge.startDate} to ${recharge.endDate} recharge from ${profile.displayName}? Only the informational TV tracker record is deleted; no financial transaction is changed.`,
+      confirmLabel: 'Delete recharge',
+    });
+  }
+
   closeTvRecharge(): void {
     if (this.saving()) return;
     this.tvRechargeProfileId.set(null);
     this.editingTvRechargeId.set(null);
     this.error.set(null);
+    this.tvRechargeForm.reset({
+      amount: '',
+      startDate: this.today,
+      validityDays: '30',
+      endDate: '',
+      notes: '',
+    });
+    this.tvValidityMode.set('DAYS');
   }
 
   async saveTvRecharge(event: Event): Promise<void> {
@@ -1156,13 +1290,26 @@ export class UtilitiesPage {
         durationDays,
         notes: value.notes,
       });
-      this.closeTvRecharge();
+      this.resetTvRechargeFormState();
       this.snackbar.show('TV recharge record saved.');
     } catch (error: unknown) {
       this.error.set(error instanceof Error ? error.message : 'TV recharge could not be saved.');
     } finally {
       this.saving.set(false);
     }
+  }
+
+  private resetTvRechargeFormState(): void {
+    this.tvRechargeProfileId.set(null);
+    this.editingTvRechargeId.set(null);
+    this.error.set(null);
+    this.tvRechargeForm.reset({
+      amount: '',
+      startDate: this.today,
+      validityDays: '30',
+      endDate: '',
+      notes: '',
+    });
   }
 
   setSection(section: UtilitySection): void {

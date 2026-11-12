@@ -430,13 +430,27 @@
                 [value]="form.controls.paymentMethod.value"
                 (valueChange)="setManualPaymentMethod($event)"
               />
+              @if (
+                form.controls.type.value === 'PURCHASE' &&
+                  form.controls.paymentMethod.value !== 'WALLET_LOADING' &&
+                  walletLoadingUnavailableMessage();
+                as message
+              ) {
+                <p class="full form-note" role="status">
+                  Wallet Loading unavailable: {{ message }}
+                </p>
+              }
               @if (form.controls.paymentMethod.value === 'WALLET_LOADING') {
-                <app-select-picker
-                  label="Consumer wallet or FASTag wallet"
-                  [options]="walletLoadWalletOptions()"
-                  [value]="form.controls.walletId.value"
-                  (valueChange)="setWalletLoadDestination($event)"
-                />
+                @if (walletLoadWalletOptions().length) {
+                  <app-select-picker
+                    label="Consumer wallet or FASTag wallet"
+                    [options]="walletLoadWalletOptions()"
+                    [value]="form.controls.walletId.value"
+                    (valueChange)="setWalletLoadDestination($event)"
+                  />
+                } @else if (walletLoadingUnavailableMessage(); as message) {
+                  <p class="full form-note" role="status">{{ message }}</p>
+                }
                 <label
                   >Amount credited<input
                     formControlName="walletLoadedAmount"

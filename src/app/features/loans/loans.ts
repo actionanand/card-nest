@@ -1,4 +1,5 @@
-import { Component, computed, inject, signal } from '@angular/core';
+import { Component, DestroyRef, computed, inject, signal } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { CommittedSaveRefreshError } from '../../core/services/committed-save-refresh-error';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { ActivatedRoute } from '@angular/router';
@@ -37,6 +38,8 @@ export class LoansPage {
   private readonly route = inject(ActivatedRoute);
   private readonly snackbar = inject(SnackbarService);
   readonly showForm = signal(false);
+  readonly formSaving = signal(false);
+  readonly formError = signal<string | null>(null);
   readonly commitmentFilter = signal<CommitmentFilter>('ACTIVE');
   readonly commitmentOwner = signal<CommitmentOwner>('ALL');
   readonly selectedEmiId = signal<string | null>(this.route.snapshot.queryParamMap.get('emi'));
@@ -153,6 +156,30 @@ export class LoansPage {
   readonly emiStartForm = new FormGroup({
     startDate: new FormControl('', { nonNullable: true, validators: [Validators.required] }),
   });
+  constructor() {
+    this.form.valueChanges.pipe(takeUntilDestroyed(inject(DestroyRef))).subscribe(() => {
+      this.formError.set(null);
+    });
+  }
+  closeForm(): void {
+    if (this.formSaving()) return;
+    this.showForm.set(false);
+    this.formError.set(null);
+    this.resetLoanForm();
+  }
+  private resetLoanForm(): void {
+    this.form.reset({
+      name: '',
+      lender: '',
+      principal: '',
+      installment: '',
+      debitDay: 5,
+      startDate: indiaTodayIso(),
+      endDate: '',
+      notes: '',
+      forFriendsOrRelatives: false,
+    });
+  }
   money(value: number): string {
     return formatMoney(value, 'INR');
   }
@@ -387,14 +414,31 @@ export class LoansPage {
     }
     this.closeEmiCandidate.set(null);
   }
-  save(): void {
+  async save(): Promise<void> {
+    if (this.formSaving()) return;
     this.form.markAllAsTouched();
     const principalMinor = parseMoneyToMinor(this.form.controls.principal.value);
     const installmentMinor = parseMoneyToMinor(this.form.controls.installment.value);
-    if (!principalMinor) this.form.controls.principal.setErrors({ money: true });
-    if (!installmentMinor) this.form.controls.installment.setErrors({ money: true });
-    if (this.form.invalid || !principalMinor || !installmentMinor) return;
+    if (!principalMinor || principalMinor <= 0)
+      this.form.controls.principal.setErrors({ money: true });
+    if (!installmentMinor || installmentMinor <= 0)
+      this.form.controls.installment.setErrors({ money: true });
     const value = this.form.getRawValue();
+    if (value.endDate < value.startDate) this.form.controls.endDate.setErrors({ range: true });
+    if (
+      this.form.invalid ||
+      !value.name.trim() ||
+      !principalMinor ||
+      principalMinor <= 0 ||
+      !installmentMinor ||
+      installmentMinor <= 0 ||
+      value.endDate < value.startDate
+    ) {
+      this.formError.set(
+        'Check the name, positive principal and installment amounts, and date range.',
+      );
+      return;
+    }
     const loan: LoanCommitment = {
       id: crypto.randomUUID(),
       name: value.name.trim(),
@@ -408,19 +452,18 @@ export class LoansPage {
       notes: value.notes.trim() || undefined,
       forFriendsOrRelatives: value.forFriendsOrRelatives,
     };
-    this.store.addLoan(loan);
-    this.showForm.set(false);
-    this.form.reset({
-      name: '',
-      lender: '',
-      principal: '',
-      installment: '',
-      debitDay: 5,
-      startDate: indiaTodayIso(),
-      endDate: '',
-      notes: '',
-      forFriendsOrRelatives: false,
-    });
+    this.formSaving.set(true);
+    this.formError.set(null);
+    try {
+      await this.store.addLoan(loan);
+      this.showForm.set(false);
+      this.resetLoanForm();
+      this.snackbar.show('Loan commitment saved.');
+    } catch (error: unknown) {
+      this.formError.set(error instanceof Error ? error.message : 'Loan could not be saved.');
+    } finally {
+      this.formSaving.set(false);
+    }
   }
 
   private matchesFilter(active: boolean): boolean {

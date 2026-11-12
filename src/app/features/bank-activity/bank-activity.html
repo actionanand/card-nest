@@ -266,11 +266,21 @@
               <button class="btn" type="button" (click)="editProfile(account.profile)">
                 Edit monitoring
               </button>
-              <button class="btn btn-archive" type="button" (click)="archive(account.profile)">
+              <button
+                class="btn btn-archive"
+                type="button"
+                [disabled]="saving()"
+                (click)="archive(account.profile)"
+              >
                 Archive monitoring profile
               </button>
             } @else if (account.profile?.archived) {
-              <button class="btn" type="button" (click)="restoreMonitoring(account.profile)">
+              <button
+                class="btn"
+                type="button"
+                [disabled]="saving()"
+                (click)="restoreMonitoring(account.profile)"
+              >
                 Restore monitoring profile
               </button>
             } @else if (account.source) {
@@ -300,6 +310,7 @@
               <button
                 class="btn btn-archive"
                 type="button"
+                [disabled]="saving()"
                 (click)="archiveMoneySource(account.source)"
               >
                 Archive Money Source
@@ -655,6 +666,23 @@
     [busy]="saving()"
     (confirmed)="confirmPrimaryBankSwitch()"
     (cancelled)="primaryBankConfirmation.set(null)"
+  />
+}
+
+@if (managementConfirmation()) {
+  <app-confirmation-dialog
+    [title]="managementConfirmationTitle()"
+    [message]="managementConfirmationMessage()"
+    [confirmLabel]="
+      managementConfirmation()?.kind === 'ARCHIVE_SOURCE' ||
+      managementConfirmation()?.kind === 'ARCHIVE_PROFILE'
+        ? 'Archive'
+        : 'Restore'
+    "
+    [busy]="saving()"
+    [error]="error()"
+    (confirmed)="confirmManagementAction()"
+    (cancelled)="cancelManagementConfirmation()"
   />
 }
 
